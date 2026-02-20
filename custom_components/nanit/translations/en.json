@@ -11,6 +11,23 @@
           "store_credentials": "Store email and password (enables easier re-authentication)"
         }
       },
+      "addon_confirm": {
+        "title": "Nanit Daemon Add-on Detected",
+        "description": "The {addon_name} add-on was detected on this Home Assistant instance. Use it as the backend?",
+        "data": {
+          "use_addon": "Use Nanit Daemon add-on"
+        }
+      },
+      "credentials": {
+        "title": "Connect to Nanit",
+        "description": "Enter your Nanit account credentials.",
+        "data": {
+          "email": "Email",
+          "password": "Password",
+          "host": "Go Backend URL",
+          "store_credentials": "Store email and password (enables easier re-authentication)"
+        }
+      },
       "mfa": {
         "title": "Multi-Factor Authentication",
         "description": "Enter the verification code sent to your device.",

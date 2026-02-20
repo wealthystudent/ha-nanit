@@ -32,6 +32,11 @@ CONF_BABY_NAME = "baby_name"
 TRANSPORT_LOCAL = "local"
 TRANSPORT_LOCAL_CLOUD = "local_cloud"
 
+# Add-on
+ADDON_SLUG = "nanitd"
+CONF_USE_ADDON = "use_addon"
+ADDON_HOST_MARKER = "__addon__"
+
 # Defaults
 DEFAULT_HOST = "http://localhost:8080"
 DEFAULT_SCAN_INTERVAL = 30

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 import aiohttp
@@ -12,8 +13,11 @@ from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 
 from .api import NanitApiClient, NanitAuthError, NanitConnectionError
 from .const import (
+    ADDON_HOST_MARKER,
+    ADDON_SLUG,
     CONF_HOST,
     CONF_TRANSPORT,
+    CONF_USE_ADDON,
     DEFAULT_HOST,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
@@ -37,10 +41,52 @@ class NanitData:
 type NanitConfigEntry = ConfigEntry[NanitData]
 
 
+async def _async_resolve_addon_host() -> str | None:
+    """Resolve the nanitd add-on hostname via Supervisor API.
+
+    Returns the full URL (http://<hostname>:8080) or None if unavailable.
+    """
+    token = os.environ.get("SUPERVISOR_TOKEN")
+    if not token:
+        return None
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            resp = await session.get(
+                f"http://supervisor/addons/{ADDON_SLUG}/info",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=aiohttp.ClientTimeout(total=10),
+            )
+            if resp.status != 200:
+                return None
+            data = await resp.json()
+            addon_data = data.get("data", {})
+            hostname = addon_data.get("hostname")
+            state = addon_data.get("state")
+            if state == "started" and hostname:
+                return f"http://{hostname}:8080"
+    except Exception:
+        LOGGER.debug("Failed to resolve addon hostname", exc_info=True)
+    return None
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: NanitConfigEntry) -> bool:
     """Set up Nanit from a config entry."""
     host = entry.data.get(CONF_HOST, DEFAULT_HOST)
     transport = entry.data.get(CONF_TRANSPORT, "local")
+    use_addon = entry.data.get(CONF_USE_ADDON, False)
+
+    # Resolve add-on hostname dynamically if configured to use the add-on
+    if use_addon or host == ADDON_HOST_MARKER:
+        resolved = await _async_resolve_addon_host()
+        if resolved:
+            host = resolved
+            LOGGER.info("Resolved nanitd add-on at %s", host)
+        else:
+            raise ConfigEntryNotReady(
+                "Nanit Daemon add-on is not running. "
+                "Please start the nanitd add-on and try again."
+            )
 
     session = aiohttp.ClientSession()
     client = NanitApiClient(host, session)

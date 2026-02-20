@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import aiohttp
@@ -23,6 +24,8 @@ from .api import (
     NanitMfaRequiredError,
 )
 from .const import (
+    ADDON_HOST_MARKER,
+    ADDON_SLUG,
     CONF_ACCESS_TOKEN,
     CONF_BABY_NAME,
     CONF_BABY_UID,
@@ -35,6 +38,7 @@ from .const import (
     CONF_REFRESH_TOKEN,
     CONF_STORE_CREDENTIALS,
     CONF_TRANSPORT,
+    CONF_USE_ADDON,
     DEFAULT_HOST,
     DOMAIN,
     LOGGER,
@@ -60,17 +64,98 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
         self._baby_uid: str = ""
         self._camera_uid: str = ""
         self._baby_name: str = ""
+        self._use_addon: bool = False
+        self._addon_hostname: str | None = None
+
+    async def _async_get_addon_info(self) -> dict[str, Any] | None:
+        """Query Supervisor API for the nanitd add-on info.
+
+        Returns addon info dict if addon is installed and running, None otherwise.
+        Works for both core and third-party add-ons via the Supervisor REST API.
+        """
+        token = os.environ.get("SUPERVISOR_TOKEN")
+        if not token:
+            return None
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                resp = await session.get(
+                    f"http://supervisor/addons/{ADDON_SLUG}/info",
+                    headers={"Authorization": f"Bearer {token}"},
+                    timeout=aiohttp.ClientTimeout(total=10),
+                )
+                if resp.status != 200:
+                    LOGGER.debug(
+                        "Supervisor returned %s for addon %s", resp.status, ADDON_SLUG
+                    )
+                    return None
+                data = await resp.json()
+                return data.get("data")
+        except Exception:
+            LOGGER.debug("Failed to query Supervisor for addon info", exc_info=True)
+            return None
+
+    async def _async_is_addon_running(self) -> bool:
+        """Check if the nanitd add-on is installed and running."""
+        info = await self._async_get_addon_info()
+        if info is None:
+            return False
+        state = info.get("state")
+        hostname = info.get("hostname")
+        if state == "started" and hostname:
+            self._addon_hostname = hostname
+            return True
+        return False
+
+    def _is_hassio(self) -> bool:
+        """Check if running under HA Supervisor."""
+        return "SUPERVISOR_TOKEN" in os.environ
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Handle the initial user step (email, password, host)."""
+        """Handle the initial user step."""
+        # If running under Supervisor, check for the nanitd add-on first
+        if self._is_hassio() and user_input is None:
+            addon_running = await self._async_is_addon_running()
+            if addon_running:
+                # Offer the user a choice: use add-on or manual host
+                return await self.async_step_addon_confirm()
+
+        return await self.async_step_credentials(user_input)
+
+    async def async_step_addon_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Confirm using the detected nanitd add-on."""
+        if user_input is not None:
+            use_addon = user_input.get(CONF_USE_ADDON, True)
+            if use_addon:
+                self._use_addon = True
+                self._host = ADDON_HOST_MARKER
+            return await self.async_step_credentials()
+
+        return self.async_show_form(
+            step_id="addon_confirm",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_USE_ADDON, default=True): cv.boolean,
+                }
+            ),
+            description_placeholders={"addon_name": "Nanit Daemon"},
+        )
+
+    async def async_step_credentials(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle credential entry (email, password, optionally host)."""
         errors: dict[str, str] = {}
 
         if user_input is not None:
             self._email = user_input[CONF_EMAIL]
             self._password = user_input[CONF_PASSWORD]
-            self._host = user_input.get(CONF_HOST, DEFAULT_HOST)
+            if not self._use_addon:
+                self._host = user_input.get(CONF_HOST, DEFAULT_HOST)
             self._store_credentials = user_input.get(CONF_STORE_CREDENTIALS, False)
 
             try:
@@ -95,16 +180,28 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
             else:
                 return await self._async_fetch_babies_and_continue()
 
-        return self.async_show_form(
-            step_id="user",
-            data_schema=vol.Schema(
+        # Build schema — hide host field if using add-on
+        if self._use_addon:
+            schema = vol.Schema(
+                {
+                    vol.Required(CONF_EMAIL): cv.string,
+                    vol.Required(CONF_PASSWORD): cv.string,
+                    vol.Optional(CONF_STORE_CREDENTIALS, default=False): cv.boolean,
+                }
+            )
+        else:
+            schema = vol.Schema(
                 {
                     vol.Required(CONF_EMAIL): cv.string,
                     vol.Required(CONF_PASSWORD): cv.string,
                     vol.Optional(CONF_HOST, default=DEFAULT_HOST): cv.string,
                     vol.Optional(CONF_STORE_CREDENTIALS, default=False): cv.boolean,
                 }
-            ),
+            )
+
+        return self.async_show_form(
+            step_id="credentials",
+            data_schema=schema,
             errors=errors,
         )
 
@@ -119,7 +216,9 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
             try:
                 async with aiohttp.ClientSession() as session:
                     auth_client = NanitAuthClient(session)
-                    result = await auth_client.verify_mfa(self._mfa_token, mfa_code)
+                    result = await auth_client.verify_mfa(
+                        self._email, self._password, self._mfa_token, mfa_code
+                    )
 
                 self._access_token = result["access_token"]
                 self._refresh_token = result["refresh_token"]
@@ -184,7 +283,11 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
                 CONF_CAMERA_UID: self._camera_uid,
                 CONF_BABY_NAME: self._baby_name,
                 CONF_STORE_CREDENTIALS: self._store_credentials,
+                CONF_USE_ADDON: self._use_addon,
             }
+
+            if self._use_addon and self._addon_hostname:
+                data[CONF_HOST] = ADDON_HOST_MARKER
 
             if self._store_credentials:
                 data[CONF_EMAIL] = self._email
@@ -280,7 +383,9 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
             try:
                 async with aiohttp.ClientSession() as session:
                     auth_client = NanitAuthClient(session)
-                    result = await auth_client.verify_mfa(self._mfa_token, mfa_code)
+                    result = await auth_client.verify_mfa(
+                        self._email, self._password, self._mfa_token, mfa_code
+                    )
 
                 access_token = result["access_token"]
                 refresh_token = result["refresh_token"]

@@ -1,6 +1,6 @@
 name: Nanit Daemon
 description: Go backend daemon for the Nanit baby camera integration. Provides sensor data, camera controls, and HLS streaming.
-version: 0.2.1
+version: 0.2.2
 slug: nanitd
 url: https://github.com/wealthystudent/ha-nanit
 image: ghcr.io/wealthystudent/nanitd-{arch}

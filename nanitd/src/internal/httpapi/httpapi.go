@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync/atomic"
+	"time"
 
 	"github.com/trymwestin/nanit/internal/core/auth"
 	"github.com/trymwestin/nanit/internal/core/camera"
@@ -16,15 +18,17 @@ import (
 
 // Server is the HTTP API server.
 type Server struct {
-	cam      *camera.Client
-	tokenMgr *auth.TokenManager
-	api      *auth.NanitAPI
-	babyUID  string
-	uiDir    string
-	corsAll  bool
-	log      *slog.Logger
-	mux      *http.ServeMux
-	hlsProxy *hlsproxy.Proxy // nil when HLS is disabled
+	cam        *camera.Client
+	tokenMgr   *auth.TokenManager
+	api        *auth.NanitAPI
+	babyUID    string
+	uiDir      string
+	corsAll    bool
+	log        *slog.Logger
+	mux        *http.ServeMux
+	hlsProxy   *hlsproxy.Proxy // nil when HLS is disabled
+	ready      atomic.Bool
+	tokenReady chan auth.Token
 }
 
 // NewServer creates a new HTTP API server.
@@ -39,18 +43,40 @@ func NewServer(
 	log *slog.Logger,
 ) *Server {
 	s := &Server{
-		cam:      cam,
-		tokenMgr: tokenMgr,
-		api:      api,
-		babyUID:  babyUID,
-		uiDir:    uiDir,
-		corsAll:  corsAll,
-		hlsProxy: hlsProxy,
-		log:      log,
-		mux:      http.NewServeMux(),
+		cam:        cam,
+		tokenMgr:   tokenMgr,
+		api:        api,
+		babyUID:    babyUID,
+		uiDir:      uiDir,
+		corsAll:    corsAll,
+		hlsProxy:   hlsProxy,
+		log:        log,
+		mux:        http.NewServeMux(),
+		tokenReady: make(chan auth.Token, 1),
+	}
+	// If dependencies are provided, mark as ready
+	if cam != nil && tokenMgr != nil && tokenMgr.IsInitialized() {
+		s.ready.Store(true)
 	}
 	s.routes()
 	return s
+}
+
+// SetDependencies injects dependencies after initialization and marks server as ready.
+func (s *Server) SetDependencies(
+	cam *camera.Client,
+	hlsProxy *hlsproxy.Proxy,
+	babyUID string,
+) {
+	s.cam = cam
+	s.hlsProxy = hlsProxy
+	s.babyUID = babyUID
+	s.ready.Store(true)
+}
+
+// TokenReady returns a channel that receives a token when it's provisioned via API.
+func (s *Server) TokenReady() <-chan auth.Token {
+	return s.tokenReady
 }
 
 // Handler returns the HTTP handler.
@@ -71,25 +97,39 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) routes() {
-	s.mux.HandleFunc("GET /api/status", s.handleGetStatus)
-	s.mux.HandleFunc("GET /api/sensors", s.handleGetSensors)
-	s.mux.HandleFunc("GET /api/settings", s.handleGetSettings)
-	s.mux.HandleFunc("GET /api/events", s.handleGetEvents)
-	s.mux.HandleFunc("GET /api/stream-url", s.handleGetStreamURL)
+	s.mux.HandleFunc("GET /api/auth/status", s.handleAuthStatus)
+	s.mux.HandleFunc("POST /api/auth/token", s.handleAuthToken)
 
-	s.mux.HandleFunc("POST /api/control/nightlight", s.handleControlNightlight)
-	s.mux.HandleFunc("POST /api/control/sleep", s.handleControlSleep)
-	s.mux.HandleFunc("POST /api/control/volume", s.handleControlVolume)
-	s.mux.HandleFunc("POST /api/control/mic", s.handleControlMic)
-	s.mux.HandleFunc("POST /api/control/statusled", s.handleControlStatusLED)
-	s.mux.HandleFunc("POST /api/streaming/start", s.handleStreamStart)
-	s.mux.HandleFunc("POST /api/streaming/stop", s.handleStreamStop)
+	s.mux.HandleFunc("GET /api/status", s.requireReady(s.handleGetStatus))
+	s.mux.HandleFunc("GET /api/sensors", s.requireReady(s.handleGetSensors))
+	s.mux.HandleFunc("GET /api/settings", s.requireReady(s.handleGetSettings))
+	s.mux.HandleFunc("GET /api/events", s.requireReady(s.handleGetEvents))
+	s.mux.HandleFunc("GET /api/stream-url", s.requireReady(s.handleGetStreamURL))
 
-	s.mux.HandleFunc("POST /api/hls/start", s.handleHLSStart)
-	s.mux.HandleFunc("POST /api/hls/stop", s.handleHLSStop)
-	s.mux.HandleFunc("GET /api/hls/status", s.handleHLSStatus)
+	s.mux.HandleFunc("POST /api/control/nightlight", s.requireReady(s.handleControlNightlight))
+	s.mux.HandleFunc("POST /api/control/sleep", s.requireReady(s.handleControlSleep))
+	s.mux.HandleFunc("POST /api/control/volume", s.requireReady(s.handleControlVolume))
+	s.mux.HandleFunc("POST /api/control/mic", s.requireReady(s.handleControlMic))
+	s.mux.HandleFunc("POST /api/control/statusled", s.requireReady(s.handleControlStatusLED))
+	s.mux.HandleFunc("POST /api/streaming/start", s.requireReady(s.handleStreamStart))
+	s.mux.HandleFunc("POST /api/streaming/stop", s.requireReady(s.handleStreamStop))
+
+	s.mux.HandleFunc("POST /api/hls/start", s.requireReady(s.handleHLSStart))
+	s.mux.HandleFunc("POST /api/hls/stop", s.requireReady(s.handleHLSStop))
+	s.mux.HandleFunc("GET /api/hls/status", s.requireReady(s.handleHLSStatus))
 	if s.hlsProxy != nil {
 		s.mux.Handle("/hls/", http.StripPrefix("/hls/", s.hlsProxy.Handler()))
+	} else {
+		// If hlsProxy is nil, we might still receive requests if HLS is enabled later.
+		// However, the standard library ServeMux matches strictly.
+		// If we add the handler later, we need to rebuild the mux or use a dynamic mux.
+		// Since we're using stdlib Mux, we can't easily add routes later.
+		// But wait, hlsProxy depends on config which is loaded at start.
+		// If HLS is enabled in config, hlsProxy will be non-nil OR we will initialize it later?
+		// The requirements say "create TokenManager (but DON'T call Init), start HTTP server... then start the full camera/MQTT/HLS stack".
+		// This implies HLS proxy might be created later.
+		// I should probably register a handler that checks if hlsProxy is set.
+		s.mux.HandleFunc("/hls/", s.handleHLSProxy)
 	}
 
 	// Serve static UI
@@ -99,6 +139,87 @@ func (s *Server) routes() {
 		// Try to find the built-in UI directory relative to the binary
 		s.mux.HandleFunc("/", s.handleStaticFallback)
 	}
+}
+
+func (s *Server) requireReady(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.ready.Load() {
+			s.writeError(w, http.StatusServiceUnavailable, "nanitd is not yet authenticated. Please set up the Nanit integration in Home Assistant.")
+			return
+		}
+		next(w, r)
+	}
+}
+
+type authStatusResponse struct {
+	Authenticated bool `json:"authenticated"`
+	Ready         bool `json:"ready"`
+}
+
+func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
+	// Authenticated if token manager has a token
+	authenticated := s.tokenMgr != nil && s.tokenMgr.IsInitialized()
+	ready := s.ready.Load()
+
+	s.writeJSON(w, authStatusResponse{
+		Authenticated: authenticated,
+		Ready:         ready,
+	})
+}
+
+type authTokenRequest struct {
+	AccessToken  string      `json:"access_token"`
+	RefreshToken string      `json:"refresh_token"`
+	Babies       []auth.Baby `json:"babies"`
+}
+
+func (s *Server) handleAuthToken(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	var req authTokenRequest
+	if err := s.readJSON(r, &req); err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		return
+	}
+
+	if req.AccessToken == "" || req.RefreshToken == "" {
+		s.writeError(w, http.StatusBadRequest, "access_token and refresh_token are required")
+		return
+	}
+
+	// Create token object
+	tok := auth.Token{
+		AuthToken:    req.AccessToken,
+		RefreshToken: req.RefreshToken,
+		AuthTime:     time.Now(),
+		Babies:       req.Babies,
+	}
+
+	// Notify main loop via channel
+	select {
+	case s.tokenReady <- tok:
+		s.log.Info("received auth token via API")
+		s.writeJSON(w, map[string]string{"status": "ok"})
+	default:
+		s.log.Warn("received auth token but channel is full or nobody listening")
+		s.writeError(w, http.StatusServiceUnavailable, "server not ready to accept tokens")
+	}
+}
+
+func (s *Server) handleHLSProxy(w http.ResponseWriter, r *http.Request) {
+	if !s.ready.Load() {
+		s.writeError(w, http.StatusServiceUnavailable, "nanitd is not yet authenticated")
+		return
+	}
+
+	if s.hlsProxy == nil {
+		s.writeError(w, http.StatusServiceUnavailable, "HLS proxy not enabled")
+		return
+	}
+	http.StripPrefix("/hls/", s.hlsProxy.Handler()).ServeHTTP(w, r)
 }
 
 func (s *Server) handleStaticFallback(w http.ResponseWriter, r *http.Request) {

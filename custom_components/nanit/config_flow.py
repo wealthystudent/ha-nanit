@@ -71,7 +71,7 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
         """Query Supervisor API for the nanitd add-on info.
 
         Returns addon info dict if addon is installed and running, None otherwise.
-        Works for both core and third-party add-ons via the Supervisor REST API.
+        Resolves the full slug dynamically (third-party add-ons get a hash prefix).
         """
         token = os.environ.get("SUPERVISOR_TOKEN")
         if not token:
@@ -79,14 +79,36 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
 
         try:
             async with aiohttp.ClientSession() as session:
+                # First, find the full slug by listing all add-ons
                 resp = await session.get(
-                    f"http://supervisor/addons/{ADDON_SLUG}/info",
+                    "http://supervisor/addons",
+                    headers={"Authorization": f"Bearer {token}"},
+                    timeout=aiohttp.ClientTimeout(total=10),
+                )
+                if resp.status != 200:
+                    return None
+                data = await resp.json()
+                addons = data.get("data", {}).get("addons", [])
+                full_slug = None
+                for addon in addons:
+                    slug = addon.get("slug", "")
+                    if slug == ADDON_SLUG or slug.endswith(f"_{ADDON_SLUG}"):
+                        full_slug = slug
+                        break
+
+                if not full_slug:
+                    LOGGER.debug("Add-on with slug ending in '%s' not found", ADDON_SLUG)
+                    return None
+
+                # Now get detailed info using the full slug
+                resp = await session.get(
+                    f"http://supervisor/addons/{full_slug}/info",
                     headers={"Authorization": f"Bearer {token}"},
                     timeout=aiohttp.ClientTimeout(total=10),
                 )
                 if resp.status != 200:
                     LOGGER.debug(
-                        "Supervisor returned %s for addon %s", resp.status, ADDON_SLUG
+                        "Supervisor returned %s for addon %s", resp.status, full_slug
                     )
                     return None
                 data = await resp.json()

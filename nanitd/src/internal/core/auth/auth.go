@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -39,6 +40,9 @@ type TokenStore interface {
 	Save(ctx context.Context, t *Token) error
 }
 
+// ErrNoToken is returned when no token is found in the store.
+var ErrNoToken = errors.New("no token found")
+
 // TokenManager combines auth + persistence with automatic refresh.
 type TokenManager struct {
 	auth  Authenticator
@@ -61,6 +65,9 @@ func NewTokenManager(auth Authenticator, store TokenStore, log *slog.Logger) *To
 func (m *TokenManager) Init(ctx context.Context) error {
 	tok, err := m.store.Load(ctx)
 	if err != nil {
+		if errors.Is(err, ErrNoToken) {
+			return ErrNoToken
+		}
 		return fmt.Errorf("auth: load token: %w", err)
 	}
 	m.mu.Lock()
@@ -68,6 +75,13 @@ func (m *TokenManager) Init(ctx context.Context) error {
 	m.mu.Unlock()
 	m.log.Info("loaded auth token", "baby_count", len(tok.Babies))
 	return nil
+}
+
+// IsInitialized returns true if a token has been loaded.
+func (m *TokenManager) IsInitialized() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.token != nil
 }
 
 // Token returns the current valid auth token, refreshing if necessary.
@@ -214,6 +228,9 @@ func (s *FileTokenStore) Load(_ context.Context) (*Token, error) {
 
 	data, err := os.ReadFile(s.path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, ErrNoToken
+		}
 		return nil, fmt.Errorf("token store: read %s: %w", s.path, err)
 	}
 

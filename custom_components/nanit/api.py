@@ -246,3 +246,73 @@ class NanitAuthClient:
                 return []
         except aiohttp.ClientError as err:
             raise NanitConnectionError(f"Connection error: {err}") from err
+
+
+class NanitAddonClient:
+    """Client for communicating with the nanitd add-on HTTP API."""
+
+    def __init__(self, host: str, session: aiohttp.ClientSession) -> None:
+        """Initialize."""
+        self._host = host.rstrip("/")
+        self._session = session
+
+    async def get_auth_status(self) -> dict[str, Any]:
+        """GET /api/auth/status — check if nanitd is authenticated and ready."""
+        url = f"{self._host}/api/auth/status"
+        try:
+            async with self._session.get(url) as response:
+                if response.status != 200:
+                    text = await response.text()
+                    raise NanitApiError(
+                        f"Auth status check failed: HTTP {response.status} {text}"
+                    )
+                return await response.json()
+        except aiohttp.ClientError as err:
+            raise NanitConnectionError(
+                f"Cannot reach nanitd at {self._host}: {err}"
+            ) from err
+
+    async def provision_token(
+        self,
+        access_token: str,
+        refresh_token: str,
+        babies: list[dict[str, Any]],
+    ) -> None:
+        """POST /api/auth/token — send auth tokens to nanitd."""
+        url = f"{self._host}/api/auth/token"
+        payload = {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "babies": babies,
+        }
+        try:
+            async with self._session.post(url, json=payload) as response:
+                if response.status != 200:
+                    text = await response.text()
+                    raise NanitApiError(
+                        f"Token provisioning failed: HTTP {response.status} {text}"
+                    )
+        except aiohttp.ClientError as err:
+            raise NanitConnectionError(
+                f"Cannot reach nanitd at {self._host}: {err}"
+            ) from err
+
+    async def wait_until_ready(
+        self, timeout: float = 30.0, poll_interval: float = 1.0
+    ) -> bool:
+        """Poll /api/auth/status until nanitd reports ready=true.
+
+        Returns True if ready within timeout, False otherwise.
+        """
+        import asyncio
+
+        deadline = asyncio.get_event_loop().time() + timeout
+        while asyncio.get_event_loop().time() < deadline:
+            try:
+                status = await self.get_auth_status()
+                if status.get("ready"):
+                    return True
+            except (NanitApiError, NanitConnectionError):
+                pass
+            await asyncio.sleep(poll_interval)
+        return False

@@ -33,7 +33,7 @@ TRANSPORT_LOCAL = "local"
 TRANSPORT_LOCAL_CLOUD = "local_cloud"
 
 # Add-on
-ADDON_SLUG = "nanitd"
+ADDON_SLUG = "nanitd"  # Short slug; full slug resolved dynamically ({hash}_nanitd)
 CONF_USE_ADDON = "use_addon"
 ADDON_HOST_MARKER = "__addon__"
 

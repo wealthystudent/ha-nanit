@@ -45,11 +45,67 @@ func run() error {
 	nanitAuth := auth.NewNanitAuth(cfg.Nanit.APIBase, log.With("component", "auth"))
 	tokenMgr := auth.NewTokenManager(nanitAuth, tokenStore, log.With("component", "token_mgr"))
 
+	nanitAPI := auth.NewNanitAPI(cfg.Nanit.APIBase, log.With("component", "nanit_api"))
+
+	// Create HTTP server early for auth endpoints
+	// Dependencies (cam, hlsProxy) are nil initially
+	apiServer := httpapi.NewServer(
+		nil,
+		tokenMgr,
+		nanitAPI,
+		"", // BabyUID not known yet
+		cfg.HTTP.UIDir,
+		cfg.HTTP.CORSAll,
+		nil,
+		log.With("component", "httpapi"),
+	)
+
+	httpSrv := &http.Server{
+		Addr:         cfg.HTTP.Addr,
+		Handler:      apiServer.Handler(),
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		log.Info("HTTP server starting", "addr", cfg.HTTP.Addr)
+		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			errCh <- fmt.Errorf("http server: %w", err)
+		}
+	}()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	// Try to load token
 	if err := tokenMgr.Init(ctx); err != nil {
-		return fmt.Errorf("init auth: %w", err)
+		if err == auth.ErrNoToken {
+			log.Info("no token found, waiting for authentication via API...")
+			// Wait for token from API
+			select {
+			case tok := <-apiServer.TokenReady():
+				log.Info("received token from API")
+				if err := tokenStore.Save(ctx, &tok); err != nil {
+					return fmt.Errorf("save token: %w", err)
+				}
+				// Now init manager
+				if err := tokenMgr.Init(ctx); err != nil {
+					return fmt.Errorf("init auth after provision: %w", err)
+				}
+			case err := <-errCh:
+				return err
+			case sig := <-sigCh:
+				log.Info("received shutdown signal while waiting for auth", "signal", sig)
+				return nil
+			}
+		} else {
+			return fmt.Errorf("init auth: %w", err)
+		}
 	}
 
 	tok, err := tokenMgr.Token(ctx)
@@ -135,36 +191,8 @@ func run() error {
 		log.Info("HLS proxy enabled")
 	}
 
-	nanitAPI := auth.NewNanitAPI(cfg.Nanit.APIBase, log.With("component", "nanit_api"))
-	apiServer := httpapi.NewServer(
-		cam,
-		tokenMgr,
-		nanitAPI,
-		babyUID,
-		cfg.HTTP.UIDir,
-		cfg.HTTP.CORSAll,
-		hlsProxy,
-		log.With("component", "httpapi"),
-	)
-
-	httpSrv := &http.Server{
-		Addr:         cfg.HTTP.Addr,
-		Handler:      apiServer.Handler(),
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
-	}
-
-	errCh := make(chan error, 1)
-	go func() {
-		log.Info("HTTP server starting", "addr", cfg.HTTP.Addr)
-		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			errCh <- fmt.Errorf("http server: %w", err)
-		}
-	}()
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	// Inject dependencies into API server now that everything is ready
+	apiServer.SetDependencies(cam, hlsProxy, babyUID)
 
 	select {
 	case sig := <-sigCh:

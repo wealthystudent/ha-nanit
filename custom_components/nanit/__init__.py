@@ -11,11 +11,21 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 
-from .api import NanitApiClient, NanitAuthError, NanitConnectionError
+from .api import (
+    NanitAddonClient,
+    NanitApiClient,
+    NanitAuthError,
+    NanitConnectionError,
+)
 from .const import (
     ADDON_HOST_MARKER,
     ADDON_SLUG,
+    CONF_ACCESS_TOKEN,
+    CONF_BABY_NAME,
+    CONF_BABY_UID,
+    CONF_CAMERA_UID,
     CONF_HOST,
+    CONF_REFRESH_TOKEN,
     CONF_TRANSPORT,
     CONF_USE_ADDON,
     DEFAULT_HOST,
@@ -41,10 +51,11 @@ class NanitData:
 type NanitConfigEntry = ConfigEntry[NanitData]
 
 
-async def _async_resolve_addon_host() -> str | None:
-    """Resolve the nanitd add-on hostname via Supervisor API.
+async def _async_resolve_addon_slug() -> str | None:
+    """Resolve the full add-on slug (e.g., '5afd9e46_nanitd') via Supervisor API.
 
-    Returns the full URL (http://<hostname>:8080) or None if unavailable.
+    Third-party add-ons are prefixed with a hash derived from the repo URL.
+    We query all add-ons and match on the short slug suffix.
     """
     token = os.environ.get("SUPERVISOR_TOKEN")
     if not token:
@@ -53,7 +64,40 @@ async def _async_resolve_addon_host() -> str | None:
     try:
         async with aiohttp.ClientSession() as session:
             resp = await session.get(
-                f"http://supervisor/addons/{ADDON_SLUG}/info",
+                "http://supervisor/addons",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=aiohttp.ClientTimeout(total=10),
+            )
+            if resp.status != 200:
+                return None
+            data = await resp.json()
+            addons = data.get("data", {}).get("addons", [])
+            for addon in addons:
+                slug = addon.get("slug", "")
+                if slug == ADDON_SLUG or slug.endswith(f"_{ADDON_SLUG}"):
+                    return slug
+    except Exception:
+        LOGGER.debug("Failed to resolve addon slug", exc_info=True)
+    return None
+
+
+async def _async_resolve_addon_host() -> str | None:
+    """Resolve the nanitd add-on hostname via Supervisor API.
+
+    Returns the full URL (http://<hostname>:8080) or None if unavailable.
+    """
+    full_slug = await _async_resolve_addon_slug()
+    if not full_slug:
+        return None
+
+    token = os.environ.get("SUPERVISOR_TOKEN")
+    if not token:
+        return None
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            resp = await session.get(
+                f"http://supervisor/addons/{full_slug}/info",
                 headers={"Authorization": f"Bearer {token}"},
                 timeout=aiohttp.ClientTimeout(total=10),
             )
@@ -87,6 +131,59 @@ async def async_setup_entry(hass: HomeAssistant, entry: NanitConfigEntry) -> boo
                 "Nanit Daemon add-on is not running. "
                 "Please start the nanitd add-on and try again."
             )
+
+        # Provision tokens to the add-on if it's not yet authenticated
+        addon_session = aiohttp.ClientSession()
+        try:
+            addon_client = NanitAddonClient(host, addon_session)
+            auth_status = await addon_client.get_auth_status()
+
+            if not auth_status.get("authenticated"):
+                LOGGER.info("Provisioning auth tokens to nanitd add-on")
+                access_token = entry.data.get(CONF_ACCESS_TOKEN, "")
+                refresh_token = entry.data.get(CONF_REFRESH_TOKEN, "")
+                baby_uid = entry.data.get(CONF_BABY_UID, "")
+                camera_uid = entry.data.get(CONF_CAMERA_UID, "")
+                baby_name = entry.data.get(CONF_BABY_NAME, "")
+
+                babies = []
+                if baby_uid:
+                    babies.append(
+                        {
+                            "uid": baby_uid,
+                            "name": baby_name,
+                            "camera_uid": camera_uid or baby_uid,
+                        }
+                    )
+
+                await addon_client.provision_token(
+                    access_token, refresh_token, babies
+                )
+
+                # Wait for nanitd to process the token and become ready
+                ready = await addon_client.wait_until_ready(timeout=30.0)
+                if not ready:
+                    raise ConfigEntryNotReady(
+                        "nanitd add-on received tokens but did not become "
+                        "ready within 30 seconds. Check add-on logs."
+                    )
+                LOGGER.info("nanitd add-on is authenticated and ready")
+
+            elif not auth_status.get("ready"):
+                # Authenticated but not ready — wait briefly
+                ready = await addon_client.wait_until_ready(timeout=15.0)
+                if not ready:
+                    raise ConfigEntryNotReady(
+                        "nanitd add-on is authenticated but not ready. "
+                        "Check add-on logs."
+                    )
+        except NanitConnectionError as err:
+            await addon_session.close()
+            raise ConfigEntryNotReady(
+                f"Cannot reach nanitd add-on at {host}: {err}"
+            ) from err
+        finally:
+            await addon_session.close()
 
     session = aiohttp.ClientSession()
     client = NanitApiClient(host, session)

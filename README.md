@@ -35,14 +35,27 @@ Custom [Home Assistant](https://www.home-assistant.io/) integration for [Nanit](
 
 ## Prerequisites
 
-1. **Go backend (`nanitd`)** must be running and accessible from your HA instance
-2. **Nanit account** with email and password
-3. **Home Assistant 2025.12+**
-4. **HACS** (for easy installation) or manual copy
+1. **Nanit account** with email and password
+2. **Home Assistant 2025.12+** (HA OS recommended for add-on support)
+3. **HACS** (for easy installation) or manual copy
 
 ## Installation
 
-### Option A: HACS (Recommended)
+### Step 1: Install the Nanit Daemon Add-on
+
+The Go backend runs as an HA add-on so you don't need a separate machine.
+
+1. In Home Assistant, go to **Settings → Add-ons → Add-on Store**
+2. Click **⋮** (three dots top-right) → **Repositories**
+3. Add: `https://github.com/wealthystudent/ha-nanit`
+4. Find **"Nanit Daemon"** in the store and click **Install**
+5. Start the add-on
+
+> **Alternative:** If you prefer running `nanitd` on a separate machine, skip this step and provide the host URL during integration setup.
+
+### Step 2: Install the Integration
+
+#### Option A: HACS (Recommended)
 
 1. Open HACS in your HA instance
 2. Click **⋮** (three dots top-right) → **Custom repositories**
@@ -50,70 +63,26 @@ Custom [Home Assistant](https://www.home-assistant.io/) integration for [Nanit](
 4. Search for "Nanit" in HACS and install
 5. Restart Home Assistant
 
-### Option B: Manual
+#### Option B: Manual
 
 1. Download this repository
 2. Copy `custom_components/nanit/` into your HA `config/custom_components/` directory
 3. Restart Home Assistant
 
-## Setup
-
-### 1. Start the Go Backend
-
-The Go backend (`nanitd`) must be running before configuring the integration.
-
-```bash
-# Minimal (defaults: localhost:8080, auto-detect camera)
-nanitd
-
-# With config file
-nanitd -config /path/to/config.yaml
-
-# With environment variables
-NANIT_HTTP_ADDR=":8080" \
-NANIT_HLS_ENABLED=true \
-NANIT_SESSION_PATH="/data/session.json" \
-nanitd
-```
-
-Example `config.yaml`:
-
-```yaml
-nanit:
-  api_base: "https://api.nanit.com"
-  # camera_uid: ""   # auto-detected from account
-  # baby_uid: ""     # auto-detected from account
-  # camera_ip: ""    # set for local transport
-
-http:
-  addr: ":8080"
-
-hls:
-  enabled: true
-  output_dir: "/tmp/nanit-hls"
-  segment_time: 2
-  playlist_size: 5
-
-session:
-  path: "/data/session.json"
-
-log:
-  level: info
-  format: text
-```
-
-### 2. Add the Integration in HA
+### Step 3: Configure the Integration
 
 1. Go to **Settings → Devices & Services → Add Integration**
 2. Search for **"Nanit"**
-3. Enter your Nanit email and password
-4. Enter the MFA code sent to your email/phone
-5. Choose transport mode:
+3. If the Nanit Daemon add-on is running, you'll be asked to use it (recommended — just click submit)
+4. Enter your Nanit email and password
+5. Enter the MFA code sent to your email/phone
+6. Choose transport mode:
    - **Local only** — data from Go backend only
    - **Local + Cloud** — backend data + cloud events (motion/sound events)
-6. Optionally set the Go backend URL (default: `http://localhost:8080`)
 
-### 3. Verify
+> If the add-on is not detected (e.g., running `nanitd` externally), you'll also see a field for the Go backend URL.
+
+### Verify
 
 After setup, you should see a new "Nanit" device with sensors, switches, camera, etc. under **Settings → Devices & Services → Nanit**.
 
@@ -134,8 +103,12 @@ After initial setup, click **Configure** on the Nanit integration to change:
 
 ## Troubleshooting
 
+### Add-on won't start
+- Check add-on logs: **Settings → Add-ons → Nanit Daemon → Log**
+- Ensure your HA instance has enough memory (nanitd + ffmpeg)
+
 ### Integration fails to load
-- Ensure `nanitd` is running and accessible at the configured URL
+- Ensure the nanitd add-on (or external `nanitd`) is running
 - Check HA logs: **Settings → System → Logs** and filter for `nanit`
 
 ### MFA code not accepted

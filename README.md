@@ -4,9 +4,109 @@
   <img src="custom_components/nanit/icon@2x.png" alt="Nanit" width="128" />
 </p>
 
-Custom [Home Assistant](https://www.home-assistant.io/) integration for [Nanit](https://www.nanit.com/) baby cameras, powered by a Go backend daemon (`nanitd`).
+A Home Assistant integration for Nanit baby cameras. Local-first, cloud-optional.
 
-## Architecture
+Keep an eye on your little one with this custom [Home Assistant](https://www.home-assistant.io/) integration for [Nanit](https://www.nanit.com/) baby cameras. It's powered by a Go backend daemon (`nanitd`) to give you fast, reliable access to your nursery.
+
+## What's in the Crib?
+
+| Entity Type | Entities | Default Enabled |
+|-------------|----------|-----------------|
+| Sensor | Temperature, Humidity, Light (lux) | Temp, Humidity, Light |
+| Binary Sensor | Motion, Sound, Night mode, Connectivity | Connectivity |
+| Switch | Night light, Sleep mode, Status LED, Mic mute | Night light |
+| Number | Volume (0-100%) | No |
+| Camera | HLS live stream with on/off control | Yes |
+| Event | Activity (motion + sound with timestamps, cloud only) | Yes |
+
+## Quick Start
+
+Setting up your nursery is easy:
+
+1. **Install the Add-on**: Add `https://github.com/wealthystudent/ha-nanit` to your Add-on Store and install the **Nanit Daemon**.
+2. **Install the Integration**: Find **Nanit** in HACS (add the same repo URL as a custom integration) or copy the files manually.
+3. **Configure**: Add the **Nanit** integration in Home Assistant, sign in, and enter your MFA code.
+
+## Features in Detail
+
+### Transport Modes
+
+Choose how your data travels from the nursery to Home Assistant. You can change this anytime in the integration configuration.
+
+| Mode | Description | Entities |
+|------|-------------|----------|
+| **Local** | All data comes directly from the Go backend. No cloud polling involved. | All except Event |
+| **Local + Cloud** | Combines backend data with Nanit cloud events for motion and sound. | All entities |
+
+### Naptime and More
+- **Sleep mode**: Puts the camera to rest when it's not needed.
+- **Night light**: Soft illumination for those midnight check-ins.
+- **Local-first**: Direct LAN connection support via Camera IP to bypass cloud relays.
+
+## Setting Up the Nursery
+
+### Prerequisites
+- A Nanit account with an email and password.
+- Home Assistant 2025.12 or newer.
+- HACS installed (recommended) or the ability to copy files manually.
+
+### Detailed Installation
+
+#### 1. Install the Nanit Daemon Add-on
+The Go backend runs as a Home Assistant add-on, so there's no need for a separate machine.
+
+1. Go to **Settings > Add-ons > Add-on Store**.
+2. Click the three dots in the top-right corner and select **Repositories**.
+3. Add `https://github.com/wealthystudent/ha-nanit`.
+4. Find **Nanit Daemon** in the store and click **Install**.
+5. Start the add-on. It will wait for your credentials once you set up the integration.
+
+*Note: If you want to run `nanitd` on a different machine, skip this and provide the host URL during setup.*
+
+#### 2. Install the Integration
+
+**Option A: HACS (Recommended)**
+1. Open HACS and click the three dots in the top-right corner.
+2. Select **Custom repositories**.
+3. Add `https://github.com/wealthystudent/ha-nanit` with the category **Integration**.
+4. Search for **Nanit** in HACS and install it.
+5. Restart Home Assistant.
+
+**Option B: Manual Copy**
+1. Download this repository.
+2. Copy the `custom_components/nanit/` folder into your `config/custom_components/` directory.
+3. Restart Home Assistant.
+
+#### 3. Configure the Integration
+1. Go to **Settings > Devices & Services > Add Integration**.
+2. Search for **Nanit**.
+3. If the add-on is running, it should be detected automatically.
+4. Enter your Nanit email and password.
+5. Provide the MFA code sent to your device.
+6. Pick your transport mode (Local or Local + Cloud).
+7. Optional: Enter your camera's local IP address for a direct LAN connection.
+
+## Configuration Options
+
+### Initial Setup Fields
+| Field | Required | Description |
+|-------|----------|-------------|
+| Email | Yes | Your Nanit account email |
+| Password | Yes | Your Nanit account password |
+| Store credentials | No | Saves credentials for easier re-authentication |
+| Transport | Yes | Local only or Local + Cloud |
+| Camera IP | No | Direct LAN IP of your camera to bypass cloud relays |
+
+### Adjusting Settings
+Click **Configure** on the Nanit integration page to update:
+- **Go Backend URL**: If you're running `nanitd` externally.
+- **Transport mode**: Switch between local and cloud-enhanced modes.
+- **Camera IP**: Set or change the camera's local IP address.
+
+## Advanced
+
+### Architecture
+The integration uses a Python component for Home Assistant logic and a Go daemon for high-performance camera handling.
 
 ```
 ┌──────────────────────┐     HTTP REST      ┌──────────────────┐     WebSocket     ┌──────────────┐
@@ -23,147 +123,44 @@ Custom [Home Assistant](https://www.home-assistant.io/) integration for [Nanit](
 └──────────────────┘                    └──────────────────┘
 ```
 
-- **Python integration** handles HA config flow, entity management, and Nanit cloud authentication (email + password + MFA)
-- **Go backend (`nanitd`)** handles camera WebSocket connections, sensor data, HLS streaming, and camera controls
-
-## Features
-
-| Entity Type | Entities | Default Enabled |
-|-------------|----------|-----------------|
-| Sensor | Temperature, Humidity, Light (lux) | Temp, Humidity, Light |
-| Binary Sensor | Motion, Sound, Night mode, Connectivity | Connectivity |
-| Switch | Night light, Sleep mode, Status LED, Mic mute | Night light |
-| Number | Volume (0-100%) | No |
-| Camera | HLS live stream with on/off control | Yes |
-| Event | Motion events, Sound events (cloud only) | No |
-
-## Prerequisites
-
-1. **Nanit account** with email and password
-2. **Home Assistant 2025.12+** (HA OS recommended for add-on support)
-3. **HACS** (for easy installation) or manual copy
-
-## Installation
-
-### Step 1: Install the Nanit Daemon Add-on
-
-The Go backend runs as an HA add-on so you don't need a separate machine.
-
-1. In Home Assistant, go to **Settings > Add-ons > Add-on Store**
-2. Click the overflow menu (top-right) > **Repositories**
-3. Add: `https://github.com/wealthystudent/ha-nanit`
-4. Find **"Nanit Daemon"** in the store and click **Install**
-5. Start the add-on — it will wait for the integration to provide credentials
-
-> **Alternative:** If you prefer running `nanitd` on a separate machine, skip this step and provide the host URL during integration setup.
-
-### Step 2: Install the Integration
-
-#### Option A: HACS (Recommended)
-
-1. Open HACS in your HA instance
-2. Click the overflow menu (top-right) > **Custom repositories**
-3. Add `https://github.com/wealthystudent/ha-nanit` — Category: **Integration**
-4. Search for "Nanit" in HACS and install
-5. Restart Home Assistant
-
-#### Option B: Manual
-
-1. Download this repository
-2. Copy `custom_components/nanit/` into your HA `config/custom_components/` directory
-3. Restart Home Assistant
-
-### Step 3: Configure the Integration
-
-1. Go to **Settings > Devices & Services > Add Integration**
-2. Search for **"Nanit"**
-3. If the Nanit Daemon add-on is running, you'll be asked to use it (recommended)
-4. Enter your Nanit email and password
-5. Enter the MFA code sent to your email/phone
-6. Choose transport mode:
-   - **Local only** — data from Go backend only
-   - **Local + Cloud** — backend data + cloud events (motion/sound events)
-7. Optionally enter your camera's local IP address (for direct LAN connection)
-
-> If the add-on is not detected (e.g., running `nanitd` externally), you'll also see a field for the Go backend URL.
-
-### Verify
-
-After setup, you should see a new "Nanit" device with sensors, switches, camera, etc. under **Settings > Devices & Services > Nanit**.
-
-## Transport Modes
-
-| Mode | Description | Entities |
-|------|-------------|----------|
-| **Local** | All data from Go backend. No cloud polling. | All except Event |
-| **Local + Cloud** | Backend data + Nanit cloud events. | All entities |
-
-You can change the transport mode anytime via **Configure** on the integration page.
-
-## Configuration Options
-
-### Initial Setup
-
-| Field | Required | Description |
-|-------|----------|-------------|
-| Email | Yes | Your Nanit account email |
-| Password | Yes | Your Nanit account password |
-| Store credentials | No | Saves email/password for easier re-authentication |
-| Transport | Yes | Local only or Local + Cloud |
-| Camera IP | No | Direct LAN IP of your Nanit camera (bypasses cloud relay) |
-
-### Reconfigure
-
-Click **Configure** on the Nanit integration to change:
-
-- **Go Backend URL** — if running `nanitd` externally
-- **Transport mode** — switch between local and local+cloud
-- **Camera IP** — set or update the camera's local IP address
-
-## Troubleshooting
-
-### Add-on won't start
-- Check add-on logs: **Settings > Add-ons > Nanit Daemon > Log**
-- Ensure your HA instance has enough memory (nanitd + ffmpeg)
-
-### Integration fails to load
-- Ensure the nanitd add-on (or external `nanitd`) is running
-- Check HA logs: **Settings > System > Logs** and filter for `nanit`
-
-### MFA code not accepted
-- Make sure you're entering the most recent code
-- MFA codes expire quickly — complete the setup promptly
-
-### Camera stream not working
-- The stream auto-starts when opened — give it a few seconds
-- Verify the HLS endpoint: `curl http://<addon-host>:8080/api/hls/status`
-- Check that `ffmpeg` is available on the machine running `nanitd`
-
-### Sensors showing "unavailable"
-- Verify `nanitd` can reach the Nanit camera (check `nanitd` logs)
-- Check status: `curl http://<addon-host>:8080/api/status` — should show `"connected": true`
-
-## API Reference
-
-The integration communicates with `nanitd` via these endpoints:
+### Technical Reference
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/status` | GET | Connection status, baby info |
-| `/api/sensors` | GET | Temperature, humidity, light, motion, sound |
-| `/api/settings` | GET | Night light, sleep mode, volume, etc. |
-| `/api/events` | GET | Recent motion/sound events |
+| `/api/status` | GET | Connection status and baby information |
+| `/api/sensors` | GET | Temperature, humidity, light, motion, and sound |
+| `/api/settings` | GET | Night light, sleep mode, volume, and other settings |
+| `/api/events` | GET | Recent motion and sound events |
+| `/api/snapshot` | GET | JPEG still image from camera |
 | `/api/hls/status` | GET | HLS proxy status |
-| `/api/hls/start` | POST | Start HLS stream proxy |
-| `/api/hls/stop` | POST | Stop HLS stream proxy |
-| `/api/control/nightlight` | POST | Toggle night light |
+| `/api/hls/start` | POST | Start the HLS stream proxy |
+| `/api/hls/stop` | POST | Stop the HLS stream proxy |
+| `/api/control/nightlight` | POST | Toggle the night light |
 | `/api/control/sleep` | POST | Toggle sleep mode |
 | `/api/control/volume` | POST | Set volume (0-100) |
-| `/api/control/mic` | POST | Toggle mic mute |
-| `/api/control/statusled` | POST | Toggle status LED |
-| `/api/auth/status` | GET | Add-on auth/ready status |
-| `/api/auth/token` | POST | Provision auth tokens to add-on |
+| `/api/control/mic` | POST | Toggle microphone mute |
+| `/api/control/statusled` | POST | Toggle the status LED |
+| `/api/auth/status` | GET | Add-on authentication and ready status |
+| `/api/auth/token` | POST | Provision authentication tokens to the add-on |
+
+### Helpful Tips
+
+**Add-on issues**
+Check the logs at **Settings > Add-ons > Nanit Daemon > Log**. Ensure your system has enough memory for `nanitd` and `ffmpeg`.
+
+**Integration loading**
+Make sure the add-on is running and check the Home Assistant logs under **Settings > System > Logs** (filter for `nanit`).
+
+**MFA difficulties**
+MFA codes expire quickly. Ensure you use the most recent code and complete the setup as soon as you receive it.
+
+**Stream performance**
+The stream starts when you open it, so give it a few seconds to warm up. You can verify the HLS endpoint with `curl http://<addon-host>:8080/api/hls/status` and ensure `ffmpeg` is available.
+
+**Unavailable sensors**
+If sensors go dark, check that `nanitd` can reach the camera in the add-on logs. You can also check the status via `curl http://<addon-host>:8080/api/status` to see if `connected` is true.
 
 ## License
 
 MIT
+

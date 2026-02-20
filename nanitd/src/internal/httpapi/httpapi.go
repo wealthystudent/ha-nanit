@@ -117,6 +117,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/hls/start", s.requireReady(s.handleHLSStart))
 	s.mux.HandleFunc("POST /api/hls/stop", s.requireReady(s.handleHLSStop))
 	s.mux.HandleFunc("GET /api/hls/status", s.requireReady(s.handleHLSStatus))
+	s.mux.HandleFunc("GET /api/snapshot", s.requireReady(s.handleSnapshot))
 	if s.hlsProxy != nil {
 		s.mux.Handle("/hls/", http.StripPrefix("/hls/", s.hlsProxy.Handler()))
 	} else {
@@ -495,4 +496,30 @@ func (s *Server) handleHLSStatus(w http.ResponseWriter, _ *http.Request) {
 		"enabled": true,
 		"running": s.hlsProxy.Running(),
 	})
+}
+
+func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
+	if s.hlsProxy == nil {
+		s.writeError(w, http.StatusServiceUnavailable, "HLS proxy not enabled")
+		return
+	}
+
+	tok, err := s.tokenMgr.Token(r.Context())
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "auth error: "+err.Error())
+		return
+	}
+
+	rtmpsURL := fmt.Sprintf("rtmps://media-secured.nanit.com/nanit/%s.%s", s.babyUID, tok.AuthToken)
+
+	data, err := s.hlsProxy.Snapshot(r.Context(), rtmpsURL)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "snapshot failed: "+err.Error())
+		return
+	}
+
+	s.corsHeaders(w)
+	w.Header().Set("Content-Type", "image/jpeg")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Write(data)
 }

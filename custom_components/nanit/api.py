@@ -113,9 +113,21 @@ class NanitApiClient:
         """Set status LED."""
         await self._request("POST", "/api/control/statusled", json={"enabled": enabled})
 
+    async def get_snapshot(self) -> bytes | None:
+        """Get a JPEG snapshot from the camera."""
+        url = f"{self._host}/api/snapshot"
+        try:
+            async with self._session.get(url) as response:
+                if response.status >= 400:
+                    _LOGGER.debug("Snapshot error: %s", response.status)
+                    return None
+                return await response.read()
+        except aiohttp.ClientError as err:
+            _LOGGER.debug("Snapshot connection error: %s", err)
+            return None
+
     async def start_hls(self) -> None:
         """Start HLS stream."""
-        # The prompt says: POST /api/hls/start (no body)
         await self._request("POST", "/api/hls/start")
 
     async def stop_hls(self) -> None:

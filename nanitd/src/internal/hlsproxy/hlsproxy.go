@@ -31,6 +31,10 @@ type Proxy struct {
 	cancel    context.CancelFunc
 	running   bool
 	streamURL string
+
+	lastSnapshot   []byte
+	lastSnapshotAt time.Time
+	snapshotMu     sync.Mutex
 }
 
 // New creates a new HLS proxy with the given config and logger.
@@ -218,6 +222,45 @@ func (p *Proxy) StreamURL() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.streamURL
+}
+
+// Snapshot captures a single JPEG frame from the RTMPS stream.
+// It caches the result for 10 seconds to avoid overloading ffmpeg.
+func (p *Proxy) Snapshot(ctx context.Context, rtmpsURL string) ([]byte, error) {
+	p.snapshotMu.Lock()
+	if time.Since(p.lastSnapshotAt) < 10*time.Second && len(p.lastSnapshot) > 0 {
+		defer p.snapshotMu.Unlock()
+		return p.lastSnapshot, nil
+	}
+	p.snapshotMu.Unlock()
+
+	// Use a timeout context for the ffmpeg command.
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, p.cfg.FFmpegPath,
+		"-i", rtmpsURL,
+		"-vframes", "1",
+		"-f", "image2",
+		"-c:v", "mjpeg",
+		"pipe:1",
+	)
+
+	// Capture stderr for debugging if needed, but don't fail on it unless cmd fails.
+	cmd.Stderr = &logWriter{log: p.log, level: slog.LevelDebug, prefix: "ffmpeg-snap"}
+
+	output, err := cmd.Output()
+	if err != nil {
+		p.log.Error("snapshot failed", "error", err)
+		return nil, fmt.Errorf("ffmpeg snapshot failed: %w", err)
+	}
+
+	p.snapshotMu.Lock()
+	p.lastSnapshot = output
+	p.lastSnapshotAt = time.Now()
+	p.snapshotMu.Unlock()
+
+	return output, nil
 }
 
 // monitor waits for the ffmpeg process to exit and logs unexpected exits.

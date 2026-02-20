@@ -117,8 +117,7 @@
       "camera": { "name": "Camera" }
     },
     "event": {
-      "motion_event": { "name": "Motion Event" },
-      "sound_event": { "name": "Sound Event" }
+      "activity": { "name": "Activity" }
     }
   }
 }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from homeassistant.components.camera import Camera, CameraEntityFeature
@@ -13,6 +14,8 @@ from .api import NanitApiClient
 from .const import CONF_BABY_NAME, CONF_CAMERA_UID, DOMAIN
 from .coordinator import NanitLocalCoordinator
 from .entity import NanitEntity
+
+_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(
@@ -56,41 +59,56 @@ class NanitCamera(NanitEntity, Camera):
 
     @property
     def is_on(self) -> bool:
-        """Return true if the camera is on."""
+        """Return true if the camera is on (not in sleep/standby mode)."""
         if self.coordinator.data is None:
             return False
-        return self.coordinator.data.get("hls", {}).get("enabled", False)
+        # sleep_mode=True means camera is OFF (standby), so invert
+        sleep_mode = self.coordinator.data.get("settings", {}).get("sleep_mode")
+        if sleep_mode is None:
+            # Default to on if we haven't received settings yet
+            return True
+        return not sleep_mode
 
     async def stream_source(self) -> str | None:
         """Return the HLS stream source.
 
-        Auto-starts HLS if it is enabled but not yet running, so HA can
-        display the stream without requiring the user to manually turn it on.
+        Auto-starts HLS when the camera is on and the user opens the stream.
         """
+        if not self.is_on:
+            return None
         if not self.is_streaming:
-            # Only attempt auto-start when the camera entity is considered "on"
-            if self.is_on:
-                try:
-                    await self._client.start_hls()
-                    await self.coordinator.async_request_refresh()
-                except Exception:  # noqa: BLE001
-                    return None
-            else:
+            try:
+                await self._client.start_hls()
+                await self.coordinator.async_request_refresh()
+            except Exception:  # noqa: BLE001
+                _LOGGER.debug("Failed to auto-start HLS stream", exc_info=True)
                 return None
         return self._client.hls_url
 
     async def async_camera_image(
         self, width: int | None = None, height: int | None = None
     ) -> bytes | None:
-        """Return bytes of camera image (not supported, stream only)."""
-        return None
+        """Return a still image from the camera."""
+        if not self.is_on:
+            return None
+        try:
+            return await self._client.get_snapshot()
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug("Failed to get camera snapshot", exc_info=True)
+            return None
 
     async def async_turn_on(self) -> None:
-        """Start HLS streaming."""
-        await self._client.start_hls()
+        """Turn the camera on (disable sleep/standby mode)."""
+        await self._client.set_sleep_mode(False)
         await self.coordinator.async_request_refresh()
 
     async def async_turn_off(self) -> None:
-        """Stop HLS streaming."""
-        await self._client.stop_hls()
+        """Turn the camera off (enable sleep/standby mode)."""
+        # Stop the HLS stream first if running
+        if self.is_streaming:
+            try:
+                await self._client.stop_hls()
+            except Exception:  # noqa: BLE001
+                _LOGGER.debug("Failed to stop HLS before sleep", exc_info=True)
+        await self._client.set_sleep_mode(True)
         await self.coordinator.async_request_refresh()

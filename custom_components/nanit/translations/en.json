@@ -1,0 +1,105 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to Nanit",
+        "description": "Enter your Nanit account credentials and Go backend address.",
+        "data": {
+          "email": "Email",
+          "password": "Password",
+          "host": "Go Backend URL",
+          "store_credentials": "Store email and password (enables easier re-authentication)"
+        }
+      },
+      "mfa": {
+        "title": "Multi-Factor Authentication",
+        "description": "Enter the verification code sent to your device.",
+        "data": {
+          "mfa_code": "Verification Code"
+        }
+      },
+      "transport": {
+        "title": "Transport Mode",
+        "description": "Choose how the integration communicates with your Nanit camera.",
+        "data": {
+          "transport": "Transport"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate Nanit",
+        "description": "Your Nanit session has expired. Please log in again.",
+        "data": {
+          "email": "Email",
+          "password": "Password"
+        }
+      },
+      "reauth_mfa": {
+        "title": "Re-authentication MFA",
+        "description": "Enter the verification code sent to your device.",
+        "data": {
+          "mfa_code": "Verification Code"
+        }
+      },
+      "reconfigure": {
+        "title": "Reconfigure Nanit",
+        "description": "Update Go backend URL or transport mode.",
+        "data": {
+          "host": "Go Backend URL",
+          "transport": "Transport"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to Nanit cloud API",
+      "invalid_auth": "Invalid email or password",
+      "invalid_mfa_code": "Invalid verification code",
+      "unknown": "Unexpected error occurred",
+      "go_backend_unreachable": "Cannot reach Go backend"
+    },
+    "abort": {
+      "already_configured": "This Nanit camera is already configured",
+      "reauth_successful": "Re-authentication successful",
+      "reconfigure_successful": "Reconfiguration successful"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Nanit Options",
+        "description": "Configure transport mode. Changing to Local only will remove cloud event entities.",
+        "data": {
+          "transport": "Transport"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "temperature": { "name": "Temperature" },
+      "humidity": { "name": "Humidity" },
+      "light": { "name": "Light Level" }
+    },
+    "binary_sensor": {
+      "motion": { "name": "Motion" },
+      "sound": { "name": "Sound" },
+      "night_mode": { "name": "Night Mode" },
+      "connectivity": { "name": "Connectivity" }
+    },
+    "switch": {
+      "night_light": { "name": "Night Light" },
+      "sleep_mode": { "name": "Sleep Mode" },
+      "status_led": { "name": "Status LED" },
+      "mic_mute": { "name": "Microphone Mute" }
+    },
+    "number": {
+      "volume": { "name": "Volume" }
+    },
+    "camera": {
+      "camera": { "name": "Camera" }
+    },
+    "event": {
+      "motion_event": { "name": "Motion Event" },
+      "sound_event": { "name": "Sound Event" }
+    }
+  }
+}

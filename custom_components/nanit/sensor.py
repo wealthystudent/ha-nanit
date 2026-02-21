@@ -38,6 +38,7 @@ SENSORS: tuple[NanitSensorEntityDescription, ...] = (
         device_class=SensorDeviceClass.TEMPERATURE,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
         state_class=SensorStateClass.MEASUREMENT,
+        entity_registry_enabled_default=True,
         value_fn=lambda data: data.get("temperature", {}).get("value"),
     ),
     NanitSensorEntityDescription(
@@ -45,6 +46,8 @@ SENSORS: tuple[NanitSensorEntityDescription, ...] = (
         device_class=SensorDeviceClass.HUMIDITY,
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
+        entity_registry_enabled_default=True,
+        suggested_display_precision=1,
         value_fn=lambda data: data.get("humidity", {}).get("value"),
     ),
     NanitSensorEntityDescription(
@@ -52,7 +55,7 @@ SENSORS: tuple[NanitSensorEntityDescription, ...] = (
         device_class=SensorDeviceClass.ILLUMINANCE,
         native_unit_of_measurement=UnitOfIlluminance.LUX,
         state_class=SensorStateClass.MEASUREMENT,
-        entity_registry_enabled_default=True,
+        entity_registry_enabled_default=False,
         value_fn=lambda data: data.get("light", {}).get("value"),
     ),
 )

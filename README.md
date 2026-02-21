@@ -12,9 +12,9 @@ Keep an eye on your little one with this custom [Home Assistant](https://www.hom
 
 | Entity Type | Entities | Default Enabled |
 |-------------|----------|-----------------|
-| Sensor | Temperature, Humidity, Light (lux) | Temp, Humidity, Light |
-| Binary Sensor | Motion, Sound, Night mode, Connectivity | Connectivity |
-| Switch | Night light, Sleep mode, Status LED, Mic mute | Night light |
+| Sensor | Temperature, Humidity, Light (lux) | Temp, Humidity |
+| Binary Sensor | Motion, Sound, Night mode, Connectivity | No |
+| Switch | Night light, Status LED, Mic mute | Night light |
 | Number | Volume (0-100%) | No |
 | Camera | HLS live stream with on/off control | Yes |
 | Event | Activity (motion + sound with timestamps, cloud only) | Yes |
@@ -39,7 +39,7 @@ Choose how your data travels from the nursery to Home Assistant. You can change 
 | **Local + Cloud** | Combines backend data with Nanit cloud events for motion and sound. | All entities |
 
 ### Naptime and More
-- **Sleep mode**: Puts the camera to rest when it's not needed.
+- **Camera power**: Use the camera entity's on/off control to enter or exit standby.
 - **Night light**: Soft illumination for those midnight check-ins.
 - **Local-first**: Direct LAN connection support via Camera IP to bypass cloud relays.
 
@@ -129,14 +129,14 @@ The integration uses a Python component for Home Assistant logic and a Go daemon
 |----------|--------|-------------|
 | `/api/status` | GET | Connection status and baby information |
 | `/api/sensors` | GET | Temperature, humidity, light, motion, and sound |
-| `/api/settings` | GET | Night light, sleep mode, volume, and other settings |
+| `/api/settings` | GET | Night light, camera power (sleep), volume, and other settings |
 | `/api/events` | GET | Recent motion and sound events |
 | `/api/snapshot` | GET | JPEG still image from camera |
 | `/api/hls/status` | GET | HLS proxy status |
 | `/api/hls/start` | POST | Start the HLS stream proxy |
 | `/api/hls/stop` | POST | Stop the HLS stream proxy |
 | `/api/control/nightlight` | POST | Toggle the night light |
-| `/api/control/sleep` | POST | Toggle sleep mode |
+| `/api/control/sleep` | POST | Toggle camera power (sleep/standby) |
 | `/api/control/volume` | POST | Set volume (0-100) |
 | `/api/control/mic` | POST | Toggle microphone mute |
 | `/api/control/statusled` | POST | Toggle the status LED |
@@ -163,4 +163,3 @@ If sensors go dark, check that `nanitd` can reach the camera in the add-on logs.
 ## License
 
 MIT
-

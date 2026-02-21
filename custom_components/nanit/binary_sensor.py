@@ -54,7 +54,7 @@ BINARY_SENSORS: tuple[NanitBinarySensorEntityDescription, ...] = (
         key="connectivity",
         translation_key="connectivity",
         device_class=BinarySensorDeviceClass.CONNECTIVITY,
-        entity_registry_enabled_default=True,
+        entity_registry_enabled_default=False,
         value_fn=lambda data: data.get("status", {}).get("connected"),
     ),
 )

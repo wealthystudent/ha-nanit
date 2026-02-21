@@ -118,24 +118,37 @@ class NanitSwitch(NanitEntity, SwitchEntity):
         super().__init__(coordinator)
         self.entity_description = description
         self._client = client
+        self._attr_is_on = None
         self._attr_unique_id = (
             f"{coordinator.config_entry.data.get('camera_uid', coordinator.config_entry.entry_id)}"
             f"_{description.key}"
         )
+        if coordinator.data is not None:
+            self._attr_is_on = self.entity_description.value_fn(coordinator.data)
 
     @property
     def is_on(self) -> bool | None:
         """Return true if the switch is on."""
-        if self.coordinator.data is None:
-            return None
-        return self.entity_description.value_fn(self.coordinator.data)
+        return self._attr_is_on
+
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated data from the coordinator."""
+        if self.coordinator.data is not None:
+            self._attr_is_on = self.entity_description.value_fn(self.coordinator.data)
+        else:
+            self._attr_is_on = None
+        self.async_write_ha_state()
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn on the switch."""
+        self._attr_is_on = True
+        self.async_write_ha_state()
         await self.entity_description.turn_on_fn(self._client)
         await self.coordinator.async_request_refresh()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn off the switch."""
+        self._attr_is_on = False
+        self.async_write_ha_state()
         await self.entity_description.turn_off_fn(self._client)
         await self.coordinator.async_request_refresh()

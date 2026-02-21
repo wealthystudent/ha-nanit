@@ -42,8 +42,7 @@ class NanitCamera(NanitEntity, Camera):
         client: NanitApiClient,
     ) -> None:
         """Initialize."""
-        NanitEntity.__init__(self, coordinator)
-        Camera.__init__(self)
+        super().__init__(coordinator)
         self._client = client
         self._attr_unique_id = (
             f"{coordinator.config_entry.data.get('camera_uid', coordinator.config_entry.entry_id)}"
@@ -61,6 +60,8 @@ class NanitCamera(NanitEntity, Camera):
     def is_on(self) -> bool:
         """Return true if the camera is on (not in sleep/standby mode)."""
         if self.coordinator.data is None:
+            return False
+        if self.coordinator.data.get("status", {}).get("connected") is False:
             return False
         # sleep_mode=True means camera is OFF (standby), so invert
         sleep_mode = self.coordinator.data.get("settings", {}).get("sleep_mode")

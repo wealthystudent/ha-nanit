@@ -25,12 +25,37 @@ class NanitSwitchEntityDescription(SwitchEntityDescription):
     turn_off_fn: Callable[[NanitApiClient], Coroutine[Any, Any, None]]
 
 
+def _connected_state(data: dict[str, Any]) -> bool | None:
+    status = data.get("status")
+    if not isinstance(status, dict):
+        return None
+    return status.get("connected")
+
+
+def _night_light_value(data: dict[str, Any]) -> bool | None:
+    if _connected_state(data) is False:
+        return None
+    value = data.get("control", {}).get("night_light")
+    if value is None:
+        return None
+    return value == "on"
+
+
+def _settings_flag(data: dict[str, Any], key: str) -> bool | None:
+    if _connected_state(data) is False:
+        return None
+    value = data.get("settings", {}).get(key)
+    if value is None:
+        return None
+    return value
+
+
 SWITCHES: tuple[NanitSwitchEntityDescription, ...] = (
     NanitSwitchEntityDescription(
         key="night_light",
         translation_key="night_light",
         entity_registry_enabled_default=True,
-        value_fn=lambda data: data.get("control", {}).get("night_light") == "on",
+        value_fn=_night_light_value,
         turn_on_fn=lambda client: client.set_night_light(True),
         turn_off_fn=lambda client: client.set_night_light(False),
     ),
@@ -38,7 +63,11 @@ SWITCHES: tuple[NanitSwitchEntityDescription, ...] = (
         key="camera_power",
         translation_key="camera_power",
         entity_registry_enabled_default=True,
-        value_fn=lambda data: not data.get("settings", {}).get("sleep_mode", False),
+        value_fn=lambda data: (
+            None
+            if _connected_state(data) is False
+            else not data.get("settings", {}).get("sleep_mode", False)
+        ),
         turn_on_fn=lambda client: client.set_sleep_mode(False),
         turn_off_fn=lambda client: client.set_sleep_mode(True),
     ),
@@ -46,7 +75,7 @@ SWITCHES: tuple[NanitSwitchEntityDescription, ...] = (
         key="status_led",
         translation_key="status_led",
         entity_registry_enabled_default=False,
-        value_fn=lambda data: data.get("settings", {}).get("status_light_on"),
+        value_fn=lambda data: _settings_flag(data, "status_light_on"),
         turn_on_fn=lambda client: client.set_status_led(True),
         turn_off_fn=lambda client: client.set_status_led(False),
     ),
@@ -54,7 +83,7 @@ SWITCHES: tuple[NanitSwitchEntityDescription, ...] = (
         key="mic_mute",
         translation_key="mic_mute",
         entity_registry_enabled_default=False,
-        value_fn=lambda data: data.get("settings", {}).get("mic_mute_on"),
+        value_fn=lambda data: _settings_flag(data, "mic_mute_on"),
         turn_on_fn=lambda client: client.set_mic_mute(True),
         turn_off_fn=lambda client: client.set_mic_mute(False),
     ),

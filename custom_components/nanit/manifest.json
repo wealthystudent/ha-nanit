@@ -1,7 +1,7 @@
 {
   "domain": "nanit",
   "name": "Nanit",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "documentation": "https://github.com/wealthystudent/ha-nanit",
   "issue_tracker": "https://github.com/wealthystudent/ha-nanit/issues",
   "codeowners": ["@wealthystudent"],

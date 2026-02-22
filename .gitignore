@@ -41,3 +41,4 @@ htmlcov/
 
 # Local dev config
 .env
+.nanit-session

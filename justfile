@@ -3,22 +3,14 @@
 default:
     @just --list
 
-# Deploy integration to HA via SSH
-deploy:
-    tar cf - -C custom_components nanit | ssh homeassistant "tar xf - -C /config/custom_components/"
+# Login to Nanit cloud (saves session to .nanit-session)
+login *args:
+    python3 tools/nanit-login.py {{args}}
 
-# Deploy + reload integration (no HA restart needed)
-reload: deploy
-    #!/usr/bin/env bash
-    set -euo pipefail
-    entry_id=$(ssh homeassistant 'curl -sf http://supervisor/core/api/config/config_entries/entry -H "Authorization: Bearer ${SUPERVISOR_TOKEN}"' \
-      | python3 -c "import sys,json; entries=json.load(sys.stdin); ids=[e[\"entry_id\"] for e in entries if e[\"domain\"]==\"nanit\"]; print(ids[0]) if ids else exit(1)")
-    if [[ -z "$entry_id" ]]; then
-        echo "Error: Nanit integration not found in HA"
-        exit 1
-    fi
-    ssh homeassistant "curl -sf -X POST http://supervisor/core/api/config/config_entries/entry/${entry_id}/reload -H \"Authorization: Bearer \${SUPERVISOR_TOKEN}\"" > /dev/null
-    echo "Reloaded nanit integration"
+# Fetch activity events from Nanit cloud API (default: 10)
+# Examples: just events    |    just events --limit 5
+events *args:
+    python3 tools/nanit-events.py {{args}}
 
 # Create a GitHub release by bumping the latest version.
 # Usage: just release <patch|minor|major>

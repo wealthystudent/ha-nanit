@@ -17,14 +17,10 @@ PLATFORMS = [
 CLOUD_EVENT_WINDOW = 300
 
 # Config Keys
-CONF_EMAIL = "email"
-CONF_PASSWORD = "password"
 CONF_MFA_CODE = "mfa_code"
 CONF_MFA_TOKEN = "mfa_token"
 CONF_TRANSPORT = "transport"
 CONF_STORE_CREDENTIALS = "store_credentials"
-CONF_HOST = "host"
-CONF_ACCESS_TOKEN = "access_token"
 CONF_REFRESH_TOKEN = "refresh_token"
 CONF_BABY_UID = "baby_uid"
 CONF_CAMERA_UID = "camera_uid"

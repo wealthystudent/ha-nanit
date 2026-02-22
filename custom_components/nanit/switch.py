@@ -8,6 +8,7 @@ from typing import Any
 
 from homeassistant.components.switch import SwitchEntity, SwitchEntityDescription
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import NanitConfigEntry
@@ -76,6 +77,7 @@ SWITCHES: tuple[NanitSwitchEntityDescription, ...] = (
     NanitSwitchEntityDescription(
         key="status_led",
         translation_key="status_led",
+        entity_category=EntityCategory.CONFIG,
         entity_registry_enabled_default=False,
         value_fn=lambda data: _settings_flag(data, "status_light_on"),
         turn_on_fn=lambda client: client.set_status_led(True),
@@ -84,6 +86,7 @@ SWITCHES: tuple[NanitSwitchEntityDescription, ...] = (
     NanitSwitchEntityDescription(
         key="mic_mute",
         translation_key="mic_mute",
+        entity_category=EntityCategory.CONFIG,
         entity_registry_enabled_default=False,
         value_fn=lambda data: _settings_flag(data, "mic_mute_on"),
         turn_on_fn=lambda client: client.set_mic_mute(True),

@@ -1,6 +1,7 @@
 """API client for Nanit."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -326,10 +327,8 @@ class NanitAddonClient:
 
         Returns True if ready within timeout, False otherwise.
         """
-        import asyncio
-
-        deadline = asyncio.get_event_loop().time() + timeout
-        while asyncio.get_event_loop().time() < deadline:
+        deadline = asyncio.get_running_loop().time() + timeout
+        while asyncio.get_running_loop().time() < deadline:
             try:
                 status = await self.get_auth_status()
                 if status.get("ready"):

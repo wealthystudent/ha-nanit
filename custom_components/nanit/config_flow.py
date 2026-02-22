@@ -14,8 +14,15 @@ from homeassistant.config_entries import (
     ConfigFlowResult,
     OptionsFlow,
 )
+from homeassistant.const import CONF_ACCESS_TOKEN, CONF_EMAIL, CONF_HOST, CONF_PASSWORD
 from homeassistant.core import callback
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.selector import (
+    SelectOptionDict,
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
+)
 
 from .api import (
     NanitAuthClient,
@@ -26,16 +33,12 @@ from .api import (
 from .const import (
     ADDON_HOST_MARKER,
     ADDON_SLUG,
-    CONF_ACCESS_TOKEN,
     CONF_BABY_NAME,
     CONF_BABY_UID,
     CONF_CAMERA_IP,
     CONF_CAMERA_UID,
-    CONF_EMAIL,
-    CONF_HOST,
     CONF_MFA_CODE,
     CONF_MFA_TOKEN,
-    CONF_PASSWORD,
     CONF_REFRESH_TOKEN,
     CONF_STORE_CREDENTIALS,
     CONF_TRANSPORT,
@@ -329,11 +332,15 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
             step_id="transport",
             data_schema=vol.Schema(
                 {
-                    vol.Required(CONF_TRANSPORT, default=TRANSPORT_LOCAL): vol.In(
-                        {
-                            TRANSPORT_LOCAL: "Local only",
-                            TRANSPORT_LOCAL_CLOUD: "Local + Cloud",
-                        }
+                    vol.Required(CONF_TRANSPORT, default=TRANSPORT_LOCAL): SelectSelector(
+                        SelectSelectorConfig(
+                            options=[
+                                SelectOptionDict(value=TRANSPORT_LOCAL, label="local"),
+                                SelectOptionDict(value=TRANSPORT_LOCAL_CLOUD, label="local_cloud"),
+                            ],
+                            mode=SelectSelectorMode.DROPDOWN,
+                            translation_key="transport",
+                        )
                     ),
                     vol.Optional(CONF_CAMERA_IP, default=""): cv.string,
                 }
@@ -479,11 +486,15 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
                     vol.Required(
                         CONF_TRANSPORT,
                         default=reconfigure_entry.data.get(CONF_TRANSPORT, TRANSPORT_LOCAL),
-                    ): vol.In(
-                        {
-                            TRANSPORT_LOCAL: "Local only",
-                            TRANSPORT_LOCAL_CLOUD: "Local + Cloud",
-                        }
+                    ): SelectSelector(
+                        SelectSelectorConfig(
+                            options=[
+                                SelectOptionDict(value=TRANSPORT_LOCAL, label="local"),
+                                SelectOptionDict(value=TRANSPORT_LOCAL_CLOUD, label="local_cloud"),
+                            ],
+                            mode=SelectSelectorMode.DROPDOWN,
+                            translation_key="transport",
+                        )
                     ),
                     vol.Optional(
                         CONF_CAMERA_IP,
@@ -509,28 +520,32 @@ class NanitOptionsFlow(OptionsFlow):
     ) -> ConfigFlowResult:
         """Manage the options."""
         if user_input is not None:
-            new_data = {**self.config_entry.data}
-            new_data[CONF_TRANSPORT] = user_input[CONF_TRANSPORT]
-            self.hass.config_entries.async_update_entry(
-                self.config_entry, data=new_data
+            return self.async_create_entry(
+                title="",
+                data={CONF_TRANSPORT: user_input[CONF_TRANSPORT]},
             )
-            await self.hass.config_entries.async_reload(self.config_entry.entry_id)
-            return self.async_create_entry(title="", data={})
 
+        # Read current transport from options first, then fall back to data
+        current_transport = self.config_entry.options.get(
+            CONF_TRANSPORT,
+            self.config_entry.data.get(CONF_TRANSPORT, TRANSPORT_LOCAL),
+        )
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(
                 {
                     vol.Required(
                         CONF_TRANSPORT,
-                        default=self.config_entry.data.get(
-                            CONF_TRANSPORT, TRANSPORT_LOCAL
-                        ),
-                    ): vol.In(
-                        {
-                            TRANSPORT_LOCAL: "Local only",
-                            TRANSPORT_LOCAL_CLOUD: "Local + Cloud",
-                        }
+                        default=current_transport,
+                    ): SelectSelector(
+                        SelectSelectorConfig(
+                            options=[
+                                SelectOptionDict(value=TRANSPORT_LOCAL, label="local"),
+                                SelectOptionDict(value=TRANSPORT_LOCAL_CLOUD, label="local_cloud"),
+                            ],
+                            mode=SelectSelectorMode.DROPDOWN,
+                            translation_key="transport",
+                        )
                     ),
                 }
             ),

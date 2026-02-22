@@ -92,6 +92,14 @@
       }
     }
   },
+  "selector": {
+    "transport": {
+      "options": {
+        "local": "Local only",
+        "local_cloud": "Local + Cloud"
+      }
+    }
+  },
   "entity": {
     "sensor": {
       "temperature": { "name": "Temperature" },

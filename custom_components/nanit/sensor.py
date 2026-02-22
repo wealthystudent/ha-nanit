@@ -10,18 +10,11 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE, UnitOfTemperature
-
-# UnitOfIlluminance was added in HA 2024.x; use string fallback for older versions
-try:
-    from homeassistant.const import UnitOfIlluminance
-except ImportError:
-    class UnitOfIlluminance:  # type: ignore[no-redef]
-        LUX = "lx"
+from homeassistant.const import PERCENTAGE, UnitOfIlluminance, UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+from . import NanitConfigEntry
 from .coordinator import NanitLocalCoordinator
 from .entity import NanitEntity
 
@@ -63,7 +56,7 @@ SENSORS: tuple[NanitSensorEntityDescription, ...] = (
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: NanitConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Nanit sensors."""

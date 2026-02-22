@@ -332,7 +332,7 @@ func (t *UnixTime) UnmarshalJSON(data []byte) error {
 }
 
 func (t UnixTime) MarshalJSON() ([]byte, error) {
-	return json.Marshal(t.Time)
+	return json.Marshal(t.Time.Unix())
 }
 
 // MessageEntry is a single message from the Nanit events API.

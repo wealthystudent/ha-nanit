@@ -10,7 +10,7 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import PERCENTAGE, UnitOfIlluminance, UnitOfTemperature
+from homeassistant.const import LIGHT_LUX, PERCENTAGE, UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -46,7 +46,7 @@ SENSORS: tuple[NanitSensorEntityDescription, ...] = (
     NanitSensorEntityDescription(
         key="light",
         device_class=SensorDeviceClass.ILLUMINANCE,
-        native_unit_of_measurement=UnitOfIlluminance.LUX,
+        native_unit_of_measurement=LIGHT_LUX,
         state_class=SensorStateClass.MEASUREMENT,
         entity_registry_enabled_default=False,
         value_fn=lambda data: data.get("light", {}).get("value"),

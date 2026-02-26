@@ -1,0 +1,110 @@
+name: Bug Report
+description: Report a bug with the Nanit integration or add-on
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Please fill in as much detail as you can — it helps us fix things faster.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which part of the integration is affected?
+      options:
+        - Integration (Python / HACS)
+        - Add-on / Daemon (nanitd)
+        - Both
+        - Not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install-type
+    attributes:
+      label: Installation type
+      description: How is Home Assistant installed?
+      options:
+        - Home Assistant OS
+        - Home Assistant Supervised
+        - Home Assistant Container (Docker)
+        - Home Assistant Core
+    validations:
+      required: true
+
+  - type: dropdown
+    id: architecture
+    attributes:
+      label: Hardware architecture
+      description: What hardware are you running on?
+      options:
+        - amd64 (Intel/AMD PC, NUC, etc.)
+        - aarch64 (Raspberry Pi 4/5, Orange Pi, etc.)
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: ha-version
+    attributes:
+      label: Home Assistant version
+      description: "Found in Settings → About"
+      placeholder: "e.g. 2026.2.0"
+    validations:
+      required: true
+
+  - type: input
+    id: integration-version
+    attributes:
+      label: Integration / add-on version
+      description: "Found in HACS or Settings → Devices & Services → Nanit"
+      placeholder: "e.g. 0.5.2"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the bug
+      description: A clear description of what is happening and what you expected instead.
+      placeholder: |
+        What happened:
+        ...
+
+        What I expected:
+        ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: How can we reproduce this?
+      placeholder: |
+        1. Go to ...
+        2. Click on ...
+        3. See error ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: |
+        Paste any relevant logs from Home Assistant or the add-on.
+        Integration logs: Settings → System → Logs (filter by "nanit")
+        Add-on logs: Settings → Add-ons → Nanit Daemon → Log
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
+      description: Screenshots, config snippets, or anything else that might help.
+    validations:
+      required: false

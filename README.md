@@ -23,7 +23,7 @@ Keep an eye on your little one with this custom [Home Assistant](https://www.hom
 
 Setting up your nursery is easy:
 
-1. **Install the Add-on**: Add `https://github.com/wealthystudent/ha-nanit` to your Add-on Store and install the **Nanit Daemon**.
+1. **Install the Daemon**: Run the **Nanit Daemon** as a Home Assistant add-on (HA OS / Supervised) or as a standalone Docker container (HA Container / Core).
 2. **Install the Integration**: Find **Nanit** in HACS (add the same repo URL as a custom integration) or copy the files manually.
 3. **Configure**: Add the **Nanit** integration in Home Assistant, sign in, and enter your MFA code.
 
@@ -49,11 +49,18 @@ Choose how your data travels from the nursery to Home Assistant. You can change 
 - A Nanit account with an email and password.
 - Home Assistant 2025.12 or newer.
 - HACS installed (recommended) or the ability to copy files manually.
+- **For add-on installs**: Home Assistant OS or a Supervised installation.
+- **For standalone installs**: Docker available on a machine reachable by Home Assistant.
 
 ### Detailed Installation
 
-#### 1. Install the Nanit Daemon Add-on
-The Go backend runs as a Home Assistant add-on, so there's no need for a separate machine.
+#### 1. Install the Nanit Daemon
+
+The Go backend (`nanitd`) handles camera communication, sensor data, and HLS streaming. Choose the option that matches your Home Assistant installation type.
+
+**Option A: Home Assistant Add-on (HA OS / Supervised)**
+
+If you run Home Assistant OS or a Supervised install, install `nanitd` as an add-on:
 
 1. Go to **Settings > Add-ons > Add-on Store**.
 2. Click the three dots in the top-right corner and select **Repositories**.
@@ -61,7 +68,60 @@ The Go backend runs as a Home Assistant add-on, so there's no need for a separat
 4. Find **Nanit Daemon** in the store and click **Install**.
 5. Start the add-on. It will wait for your credentials once you set up the integration.
 
-*Note: If you want to run `nanitd` on a different machine, skip this and provide the host URL during setup.*
+**Option B: Standalone Docker Container (HA Container / Core)**
+
+If you run Home Assistant Container or Core (no Supervisor), run `nanitd` as a standalone Docker container:
+
+```bash
+docker run -d \
+  --name nanitd \
+  --restart unless-stopped \
+  -p 8080:8080 \
+  -v nanitd-data:/data \
+  -e NANIT_HTTP_ADDR="0.0.0.0:8080" \
+  -e NANIT_SESSION_PATH="/data/session.json" \
+  -e NANIT_HLS_ENABLED="true" \
+  -e NANIT_HLS_OUTPUT_DIR="/tmp/nanit-hls" \
+  -e NANIT_LOG_LEVEL="info" \
+  ghcr.io/wealthystudent/nanitd-amd64:0.5.1 \
+  /usr/bin/nanitd
+```
+
+On a Raspberry Pi or other ARM64 device, use the `nanitd-aarch64` image instead:
+
+```bash
+docker run -d \
+  --name nanitd \
+  --restart unless-stopped \
+  -p 8080:8080 \
+  -v nanitd-data:/data \
+  -e NANIT_HTTP_ADDR="0.0.0.0:8080" \
+  -e NANIT_SESSION_PATH="/data/session.json" \
+  -e NANIT_HLS_ENABLED="true" \
+  -e NANIT_HLS_OUTPUT_DIR="/tmp/nanit-hls" \
+  -e NANIT_LOG_LEVEL="info" \
+  ghcr.io/wealthystudent/nanitd-aarch64:0.5.1 \
+  /usr/bin/nanitd
+```
+
+Optional environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `NANIT_HTTP_ADDR` | `:8080` | Listen address for the HTTP API |
+| `NANIT_SESSION_PATH` | `/data/session.json` | Path to persist auth tokens |
+| `NANIT_LOG_LEVEL` | `info` | Log level (`debug`, `info`, `warning`, `error`) |
+| `NANIT_HLS_ENABLED` | `false` | Enable HLS live stream proxy |
+| `NANIT_HLS_OUTPUT_DIR` | (none) | Directory for HLS segments |
+| `NANIT_CAMERA_IP` | (none) | Camera LAN IP for direct local connection |
+
+After starting the container, provision auth tokens with the login helper:
+
+```bash
+just login --host http://<docker-host>:8080
+```
+
+Verify it's running: `curl http://<docker-host>:8080/api/status`
 
 #### 2. Install the Integration
 
@@ -80,7 +140,7 @@ The Go backend runs as a Home Assistant add-on, so there's no need for a separat
 #### 3. Configure the Integration
 1. Go to **Settings > Devices & Services > Add Integration**.
 2. Search for **Nanit**.
-3. If the add-on is running, it should be detected automatically.
+3. If the add-on is running, it should be detected automatically. If you're running `nanitd` standalone (Option B above), uncheck **Use detected add-on** or enter the backend URL (e.g., `http://192.168.1.50:8080`) when prompted.
 4. Enter your Nanit email and password.
 5. Provide the MFA code sent to your device.
 6. Pick your transport mode (Local or Local + Cloud).
@@ -96,6 +156,7 @@ The Go backend runs as a Home Assistant add-on, so there's no need for a separat
 | Store credentials | No | Saves credentials for easier re-authentication |
 | Transport | Yes | Local only or Local + Cloud |
 | Camera IP | No | Direct LAN IP of your camera to bypass cloud relays |
+| Go Backend URL | No | URL of the `nanitd` instance (e.g., `http://192.168.1.50:8080`). Only shown when not using the add-on. Defaults to `http://localhost:8080` |
 
 ### Adjusting Settings
 Click **Configure** on the Nanit integration page to update:

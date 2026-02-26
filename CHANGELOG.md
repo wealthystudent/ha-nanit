@@ -2,6 +2,19 @@
 
 All notable changes to the Nanit Home Assistant integration are documented in this file.
 
+## [0.5.2] – 2026-02-26
+
+### Added
+- aarch64 (ARM64) architecture support for the add-on (Raspberry Pi, etc.)
+- Standalone Docker deployment instructions for HA Container / Core users
+- Environment variable reference table for `nanitd`
+- Go Backend URL configuration option documentation
+
+### Changed
+- CI workflow now builds both `amd64` and `aarch64` images via matrix strategy
+- Dockerfile supports cross-compilation for ARM64 targets
+- README quick start and prerequisites updated for add-on vs standalone paths
+
 ## [0.5.0] – 2026-02-22
 
 ### Changed

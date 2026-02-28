@@ -7,7 +7,7 @@ name = "aionanit"
 version = "1.0.0"
 description = "Async Python client for Nanit baby cameras"
 readme = "README.md"
-license = {text = "MIT"}
+license = "MIT"
 requires-python = ">=3.12"
 dependencies = [
     "aiohttp>=3.9.0",

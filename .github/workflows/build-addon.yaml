@@ -3,7 +3,7 @@ name: Build and publish nanitd add-on
 on:
   push:
     tags:
-      - "v*"
+      - "v0.*"
   workflow_dispatch:
 
 env:

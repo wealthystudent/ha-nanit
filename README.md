@@ -1,7 +1,7 @@
 # Nanit Baby Camera — Home Assistant Integration
 
 <p align="center">
-  <img src="custom_components/nanit/icon@2x.png" alt="Nanit" width="128" />
+  <img src="custom_components/nanit/brand/icon@2x.png" alt="Nanit" width="128" />
 </p>
 
 A Home Assistant integration for Nanit baby cameras. Local-first, cloud-optional.

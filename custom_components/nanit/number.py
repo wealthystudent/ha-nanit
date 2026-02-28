@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.const import PERCENTAGE
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import NanitConfigEntry
-from .api import NanitApiClient
-from .coordinator import NanitLocalCoordinator
+from .const import CONF_CAMERA_UID
+from .coordinator import NanitPushCoordinator
 from .entity import NanitEntity
+
+from aionanit import NanitCamera
 
 
 async def async_setup_entry(
@@ -21,9 +21,9 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Nanit number entities."""
-    coordinator = entry.runtime_data.local_coordinator
-    client = entry.runtime_data.client
-    async_add_entities([NanitVolume(coordinator, client)])
+    coordinator = entry.runtime_data.push_coordinator
+    camera = entry.runtime_data.camera
+    async_add_entities([NanitVolume(coordinator, camera)])
 
 
 class NanitVolume(NanitEntity, NumberEntity):
@@ -39,14 +39,14 @@ class NanitVolume(NanitEntity, NumberEntity):
 
     def __init__(
         self,
-        coordinator: NanitLocalCoordinator,
-        client: NanitApiClient,
+        coordinator: NanitPushCoordinator,
+        camera: NanitCamera,
     ) -> None:
         """Initialize."""
         super().__init__(coordinator)
-        self._client = client
+        self._camera = camera
         self._attr_unique_id = (
-            f"{coordinator.config_entry.data.get('camera_uid', coordinator.config_entry.entry_id)}"
+            f"{coordinator.config_entry.data.get(CONF_CAMERA_UID, coordinator.config_entry.entry_id)}"
             "_volume"
         )
 
@@ -55,9 +55,8 @@ class NanitVolume(NanitEntity, NumberEntity):
         """Return the current volume."""
         if self.coordinator.data is None:
             return None
-        return self.coordinator.data.get("settings", {}).get("volume")
+        return self.coordinator.data.settings.volume
 
     async def async_set_native_value(self, value: float) -> None:
         """Set the volume."""
-        await self._client.set_volume(int(value))
-        await self.coordinator.async_request_refresh()
+        await self._camera.async_set_settings(volume=int(value))

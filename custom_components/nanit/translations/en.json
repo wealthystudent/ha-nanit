@@ -3,19 +3,11 @@
     "step": {
       "user": {
         "title": "Connect to Nanit",
-        "description": "Enter your Nanit account credentials and Go backend address.",
+        "description": "Enter your Nanit account credentials.",
         "data": {
           "email": "Email",
           "password": "Password",
-          "host": "Go Backend URL",
           "store_credentials": "Store email and password (enables easier re-authentication)"
-        }
-      },
-      "addon_confirm": {
-        "title": "Nanit Daemon Add-on Detected",
-        "description": "The {addon_name} add-on was detected on this Home Assistant instance. Use it as the backend?",
-        "data": {
-          "use_addon": "Use Nanit Daemon add-on"
         }
       },
       "credentials": {
@@ -24,7 +16,6 @@
         "data": {
           "email": "Email",
           "password": "Password",
-          "host": "Go Backend URL",
           "store_credentials": "Store email and password (enables easier re-authentication)"
         }
       },
@@ -35,12 +26,11 @@
           "mfa_code": "Verification Code"
         }
       },
-      "transport": {
-        "title": "Transport Mode",
-        "description": "Choose how the integration communicates with your Nanit camera.",
+      "camera_ip": {
+        "title": "Camera IP (Optional)",
+        "description": "Enter your camera's local IP address for local-first connectivity. Leave blank to use cloud only.",
         "data": {
-          "transport": "Transport",
-          "camera_ip": "Camera IP Address (optional, for direct local connection)"
+          "camera_ip": "Camera IP Address"
         }
       },
       "reauth_confirm": {
@@ -60,11 +50,9 @@
       },
       "reconfigure": {
         "title": "Reconfigure Nanit",
-        "description": "Update Go backend URL, transport mode, or camera IP.",
+        "description": "Update the camera IP address for local access.",
         "data": {
-          "host": "Go Backend URL",
-          "transport": "Transport",
-          "camera_ip": "Camera IP Address (optional)"
+          "camera_ip": "Camera IP Address"
         }
       }
     },
@@ -72,8 +60,7 @@
       "cannot_connect": "Failed to connect to Nanit cloud API",
       "invalid_auth": "Invalid email or password",
       "invalid_mfa_code": "Invalid verification code",
-      "unknown": "Unexpected error occurred",
-      "go_backend_unreachable": "Cannot reach Go backend"
+      "unknown": "Unexpected error occurred"
     },
     "abort": {
       "already_configured": "This Nanit camera is already configured",
@@ -85,18 +72,10 @@
     "step": {
       "init": {
         "title": "Nanit Options",
-        "description": "Configure transport mode. Changing to Local only will remove cloud event entities.",
+        "description": "Configure the camera IP address for local access. Leave blank to use cloud only.",
         "data": {
-          "transport": "Transport"
+          "camera_ip": "Camera IP Address"
         }
-      }
-    }
-  },
-  "selector": {
-    "transport": {
-      "options": {
-        "local": "Local only",
-        "local_cloud": "Local + Cloud"
       }
     }
   },

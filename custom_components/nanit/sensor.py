@@ -1,8 +1,9 @@
 """Sensor entities for Nanit."""
+
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -15,14 +16,17 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import NanitConfigEntry
-from .coordinator import NanitLocalCoordinator
+from .coordinator import NanitPushCoordinator
 from .entity import NanitEntity
+
+from aionanit.models import CameraState
 
 
 @dataclass(frozen=True, kw_only=True)
 class NanitSensorEntityDescription(SensorEntityDescription):
     """Description for Nanit sensor."""
-    value_fn: Callable[[dict[str, Any]], Any]
+
+    value_fn: Callable[[CameraState], float | int | None]
 
 
 SENSORS: tuple[NanitSensorEntityDescription, ...] = (
@@ -32,7 +36,7 @@ SENSORS: tuple[NanitSensorEntityDescription, ...] = (
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
         state_class=SensorStateClass.MEASUREMENT,
         entity_registry_enabled_default=True,
-        value_fn=lambda data: data.get("temperature", {}).get("value"),
+        value_fn=lambda state: state.sensors.temperature,
     ),
     NanitSensorEntityDescription(
         key="humidity",
@@ -41,7 +45,7 @@ SENSORS: tuple[NanitSensorEntityDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         entity_registry_enabled_default=True,
         suggested_display_precision=1,
-        value_fn=lambda data: data.get("humidity", {}).get("value"),
+        value_fn=lambda state: state.sensors.humidity,
     ),
     NanitSensorEntityDescription(
         key="light",
@@ -49,7 +53,7 @@ SENSORS: tuple[NanitSensorEntityDescription, ...] = (
         native_unit_of_measurement=LIGHT_LUX,
         state_class=SensorStateClass.MEASUREMENT,
         entity_registry_enabled_default=False,
-        value_fn=lambda data: data.get("light", {}).get("value"),
+        value_fn=lambda state: state.sensors.light,
     ),
 )
 
@@ -60,7 +64,7 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Nanit sensors."""
-    coordinator: NanitLocalCoordinator = entry.runtime_data.local_coordinator
+    coordinator = entry.runtime_data.push_coordinator
     async_add_entities(
         NanitSensor(coordinator, description) for description in SENSORS
     )
@@ -73,7 +77,7 @@ class NanitSensor(NanitEntity, SensorEntity):
 
     def __init__(
         self,
-        coordinator: NanitLocalCoordinator,
+        coordinator: NanitPushCoordinator,
         description: NanitSensorEntityDescription,
     ) -> None:
         """Initialize."""
@@ -82,8 +86,8 @@ class NanitSensor(NanitEntity, SensorEntity):
         self._attr_unique_id = f"{coordinator.config_entry.unique_id}_{description.key}"
 
     @property
-    def native_value(self) -> Any:
+    def native_value(self) -> float | int | None:
         """Return the state of the sensor."""
-        if not self.coordinator.data or "sensors" not in self.coordinator.data:
+        if self.coordinator.data is None:
             return None
-        return self.entity_description.value_fn(self.coordinator.data["sensors"])
+        return self.entity_description.value_fn(self.coordinator.data)

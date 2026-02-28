@@ -35,7 +35,7 @@ class NanitData:
     cloud_coordinator: NanitCloudCoordinator | None
 
 
-type NanitConfigEntry = ConfigEntry[NanitData]
+NanitConfigEntry = ConfigEntry[NanitData]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: NanitConfigEntry) -> bool:

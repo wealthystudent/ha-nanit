@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aionanit"
+version = "1.0.0"
+description = "Async Python client for Nanit baby cameras"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.12"
+dependencies = [
+    "aiohttp>=3.9.0",
+    "betterproto>=2.0.0b7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "grpcio-tools",
+    "pytest",
+    "pytest-asyncio",
+    "aioresponses",
+    "pytest-cov",
+]
+
+[tool.setuptools.packages.find]
+include = ["aionanit*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

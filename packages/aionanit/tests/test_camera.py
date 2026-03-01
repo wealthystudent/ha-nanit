@@ -60,7 +60,6 @@ from aionanit.proto import (
     StreamingStatus,
 )
 from aionanit.rest import NanitRestClient
-from aionanit.ws.protocol import encode_message
 
 
 # ---------------------------------------------------------------------------
@@ -503,9 +502,9 @@ class TestOnWsMessage:
         future = cam._pending.track(req_id)
 
         # Build a RESPONSE message
-        resp = Response(request_id=req_id, status_code=200)
+        resp = Response(request_id=req_id, request_type=RequestType.GET_STATUS, status_code=200)
         msg = Message(type=MessageType.RESPONSE, response=resp)
-        data = bytes(msg)
+        data = msg.SerializeToString()
 
         cam._on_ws_message(data)
 
@@ -519,11 +518,12 @@ class TestOnWsMessage:
         cam.subscribe(lambda e: events.append(e))
 
         req = Request(
+            id=1,
             type=RequestType.PUT_SETTINGS,
             settings=Settings(volume=80),
         )
         msg = Message(type=MessageType.REQUEST, request=req)
-        data = bytes(msg)
+        data = msg.SerializeToString()
 
         cam._on_ws_message(data)
 
@@ -532,9 +532,9 @@ class TestOnWsMessage:
 
     def test_keepalive_no_error(self) -> None:
         cam, *_ = _make_camera()
-        # KEEPALIVE is type=0, which serializes to b"" for betterproto defaults
+        # KEEPALIVE is type=0 (proto2 default), serializes to b'\x08\x00'
         msg = Message(type=MessageType.KEEPALIVE)
-        data = bytes(msg)
+        data = msg.SerializeToString()
 
         # Should not raise or trigger any state changes
         cam._on_ws_message(data)

@@ -27,12 +27,12 @@ from aionanit.ws.protocol import (
 
 class TestEncodeDecodeRoundtrip:
     def test_keepalive_roundtrip(self) -> None:
-        # betterproto: KEEPALIVE=0 is default enum value,
-        # so Message(type=KEEPALIVE) serializes to empty bytes (all defaults).
+        # KEEPALIVE=0 is default enum value (proto2),
+        # so Message(type=KEEPALIVE) serializes to b'\x08\x00' (field 1, value 0).
         msg = Message(type=MessageType.KEEPALIVE)
         data = encode_message(msg)
         assert isinstance(data, bytes)
-        # Empty bytes is valid — decodes back to default Message (KEEPALIVE).
+        # Decodes back to default Message (KEEPALIVE).
         decoded = decode_message(data)
         assert decoded.type == MessageType.KEEPALIVE
 
@@ -135,12 +135,12 @@ class TestExtractRequest:
 
 class TestDecodeMessageErrors:
     def test_empty_bytes_decodes_to_default_message(self) -> None:
-        # betterproto is lenient — empty bytes decodes to default Message.
+        # Empty bytes decodes to default Message (all fields at defaults).
         msg = decode_message(b"")
         assert msg.type == MessageType.KEEPALIVE  # default enum value is 0 = KEEPALIVE
 
-    def test_garbage_bytes_does_not_crash(self) -> None:
-        # betterproto doesn't raise on most garbage — it silently parses.
-        # This test verifies decode_message doesn't crash on arbitrary input.
-        msg = decode_message(b"\xff\xfe\xfd\xfc\xfb\xfa")
-        assert isinstance(msg, Message)
+    def test_garbage_bytes_raises_protocol_error(self) -> None:
+        # google protobuf raises DecodeError on malformed input,
+        # which decode_message wraps in NanitProtocolError.
+        with pytest.raises(NanitProtocolError):
+            decode_message(b"\xff\xfe\xfd\xfc\xfb\xfa")

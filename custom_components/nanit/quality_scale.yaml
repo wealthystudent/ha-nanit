@@ -45,10 +45,10 @@ rules:
   diagnostics: done
   discovery-update-info:
     status: exempt
-    comment: Camera is not discovered via mDNS/SSDP; connection is via add-on.
+    comment: Nanit cameras do not advertise via mDNS/SSDP/DHCP; cloud authentication required.
   discovery:
     status: exempt
-    comment: Camera is accessed via the nanitd add-on, not directly discovered.
+    comment: Nanit cameras are cloud-authenticated and do not support local network discovery.
   docs-data-update: todo
   docs-examples: todo
   docs-known-limitations: todo

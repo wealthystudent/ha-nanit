@@ -6,7 +6,7 @@ from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from typing import Any
 
-from homeassistant.components.switch import SwitchEntity, SwitchEntityDescription
+from homeassistant.components.switch import SwitchDeviceClass, SwitchEntity, SwitchEntityDescription
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -53,6 +53,7 @@ SWITCHES: tuple[NanitSwitchEntityDescription, ...] = (
         translation_key="night_light",
         icon="mdi:lightbulb-night",
         entity_registry_enabled_default=True,
+        device_class=SwitchDeviceClass.SWITCH,
         value_fn=_night_light_value,
         turn_on_fn=lambda cam: cam.async_set_control(night_light=NightLightState.ON),
         turn_off_fn=lambda cam: cam.async_set_control(night_light=NightLightState.OFF),
@@ -62,6 +63,7 @@ SWITCHES: tuple[NanitSwitchEntityDescription, ...] = (
         translation_key="camera_power",
         icon="mdi:power",
         entity_registry_enabled_default=True,
+        device_class=SwitchDeviceClass.SWITCH,
         value_fn=lambda state: (
             None
             if state.status.connected_to_server is False
@@ -77,6 +79,7 @@ SWITCHES: tuple[NanitSwitchEntityDescription, ...] = (
         translation_key="status_led",
         entity_category=EntityCategory.CONFIG,
         entity_registry_enabled_default=False,
+        device_class=SwitchDeviceClass.SWITCH,
         value_fn=lambda state: _settings_flag(state, "status_light_on"),
         turn_on_fn=lambda cam: cam.async_set_settings(status_light_on=True),
         turn_off_fn=lambda cam: cam.async_set_settings(status_light_on=False),
@@ -86,6 +89,7 @@ SWITCHES: tuple[NanitSwitchEntityDescription, ...] = (
         translation_key="mic_mute",
         entity_category=EntityCategory.CONFIG,
         entity_registry_enabled_default=False,
+        device_class=SwitchDeviceClass.SWITCH,
         value_fn=lambda state: _settings_flag(state, "mic_mute_on"),
         turn_on_fn=lambda cam: cam.async_set_settings(mic_mute_on=True),
         turn_off_fn=lambda cam: cam.async_set_settings(mic_mute_on=False),

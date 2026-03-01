@@ -440,21 +440,21 @@ class NanitCamera:
             )
 
         elif req_type == RequestType.PUT_STATUS:
-            if request.status:
+            if request.HasField('status'):
                 status = _parse_status_from_proto(request.status)
                 self._update_state(
                     status=status, kind=CameraEventKind.STATUS_UPDATE
                 )
 
         elif req_type == RequestType.PUT_SETTINGS:
-            if request.settings:
+            if request.HasField('settings'):
                 settings = _parse_settings_from_proto(request.settings)
                 self._update_state(
                     settings=settings, kind=CameraEventKind.SETTINGS_UPDATE
                 )
 
         elif req_type == RequestType.PUT_CONTROL:
-            if request.control:
+            if request.HasField('control'):
                 control = _parse_control_from_proto(request.control)
                 self._update_state(
                     control=control, kind=CameraEventKind.CONTROL_UPDATE
@@ -561,7 +561,7 @@ class NanitCamera:
             # Remove from pending if still tracked.
             _ = self._pending.resolve(request_id, Response())  # clean up
             raise NanitRequestTimeout(
-                request_type.name or "UNKNOWN", request_id, timeout
+                RequestType.Name(request_type), request_id, timeout
             ) from err
 
     # ------------------------------------------------------------------
@@ -739,7 +739,7 @@ def _parse_sensor_data(
 
 def _parse_status(resp: Response) -> StatusState:
     """Extract StatusState from a GET_STATUS response."""
-    if resp.status:
+    if resp.HasField('status'):
         return _parse_status_from_proto(resp.status)
     return StatusState()
 
@@ -763,7 +763,7 @@ def _parse_status_from_proto(status: object) -> StatusState:
 
 def _parse_settings(resp: Response) -> SettingsState:
     """Extract SettingsState from a GET_SETTINGS response."""
-    if resp.settings:
+    if resp.HasField('settings'):
         return _parse_settings_from_proto(resp.settings)
     return SettingsState()
 
@@ -788,7 +788,7 @@ def _parse_settings_from_proto(settings: object) -> SettingsState:
 
 def _parse_control(resp: Response) -> ControlState:
     """Extract ControlState from a GET_CONTROL response."""
-    if resp.control:
+    if resp.HasField('control'):
         return _parse_control_from_proto(resp.control)
     return ControlState()
 
@@ -807,7 +807,7 @@ def _parse_control_from_proto(control: object) -> ControlState:
         night_light = NightLightState.OFF
 
     sensor_transfer_enabled: bool | None = None
-    if control.sensor_data_transfer:
+    if control.HasField('sensor_data_transfer'):
         sdt = control.sensor_data_transfer
         sensor_transfer_enabled = any(
             [sdt.sound, sdt.motion, sdt.temperature, sdt.humidity, sdt.light, sdt.night]

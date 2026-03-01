@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate betterproto Python code from nanit.proto."""
+"""Generate google protobuf Python code from nanit.proto."""
 
 import subprocess
 import sys
@@ -10,7 +10,7 @@ OUT_DIR = Path(__file__).parent.parent / "aionanit" / "proto"
 
 
 def main() -> None:
-    """Run protoc with betterproto plugin."""
+    """Run protoc with --python_out to generate nanit_pb2.py."""
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
     cmd = [
@@ -18,7 +18,7 @@ def main() -> None:
         "-m",
         "grpc_tools.protoc",
         f"-I{PROTO_DIR}",
-        f"--python_betterproto_out={OUT_DIR}",
+        f"--python_out={OUT_DIR}",
         str(PROTO_DIR / "nanit.proto"),
     ]
 
@@ -31,19 +31,13 @@ def main() -> None:
 
     print(f"Generated protobuf code in {OUT_DIR}")
 
-    # Rename the generated file from nanit.py to the correct location
-    # betterproto generates into a package based on the proto package name
-    generated_dir = OUT_DIR / "nanit"
-    if generated_dir.is_dir():
-        # Move __init__.py from nanit/ subdirectory up as nanit.py
-        init_file = generated_dir / "__init__.py"
-        if init_file.exists():
-            target = OUT_DIR / "nanit.py"
-            target.write_text(init_file.read_text())
-            # Clean up the generated subdirectory
-            init_file.unlink()
-            generated_dir.rmdir()
-            print(f"Moved generated code to {target}")
+    # protoc --python_out generates nanit_pb2.py directly in OUT_DIR.
+    generated = OUT_DIR / "nanit_pb2.py"
+    if generated.exists():
+        print(f"OK: {generated}")
+    else:
+        print(f"WARNING: Expected {generated} not found", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

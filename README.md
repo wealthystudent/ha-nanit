@@ -8,6 +8,8 @@ A Home Assistant custom integration for Nanit baby cameras. Pure Python — no a
 
 Keep an eye on your little one with this custom [Home Assistant](https://www.home-assistant.io/) integration for [Nanit](https://www.nanit.com/) baby cameras. It connects directly to the Nanit cloud API and optionally to your camera's local network, with no external daemon or add-on needed.
 
+> **Upgrading from v0.x?** Version 1.x is a standalone integration — the Go add-on (`nanitd`) is no longer needed. Simply update the integration through HACS, remove the old config entry, and re-add it. The add-on can then be uninstalled. Previous releases (0.x.x) remain available if you need the add-on-based setup. See [Migrating from v0.x](#migrating-from-v0x) for details.
+
 ## What's in the Crib?
 
 | Entity Type | Entities | Default Enabled |
@@ -191,7 +193,7 @@ ha-nanit/
 │   │   ├── camera.py           # Camera state + commands
 │   │   ├── client.py           # Top-level client
 │   │   ├── models.py           # Data models
-│   │   ├── proto/              # Protobuf types (betterproto)
+│   │   ├── proto/              # Protobuf types (google protobuf)
 │   │   └── ws/                 # WebSocket transport
 │   └── tests/                  # 135 unit tests
 └── nanitd/                     # Legacy Go daemon (deprecated)

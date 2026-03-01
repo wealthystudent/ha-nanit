@@ -13,7 +13,7 @@ All notable changes to the Nanit Home Assistant integration are documented in th
 ### Added
 - `aionanit` — new pure-Python async client library for Nanit cameras (`packages/aionanit/`).
 - Direct WebSocket communication with Nanit cameras (cloud and local).
-- Protobuf-over-WebSocket protocol implementation using `betterproto`.
+- Protobuf-over-WebSocket protocol implementation using google `protobuf`.
 - Push-based sensor updates via WebSocket (temperature, humidity, light, motion, sound).
 - Automatic token refresh with proactive renewal before expiry.
 - Local-first camera connectivity with automatic cloud fallback.

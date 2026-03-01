@@ -33,9 +33,7 @@ release bump:
     echo "Bumping: ${latest} → ${new}"
     # Update manifest.json
     sed -i '' 's/"version": "[0-9]*\.[0-9]*\.[0-9]*"/"version": "'"${new}"'"/' custom_components/nanit/manifest.json
-    # Update addon config.yaml
-    sed -i '' 's/^version: [0-9]*\.[0-9]*\.[0-9]*/version: '"${new}"'/' nanitd/config.yaml
-    git add custom_components/nanit/manifest.json nanitd/config.yaml
+    git add custom_components/nanit/manifest.json
     git commit -m "Bump version to ${new}"
     git tag "${tag}"
     git push && git push --tags

@@ -54,7 +54,7 @@ custom_components/nanit/
 - `aionanit/camera.py` — `NanitCamera` (state machine, subscribe, commands)
 - `aionanit/client.py` — `NanitClient` (top-level entrypoint, camera factory)
 - `aionanit/models.py` — `CameraState`, `CameraEvent`, `Baby`, `CloudEvent`, etc.
-- `aionanit/proto/nanit.py` — betterproto-generated protobuf types
+- `aionanit/proto/nanit_pb2.py` — google protobuf generated types (via `protoc`)
 - `aionanit/ws/transport.py` — `WsTransport` (WebSocket connection, reconnect, keepalive)
 - `aionanit/ws/protocol.py` — protobuf encode/decode
 - `aionanit/ws/pending.py` — `PendingRequests` (request/response correlation)

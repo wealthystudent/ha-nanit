@@ -55,7 +55,7 @@ async with aiohttp.ClientSession() as session:
 
 - Python 3.12+
 - aiohttp >= 3.9.0
-- betterproto >= 2.0.0b7
+- protobuf >= 6.0
 
 ## License
 

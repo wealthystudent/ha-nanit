@@ -12,40 +12,36 @@ from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import NanitConfigEntry
-from .api import NanitApiClient
-from .coordinator import NanitLocalCoordinator
+from .const import CONF_CAMERA_UID
+from .coordinator import NanitPushCoordinator
 from .entity import NanitEntity
+
+from aionanit import NanitCamera
+from aionanit.models import CameraState, NightLightState
 
 
 @dataclass(frozen=True, kw_only=True)
 class NanitSwitchEntityDescription(SwitchEntityDescription):
     """Describe a Nanit switch."""
 
-    value_fn: Callable[[dict[str, Any]], bool | None]
-    turn_on_fn: Callable[[NanitApiClient], Coroutine[Any, Any, None]]
-    turn_off_fn: Callable[[NanitApiClient], Coroutine[Any, Any, None]]
+    value_fn: Callable[[CameraState], bool | None]
+    turn_on_fn: Callable[[NanitCamera], Coroutine[Any, Any, None]]
+    turn_off_fn: Callable[[NanitCamera], Coroutine[Any, Any, None]]
 
 
-def _connected_state(data: dict[str, Any]) -> bool | None:
-    status = data.get("status")
-    if not isinstance(status, dict):
+def _night_light_value(state: CameraState) -> bool | None:
+    if state.status.connected_to_server is False:
         return None
-    return status.get("connected")
-
-
-def _night_light_value(data: dict[str, Any]) -> bool | None:
-    if _connected_state(data) is False:
+    nl = state.control.night_light
+    if nl is None:
         return None
-    value = data.get("control", {}).get("night_light")
-    if value is None:
-        return None
-    return value == "on"
+    return nl == NightLightState.ON
 
 
-def _settings_flag(data: dict[str, Any], key: str) -> bool | None:
-    if _connected_state(data) is False:
+def _settings_flag(state: CameraState, key: str) -> bool | None:
+    if state.status.connected_to_server is False:
         return None
-    value = data.get("settings", {}).get(key)
+    value = getattr(state.settings, key, None)
     if value is None:
         return None
     return value
@@ -58,39 +54,41 @@ SWITCHES: tuple[NanitSwitchEntityDescription, ...] = (
         icon="mdi:lightbulb-night",
         entity_registry_enabled_default=True,
         value_fn=_night_light_value,
-        turn_on_fn=lambda client: client.set_night_light(True),
-        turn_off_fn=lambda client: client.set_night_light(False),
+        turn_on_fn=lambda cam: cam.async_set_control(night_light=NightLightState.ON),
+        turn_off_fn=lambda cam: cam.async_set_control(night_light=NightLightState.OFF),
     ),
     NanitSwitchEntityDescription(
         key="camera_power",
         translation_key="camera_power",
         icon="mdi:power",
         entity_registry_enabled_default=True,
-        value_fn=lambda data: (
+        value_fn=lambda state: (
             None
-            if _connected_state(data) is False
-            else not data.get("settings", {}).get("sleep_mode", False)
+            if state.status.connected_to_server is False
+            else not state.settings.sleep_mode
+            if state.settings.sleep_mode is not None
+            else None
         ),
-        turn_on_fn=lambda client: client.set_sleep_mode(False),
-        turn_off_fn=lambda client: client.set_sleep_mode(True),
+        turn_on_fn=lambda cam: cam.async_set_settings(sleep_mode=False),
+        turn_off_fn=lambda cam: cam.async_set_settings(sleep_mode=True),
     ),
     NanitSwitchEntityDescription(
         key="status_led",
         translation_key="status_led",
         entity_category=EntityCategory.CONFIG,
         entity_registry_enabled_default=False,
-        value_fn=lambda data: _settings_flag(data, "status_light_on"),
-        turn_on_fn=lambda client: client.set_status_led(True),
-        turn_off_fn=lambda client: client.set_status_led(False),
+        value_fn=lambda state: _settings_flag(state, "status_light_on"),
+        turn_on_fn=lambda cam: cam.async_set_settings(status_light_on=True),
+        turn_off_fn=lambda cam: cam.async_set_settings(status_light_on=False),
     ),
     NanitSwitchEntityDescription(
         key="mic_mute",
         translation_key="mic_mute",
         entity_category=EntityCategory.CONFIG,
         entity_registry_enabled_default=False,
-        value_fn=lambda data: _settings_flag(data, "mic_mute_on"),
-        turn_on_fn=lambda client: client.set_mic_mute(True),
-        turn_off_fn=lambda client: client.set_mic_mute(False),
+        value_fn=lambda state: _settings_flag(state, "mic_mute_on"),
+        turn_on_fn=lambda cam: cam.async_set_settings(mic_mute_on=True),
+        turn_off_fn=lambda cam: cam.async_set_settings(mic_mute_on=False),
     ),
 )
 
@@ -101,10 +99,10 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Nanit switches."""
-    coordinator = entry.runtime_data.local_coordinator
-    client = entry.runtime_data.client
+    coordinator = entry.runtime_data.push_coordinator
+    camera = entry.runtime_data.camera
     async_add_entities(
-        NanitSwitch(coordinator, client, description) for description in SWITCHES
+        NanitSwitch(coordinator, camera, description) for description in SWITCHES
     )
 
 
@@ -115,17 +113,17 @@ class NanitSwitch(NanitEntity, SwitchEntity):
 
     def __init__(
         self,
-        coordinator: NanitLocalCoordinator,
-        client: NanitApiClient,
+        coordinator: NanitPushCoordinator,
+        camera: NanitCamera,
         description: NanitSwitchEntityDescription,
     ) -> None:
         """Initialize."""
         super().__init__(coordinator)
         self.entity_description = description
-        self._client = client
+        self._camera = camera
         self._attr_is_on = None
         self._attr_unique_id = (
-            f"{coordinator.config_entry.data.get('camera_uid', coordinator.config_entry.entry_id)}"
+            f"{coordinator.config_entry.data.get(CONF_CAMERA_UID, coordinator.config_entry.entry_id)}"
             f"_{description.key}"
         )
         if coordinator.data is not None:
@@ -148,12 +146,10 @@ class NanitSwitch(NanitEntity, SwitchEntity):
         """Turn on the switch."""
         self._attr_is_on = True
         self.async_write_ha_state()
-        await self.entity_description.turn_on_fn(self._client)
-        await self.coordinator.async_request_refresh()
+        await self.entity_description.turn_on_fn(self._camera)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn off the switch."""
         self._attr_is_on = False
         self.async_write_ha_state()
-        await self.entity_description.turn_off_fn(self._client)
-        await self.coordinator.async_request_refresh()
+        await self.entity_description.turn_off_fn(self._camera)

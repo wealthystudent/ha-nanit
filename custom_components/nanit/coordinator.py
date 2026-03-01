@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 from datetime import timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
@@ -57,7 +57,7 @@ class NanitPushCoordinator(DataUpdateCoordinator[CameraState]):
         )
         self.camera = camera
         self.connected: bool = False
-        self._unsubscribe: (() -> None) | None = None
+        self._unsubscribe: Callable[[], None] | None = None
 
     async def async_setup(self) -> None:
         """Start the camera and subscribe to push events.

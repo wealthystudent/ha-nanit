@@ -15,6 +15,13 @@ from .models import Baby, CloudEvent
 
 DEFAULT_BASE_URL = "https://api.nanit.com"
 
+# Headers required by the Nanit API. The API rejects requests without
+# nanit-api-version (especially when MFA is enabled) and may reject
+# requests with a non-mobile User-Agent.
+NANIT_API_HEADERS: dict[str, str] = {
+    "nanit-api-version": "1",
+    "User-Agent": "Nanit/767 CFNetwork/1498.700.2 Darwin/23.6.0",
+}
 
 class NanitRestClient:
     """Async HTTP client for the Nanit cloud REST API.
@@ -61,6 +68,7 @@ class NanitRestClient:
             resp = await self._session.post(
                 f"{self._base_url}/login",
                 json=data,
+                headers=NANIT_API_HEADERS,
             )
         except aiohttp.ClientError as err:
             raise NanitConnectionError(str(err)) from err
@@ -68,11 +76,15 @@ class NanitRestClient:
         if resp.status == 401:
             raise NanitAuthError("Invalid credentials")
 
-        resp.raise_for_status()
+        # Nanit returns HTTP 482 when MFA is required. Parse the body
+        # before raise_for_status() since 482 is non-standard and aiohttp
+        # would raise ClientResponseError for it.
         body = await resp.json()
 
         if "mfa_token" in body:
             raise NanitMfaRequiredError(body["mfa_token"])
+
+        resp.raise_for_status()
 
         return {
             "access_token": body["access_token"],
@@ -89,7 +101,7 @@ class NanitRestClient:
                 f"{self._base_url}/tokens/refresh",
                 json={"refresh_token": refresh_token},
                 # Nanit uses bare token, not "Bearer" prefix
-                headers={"Authorization": access_token},
+                headers={**NANIT_API_HEADERS, "Authorization": access_token},
             )
         except aiohttp.ClientError as err:
             raise NanitConnectionError(str(err)) from err
@@ -116,7 +128,7 @@ class NanitRestClient:
             resp = await self._session.get(
                 f"{self._base_url}/babies",
                 # Nanit uses bare token, not "Bearer" prefix
-                headers={"Authorization": access_token},
+                headers={**NANIT_API_HEADERS, "Authorization": access_token},
             )
         except aiohttp.ClientError as err:
             raise NanitConnectionError(str(err)) from err
@@ -147,7 +159,7 @@ class NanitRestClient:
                 f"{self._base_url}/babies/{baby_uid}/messages",
                 params={"limit": limit},
                 # Nanit uses bare token, not "Bearer" prefix
-                headers={"Authorization": access_token},
+                headers={**NANIT_API_HEADERS, "Authorization": access_token},
             )
         except aiohttp.ClientError as err:
             raise NanitConnectionError(str(err)) from err

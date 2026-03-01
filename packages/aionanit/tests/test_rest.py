@@ -71,6 +71,22 @@ class TestLogin:
 
             assert exc_info.value.mfa_token == "mfa_abc"
 
+    async def test_login_mfa_required_http_482(
+        self, client: NanitRestClient
+    ) -> None:
+        """Nanit returns HTTP 482 for MFA — verify we parse it before raise_for_status."""
+        with aioresponses() as m:
+            m.post(
+                LOGIN_URL,
+                status=482,
+                payload={"mfa_token": "mfa_482"},
+            )
+
+            with pytest.raises(NanitMfaRequiredError) as exc_info:
+                await client.async_login("user@test.com", "pass123")
+
+            assert exc_info.value.mfa_token == "mfa_482"
+
     async def test_login_connection_error(
         self, client: NanitRestClient
     ) -> None:

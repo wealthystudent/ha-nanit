@@ -1,0 +1,262 @@
+syntax = "proto2";
+package nanit;
+
+enum RequestType {
+  PUT_STREAMING = 2;
+  GET_STREAMING = 3;
+  GET_SETTINGS = 4;
+  PUT_SETTINGS = 5;
+  GET_CONTROL = 6;
+  PUT_CONTROL = 7;
+  GET_STATUS = 8;
+  PUT_STATUS = 9;
+  PUT_SENSOR_DATA = 11;
+  GET_SENSOR_DATA = 12;
+  GET_UCTOKENS = 13;
+  PUT_UCTOKENS = 14;
+  PUT_SETUP_NETWORK = 15;
+  PUT_SETUP_SERVER = 16;
+  GET_FIRMWARE = 17;
+  PUT_FIRMWARE = 18;
+  GET_PLAYBACK = 19;
+  PUT_PLAYBACK = 20;
+  GET_SOUNDTRACKS = 21;
+  GET_STATUS_NETWORK = 22;
+  GET_LIST_NETWORKS = 23;
+  GET_LOGS = 24;
+  GET_BANDWIDTH = 25;
+  GET_AUDIO_STREAMING = 26;
+  PUT_AUDIO_STREAMING = 27;
+  GET_WIFI_SETUP = 28;
+  PUT_WIFI_SETUP = 29;
+  PUT_STING_START = 30;
+  PUT_STING_STOP = 31;
+  PUT_STING_STATUS = 32;
+  PUT_STING_ALERT = 34;
+  PUT_KEEP_ALIVE = 35;
+  GET_STING_STATUS = 36;
+  PUT_STING_TEST = 37;
+  PUT_RTSP_STREAMING = 38;
+  GET_UOM_URI = 39;
+  GET_UOM = 40;
+  PUT_UOM = 41;
+  GET_AUTH_KEY = 42;
+  PUT_AUTH_KEY = 43;
+  PUT_HEALTH = 44;
+  PUT_TCP_REQUEST = 45;
+  GET_STING_START = 46;
+  GET_LOGS_URI = 47;
+}
+
+enum SensorType {
+  SOUND = 0;
+  MOTION = 1;
+  TEMPERATURE = 2;
+  HUMIDITY = 3;
+  LIGHT = 4;
+  NIGHT = 5;
+}
+
+message SensorData {
+  required SensorType sensor_type = 1;
+  optional int32 value = 3;
+  optional bool is_alert = 4;
+  optional int32 timestamp = 5;
+  optional int32 value_milli = 6;
+}
+
+message GetSensorData {
+  optional bool all = 1;
+  optional bool temperature = 4;
+  optional bool humidity = 5;
+  optional bool light = 6;
+  optional bool night = 7;
+}
+
+message GetControl {
+  optional bool ptz = 1;
+  optional bool night_light = 2;
+  optional bool night_light_timeout = 3;
+  optional bool sensor_data_transfer_en = 4;
+}
+
+message Control {
+  enum NightLight {
+    LIGHT_OFF = 0;
+    LIGHT_ON = 1;
+  }
+
+  optional NightLight night_light = 3;
+
+  message SensorDataTransfer {
+    optional bool sound = 1;
+    optional bool motion = 2;
+    optional bool temperature = 3;
+    optional bool humidity = 4;
+    optional bool light = 5;
+    optional bool night = 6;
+  }
+
+  optional SensorDataTransfer sensor_data_transfer = 4;
+  optional bool force_connect_to_server = 5;
+  optional int32 night_light_timeout = 6;
+}
+
+enum StreamIdentifier {
+  DVR = 0;
+  ANALYTICS = 1;
+  MOBILE = 2;
+}
+
+enum MountingMode {
+  STAND = 0;
+  TRAVEL = 1;
+  SWITCH = 2;
+}
+
+message Settings {
+  optional bool night_vision = 2;
+
+  message SensorSettings {
+    required SensorType sensor_type = 1;
+    optional bool use_low_threshold = 2;
+    optional bool use_high_threshold = 3;
+    optional int32 low_threshold = 4;
+    optional int32 high_threshold = 5;
+    optional int32 sample_interval_sec = 6;
+    optional int32 trigger_interval_sec = 7;
+    optional bool use_milli_for_thresholds = 8;
+  }
+
+  repeated SensorSettings sensors = 7;
+
+  message StreamSettings {
+    required StreamIdentifier id = 1;
+    optional int32 bitrate = 2;
+    optional int32 economy_bitrate = 3;
+    optional int32 economy_fps = 4;
+    optional int32 best_bitrate = 5;
+    optional int32 best_fps = 6;
+  }
+
+  repeated StreamSettings streams = 8;
+  optional int32 volume = 9;
+
+  enum AntiFlicker {
+    FR50HZ = 0;
+    FR60HZ = 1;
+  }
+
+  optional AntiFlicker anti_flicker = 10;
+  optional bool sleep_mode = 11;
+  optional bool status_light_on = 12;
+  optional int32 mounting_mode = 15;
+
+  enum WifiBand {
+    ANY = 0;
+    FR2_4GHZ = 1;
+    FR5_0GHZ = 2;
+  }
+
+  optional WifiBand wifi_band = 18;
+  optional bool mic_mute_on = 20;
+}
+
+message Status {
+  optional bool upgrade_downloaded = 1;
+
+  enum ConnectionToServer {
+    DISCONNECTED = 0;
+    CONNECTED = 1;
+  }
+
+  optional ConnectionToServer connection_to_server = 2;
+  optional string current_version = 3;
+  optional MountingMode mode = 4;
+  optional bool is_security_upgrade = 5;
+  optional string downloaded_version = 6;
+  optional string hardware_version = 7;
+}
+
+message Playback {
+  enum Status {
+    STARTED = 0;
+    STOPPED = 1;
+  }
+
+  required Status status = 1;
+}
+
+message Stream {
+  enum Type {
+    LOCAL = 0;
+    REMOTE = 1;
+    RTSP = 2;
+    P2P = 3;
+  }
+
+  required Type type = 1;
+  optional string url = 2;
+  optional int32 bps = 3;
+}
+
+message Streaming {
+  required StreamIdentifier id = 1;
+
+  enum Status {
+    STARTED = 0;
+    STOPPED = 1;
+    PAUSED = 2;
+  }
+
+  required Status status = 2;
+  required string rtmp_url = 3;
+  optional int32 attempts = 4;
+}
+
+message GetLogs {
+  required string url = 1;
+}
+
+message GetStatus {
+  optional bool all = 1;
+}
+
+message Request {
+  required int32 id = 1;
+  required RequestType type = 2;
+
+  optional Streaming streaming = 4;
+  optional Settings settings = 5;
+  optional Status status = 7;
+  optional GetStatus get_status = 8;
+  optional GetSensorData get_sensor_data = 12;
+  repeated SensorData sensor_data = 13;
+  optional Control control = 15;
+  optional Playback playback = 16;
+  optional GetControl get_control = 17;
+  optional GetLogs get_logs = 18;
+}
+
+message Response {
+  required int32 request_id = 1;
+  required RequestType request_type = 2;
+  required int32 status_code = 3;
+  optional string status_message = 4;
+
+  optional Status status = 5;
+  optional Settings settings = 6;
+  repeated SensorData sensor_data = 9;
+  optional Control control = 13;
+}
+
+message Message {
+  enum Type {
+    KEEPALIVE = 0;
+    REQUEST = 1;
+    RESPONSE = 2;
+  }
+  required Type type = 1;
+  optional Request request = 2;
+  optional Response response = 3;
+}

@@ -5,7 +5,6 @@ from __future__ import annotations
 import time as time_mod
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
 
 from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
@@ -25,15 +24,17 @@ from .const import (
     CONF_CAMERA_UID,
     DOMAIN,
 )
-from .coordinator import NanitCloudCoordinator, NanitLocalCoordinator
+from .coordinator import NanitCloudCoordinator, NanitPushCoordinator
 from .entity import NanitEntity
+
+from aionanit.models import CameraState, CloudEvent
 
 
 @dataclass(frozen=True, kw_only=True)
 class NanitBinarySensorEntityDescription(BinarySensorEntityDescription):
     """Describe a Nanit binary sensor."""
 
-    value_fn: Callable[[dict[str, Any]], bool | None]
+    value_fn: Callable[[CameraState], bool | None]
 
 
 BINARY_SENSORS: tuple[NanitBinarySensorEntityDescription, ...] = (
@@ -42,23 +43,20 @@ BINARY_SENSORS: tuple[NanitBinarySensorEntityDescription, ...] = (
         translation_key="motion",
         device_class=BinarySensorDeviceClass.MOTION,
         entity_registry_enabled_default=False,
-        value_fn=lambda data: data.get("sensors", {}).get("motion", {}).get("is_alert"),
+        value_fn=lambda state: state.sensors.motion_alert,
     ),
     NanitBinarySensorEntityDescription(
         key="sound",
         translation_key="sound",
         device_class=BinarySensorDeviceClass.SOUND,
         entity_registry_enabled_default=False,
-        value_fn=lambda data: data.get("sensors", {}).get("sound", {}).get("is_alert"),
+        value_fn=lambda state: state.sensors.sound_alert,
     ),
     NanitBinarySensorEntityDescription(
         key="night_mode",
         translation_key="night_mode",
         entity_registry_enabled_default=False,
-        value_fn=lambda data: (
-            (v := data.get("sensors", {}).get("night", {}).get("value")) is not None
-            and v > 0
-        ),
+        value_fn=lambda state: state.sensors.night,
     ),
     NanitBinarySensorEntityDescription(
         key="connectivity",
@@ -66,7 +64,7 @@ BINARY_SENSORS: tuple[NanitBinarySensorEntityDescription, ...] = (
         device_class=BinarySensorDeviceClass.CONNECTIVITY,
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
-        value_fn=lambda data: data.get("status", {}).get("connected"),
+        value_fn=lambda state: state.status.connected_to_server,
     ),
 )
 
@@ -107,8 +105,8 @@ async def async_setup_entry(
     """Set up Nanit binary sensors."""
     entities: list[BinarySensorEntity] = []
 
-    # Local binary sensors (from camera WebSocket)
-    coordinator = entry.runtime_data.local_coordinator
+    # Local binary sensors (from camera WebSocket push)
+    coordinator = entry.runtime_data.push_coordinator
     entities.extend(
         NanitBinarySensor(coordinator, description)
         for description in BINARY_SENSORS
@@ -132,14 +130,14 @@ class NanitBinarySensor(NanitEntity, BinarySensorEntity):
 
     def __init__(
         self,
-        coordinator: NanitLocalCoordinator,
+        coordinator: NanitPushCoordinator,
         description: NanitBinarySensorEntityDescription,
     ) -> None:
         """Initialize."""
         super().__init__(coordinator)
         self.entity_description = description
         self._attr_unique_id = (
-            f"{coordinator.config_entry.data.get('camera_uid', coordinator.config_entry.entry_id)}"
+            f"{coordinator.config_entry.data.get(CONF_CAMERA_UID, coordinator.config_entry.entry_id)}"
             f"_{description.key}"
         )
 
@@ -194,7 +192,7 @@ class NanitCloudBinarySensor(
         if self.coordinator.data is None:
             return None
 
-        events: list[dict[str, Any]] = self.coordinator.data.get("events", [])
+        events: list[CloudEvent] = self.coordinator.data
         if not events:
             return False
 
@@ -203,13 +201,9 @@ class NanitCloudBinarySensor(
         target_type = self.entity_description.event_type
 
         for event in events:
-            if str(event.get("type", "")).upper() != target_type:
+            if event.event_type.upper() != target_type:
                 continue
-            event_time = event.get("time")
-            if event_time is None:
-                continue
-            # time is a Unix timestamp (seconds)
-            if isinstance(event_time, (int, float)) and event_time >= cutoff:
+            if event.timestamp >= cutoff:
                 return True
 
         return False

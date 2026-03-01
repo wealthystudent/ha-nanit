@@ -2,6 +2,39 @@
 
 All notable changes to the Nanit Home Assistant integration are documented in this file.
 
+## [1.0.0] – 2026-02-28
+
+### Breaking
+- Complete rewrite: the Go add-on (`nanitd`) is **no longer required**. Remove it after upgrading.
+- Existing config entries must be deleted and re-added (entity unique IDs are preserved).
+- The `transport` configuration option has been removed. Local connectivity is now controlled by the optional camera IP field.
+- Camera streaming changed from HLS (via Go proxy) to RTMPS (direct from Nanit cloud).
+
+### Added
+- `aionanit` — new pure-Python async client library for Nanit cameras (`packages/aionanit/`).
+- Direct WebSocket communication with Nanit cameras (cloud and local).
+- Protobuf-over-WebSocket protocol implementation using google `protobuf`.
+- Push-based sensor updates via WebSocket (temperature, humidity, light, motion, sound).
+- Automatic token refresh with proactive renewal before expiry.
+- Local-first camera connectivity with automatic cloud fallback.
+- Self-signed TLS support for local camera connections (port 442).
+- Exponential backoff with jitter for WebSocket reconnection.
+- 135 unit tests for the `aionanit` library.
+
+### Changed
+- Authentication now happens directly against the Nanit cloud API (no Go backend intermediary).
+- All entity platforms rewritten to use `CameraState` dataclasses from `aionanit`.
+- Coordinators rewritten: `NanitPushCoordinator` (WebSocket push) and `NanitCloudCoordinator` (event polling).
+- Config flow simplified: removed add-on detection, Go backend URL, and transport mode selection.
+- `iot_class` changed from `cloud_polling` to `cloud_push`.
+
+### Removed
+- Dependency on `nanitd` Go daemon / Home Assistant add-on.
+- `api.py` (Go backend HTTP wrapper).
+- Add-on auto-discovery and host resolution logic.
+- HLS stream proxy (replaced by RTMPS).
+- Transport mode selector (Local / Local + Cloud).
+
 ## [0.5.2] – 2026-02-26
 
 ### Added

@@ -16,14 +16,14 @@ from aionanit.ws.transport import WsTransport
 def _make_transport(
     on_message: MagicMock | None = None,
     on_connection_change: MagicMock | None = None,
-) -> tuple[WsTransport, MagicMock, MagicMock, MagicMock]:
+    get_headers: AsyncMock | None = None,
+    ) -> tuple[WsTransport, MagicMock, MagicMock, MagicMock]:
     """Create a WsTransport with mocked session and callbacks."""
     session = MagicMock(spec=aiohttp.ClientSession)
     msg_cb = on_message or MagicMock()
     conn_cb = on_connection_change or MagicMock()
-    transport = WsTransport(session, msg_cb, conn_cb)
+    transport = WsTransport(session, msg_cb, conn_cb, get_headers=get_headers)
     return transport, session, msg_cb, conn_cb
-
 
 class TestInitialState:
     def test_connected_is_false(self) -> None:
@@ -154,3 +154,128 @@ class TestRecvLoop:
 
         msg_cb.assert_called_once_with(b"\x08\x00")
         await t.async_close()
+
+
+class TestGetHeadersCallback:
+    async def test_transport_stores_get_headers(self) -> None:
+        """get_headers callback is stored on the transport."""
+        headers_cb = AsyncMock(return_value={"Authorization": "Bearer fresh"})
+        t, *_ = _make_transport(get_headers=headers_cb)
+        assert t._get_headers is headers_cb
+
+    async def test_transport_without_get_headers(self) -> None:
+        """get_headers defaults to None."""
+        t, *_ = _make_transport()
+        assert t._get_headers is None
+
+    async def test_reconnect_calls_get_headers(self) -> None:
+        """_reconnect_loop calls get_headers to refresh auth before reconnect."""
+        fresh_headers = {"Authorization": "Bearer refreshed_token"}
+        headers_cb = AsyncMock(return_value=fresh_headers)
+        t, session, _, conn_cb = _make_transport(get_headers=headers_cb)
+
+        # Set up state as if we were previously connected and recv loop ended
+        t._url = "wss://api.nanit.com/focus/cameras/cam1/user_connect"
+        t._headers = {"Authorization": "Bearer stale_token"}
+        t._transport_kind = TransportKind.CLOUD
+        t._closed = False
+
+        # Mock ws_connect to succeed on reconnect
+        mock_ws = AsyncMock(spec=aiohttp.ClientWebSocketResponse)
+        mock_ws.closed = False
+        mock_ws.__aiter__ = MagicMock(return_value=iter([]))
+        session.ws_connect = AsyncMock(return_value=mock_ws)
+
+        # Run reconnect with patched sleep to avoid waiting
+        with patch("aionanit.ws.transport.asyncio.sleep", new_callable=AsyncMock):
+            await t._reconnect_loop()
+
+        # get_headers should have been called
+        headers_cb.assert_awaited_once()
+        # The headers passed to ws_connect should be the fresh ones
+        call_kwargs = session.ws_connect.call_args
+        assert call_kwargs[1]["headers"] == fresh_headers
+
+        await t.async_close()
+
+    async def test_reconnect_without_get_headers_keeps_original(self) -> None:
+        """Without get_headers callback, reconnect reuses existing headers."""
+        t, session, _, conn_cb = _make_transport()  # no get_headers
+
+        original_headers = {"Authorization": "Bearer original"}
+        t._url = "wss://api.nanit.com/focus/cameras/cam1/user_connect"
+        t._headers = original_headers.copy()
+        t._transport_kind = TransportKind.CLOUD
+        t._closed = False
+
+        mock_ws = AsyncMock(spec=aiohttp.ClientWebSocketResponse)
+        mock_ws.closed = False
+        mock_ws.__aiter__ = MagicMock(return_value=iter([]))
+        session.ws_connect = AsyncMock(return_value=mock_ws)
+
+        with patch("aionanit.ws.transport.asyncio.sleep", new_callable=AsyncMock):
+            await t._reconnect_loop()
+
+        call_kwargs = session.ws_connect.call_args
+        assert call_kwargs[1]["headers"] == original_headers
+
+        await t.async_close()
+
+    async def test_reconnect_header_refresh_failure_uses_existing(self) -> None:
+        """If get_headers raises, reconnect proceeds with existing headers."""
+        headers_cb = AsyncMock(side_effect=Exception("token refresh failed"))
+        t, session, _, conn_cb = _make_transport(get_headers=headers_cb)
+
+        stale_headers = {"Authorization": "Bearer stale"}
+        t._url = "wss://api.nanit.com/focus/cameras/cam1/user_connect"
+        t._headers = stale_headers.copy()
+        t._transport_kind = TransportKind.CLOUD
+        t._closed = False
+
+        mock_ws = AsyncMock(spec=aiohttp.ClientWebSocketResponse)
+        mock_ws.closed = False
+        mock_ws.__aiter__ = MagicMock(return_value=iter([]))
+        session.ws_connect = AsyncMock(return_value=mock_ws)
+
+        with patch("aionanit.ws.transport.asyncio.sleep", new_callable=AsyncMock):
+            await t._reconnect_loop()
+
+        # Should still have attempted connection with stale headers
+        call_kwargs = session.ws_connect.call_args
+        assert call_kwargs[1]["headers"] == stale_headers
+
+        await t.async_close()
+
+
+class TestAsyncForceReconnect:
+    async def test_force_reconnect_closes_ws(self) -> None:
+        """async_force_reconnect closes ws without setting _closed."""
+        t, session, _, _ = _make_transport()
+
+        mock_ws = AsyncMock(spec=aiohttp.ClientWebSocketResponse)
+        mock_ws.closed = False
+        mock_ws.close = AsyncMock()
+        t._ws = mock_ws
+
+        await t.async_force_reconnect()
+
+        mock_ws.close.assert_awaited_once()
+        assert t._closed is False  # NOT set — reconnect loop should fire
+
+    async def test_force_reconnect_noop_when_no_ws(self) -> None:
+        """async_force_reconnect is a no-op when no ws connection."""
+        t, *_ = _make_transport()
+        assert t._ws is None
+        await t.async_force_reconnect()  # Should not raise
+
+    async def test_force_reconnect_noop_when_already_closed(self) -> None:
+        """async_force_reconnect is a no-op when ws is already closed."""
+        t, *_ = _make_transport()
+
+        mock_ws = AsyncMock(spec=aiohttp.ClientWebSocketResponse)
+        mock_ws.closed = True
+        mock_ws.close = AsyncMock()
+        t._ws = mock_ws
+
+        await t.async_force_reconnect()
+        mock_ws.close.assert_not_awaited()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from typing import Any
@@ -19,6 +20,7 @@ from .entity import NanitEntity
 from aionanit import NanitCamera
 from aionanit.models import CameraState, NightLightState
 
+_LOGGER = logging.getLogger(__name__)
 
 @dataclass(frozen=True, kw_only=True)
 class NanitSwitchEntityDescription(SwitchEntityDescription):
@@ -30,8 +32,7 @@ class NanitSwitchEntityDescription(SwitchEntityDescription):
 
 
 def _night_light_value(state: CameraState) -> bool | None:
-    if state.status.connected_to_server is False:
-        return None
+    """Return night light on/off state, or None only when truly unknown."""
     nl = state.control.night_light
     if nl is None:
         return None
@@ -39,13 +40,11 @@ def _night_light_value(state: CameraState) -> bool | None:
 
 
 def _settings_flag(state: CameraState, key: str) -> bool | None:
-    if state.status.connected_to_server is False:
-        return None
+    """Return a boolean settings flag, or None only when truly unknown."""
     value = getattr(state.settings, key, None)
     if value is None:
         return None
     return value
-
 
 SWITCHES: tuple[NanitSwitchEntityDescription, ...] = (
     NanitSwitchEntityDescription(
@@ -65,9 +64,7 @@ SWITCHES: tuple[NanitSwitchEntityDescription, ...] = (
         entity_registry_enabled_default=True,
         device_class=SwitchDeviceClass.SWITCH,
         value_fn=lambda state: (
-            None
-            if state.status.connected_to_server is False
-            else not state.settings.sleep_mode
+            not state.settings.sleep_mode
             if state.settings.sleep_mode is not None
             else None
         ),
@@ -125,7 +122,7 @@ class NanitSwitch(NanitEntity, SwitchEntity):
         super().__init__(coordinator)
         self.entity_description = description
         self._camera = camera
-        self._attr_is_on = None
+        self._attr_is_on: bool | None = None
         self._attr_unique_id = (
             f"{coordinator.config_entry.data.get(CONF_CAMERA_UID, coordinator.config_entry.entry_id)}"
             f"_{description.key}"
@@ -135,25 +132,54 @@ class NanitSwitch(NanitEntity, SwitchEntity):
 
     @property
     def is_on(self) -> bool | None:
-        """Return true if the switch is on."""
+        """Return true if the switch is on.
+
+        Always returns a bool (never None) when the entity is available,
+        so that the HA frontend renders a toggle instead of on/off buttons.
+        """
+        if self._attr_is_on is None:
+            return False
         return self._attr_is_on
 
     def _handle_coordinator_update(self) -> None:
-        """Handle updated data from the coordinator."""
+        """Handle updated data from the coordinator.
+
+        Keeps the last known value when value_fn returns None so that
+        ``is_on`` always has a boolean to return while the entity is available.
+        """
         if self.coordinator.data is not None:
-            self._attr_is_on = self.entity_description.value_fn(self.coordinator.data)
-        else:
-            self._attr_is_on = None
+            new_value = self.entity_description.value_fn(self.coordinator.data)
+            if new_value is not None:
+                self._attr_is_on = new_value
+            # If new_value is None, keep the previous _attr_is_on (last-known).
         self.async_write_ha_state()
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn on the switch."""
+        previous = self._attr_is_on
         self._attr_is_on = True
         self.async_write_ha_state()
-        await self.entity_description.turn_on_fn(self._camera)
+        try:
+            await self.entity_description.turn_on_fn(self._camera)
+        except Exception:
+            _LOGGER.warning(
+                "Failed to turn on %s, reverting state", self.entity_description.key
+            )
+            self._attr_is_on = previous
+            self.async_write_ha_state()
+            raise
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn off the switch."""
+        previous = self._attr_is_on
         self._attr_is_on = False
         self.async_write_ha_state()
-        await self.entity_description.turn_off_fn(self._camera)
+        try:
+            await self.entity_description.turn_off_fn(self._camera)
+        except Exception:
+            _LOGGER.warning(
+                "Failed to turn off %s, reverting state", self.entity_description.key
+            )
+            self._attr_is_on = previous
+            self.async_write_ha_state()
+            raise

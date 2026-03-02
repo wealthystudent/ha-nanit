@@ -6,7 +6,7 @@ import asyncio
 import logging
 import random
 import ssl
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 
 import aiohttp
 
@@ -45,10 +45,12 @@ class WsTransport:
         on_connection_change: Callable[
             [ConnectionState, TransportKind, str | None], None
         ],
+        get_headers: Callable[[], Awaitable[dict[str, str]]] | None = None,
     ) -> None:
         self._session = session
         self._on_message = on_message
         self._on_connection_change = on_connection_change
+        self._get_headers = get_headers
 
         self._ws: aiohttp.ClientWebSocketResponse | None = None
         self._recv_task: asyncio.Task[None] | None = None
@@ -135,6 +137,15 @@ class WsTransport:
         self._on_connection_change(
             ConnectionState.DISCONNECTED, TransportKind.NONE, None
         )
+
+    async def async_force_reconnect(self) -> None:
+        """Force-close the WebSocket so the recv loop triggers a reconnect.
+
+        Unlike async_close(), this does NOT set ``_closed`` so the
+        automatic reconnect loop will fire.
+        """
+        if self._ws is not None and not self._ws.closed:
+            await self._ws.close()
 
     # ------------------------------------------------------------------
     # Internal — connection lifecycle
@@ -261,6 +272,12 @@ class WsTransport:
                 return
 
             try:
+                # Fetch fresh headers if callback is available.
+                if self._get_headers is not None:
+                    try:
+                        self._headers = await self._get_headers()
+                    except Exception as hdr_err:  # noqa: BLE001
+                        _LOGGER.warning("Failed to refresh headers: %s", hdr_err)
                 self._ws = await self._session.ws_connect(
                     self._url,
                     headers=self._headers,

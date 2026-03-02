@@ -199,7 +199,7 @@ class TestConnectionChange:
         )
         assert cam.state.connection.reconnect_attempts == 2
 
-    def test_connected_resets_attempts(self) -> None:
+    async def test_connected_resets_attempts(self) -> None:
         cam, *_ = _make_camera()
         cam._on_connection_change(
             ConnectionState.RECONNECTING, TransportKind.CLOUD, "err"
@@ -572,6 +572,7 @@ class TestSendRequest:
 
         cam._transport = MagicMock()
         cam._transport.async_send = AsyncMock()
+        cam._transport.async_force_reconnect = AsyncMock()
 
         with pytest.raises(NanitRequestTimeout):
             await cam._send_request(
@@ -658,3 +659,128 @@ class TestAsyncStop:
         assert cam._stopped is True
         assert future.done()
         cam._transport.async_close.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Cloud headers for reconnect
+# ---------------------------------------------------------------------------
+
+
+class TestAsyncGetCloudHeaders:
+    async def test_cloud_headers_contain_bearer_token(self) -> None:
+        """_async_get_cloud_headers returns Bearer token for cloud transport."""
+        cam, tm, _ = _make_camera()
+        tm.async_get_access_token = AsyncMock(return_value="new_cloud_token")
+        # Set transport kind to CLOUD
+        cam._transport._transport_kind = TransportKind.CLOUD
+
+        headers = await cam._async_get_cloud_headers()
+        assert headers == {"Authorization": "Bearer new_cloud_token"}
+        tm.async_get_access_token.assert_awaited_once()
+
+    async def test_local_headers_contain_token_prefix(self) -> None:
+        """_async_get_cloud_headers returns 'token X' for local transport."""
+        cam, tm, _ = _make_camera()
+        tm.async_get_access_token = AsyncMock(return_value="new_local_token")
+        # Set transport kind to LOCAL
+        cam._transport._transport_kind = TransportKind.LOCAL
+
+        headers = await cam._async_get_cloud_headers()
+        assert headers == {"Authorization": "token new_local_token"}
+
+
+# ---------------------------------------------------------------------------
+# Post-reconnect re-initialization
+# ---------------------------------------------------------------------------
+
+
+class TestOnReconnected:
+    async def test_connected_after_reconnect_triggers_reinit(self) -> None:
+        """CONNECTED after reconnect_attempts > 0 schedules _async_on_reconnected."""
+        cam, *_ = _make_camera()
+        cam._async_on_reconnected = AsyncMock()
+
+        # Simulate RECONNECTING first (sets reconnect_attempts to 1)
+        cam._on_connection_change(
+            ConnectionState.RECONNECTING, TransportKind.CLOUD, None
+        )
+        assert cam.state.connection.reconnect_attempts == 1
+
+        # Now simulate CONNECTED — should schedule reinit
+        cam._on_connection_change(
+            ConnectionState.CONNECTED, TransportKind.CLOUD, None
+        )
+
+        # Give the scheduled task a moment to run
+        await asyncio.sleep(0.05)
+        cam._async_on_reconnected.assert_awaited_once()
+
+    async def test_initial_connect_does_not_trigger_reinit(self) -> None:
+        """First CONNECTED (reconnect_attempts == 0) does NOT schedule reinit."""
+        cam, *_ = _make_camera()
+        cam._async_on_reconnected = AsyncMock()
+
+        # First connection — reconnect_attempts is 0
+        cam._on_connection_change(
+            ConnectionState.CONNECTED, TransportKind.CLOUD, None
+        )
+
+        await asyncio.sleep(0.05)
+        cam._async_on_reconnected.assert_not_awaited()
+
+    async def test_async_on_reconnected_calls_init_and_push(self) -> None:
+        """_async_on_reconnected re-requests state and re-enables sensor push."""
+        cam, *_ = _make_camera()
+        cam._async_request_initial_state = AsyncMock()
+        cam._async_enable_sensor_push = AsyncMock()
+
+        await cam._async_on_reconnected()
+
+        cam._async_request_initial_state.assert_awaited_once()
+        cam._async_enable_sensor_push.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Timeout triggers force reconnect
+# ---------------------------------------------------------------------------
+
+
+class TestTimeoutForceReconnect:
+    async def test_timeout_calls_force_reconnect(self) -> None:
+        """Request timeout should call async_force_reconnect before raising."""
+        cam, *_ = _make_camera()
+
+        cam._transport = MagicMock()
+        cam._transport.async_send = AsyncMock()
+        cam._transport.async_force_reconnect = AsyncMock()
+
+        with pytest.raises(NanitRequestTimeout):
+            await cam._send_request(
+                RequestType.GET_STATUS,
+                timeout=0.01,
+                get_status=GetStatus(all=True),
+            )
+
+        cam._transport.async_force_reconnect.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# WsTransport constructed with get_headers
+# ---------------------------------------------------------------------------
+
+
+class TestTransportGetHeaders:
+    def test_transport_has_get_headers_callback(self) -> None:
+        """NanitCamera passes a get_headers callback to WsTransport."""
+        cam, *_ = _make_camera()
+        assert cam._transport._get_headers is not None
+        assert callable(cam._transport._get_headers)
+
+    async def test_transport_get_headers_returns_fresh_token(self) -> None:
+        """The get_headers callback on transport produces correct headers."""
+        cam, tm, _ = _make_camera()
+        tm.async_get_access_token = AsyncMock(return_value="fresh_abc")
+        cam._transport._transport_kind = TransportKind.CLOUD
+
+        headers = await cam._transport._get_headers()
+        assert headers == {"Authorization": "Bearer fresh_abc"}

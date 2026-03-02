@@ -73,18 +73,14 @@ class NanitPushCoordinator(DataUpdateCoordinator[CameraState]):
     @callback
     def _on_camera_event(self, event: CameraEvent) -> None:
         """Handle a push event from NanitCamera.subscribe()."""
-        if event.kind == CameraEventKind.CONNECTION_CHANGE:
-            self.connected = self.camera.connected
-            if not self.connected:
-                _LOGGER.debug(
-                    "Camera %s disconnected: %s",
-                    self.camera.uid,
-                    event.state.connection.last_error,
-                )
-        else:
-            # Any data event means the camera is alive
-            self.connected = True
-
+        # Always derive connected from the actual transport state.
+        self.connected = self.camera.connected
+        if event.kind == CameraEventKind.CONNECTION_CHANGE and not self.connected:
+            _LOGGER.debug(
+                "Camera %s disconnected: %s",
+                self.camera.uid,
+                event.state.connection.last_error,
+            )
         self.async_set_updated_data(event.state)
 
     async def async_shutdown(self) -> None:

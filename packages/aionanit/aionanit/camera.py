@@ -111,6 +111,7 @@ class NanitCamera:
             session,
             self._on_ws_message,
             self._on_connection_change,
+            get_headers=self._async_get_cloud_headers,
         )
         self._subscribers: list[Callable[[CameraEvent], None]] = []
         self._local_probe_task: asyncio.Task[None] | None = None
@@ -395,6 +396,21 @@ class NanitCamera:
         return None
 
     # ------------------------------------------------------------------
+    # Internal — header refresh for reconnect
+    # ------------------------------------------------------------------
+
+    async def _async_get_cloud_headers(self) -> dict[str, str]:
+        """Build fresh WebSocket headers using a current access token.
+
+        Called by WsTransport._reconnect_loop before each reconnect attempt
+        so that stale tokens are replaced with freshly issued ones.
+        """
+        token = await self._token_manager.async_get_access_token()
+        if self._transport.transport_kind == TransportKind.LOCAL:
+            return {"Authorization": f"token {token}"}
+        return {"Authorization": f"Bearer {token}"}
+
+    # ------------------------------------------------------------------
     # Internal — WebSocket message handling
     # ------------------------------------------------------------------
 
@@ -500,6 +516,25 @@ class NanitCamera:
 
         self._notify_subscribers(CameraEventKind.CONNECTION_CHANGE)
 
+        # After a successful reconnect, re-initialize the session.
+        if (
+            state == ConnectionState.CONNECTED
+            and old_conn.reconnect_attempts > 0
+        ):
+            asyncio.get_running_loop().create_task(
+                self._async_on_reconnected()
+            )
+
+    async def _async_on_reconnected(self) -> None:
+        """Re-initialize session after a successful reconnect.
+
+        Requests full state from the camera and re-enables sensor push
+        so that push-based data resumes after a connection drop.
+        """
+        _LOGGER.info("Re-initializing session after reconnect")
+        await self._async_request_initial_state()
+        await self._async_enable_sensor_push()
+
     # ------------------------------------------------------------------
     # Internal — state management
     # ------------------------------------------------------------------
@@ -560,6 +595,14 @@ class NanitCamera:
         except asyncio.TimeoutError as err:
             # Remove from pending if still tracked.
             _ = self._pending.resolve(request_id, Response())  # clean up
+            # Force a reconnect — the connection is likely stale.
+            _LOGGER.warning(
+                "Request %s (id=%s) timed out after %.1fs, forcing reconnect",
+                RequestType.Name(request_type),
+                request_id,
+                timeout,
+            )
+            await self._transport.async_force_reconnect()
             raise NanitRequestTimeout(
                 RequestType.Name(request_type), request_id, timeout
             ) from err

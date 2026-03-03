@@ -2,6 +2,11 @@
 
 All notable changes to the Nanit Home Assistant integration are documented in this file.
 
+## [1.0.10] – 2026-03-03
+
+### Fixed
+- Restore missing `unique_id` assignment in camera entity (regression in v1.0.9 caused entity to disappear)
+
 ## [1.0.9] – 2026-03-03
 
 ### Fixed

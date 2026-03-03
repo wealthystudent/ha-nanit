@@ -8,10 +8,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from homeassistant.components.switch import SwitchDeviceClass, SwitchEntity, SwitchEntityDescription
+from homeassistant.const import STATE_ON
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-
+from homeassistant.helpers.restore_state import RestoreEntity
 from . import NanitConfigEntry
 from .const import CONF_CAMERA_UID
 from .coordinator import NanitPushCoordinator
@@ -107,7 +108,7 @@ async def async_setup_entry(
     )
 
 
-class NanitSwitch(NanitEntity, SwitchEntity):
+class NanitSwitch(NanitEntity, RestoreEntity, SwitchEntity):
     """Nanit switch entity."""
 
     entity_description: NanitSwitchEntityDescription
@@ -130,15 +131,20 @@ class NanitSwitch(NanitEntity, SwitchEntity):
         if coordinator.data is not None:
             self._attr_is_on = self.entity_description.value_fn(coordinator.data)
 
+    async def async_added_to_hass(self) -> None:
+        """Restore last known state on startup."""
+        await super().async_added_to_hass()
+        if self._attr_is_on is None:
+            if (last_state := await self.async_get_last_state()) is not None:
+                self._attr_is_on = last_state.state == STATE_ON
+
     @property
     def is_on(self) -> bool | None:
         """Return true if the switch is on.
 
-        Always returns a bool (never None) when the entity is available,
-        so that the HA frontend renders a toggle instead of on/off buttons.
+        Returns None (unknown) when no live or restored data is available,
+        so that the HA frontend does not misleadingly show 'off'.
         """
-        if self._attr_is_on is None:
-            return False
         return self._attr_is_on
 
     def _handle_coordinator_update(self) -> None:

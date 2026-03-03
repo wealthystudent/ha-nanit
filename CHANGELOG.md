@@ -2,6 +2,12 @@
 
 All notable changes to the Nanit Home Assistant integration are documented in this file.
 
+
+## [1.0.11] – 2026-03-03
+
+### Fixed
+- Restore switch state across HA restarts using `RestoreEntity` mixin (switches no longer show "off" when the camera is actually on)
+- Fix missing camera snapshot thumbnail in sidebar (caused by `is_on` returning `False` before initial data arrived, which made the camera proxy return 503)
 ## [1.0.10] – 2026-03-03
 
 ### Fixed

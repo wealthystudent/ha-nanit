@@ -297,11 +297,25 @@ class NanitCamera:
             RequestType.PUT_SETTINGS,
             settings=proto_settings,
         )
-        new_settings = _parse_settings(resp)
         if resp.HasField('settings'):
-            self._update_state(
-                settings=new_settings, kind=CameraEventKind.SETTINGS_UPDATE
-            )
+            new_settings = _parse_settings(resp)
+        else:
+            # Camera didn't echo settings back — apply optimistic merge.
+            requested: dict[str, object] = {}
+            if night_vision is not None:
+                requested["night_vision"] = night_vision
+            if volume is not None:
+                requested["volume"] = volume
+            if sleep_mode is not None:
+                requested["sleep_mode"] = sleep_mode
+            if status_light_on is not None:
+                requested["status_light_on"] = status_light_on
+            if mic_mute_on is not None:
+                requested["mic_mute_on"] = mic_mute_on
+            new_settings = dataclasses.replace(self._state.settings, **requested)
+        self._update_state(
+            settings=new_settings, kind=CameraEventKind.SETTINGS_UPDATE
+        )
         return new_settings
 
     async def async_set_control(
@@ -325,11 +339,19 @@ class NanitCamera:
             RequestType.PUT_CONTROL,
             control=proto_control,
         )
-        new_control = _parse_control(resp)
         if resp.HasField('control'):
-            self._update_state(
-                control=new_control, kind=CameraEventKind.CONTROL_UPDATE
-            )
+            new_control = _parse_control(resp)
+        else:
+            # Camera didn't echo control back — apply optimistic merge.
+            requested: dict[str, object] = {}
+            if night_light is not None:
+                requested["night_light"] = night_light
+            if night_light_timeout is not None:
+                requested["night_light_timeout"] = night_light_timeout
+            new_control = dataclasses.replace(self._state.control, **requested)
+        self._update_state(
+            control=new_control, kind=CameraEventKind.CONTROL_UPDATE
+        )
         return new_control
 
     # ------------------------------------------------------------------

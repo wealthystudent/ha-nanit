@@ -649,14 +649,14 @@ class TestSetSettings:
         assert result.volume == 55
         assert cam.state.settings.volume == 55  # state updated
 
-    async def test_preserves_state_when_response_lacks_settings(self) -> None:
-        """If PUT_SETTINGS response has no settings sub-message, state is NOT updated."""
+    async def test_optimistic_merge_when_response_lacks_settings(self) -> None:
+        """If PUT_SETTINGS response has no settings sub-message, apply optimistic merge."""
         cam, *_ = _make_camera()
         cam._transport = MagicMock()
 
         # Pre-set existing state
         cam._update_state(
-            settings=SettingsState(volume=42),
+            settings=SettingsState(volume=42, night_vision=True),
             kind=CameraEventKind.SETTINGS_UPDATE,
         )
 
@@ -668,9 +668,52 @@ class TestSetSettings:
 
         cam._transport.async_send = AsyncMock(side_effect=_fake_send)
 
-        await cam.async_set_settings(volume=80)
-        assert cam.state.settings.volume == 42  # unchanged
+        result = await cam.async_set_settings(volume=80)
+        assert result.volume == 80  # optimistically updated
+        assert result.night_vision is True  # preserved from existing state
+        assert cam.state.settings.volume == 80  # state updated
+        assert cam.state.settings.night_vision is True  # untouched fields preserved
 
+    async def test_optimistic_merge_sleep_mode(self) -> None:
+        """Optimistic merge correctly updates sleep_mode."""
+        cam, *_ = _make_camera()
+        cam._transport = MagicMock()
+
+        cam._update_state(
+            settings=SettingsState(sleep_mode=False, volume=50),
+            kind=CameraEventKind.SETTINGS_UPDATE,
+        )
+
+        resp = Response(status_code=200)
+
+        async def _fake_send(data: bytes) -> None:
+            cam._pending.resolve(1, resp)
+
+        cam._transport.async_send = AsyncMock(side_effect=_fake_send)
+
+        result = await cam.async_set_settings(sleep_mode=True)
+        assert result.sleep_mode is True
+        assert result.volume == 50  # preserved
+        assert cam.state.settings.sleep_mode is True
+
+    async def test_optimistic_notifies_subscribers(self) -> None:
+        """Optimistic merge fires a SETTINGS_UPDATE event even without response echo."""
+        cam, *_ = _make_camera()
+        cam._transport = MagicMock()
+
+        events: list[object] = []
+        cam.subscribe(lambda e: events.append(e))
+
+        resp = Response(status_code=200)
+
+        async def _fake_send(data: bytes) -> None:
+            cam._pending.resolve(1, resp)
+
+        cam._transport.async_send = AsyncMock(side_effect=_fake_send)
+
+        await cam.async_set_settings(volume=70)
+        assert len(events) == 1
+        assert events[0].kind == CameraEventKind.SETTINGS_UPDATE
 
 class TestSetControl:
     async def test_updates_state_when_response_has_control(self) -> None:
@@ -692,14 +735,14 @@ class TestSetControl:
         assert result.night_light == NightLightState.ON
         assert cam.state.control.night_light == NightLightState.ON  # state updated
 
-    async def test_preserves_state_when_response_lacks_control(self) -> None:
-        """If PUT_CONTROL response has no control sub-message, state is NOT updated."""
+    async def test_optimistic_merge_when_response_lacks_control(self) -> None:
+        """If PUT_CONTROL response has no control sub-message, apply optimistic merge."""
         cam, *_ = _make_camera()
         cam._transport = MagicMock()
 
         # Pre-set existing state
         cam._update_state(
-            control=ControlState(night_light=NightLightState.ON),
+            control=ControlState(night_light=NightLightState.ON, night_light_timeout=30),
             kind=CameraEventKind.CONTROL_UPDATE,
         )
 
@@ -711,8 +754,29 @@ class TestSetControl:
 
         cam._transport.async_send = AsyncMock(side_effect=_fake_send)
 
-        await cam.async_set_control(night_light=NightLightState.OFF)
-        assert cam.state.control.night_light == NightLightState.ON  # unchanged
+        result = await cam.async_set_control(night_light=NightLightState.OFF)
+        assert result.night_light == NightLightState.OFF  # optimistically updated
+        assert result.night_light_timeout == 30  # preserved from existing state
+        assert cam.state.control.night_light == NightLightState.OFF
+
+    async def test_optimistic_notifies_subscribers(self) -> None:
+        """Optimistic merge fires a CONTROL_UPDATE event even without response echo."""
+        cam, *_ = _make_camera()
+        cam._transport = MagicMock()
+
+        events: list[object] = []
+        cam.subscribe(lambda e: events.append(e))
+
+        resp = Response(status_code=200)
+
+        async def _fake_send(data: bytes) -> None:
+            cam._pending.resolve(1, resp)
+
+        cam._transport.async_send = AsyncMock(side_effect=_fake_send)
+
+        await cam.async_set_control(night_light=NightLightState.ON)
+        assert len(events) == 1
+        assert events[0].kind == CameraEventKind.CONTROL_UPDATE
 # ---------------------------------------------------------------------------
 # Streaming
 # ---------------------------------------------------------------------------

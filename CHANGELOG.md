@@ -2,6 +2,16 @@
 
 All notable changes to the Nanit Home Assistant integration are documented in this file.
 
+## [1.0.9] – 2026-03-03
+
+### Fixed
+- Fix camera stream not reloading after toggling camera power: use optimistic state merge when camera PUT response omits the settings/control sub-message
+- Invalidate HA's cached stream object on camera sleep/wake transitions so a fresh RTMPS stream is established
+- Clear stale stream in `async_turn_on`/`async_turn_off` to prevent dead stream reuse
+
+### Added
+- 5 new unit tests for optimistic state merge and subscriber notification
+
 ## [1.0.8] – 2026-03-03
 
 ### Fixed

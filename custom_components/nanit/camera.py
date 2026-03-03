@@ -45,10 +45,10 @@ class NanitCameraEntity(NanitEntity, Camera):
         NanitEntity.__init__(self, coordinator)
         Camera.__init__(self)
         self._camera = camera
+        self._prev_is_on: bool | None = None
         camera_uid = coordinator.config_entry.data.get(
             CONF_CAMERA_UID, coordinator.config_entry.entry_id
         )
-        self._attr_unique_id = f"{camera_uid}_camera"
 
     @property
     def is_on(self) -> bool:
@@ -59,6 +59,24 @@ class NanitCameraEntity(NanitEntity, Camera):
         if sleep_mode is None:
             return True
         return not sleep_mode
+
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated data from the coordinator."""
+        cur_on = self.is_on
+        prev_on = self._prev_is_on
+        self._prev_is_on = cur_on
+
+        if prev_on is not None and prev_on != cur_on:
+            # Camera power changed — invalidate cached stream.
+            self._invalidate_stream()
+
+        super()._handle_coordinator_update()
+
+    def _invalidate_stream(self) -> None:
+        """Discard HA's cached stream so a fresh one is created on next view."""
+        if self.stream is not None:
+            _LOGGER.debug("Invalidating cached stream after power state change")
+            self.stream = None
 
     async def stream_source(self) -> str | None:
         """Return the RTMPS stream URL.
@@ -90,10 +108,12 @@ class NanitCameraEntity(NanitEntity, Camera):
 
     async def async_turn_on(self) -> None:
         """Turn the camera on (disable sleep/standby mode)."""
+        self._invalidate_stream()
         await self._camera.async_set_settings(sleep_mode=False)
 
     async def async_turn_off(self) -> None:
         """Turn the camera off (enable sleep/standby mode)."""
+        self._invalidate_stream()
         try:
             await self._camera.async_stop_streaming()
         except Exception:  # noqa: BLE001

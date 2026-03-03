@@ -298,9 +298,10 @@ class NanitCamera:
             settings=proto_settings,
         )
         new_settings = _parse_settings(resp)
-        self._update_state(
-            settings=new_settings, kind=CameraEventKind.SETTINGS_UPDATE
-        )
+        if resp.HasField('settings'):
+            self._update_state(
+                settings=new_settings, kind=CameraEventKind.SETTINGS_UPDATE
+            )
         return new_settings
 
     async def async_set_control(
@@ -325,9 +326,10 @@ class NanitCamera:
             control=proto_control,
         )
         new_control = _parse_control(resp)
-        self._update_state(
-            control=new_control, kind=CameraEventKind.CONTROL_UPDATE
-        )
+        if resp.HasField('control'):
+            self._update_state(
+                control=new_control, kind=CameraEventKind.CONTROL_UPDATE
+            )
         return new_control
 
     # ------------------------------------------------------------------
@@ -819,13 +821,13 @@ def _parse_settings_from_proto(settings: object) -> SettingsState:
         return SettingsState()
 
     return SettingsState(
-        night_vision=settings.night_vision,
-        volume=settings.volume,
-        sleep_mode=settings.sleep_mode,
-        status_light_on=settings.status_light_on,
-        mic_mute_on=settings.mic_mute_on,
-        wifi_band=_WIFI_BAND_MAP.get(settings.wifi_band),
-        mounting_mode=_MOUNTING_MODE_MAP.get(settings.mounting_mode),
+        night_vision=settings.night_vision if settings.HasField('night_vision') else None,
+        volume=settings.volume if settings.HasField('volume') else None,
+        sleep_mode=settings.sleep_mode if settings.HasField('sleep_mode') else None,
+        status_light_on=settings.status_light_on if settings.HasField('status_light_on') else None,
+        mic_mute_on=settings.mic_mute_on if settings.HasField('mic_mute_on') else None,
+        wifi_band=_WIFI_BAND_MAP.get(settings.wifi_band) if settings.HasField('wifi_band') else None,
+        mounting_mode=_MOUNTING_MODE_MAP.get(settings.mounting_mode) if settings.HasField('mounting_mode') else None,
     )
 
 
@@ -844,10 +846,11 @@ def _parse_control_from_proto(control: object) -> ControlState:
         return ControlState()
 
     night_light: NightLightState | None = None
-    if control.night_light == ControlNightLight.LIGHT_ON:
-        night_light = NightLightState.ON
-    elif control.night_light == ControlNightLight.LIGHT_OFF:
-        night_light = NightLightState.OFF
+    if control.HasField('night_light'):
+        if control.night_light == ControlNightLight.LIGHT_ON:
+            night_light = NightLightState.ON
+        else:
+            night_light = NightLightState.OFF
 
     sensor_transfer_enabled: bool | None = None
     if control.HasField('sensor_data_transfer'):
@@ -858,6 +861,6 @@ def _parse_control_from_proto(control: object) -> ControlState:
 
     return ControlState(
         night_light=night_light,
-        night_light_timeout=control.night_light_timeout or None,
+        night_light_timeout=control.night_light_timeout if control.HasField('night_light_timeout') else None,
         sensor_data_transfer_enabled=sensor_transfer_enabled,
     )

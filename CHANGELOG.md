@@ -2,6 +2,16 @@
 
 All notable changes to the Nanit Home Assistant integration are documented in this file.
 
+## [1.0.8] – 2026-03-03
+
+### Fixed
+- Fix double-toggle bug: use proto2 `HasField()` guards to distinguish unset scalar fields from default values (0/False) in settings and control parsers
+- Defense-in-depth: only update camera state when PUT response actually echoes back the settings/control sub-message
+- Restrict build-addon CI workflow to only trigger on legacy `v0.*` tags
+
+### Added
+- 10 new unit tests covering HasField parsing behavior and response guard logic
+
 ## [1.0.0] – 2026-02-28
 
 ### Breaking

@@ -368,6 +368,29 @@ class TestParseSettings:
         result = _parse_settings_from_proto("not_settings")
         assert result == SettingsState()
 
+    def test_partial_fields_leave_unset_as_none(self) -> None:
+        """Settings with only volume set should leave other fields as None."""
+        proto_settings = Settings(volume=42)
+        result = _parse_settings_from_proto(proto_settings)
+        assert result.volume == 42
+        assert result.night_vision is None
+        assert result.sleep_mode is None
+        assert result.status_light_on is None
+        assert result.mic_mute_on is None
+        assert result.wifi_band is None
+        assert result.mounting_mode is None
+
+    def test_sleep_mode_false_when_explicitly_set(self) -> None:
+        """sleep_mode=False should be False, not None (it was explicitly set)."""
+        proto_settings = Settings(sleep_mode=False)
+        result = _parse_settings_from_proto(proto_settings)
+        assert result.sleep_mode is False
+
+    def test_bool_field_not_set_is_none(self) -> None:
+        """A Settings proto with no sleep_mode should yield None, not False."""
+        proto_settings = Settings(volume=10)
+        result = _parse_settings_from_proto(proto_settings)
+        assert result.sleep_mode is None
 
 class TestParseControl:
     def test_empty_response(self) -> None:
@@ -399,6 +422,25 @@ class TestParseControl:
         result = _parse_control_from_proto("not_control")
         assert result == ControlState()
 
+    def test_partial_control_leaves_unset_as_none(self) -> None:
+        """Control with only night_light_timeout should leave night_light as None."""
+        proto_control = Control(night_light_timeout=30)
+        result = _parse_control_from_proto(proto_control)
+        assert result.night_light is None
+        assert result.night_light_timeout == 30
+        assert result.sensor_data_transfer_enabled is None
+
+    def test_night_light_off_when_explicitly_set(self) -> None:
+        """night_light=LIGHT_OFF (enum value 0) should parse as OFF, not None."""
+        proto_control = Control(night_light=ControlNightLight.LIGHT_OFF)
+        result = _parse_control_from_proto(proto_control)
+        assert result.night_light == NightLightState.OFF
+
+    def test_night_light_not_set_is_none(self) -> None:
+        """Control with no night_light field should yield night_light=None."""
+        proto_control = Control(night_light_timeout=60)
+        result = _parse_control_from_proto(proto_control)
+        assert result.night_light is None
 
 # ---------------------------------------------------------------------------
 # Push event handling
@@ -582,6 +624,95 @@ class TestSendRequest:
             )
 
 
+# ---------------------------------------------------------------------------
+# Set settings / set control — response guard (Fix B)
+# ---------------------------------------------------------------------------
+
+
+class TestSetSettings:
+    async def test_updates_state_when_response_has_settings(self) -> None:
+        """If PUT_SETTINGS response echoes back settings, state is updated."""
+        cam, *_ = _make_camera()
+        cam._transport = MagicMock()
+
+        resp = Response(
+            status_code=200,
+            settings=Settings(volume=55),
+        )
+
+        async def _fake_send(data: bytes) -> None:
+            cam._pending.resolve(1, resp)
+
+        cam._transport.async_send = AsyncMock(side_effect=_fake_send)
+
+        result = await cam.async_set_settings(volume=55)
+        assert result.volume == 55
+        assert cam.state.settings.volume == 55  # state updated
+
+    async def test_preserves_state_when_response_lacks_settings(self) -> None:
+        """If PUT_SETTINGS response has no settings sub-message, state is NOT updated."""
+        cam, *_ = _make_camera()
+        cam._transport = MagicMock()
+
+        # Pre-set existing state
+        cam._update_state(
+            settings=SettingsState(volume=42),
+            kind=CameraEventKind.SETTINGS_UPDATE,
+        )
+
+        # Response with no settings field
+        resp = Response(status_code=200)
+
+        async def _fake_send(data: bytes) -> None:
+            cam._pending.resolve(1, resp)
+
+        cam._transport.async_send = AsyncMock(side_effect=_fake_send)
+
+        await cam.async_set_settings(volume=80)
+        assert cam.state.settings.volume == 42  # unchanged
+
+
+class TestSetControl:
+    async def test_updates_state_when_response_has_control(self) -> None:
+        """If PUT_CONTROL response echoes back control, state is updated."""
+        cam, *_ = _make_camera()
+        cam._transport = MagicMock()
+
+        resp = Response(
+            status_code=200,
+            control=Control(night_light=ControlNightLight.LIGHT_ON),
+        )
+
+        async def _fake_send(data: bytes) -> None:
+            cam._pending.resolve(1, resp)
+
+        cam._transport.async_send = AsyncMock(side_effect=_fake_send)
+
+        result = await cam.async_set_control(night_light=NightLightState.ON)
+        assert result.night_light == NightLightState.ON
+        assert cam.state.control.night_light == NightLightState.ON  # state updated
+
+    async def test_preserves_state_when_response_lacks_control(self) -> None:
+        """If PUT_CONTROL response has no control sub-message, state is NOT updated."""
+        cam, *_ = _make_camera()
+        cam._transport = MagicMock()
+
+        # Pre-set existing state
+        cam._update_state(
+            control=ControlState(night_light=NightLightState.ON),
+            kind=CameraEventKind.CONTROL_UPDATE,
+        )
+
+        # Response with no control field
+        resp = Response(status_code=200)
+
+        async def _fake_send(data: bytes) -> None:
+            cam._pending.resolve(1, resp)
+
+        cam._transport.async_send = AsyncMock(side_effect=_fake_send)
+
+        await cam.async_set_control(night_light=NightLightState.OFF)
+        assert cam.state.control.night_light == NightLightState.ON  # unchanged
 # ---------------------------------------------------------------------------
 # Streaming
 # ---------------------------------------------------------------------------

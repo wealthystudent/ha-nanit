@@ -49,6 +49,7 @@ class NanitCameraEntity(NanitEntity, Camera):
         camera_uid = coordinator.config_entry.data.get(
             CONF_CAMERA_UID, coordinator.config_entry.entry_id
         )
+        self._attr_unique_id = f"{camera_uid}_camera"
 
     @property
     def is_on(self) -> bool:

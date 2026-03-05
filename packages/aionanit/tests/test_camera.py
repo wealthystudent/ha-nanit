@@ -594,6 +594,8 @@ class TestSendRequest:
 
         # Mock transport to capture send calls
         cam._transport = MagicMock()
+        cam._transport.connected = True
+        cam._transport.idle_seconds = 0.0
         cam._transport.async_send = AsyncMock()
 
         # Simulate response arriving after send
@@ -609,12 +611,15 @@ class TestSendRequest:
         result = await cam._send_request(RequestType.GET_STATUS, get_status=GetStatus(all=True))
         assert result.status_code == 200
 
-    async def test_timeout_raises(self) -> None:
+    async def test_timeout_retries_then_raises(self) -> None:
+        """Both attempts time out → NanitRequestTimeout raised."""
         cam, *_ = _make_camera()
 
         cam._transport = MagicMock()
+        cam._transport.connected = True
+        cam._transport.idle_seconds = 0.0
         cam._transport.async_send = AsyncMock()
-        cam._transport.async_force_reconnect = AsyncMock()
+        cam._async_reconnect = AsyncMock()
 
         with pytest.raises(NanitRequestTimeout):
             await cam._send_request(
@@ -622,6 +627,9 @@ class TestSendRequest:
                 timeout=0.01,
                 get_status=GetStatus(all=True),
             )
+
+        # Reconnect was called once (after first timeout, before retry).
+        cam._async_reconnect.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -634,6 +642,8 @@ class TestSetSettings:
         """If PUT_SETTINGS response echoes back settings, state is updated."""
         cam, *_ = _make_camera()
         cam._transport = MagicMock()
+        cam._transport.connected = True
+        cam._transport.idle_seconds = 0.0
 
         resp = Response(
             status_code=200,
@@ -653,6 +663,8 @@ class TestSetSettings:
         """If PUT_SETTINGS response has no settings sub-message, apply optimistic merge."""
         cam, *_ = _make_camera()
         cam._transport = MagicMock()
+        cam._transport.connected = True
+        cam._transport.idle_seconds = 0.0
 
         # Pre-set existing state
         cam._update_state(
@@ -678,6 +690,8 @@ class TestSetSettings:
         """Optimistic merge correctly updates sleep_mode."""
         cam, *_ = _make_camera()
         cam._transport = MagicMock()
+        cam._transport.connected = True
+        cam._transport.idle_seconds = 0.0
 
         cam._update_state(
             settings=SettingsState(sleep_mode=False, volume=50),
@@ -700,6 +714,8 @@ class TestSetSettings:
         """Optimistic merge fires a SETTINGS_UPDATE event even without response echo."""
         cam, *_ = _make_camera()
         cam._transport = MagicMock()
+        cam._transport.connected = True
+        cam._transport.idle_seconds = 0.0
 
         events: list[object] = []
         cam.subscribe(lambda e: events.append(e))
@@ -720,6 +736,8 @@ class TestSetControl:
         """If PUT_CONTROL response echoes back control, state is updated."""
         cam, *_ = _make_camera()
         cam._transport = MagicMock()
+        cam._transport.connected = True
+        cam._transport.idle_seconds = 0.0
 
         resp = Response(
             status_code=200,
@@ -739,6 +757,8 @@ class TestSetControl:
         """If PUT_CONTROL response has no control sub-message, apply optimistic merge."""
         cam, *_ = _make_camera()
         cam._transport = MagicMock()
+        cam._transport.connected = True
+        cam._transport.idle_seconds = 0.0
 
         # Pre-set existing state
         cam._update_state(
@@ -763,6 +783,8 @@ class TestSetControl:
         """Optimistic merge fires a CONTROL_UPDATE event even without response echo."""
         cam, *_ = _make_camera()
         cam._transport = MagicMock()
+        cam._transport.connected = True
+        cam._transport.idle_seconds = 0.0
 
         events: list[object] = []
         cam.subscribe(lambda e: events.append(e))
@@ -844,6 +866,8 @@ class TestAsyncStop:
     async def test_stop_cancels_probe_and_pending(self) -> None:
         cam, *_ = _make_camera()
         cam._transport = MagicMock()
+        cam._transport.connected = True
+        cam._transport.idle_seconds = 0.0
         cam._transport.async_close = AsyncMock()
 
         req_id = cam._pending.next_id()
@@ -941,13 +965,15 @@ class TestOnReconnected:
 
 
 class TestTimeoutForceReconnect:
-    async def test_timeout_calls_force_reconnect(self) -> None:
-        """Request timeout should call async_force_reconnect before raising."""
+    async def test_timeout_calls_reconnect_before_retry(self) -> None:
+        """Request timeout triggers _async_reconnect, then retries."""
         cam, *_ = _make_camera()
 
         cam._transport = MagicMock()
+        cam._transport.connected = True
+        cam._transport.idle_seconds = 0.0
         cam._transport.async_send = AsyncMock()
-        cam._transport.async_force_reconnect = AsyncMock()
+        cam._async_reconnect = AsyncMock()
 
         with pytest.raises(NanitRequestTimeout):
             await cam._send_request(
@@ -956,7 +982,176 @@ class TestTimeoutForceReconnect:
                 get_status=GetStatus(all=True),
             )
 
-        cam._transport.async_force_reconnect.assert_awaited_once()
+        # Reconnect called once (after first timeout, before retry).
+        cam._async_reconnect.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Stale connection detection
+# ---------------------------------------------------------------------------
+
+
+class TestStaleConnectionDetection:
+    async def test_stale_connection_triggers_reconnect_before_send(self) -> None:
+        """If connection idle > threshold, reconnect before sending."""
+        cam, *_ = _make_camera()
+
+        cam._transport = MagicMock()
+        cam._transport.connected = True
+        cam._transport.idle_seconds = 400.0  # > 300s threshold
+        cam._transport.async_send = AsyncMock()
+        cam._async_reconnect = AsyncMock()
+
+        resp = Response(status_code=200)
+
+        async def _fake_send(data: bytes) -> None:
+            cam._pending.resolve(1, resp)
+
+        cam._transport.async_send = AsyncMock(side_effect=_fake_send)
+
+        result = await cam._send_request(
+            RequestType.GET_STATUS,
+            get_status=GetStatus(all=True),
+        )
+
+        assert result.status_code == 200
+        cam._async_reconnect.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Retry after timeout
+# ---------------------------------------------------------------------------
+
+
+class TestRetryAfterTimeout:
+    async def test_retry_succeeds_after_first_timeout(self) -> None:
+        """First attempt times out, reconnect, second attempt succeeds."""
+        cam, *_ = _make_camera()
+
+        cam._transport = MagicMock()
+        cam._transport.connected = True
+        cam._transport.idle_seconds = 0.0
+        cam._async_reconnect = AsyncMock()
+
+        resp = Response(status_code=200)
+        call_count = 0
+
+        async def _fake_send(data: bytes) -> None:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:
+                cam._pending.resolve(2, resp)
+
+        cam._transport.async_send = AsyncMock(side_effect=_fake_send)
+
+        result = await cam._send_request(
+            RequestType.GET_STATUS,
+            timeout=0.05,
+            get_status=GetStatus(all=True),
+        )
+
+        assert result.status_code == 200
+        cam._async_reconnect.assert_awaited_once()
+        assert call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Retry after transport error
+# ---------------------------------------------------------------------------
+
+
+class TestRetryAfterTransportError:
+    async def test_retry_succeeds_after_transport_error(self) -> None:
+        """First send raises NanitTransportError, reconnect, second succeeds."""
+        cam, *_ = _make_camera()
+
+        cam._transport = MagicMock()
+        cam._transport.connected = True
+        cam._transport.idle_seconds = 0.0
+        cam._async_reconnect = AsyncMock()
+
+        resp = Response(status_code=200)
+        call_count = 0
+
+        async def _fake_send(data: bytes) -> None:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise NanitTransportError("send failed")
+            cam._pending.resolve(2, resp)
+
+        cam._transport.async_send = AsyncMock(side_effect=_fake_send)
+
+        result = await cam._send_request(
+            RequestType.GET_STATUS,
+            get_status=GetStatus(all=True),
+        )
+
+        assert result.status_code == 200
+        cam._async_reconnect.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Not-connected triggers reconnect
+# ---------------------------------------------------------------------------
+
+
+class TestNotConnectedReconnect:
+    async def test_not_connected_triggers_reconnect(self) -> None:
+        """If transport is not connected, reconnect before sending."""
+        cam, *_ = _make_camera()
+
+        cam._transport = MagicMock()
+        cam._transport.connected = False
+        cam._transport.idle_seconds = 0.0
+        cam._async_reconnect = AsyncMock()
+
+        resp = Response(status_code=200)
+
+        async def _fake_send(data: bytes) -> None:
+            cam._pending.resolve(1, resp)
+
+        cam._transport.async_send = AsyncMock(side_effect=_fake_send)
+
+        # After reconnect, transport becomes connected
+        def _set_connected() -> None:
+            cam._transport.connected = True
+
+        cam._async_reconnect = AsyncMock(side_effect=_set_connected)
+
+        result = await cam._send_request(
+            RequestType.GET_STATUS,
+            get_status=GetStatus(all=True),
+        )
+
+        assert result.status_code == 200
+        cam._async_reconnect.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Health check lifecycle
+# ---------------------------------------------------------------------------
+
+
+class TestHealthCheckLifecycle:
+    async def test_health_check_cancelled_on_stop(self) -> None:
+        """async_stop cancels the health check task."""
+        cam, *_ = _make_camera()
+        cam._transport = MagicMock()
+        cam._transport.connected = True
+        cam._transport.idle_seconds = 0.0
+        cam._transport.async_close = AsyncMock()
+
+        # Create a fake health check task
+        fake_task = MagicMock()
+        fake_task.done.return_value = False
+        fake_task.cancel = MagicMock()
+        cam._health_check_task = fake_task
+
+        await cam.async_stop()
+
+        fake_task.cancel.assert_called_once()
+        assert cam._health_check_task is None
 
 
 # ---------------------------------------------------------------------------

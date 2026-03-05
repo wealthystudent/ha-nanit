@@ -64,6 +64,9 @@ _LOGGER = logging.getLogger(__name__)
 _DEFAULT_REQUEST_TIMEOUT: float = 10.0
 _LOCAL_PROBE_INTERVAL: float = 300.0  # 5 minutes
 _MAX_LOCAL_FAILURES_BEFORE_CLOUD: int = 3
+_STALE_CONNECTION_THRESHOLD: float = 300.0  # 5 min — reconnect before send
+_HEALTH_CHECK_INTERVAL: float = 270.0  # 4.5 min — periodic session liveness check
+_FRESH_CONNECTION_WINDOW: float = 10.0  # skip reconnect if connected within this
 
 # Maps for proto enum → model string conversions.
 _WIFI_BAND_MAP: dict[int, str] = {
@@ -115,6 +118,8 @@ class NanitCamera:
         )
         self._subscribers: list[Callable[[CameraEvent], None]] = []
         self._local_probe_task: asyncio.Task[None] | None = None
+        self._health_check_task: asyncio.Task[None] | None = None
+        self._reconnect_lock: asyncio.Lock = asyncio.Lock()
         self._stopped: bool = False
 
     # ------------------------------------------------------------------
@@ -195,10 +200,14 @@ class NanitCamera:
         ):
             self._start_local_probe()
 
+        # Start periodic session health check.
+        self._start_health_check()
+
     async def async_stop(self) -> None:
         """Stop the camera connection. Cancel all tasks, close transport."""
         self._stopped = True
         self._cancel_local_probe()
+        self._cancel_health_check()
         self._pending.cancel_all()
         await self._transport.async_close()
 
@@ -607,29 +616,72 @@ class NanitCamera:
         timeout: float = _DEFAULT_REQUEST_TIMEOUT,
         **kwargs: Any,
     ) -> Response:
-        """Send a protobuf request and await the correlated response."""
-        request_id = self._pending.next_id()
-        data = build_request(request_id, request_type, **kwargs)
-        future = self._pending.track(request_id)
+        """Send a protobuf request and await the correlated response.
 
-        await self._transport.async_send(data)
+        Includes automatic stale-connection detection and one transparent
+        retry after inline reconnect so that commands succeed even when the
+        server-side session has silently expired.
+        """
+        for attempt in range(2):
+            # Pre-send gate: if the connection has been idle longer than
+            # the threshold, the server-side session is likely dead.
+            # Reconnect proactively so the send goes over a fresh session.
+            if (
+                attempt == 0
+                and self._transport.connected
+                and self._transport.idle_seconds > _STALE_CONNECTION_THRESHOLD
+            ):
+                _LOGGER.warning(
+                    "Connection idle for %.0fs, reconnecting before send",
+                    self._transport.idle_seconds,
+                )
+                await self._async_reconnect()
 
-        try:
-            return await asyncio.wait_for(future, timeout=timeout)
-        except asyncio.TimeoutError as err:
-            # Remove from pending if still tracked.
-            _ = self._pending.resolve(request_id, Response())  # clean up
-            # Force a reconnect — the connection is likely stale.
-            _LOGGER.warning(
-                "Request %s (id=%s) timed out after %.1fs, forcing reconnect",
-                RequestType.Name(request_type),
-                request_id,
-                timeout,
-            )
-            await self._transport.async_force_reconnect()
-            raise NanitRequestTimeout(
-                RequestType.Name(request_type), request_id, timeout
-            ) from err
+            # Ensure we are connected before attempting to send.
+            if not self._transport.connected:
+                if attempt > 0:
+                    raise NanitCameraUnavailable(
+                        f"Camera {self._uid} not reachable after reconnect"
+                    )
+                _LOGGER.warning(
+                    "Not connected to camera %s, reconnecting", self._uid
+                )
+                await self._async_reconnect()
+
+            request_id = self._pending.next_id()
+            data = build_request(request_id, request_type, **kwargs)
+            future = self._pending.track(request_id)
+
+            try:
+                await self._transport.async_send(data)
+            except NanitTransportError:
+                _ = self._pending.resolve(request_id, Response())
+                if attempt == 0:
+                    _LOGGER.warning("Send failed, reconnecting and retrying")
+                    await self._async_reconnect()
+                    continue
+                raise
+
+            try:
+                return await asyncio.wait_for(future, timeout=timeout)
+            except asyncio.TimeoutError:
+                _ = self._pending.resolve(request_id, Response())
+                if attempt == 0:
+                    _LOGGER.warning(
+                        "Request %s (id=%s) timed out after %.1fs, "
+                        "reconnecting and retrying",
+                        RequestType.Name(request_type),
+                        request_id,
+                        timeout,
+                    )
+                    await self._async_reconnect()
+                    continue
+                raise NanitRequestTimeout(
+                    RequestType.Name(request_type), request_id, timeout
+                )
+
+        # Should never be reached — the loop always returns or raises.
+        raise NanitCameraUnavailable(f"Camera {self._uid} request failed")
 
     # ------------------------------------------------------------------
     # Internal — initial state + sensor push
@@ -692,6 +744,125 @@ class NanitCamera:
         if self._local_probe_task is not None and not self._local_probe_task.done():
             self._local_probe_task.cancel()
         self._local_probe_task = None
+
+    # ------------------------------------------------------------------
+    # Internal — inline reconnect
+    # ------------------------------------------------------------------
+
+    async def _async_reconnect(self) -> None:
+        """Close and re-establish the WebSocket connection inline.
+
+        Used by ``_send_request`` to transparently recover from stale or
+        broken connections without surfacing errors to the caller.
+
+        A lock prevents concurrent reconnects, and a freshness guard skips
+        the reconnect if another caller just completed one.
+        """
+        async with self._reconnect_lock:
+            # Skip if another caller already reconnected.
+            if (
+                self._transport.connected
+                and self._transport.idle_seconds < _FRESH_CONNECTION_WINDOW
+            ):
+                _LOGGER.debug(
+                    "Skipping reconnect — connection is fresh (idle %.1fs)",
+                    self._transport.idle_seconds,
+                )
+                return
+
+            _LOGGER.info("Reconnecting camera %s inline", self._uid)
+            self._cancel_local_probe()
+
+            connected = False
+            if self._prefer_local and self._local_ip:
+                try:
+                    token = (
+                        await self._token_manager.async_get_access_token()
+                    )
+                    await self._transport.async_connect_local(
+                        self._local_ip, token
+                    )
+                    connected = True
+                except (NanitConnectionError, NanitTransportError) as err:
+                    _LOGGER.info(
+                        "Local reconnect to %s failed (%s), trying cloud",
+                        self._local_ip,
+                        err,
+                    )
+
+            if not connected:
+                try:
+                    token = (
+                        await self._token_manager.async_get_access_token()
+                    )
+                    await self._transport.async_connect_cloud(
+                        self._uid, token
+                    )
+                except (NanitConnectionError, NanitTransportError) as err:
+                    raise NanitCameraUnavailable(
+                        f"Cannot reach camera {self._uid}: {err}"
+                    ) from err
+
+            await self._async_enable_sensor_push()
+
+            if (
+                self._transport.transport_kind == TransportKind.CLOUD
+                and self._local_ip
+            ):
+                self._start_local_probe()
+
+    # ------------------------------------------------------------------
+    # Internal — session health check
+    # ------------------------------------------------------------------
+
+    def _start_health_check(self) -> None:
+        """Start the periodic session health-check task."""
+        self._cancel_health_check()
+        self._health_check_task = asyncio.get_running_loop().create_task(
+            self._health_check_loop()
+        )
+
+    def _cancel_health_check(self) -> None:
+        """Cancel the health-check task if running."""
+        if (
+            self._health_check_task is not None
+            and not self._health_check_task.done()
+        ):
+            self._health_check_task.cancel()
+        self._health_check_task = None
+
+    async def _health_check_loop(self) -> None:
+        """Periodically verify the session is responsive.
+
+        Sends a lightweight GET_STATUS every ``_HEALTH_CHECK_INTERVAL``
+        seconds. If the session is stale, ``_send_request`` will detect it
+        (via the staleness gate or timeout-retry) and reconnect
+        transparently.  This keeps the session warm so that user-initiated
+        commands succeed immediately even after long idle periods.
+        """
+        try:
+            while not self._stopped:
+                await asyncio.sleep(_HEALTH_CHECK_INTERVAL)
+                if self._stopped or not self._transport.connected:
+                    continue
+                try:
+                    await self.async_get_status()
+                except (
+                    NanitRequestTimeout,
+                    NanitTransportError,
+                    NanitCameraUnavailable,
+                ):
+                    _LOGGER.info(
+                        "Session health check failed — reconnect triggered"
+                    )
+                except Exception:  # noqa: BLE001
+                    _LOGGER.debug("Health check error", exc_info=True)
+        except asyncio.CancelledError:
+            return
+
+    # ------------------------------------------------------------------
+    # Internal — local probe
+    # ------------------------------------------------------------------
 
     async def _local_probe_loop(self) -> None:
         """Periodically check if local camera is reachable and promote."""

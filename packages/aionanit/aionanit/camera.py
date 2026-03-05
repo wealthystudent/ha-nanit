@@ -989,10 +989,14 @@ def _parse_status_from_proto(status: object) -> StatusState:
     if not isinstance(status, ProtoStatus):
         return StatusState()
 
-    return StatusState(
-        connected_to_server=(
+    connected: bool | None = None
+    if status.HasField('connection_to_server'):
+        connected = (
             status.connection_to_server == StatusConnectionToServer.CONNECTED
-        ),
+        )
+
+    return StatusState(
+        connected_to_server=connected,
         firmware_version=status.current_version or None,
         hardware_version=status.hardware_version or None,
         mounting_mode=_MOUNTING_MODE_MAP.get(status.mode),

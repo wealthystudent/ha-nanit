@@ -3,6 +3,13 @@
 All notable changes to the Nanit Home Assistant integration are documented in this file.
 
 
+## [1.0.13] – 2026-03-05
+
+### Fixed
+- Fix connectivity binary sensor showing "Disconnected" — entity now reflects the actual HA-to-camera WebSocket connection state instead of the camera's self-reported cloud server status
+- Fix proto2 default trap in status parser: unset `connection_to_server` field now returns `None` instead of `False`
+- Connectivity entity stays available when camera disconnects so it can properly display the disconnected state
+
 ## [1.0.12] – 2026-03-05
 
 ### Fixed

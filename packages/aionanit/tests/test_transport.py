@@ -34,6 +34,10 @@ class TestInitialState:
         t, *_ = _make_transport()
         assert t.transport_kind == TransportKind.NONE
 
+    def test_idle_seconds_is_zero_initially(self) -> None:
+        t, *_ = _make_transport()
+        assert t.idle_seconds == 0.0
+
 
 class TestAsyncSend:
     async def test_raises_when_not_connected(self) -> None:
@@ -126,6 +130,48 @@ class TestAsyncConnectLocal:
         assert call_kwargs[1]["headers"]["Authorization"] == "token uctoken123"
         assert call_kwargs[1]["ssl"] is not None  # self-signed SSL context
         assert t.transport_kind == TransportKind.LOCAL
+
+        await t.async_close()
+
+
+class TestIdleSeconds:
+    async def test_idle_seconds_resets_on_connect(self) -> None:
+        """idle_seconds starts near zero after a successful connection."""
+        t, session, _, _ = _make_transport()
+
+        mock_ws = AsyncMock(spec=aiohttp.ClientWebSocketResponse)
+        mock_ws.closed = False
+        mock_ws.__aiter__ = MagicMock(return_value=iter([]))
+        session.ws_connect = AsyncMock(return_value=mock_ws)
+
+        await t.async_connect_cloud("cam1", "tok1")
+        # Just connected — idle should be very small.
+        assert t.idle_seconds < 1.0
+
+        await t.async_close()
+
+    async def test_idle_seconds_updates_on_binary_message(self) -> None:
+        """idle_seconds resets when a binary message is received."""
+        t, session, msg_cb, _ = _make_transport()
+
+        binary_msg = MagicMock()
+        binary_msg.type = aiohttp.WSMsgType.BINARY
+        binary_msg.data = b"\x08\x00"
+
+        mock_ws = AsyncMock(spec=aiohttp.ClientWebSocketResponse)
+        mock_ws.closed = False
+
+        async def _aiter(self_=None):
+            yield binary_msg
+
+        mock_ws.__aiter__ = _aiter
+        session.ws_connect = AsyncMock(return_value=mock_ws)
+
+        await t.async_connect_cloud("cam1", "tok1")
+        await asyncio.sleep(0.05)
+
+        # A binary message was received — idle should be small.
+        assert t.idle_seconds < 1.0
 
         await t.async_close()
 

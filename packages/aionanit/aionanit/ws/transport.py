@@ -61,6 +61,7 @@ class WsTransport:
         self._ssl_context: ssl.SSLContext | None = None
         self._closed: bool = False
         self._connect_lock: asyncio.Lock = asyncio.Lock()
+        self._last_received_at: float = 0.0
 
     # ------------------------------------------------------------------
     # Properties
@@ -75,6 +76,17 @@ class WsTransport:
     def transport_kind(self) -> TransportKind:
         """Current transport type (LOCAL, CLOUD, or NONE)."""
         return self._transport_kind
+
+    @property
+    def idle_seconds(self) -> float:
+        """Seconds since the last received WebSocket message.
+
+        Returns 0.0 if no message has been received yet (before first
+        connection or before the first binary frame arrives).
+        """
+        if self._last_received_at == 0.0:
+            return 0.0
+        return asyncio.get_event_loop().time() - self._last_received_at
 
     # ------------------------------------------------------------------
     # Public API
@@ -182,6 +194,7 @@ class WsTransport:
                 raise NanitConnectionError(str(err)) from err
 
             loop = asyncio.get_running_loop()
+            self._last_received_at = loop.time()
             self._recv_task = loop.create_task(self._recv_loop())
             self._keepalive_task = loop.create_task(self._keepalive_loop())
             self._on_connection_change(ConnectionState.CONNECTED, kind, None)
@@ -212,6 +225,7 @@ class WsTransport:
         try:
             async for msg in self._ws:
                 if msg.type == aiohttp.WSMsgType.BINARY:
+                    self._last_received_at = asyncio.get_event_loop().time()
                     self._on_message(msg.data)
                 elif msg.type in (
                     aiohttp.WSMsgType.CLOSE,

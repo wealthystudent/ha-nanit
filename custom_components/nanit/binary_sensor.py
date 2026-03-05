@@ -27,7 +27,7 @@ from .const import (
 from .coordinator import NanitCloudCoordinator, NanitPushCoordinator
 from .entity import NanitEntity
 
-from aionanit.models import CameraState, CloudEvent
+from aionanit.models import CameraState, CloudEvent, ConnectionState
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -35,6 +35,7 @@ class NanitBinarySensorEntityDescription(BinarySensorEntityDescription):
     """Describe a Nanit binary sensor."""
 
     value_fn: Callable[[CameraState], bool | None]
+    always_available: bool = False
 
 
 BINARY_SENSORS: tuple[NanitBinarySensorEntityDescription, ...] = (
@@ -64,7 +65,8 @@ BINARY_SENSORS: tuple[NanitBinarySensorEntityDescription, ...] = (
         device_class=BinarySensorDeviceClass.CONNECTIVITY,
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
-        value_fn=lambda state: state.status.connected_to_server,
+        value_fn=lambda state: state.connection.state == ConnectionState.CONNECTED,
+        always_available=True,
     ),
 )
 
@@ -140,6 +142,21 @@ class NanitBinarySensor(NanitEntity, BinarySensorEntity):
             f"{coordinator.config_entry.data.get(CONF_CAMERA_UID, coordinator.config_entry.entry_id)}"
             f"_{description.key}"
         )
+
+    @property
+    def available(self) -> bool:
+        """Return entity availability.
+
+        Entities flagged ``always_available`` (e.g. connectivity) stay
+        available even when the camera is disconnected so they can
+        report the disconnected state instead of going unavailable.
+        """
+        if self.entity_description.always_available:
+            return (
+                self.coordinator.last_update_success
+                and self.coordinator.data is not None
+            )
+        return super().available
 
     @property
     def is_on(self) -> bool | None:

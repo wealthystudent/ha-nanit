@@ -334,6 +334,21 @@ class TestParseStatus:
         assert result.hardware_version == "hw4"
         assert result.mounting_mode == "stand"
 
+    def test_unset_connection_to_server_is_none(self) -> None:
+        """Proto2 default (0=DISCONNECTED) should not be treated as explicitly set."""
+        proto_status = Status(current_version="1.2.3")
+        result = _parse_status_from_proto(proto_status)
+        assert result.connected_to_server is None
+        assert result.firmware_version == "1.2.3"
+
+    def test_explicit_disconnected_is_false(self) -> None:
+        """Explicitly set DISCONNECTED should parse as False."""
+        proto_status = Status(
+            connection_to_server=StatusConnectionToServer.DISCONNECTED,
+        )
+        result = _parse_status_from_proto(proto_status)
+        assert result.connected_to_server is False
+
     def test_non_status_type_returns_default(self) -> None:
         result = _parse_status_from_proto("not_a_status")
         assert result == StatusState()

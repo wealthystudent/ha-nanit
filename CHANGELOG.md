@@ -3,6 +3,19 @@
 All notable changes to the Nanit Home Assistant integration are documented in this file.
 
 
+## [1.0.12] – 2026-03-05
+
+### Fixed
+- Fix switch commands timing out after idle periods (Nanit cloud relay silently expires WebSocket sessions; the keepalive only validated TCP liveness, not application session health)
+- Force immediate token refresh on restore to prevent stale access token use after HA restarts
+
+### Added
+- Stale connection detection: reconnects automatically when idle > 5 minutes before sending commands
+- Retry-after-reconnect: commands that fail due to transport errors or timeout are retried once after an inline reconnect
+- Session health check loop: periodic `GET_STATUS` every 4.5 minutes prevents session staleness from building up
+- Idle tracking on WsTransport (`idle_seconds` property)
+- 12 new unit tests covering stale detection, retry logic, health check lifecycle, and token expiry
+
 ## [1.0.11] – 2026-03-03
 
 ### Fixed

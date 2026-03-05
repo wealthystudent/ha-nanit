@@ -114,6 +114,18 @@ class TestRestoreTokens:
         assert client.token_manager is not None
         assert client.token_manager.access_token == "new_at"
 
+    def test_restored_tokens_expire_immediately(self) -> None:
+        """restore_tokens passes expires_in=0 so first access triggers refresh."""
+        import time
+
+        client, _ = _make_client()
+        client.restore_tokens("old_at", "old_rt")
+
+        assert client.token_manager is not None
+        # expires_in=0 means _expires_at was set to monotonic() at creation,
+        # so it should already be expired (or at most equal to now).
+        assert client.token_manager._expires_at <= time.monotonic()
+
 
 class TestAsyncGetBabies:
     async def test_raises_when_not_authenticated(self) -> None:
@@ -129,6 +141,11 @@ class TestAsyncGetBabies:
             Baby(uid="baby1", name="Baby One", camera_uid="cam1"),
         ]
         with patch.object(
+            client.rest_client,
+            "async_refresh_token",
+            new_callable=AsyncMock,
+            return_value={"access_token": "new_at", "refresh_token": "new_rt"},
+        ), patch.object(
             client.rest_client,
             "async_get_babies",
             new_callable=AsyncMock,

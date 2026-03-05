@@ -100,11 +100,15 @@ class NanitClient:
         """Restore tokens from storage without a login call.
 
         Creates a TokenManager from previously persisted tokens.
+        ``expires_in=0`` forces the first call to
+        ``async_get_access_token`` to trigger a refresh, preventing use
+        of a potentially expired access token after HA restarts.
         """
         self._token_manager = TokenManager(
             self._rest,
             access_token,
             refresh_token,
+            expires_in=0,
         )
 
     # ------------------------------------------------------------------

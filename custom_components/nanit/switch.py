@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from typing import Any
@@ -22,6 +23,11 @@ from aionanit import NanitCamera
 from aionanit.models import CameraState, NightLightState
 
 _LOGGER = logging.getLogger(__name__)
+
+# After a command, ignore contradicting push updates for this many seconds.
+# The Nanit camera may echo the *old* state before processing the command;
+# empirical data shows the stale-then-confirmed cycle completes within ~12 s.
+_COMMAND_GRACE_PERIOD: float = 15.0
 
 @dataclass(frozen=True, kw_only=True)
 class NanitSwitchEntityDescription(SwitchEntityDescription):
@@ -124,6 +130,9 @@ class NanitSwitch(NanitEntity, RestoreEntity, SwitchEntity):
         self.entity_description = description
         self._camera = camera
         self._attr_is_on: bool | None = None
+        # Track the last command so stale push events are suppressed.
+        self._command_state: bool | None = None
+        self._command_ts: float = 0.0
         self._attr_unique_id = (
             f"{coordinator.config_entry.data.get(CONF_CAMERA_UID, coordinator.config_entry.entry_id)}"
             f"_{description.key}"
@@ -150,13 +159,37 @@ class NanitSwitch(NanitEntity, RestoreEntity, SwitchEntity):
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator.
 
-        Keeps the last known value when value_fn returns None so that
-        ``is_on`` always has a boolean to return while the entity is available.
+        After a command, push events that contradict the expected state are
+        suppressed for ``_COMMAND_GRACE_PERIOD`` seconds to prevent the
+        camera's stale echo from bouncing the HA state.  Once the push
+        state matches the command (confirming it was applied) or the grace
+        period expires, normal push handling resumes.
         """
         if self.coordinator.data is not None:
             new_value = self.entity_description.value_fn(self.coordinator.data)
             if new_value is not None:
-                self._attr_is_on = new_value
+                if self._command_state is not None:
+                    elapsed = time.monotonic() - self._command_ts
+                    if elapsed < _COMMAND_GRACE_PERIOD:
+                        if new_value == self._command_state:
+                            # Push confirms the command — accept and clear.
+                            self._command_state = None
+                            self._attr_is_on = new_value
+                        else:
+                            # Stale push contradicts the command — skip.
+                            _LOGGER.debug(
+                                "Ignoring stale push for %s (got %s, expected %s, %.1fs after command)",
+                                self.entity_description.key,
+                                new_value,
+                                self._command_state,
+                                elapsed,
+                            )
+                    else:
+                        # Grace period expired — accept whatever the camera says.
+                        self._command_state = None
+                        self._attr_is_on = new_value
+                else:
+                    self._attr_is_on = new_value
             # If new_value is None, keep the previous _attr_is_on (last-known).
         self.async_write_ha_state()
 
@@ -164,6 +197,8 @@ class NanitSwitch(NanitEntity, RestoreEntity, SwitchEntity):
         """Turn on the switch."""
         previous = self._attr_is_on
         self._attr_is_on = True
+        self._command_state = True
+        self._command_ts = time.monotonic()
         self.async_write_ha_state()
         try:
             await self.entity_description.turn_on_fn(self._camera)
@@ -172,6 +207,7 @@ class NanitSwitch(NanitEntity, RestoreEntity, SwitchEntity):
                 "Failed to turn on %s, reverting state", self.entity_description.key
             )
             self._attr_is_on = previous
+            self._command_state = None
             self.async_write_ha_state()
             raise
 
@@ -179,6 +215,8 @@ class NanitSwitch(NanitEntity, RestoreEntity, SwitchEntity):
         """Turn off the switch."""
         previous = self._attr_is_on
         self._attr_is_on = False
+        self._command_state = False
+        self._command_ts = time.monotonic()
         self.async_write_ha_state()
         try:
             await self.entity_description.turn_off_fn(self._camera)
@@ -187,5 +225,6 @@ class NanitSwitch(NanitEntity, RestoreEntity, SwitchEntity):
                 "Failed to turn off %s, reverting state", self.entity_description.key
             )
             self._attr_is_on = previous
+            self._command_state = None
             self.async_write_ha_state()
             raise

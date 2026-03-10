@@ -5,6 +5,9 @@ All notable changes to the Nanit Home Assistant integration are documented in th
 
 ## [Unreleased]
 
+### Fixed
+- Fix switch state bouncing after toggle commands — stale WebSocket push events from the camera no longer override the commanded state during a 15-second grace period
+
 ### Removed
 - Remove Night Mode binary sensor entity (was disabled by default; underlying sensor data still collected by aionanit)
 

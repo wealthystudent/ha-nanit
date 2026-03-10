@@ -33,7 +33,9 @@ release bump:
     echo "Bumping: ${latest} → ${new}"
     # Update manifest.json
     sed -i '' 's/"version": "[0-9]*\.[0-9]*\.[0-9]*"/"version": "'"${new}"'"/' custom_components/nanit/manifest.json
-    git add custom_components/nanit/manifest.json
+    # Update aionanit pyproject.toml
+    sed -i '' 's/^version = "[0-9]*\.[0-9]*\.[0-9]*"/version = "'"${new}"'"/' packages/aionanit/pyproject.toml
+    git add custom_components/nanit/manifest.json packages/aionanit/pyproject.toml
     git commit -m "Bump version to ${new}"
     git tag "${tag}"
     git push && git push --tags

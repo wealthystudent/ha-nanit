@@ -60,3 +60,4 @@ class NanitVolume(NanitEntity, NumberEntity):
     async def async_set_native_value(self, value: float) -> None:
         """Set the volume."""
         await self._camera.async_set_settings(volume=int(value))
+        self.async_write_ha_state()

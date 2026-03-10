@@ -20,7 +20,7 @@
 | Camera | RTMPS live stream with on/off control | Yes |
 | Sensor | Temperature, Humidity, Light level | Yes |
 | Binary Sensor | Motion, Sound (cloud-polled) | Yes |
-| Binary Sensor | Motion, Sound, Night mode, Connectivity (local push) | No |
+| Binary Sensor | Motion, Sound, Connectivity (local push) | No |
 | Switch | Night light, Camera power, Status LED, Mic mute | Night light, Camera power |
 | Number | Volume (0–100 %) | No |
 

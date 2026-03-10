@@ -54,12 +54,6 @@ BINARY_SENSORS: tuple[NanitBinarySensorEntityDescription, ...] = (
         value_fn=lambda state: state.sensors.sound_alert,
     ),
     NanitBinarySensorEntityDescription(
-        key="night_mode",
-        translation_key="night_mode",
-        entity_registry_enabled_default=False,
-        value_fn=lambda state: state.sensors.night,
-    ),
-    NanitBinarySensorEntityDescription(
         key="connectivity",
         translation_key="connectivity",
         device_class=BinarySensorDeviceClass.CONNECTIVITY,

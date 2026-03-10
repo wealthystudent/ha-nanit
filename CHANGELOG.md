@@ -3,6 +3,11 @@
 All notable changes to the Nanit Home Assistant integration are documented in this file.
 
 
+## [Unreleased]
+
+### Removed
+- Remove Night Mode binary sensor entity (was disabled by default; underlying sensor data still collected by aionanit)
+
 ## [1.0.13] – 2026-03-05
 
 ### Fixed

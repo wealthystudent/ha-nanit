@@ -67,6 +67,7 @@ _MAX_LOCAL_FAILURES_BEFORE_CLOUD: int = 3
 _STALE_CONNECTION_THRESHOLD: float = 300.0  # 5 min — reconnect before send
 _HEALTH_CHECK_INTERVAL: float = 270.0  # 4.5 min — periodic session liveness check
 _FRESH_CONNECTION_WINDOW: float = 10.0  # skip reconnect if connected within this
+_DEFAULT_SENSOR_POLL_INTERVAL: float = 120.0  # 2 min — poll sensors camera doesn't push
 
 # Maps for proto enum → model string conversions.
 _WIFI_BAND_MAP: dict[int, str] = {
@@ -99,6 +100,7 @@ class NanitCamera:
         *,
         prefer_local: bool = True,
         local_ip: str | None = None,
+        sensor_poll_interval: float | None = None,
     ) -> None:
         self._uid: str = uid
         self._baby_uid: str = baby_uid
@@ -107,6 +109,11 @@ class NanitCamera:
         self._session: aiohttp.ClientSession = session
         self._prefer_local: bool = prefer_local
         self._local_ip: str | None = local_ip
+        self._sensor_poll_interval: float = (
+            sensor_poll_interval
+            if sensor_poll_interval is not None
+            else _DEFAULT_SENSOR_POLL_INTERVAL
+        )
 
         self._state: CameraState = CameraState()
         self._pending: PendingRequests = PendingRequests()
@@ -119,6 +126,7 @@ class NanitCamera:
         self._subscribers: list[Callable[[CameraEvent], None]] = []
         self._local_probe_task: asyncio.Task[None] | None = None
         self._health_check_task: asyncio.Task[None] | None = None
+        self._sensor_poll_task: asyncio.Task[None] | None = None
         self._reconnect_lock: asyncio.Lock = asyncio.Lock()
         self._stopped: bool = False
 
@@ -203,11 +211,15 @@ class NanitCamera:
         # Start periodic session health check.
         self._start_health_check()
 
+        # Start periodic sensor polling (light values are not pushed).
+        self._start_sensor_poll()
+
     async def async_stop(self) -> None:
         """Stop the camera connection. Cancel all tasks, close transport."""
         self._stopped = True
         self._cancel_local_probe()
         self._cancel_health_check()
+        self._cancel_sensor_poll()
         self._pending.cancel_all()
         await self._transport.async_close()
 
@@ -811,6 +823,9 @@ class NanitCamera:
             ):
                 self._start_local_probe()
 
+            # Restart sensor polling after reconnect.
+            self._start_sensor_poll()
+
     # ------------------------------------------------------------------
     # Internal — session health check
     # ------------------------------------------------------------------
@@ -860,6 +875,58 @@ class NanitCamera:
         except asyncio.CancelledError:
             return
 
+
+    # ------------------------------------------------------------------
+    # Internal — periodic sensor polling
+    # ------------------------------------------------------------------
+
+    def _start_sensor_poll(self) -> None:
+        """Start the periodic sensor-poll task.
+
+        Some sensor types (notably LIGHT / illuminance) are not pushed by
+        the camera firmware despite enabling sensor push via PUT_CONTROL.
+        This loop issues GET_SENSOR_DATA periodically so those values stay
+        up-to-date.
+        """
+        self._cancel_sensor_poll()
+        self._sensor_poll_task = asyncio.get_running_loop().create_task(
+            self._sensor_poll_loop()
+        )
+
+    def _cancel_sensor_poll(self) -> None:
+        """Cancel the sensor-poll task if running."""
+        if (
+            self._sensor_poll_task is not None
+            and not self._sensor_poll_task.done()
+        ):
+            self._sensor_poll_task.cancel()
+        self._sensor_poll_task = None
+
+    async def _sensor_poll_loop(self) -> None:
+        """Periodically request sensor data from the camera.
+
+        The Nanit camera pushes temperature and humidity via
+        PUT_SENSOR_DATA, but does not push light (illuminance) values.
+        This loop compensates by explicitly requesting all sensor data
+        every ``_sensor_poll_interval`` seconds.
+        """
+        try:
+            while not self._stopped:
+                await asyncio.sleep(self._sensor_poll_interval)
+                if self._stopped or not self._transport.connected:
+                    continue
+                try:
+                    await self.async_get_sensor_data()
+                except (
+                    NanitRequestTimeout,
+                    NanitTransportError,
+                    NanitCameraUnavailable,
+                ):
+                    _LOGGER.debug("Sensor poll failed — will retry next cycle")
+                except Exception:  # noqa: BLE001
+                    _LOGGER.debug("Sensor poll error", exc_info=True)
+        except asyncio.CancelledError:
+            return
     # ------------------------------------------------------------------
     # Internal — local probe
     # ------------------------------------------------------------------

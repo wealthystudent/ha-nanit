@@ -1168,6 +1168,120 @@ class TestHealthCheckLifecycle:
         fake_task.cancel.assert_called_once()
         assert cam._health_check_task is None
 
+# ---------------------------------------------------------------------------
+# Sensor poll lifecycle
+# ---------------------------------------------------------------------------
+
+
+class TestSensorPollLifecycle:
+    async def test_sensor_poll_cancelled_on_stop(self) -> None:
+        """async_stop cancels the sensor poll task."""
+        cam, *_ = _make_camera()
+        cam._transport = MagicMock()
+        cam._transport.connected = True
+        cam._transport.idle_seconds = 0.0
+        cam._transport.async_close = AsyncMock()
+
+        # Create a fake sensor poll task
+        fake_task = MagicMock()
+        fake_task.done.return_value = False
+        fake_task.cancel = MagicMock()
+        cam._sensor_poll_task = fake_task
+
+        await cam.async_stop()
+
+        fake_task.cancel.assert_called_once()
+        assert cam._sensor_poll_task is None
+
+    def test_sensor_poll_default_interval(self) -> None:
+        """Default sensor poll interval is 120 seconds."""
+        cam, *_ = _make_camera()
+        assert cam._sensor_poll_interval == 120.0
+
+    def test_sensor_poll_custom_interval(self) -> None:
+        """Custom sensor_poll_interval is stored correctly."""
+        session = MagicMock(spec=aiohttp.ClientSession)
+        rest = MagicMock(spec=NanitRestClient)
+        tm = MagicMock(spec=TokenManager)
+        tm.async_get_access_token = AsyncMock(return_value="test_token")
+
+        cam = NanitCamera(
+            uid="cam_uid_1",
+            baby_uid="baby_uid_1",
+            token_manager=tm,
+            rest_client=rest,
+            session=session,
+            sensor_poll_interval=300.0,
+        )
+        assert cam._sensor_poll_interval == 300.0
+
+    async def test_start_sensor_poll_creates_task(self) -> None:
+        """_start_sensor_poll creates a running asyncio task."""
+        cam, *_ = _make_camera()
+        assert cam._sensor_poll_task is None
+
+        cam._start_sensor_poll()
+
+        assert cam._sensor_poll_task is not None
+        assert not cam._sensor_poll_task.done()
+
+        # Cleanup
+        cam._sensor_poll_task.cancel()
+        try:
+            await cam._sensor_poll_task
+        except asyncio.CancelledError:
+            pass
+
+    async def test_cancel_sensor_poll_noop_when_none(self) -> None:
+        """_cancel_sensor_poll is safe to call when no task exists."""
+        cam, *_ = _make_camera()
+        cam._sensor_poll_task = None
+        cam._cancel_sensor_poll()  # Should not raise
+        assert cam._sensor_poll_task is None
+
+    async def test_sensor_poll_loop_calls_get_sensor_data(self) -> None:
+        """The poll loop calls async_get_sensor_data after sleeping."""
+        cam, *_ = _make_camera()
+        cam._sensor_poll_interval = 0.01  # Very short for test speed
+        cam._transport = MagicMock()
+        cam._transport.connected = True
+        cam.async_get_sensor_data = AsyncMock()
+
+        cam._start_sensor_poll()
+
+        # Let the loop run at least one cycle
+        await asyncio.sleep(0.05)
+
+        assert cam.async_get_sensor_data.await_count >= 1
+
+        # Cleanup
+        cam._cancel_sensor_poll()
+
+    async def test_sensor_poll_loop_survives_timeout_error(self) -> None:
+        """The poll loop continues after NanitRequestTimeout."""
+        cam, *_ = _make_camera()
+        cam._sensor_poll_interval = 0.01
+        cam._transport = MagicMock()
+        cam._transport.connected = True
+
+        call_count = 0
+
+        async def _fail_then_succeed() -> SensorState:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise NanitRequestTimeout("timeout")
+            return SensorState()
+
+        cam.async_get_sensor_data = AsyncMock(side_effect=_fail_then_succeed)
+
+        cam._start_sensor_poll()
+        await asyncio.sleep(0.05)
+
+        # Should have retried after the first failure
+        assert call_count >= 2
+
+        cam._cancel_sensor_poll()
 
 # ---------------------------------------------------------------------------
 # WsTransport constructed with get_headers

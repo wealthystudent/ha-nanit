@@ -11,7 +11,6 @@ from typing import Any
 from homeassistant.components.switch import SwitchDeviceClass, SwitchEntity, SwitchEntityDescription
 from homeassistant.const import STATE_ON
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 from . import NanitConfigEntry
@@ -46,13 +45,6 @@ def _night_light_value(state: CameraState) -> bool | None:
     return nl == NightLightState.ON
 
 
-def _settings_flag(state: CameraState, key: str) -> bool | None:
-    """Return a boolean settings flag, or None only when truly unknown."""
-    value = getattr(state.settings, key, None)
-    if value is None:
-        return None
-    return value
-
 SWITCHES: tuple[NanitSwitchEntityDescription, ...] = (
     NanitSwitchEntityDescription(
         key="night_light",
@@ -78,27 +70,7 @@ SWITCHES: tuple[NanitSwitchEntityDescription, ...] = (
         turn_on_fn=lambda cam: cam.async_set_settings(sleep_mode=False),
         turn_off_fn=lambda cam: cam.async_set_settings(sleep_mode=True),
     ),
-    NanitSwitchEntityDescription(
-        key="status_led",
-        translation_key="status_led",
-        entity_category=EntityCategory.CONFIG,
-        entity_registry_enabled_default=False,
-        device_class=SwitchDeviceClass.SWITCH,
-        value_fn=lambda state: _settings_flag(state, "status_light_on"),
-        turn_on_fn=lambda cam: cam.async_set_settings(status_light_on=True),
-        turn_off_fn=lambda cam: cam.async_set_settings(status_light_on=False),
-    ),
-    NanitSwitchEntityDescription(
-        key="mic_mute",
-        translation_key="mic_mute",
-        entity_category=EntityCategory.CONFIG,
-        entity_registry_enabled_default=False,
-        device_class=SwitchDeviceClass.SWITCH,
-        value_fn=lambda state: _settings_flag(state, "mic_mute_on"),
-        turn_on_fn=lambda cam: cam.async_set_settings(mic_mute_on=True),
-        turn_off_fn=lambda cam: cam.async_set_settings(mic_mute_on=False),
-    ),
-)
+    )
 
 
 async def async_setup_entry(

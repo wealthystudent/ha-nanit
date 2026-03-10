@@ -10,6 +10,11 @@ All notable changes to the Nanit Home Assistant integration are documented in th
 
 ### Removed
 - Remove Night Mode binary sensor entity (was disabled by default; underlying sensor data still collected by aionanit)
+- Remove local-push Motion and Sound binary sensors (replaced by cloud-polled equivalents)
+- Remove Status LED and Microphone Mute switch entities (were disabled by default)
+
+### Changed
+- Rename Cloud Motion / Cloud Sound binary sensors to Motion / Sound
 
 ## [1.0.13] – 2026-03-05
 

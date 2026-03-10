@@ -88,15 +88,11 @@
     "binary_sensor": {
       "motion": { "name": "Motion" },
       "sound": { "name": "Sound" },
-      "connectivity": { "name": "Connectivity" },
-      "cloud_motion": { "name": "Cloud Motion" },
-      "cloud_sound": { "name": "Cloud Sound" }
+      "connectivity": { "name": "Connectivity" }
     },
     "switch": {
       "night_light": { "name": "Night Light" },
-      "camera_power": { "name": "Camera Power" },
-      "status_led": { "name": "Status LED" },
-      "mic_mute": { "name": "Microphone Mute" }
+      "camera_power": { "name": "Camera Power" }
     },
     "number": {
       "volume": { "name": "Volume" }

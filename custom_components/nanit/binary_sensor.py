@@ -40,20 +40,6 @@ class NanitBinarySensorEntityDescription(BinarySensorEntityDescription):
 
 BINARY_SENSORS: tuple[NanitBinarySensorEntityDescription, ...] = (
     NanitBinarySensorEntityDescription(
-        key="motion",
-        translation_key="motion",
-        device_class=BinarySensorDeviceClass.MOTION,
-        entity_registry_enabled_default=False,
-        value_fn=lambda state: state.sensors.motion_alert,
-    ),
-    NanitBinarySensorEntityDescription(
-        key="sound",
-        translation_key="sound",
-        device_class=BinarySensorDeviceClass.SOUND,
-        entity_registry_enabled_default=False,
-        value_fn=lambda state: state.sensors.sound_alert,
-    ),
-    NanitBinarySensorEntityDescription(
         key="connectivity",
         translation_key="connectivity",
         device_class=BinarySensorDeviceClass.CONNECTIVITY,
@@ -78,14 +64,14 @@ class NanitCloudBinarySensorEntityDescription(BinarySensorEntityDescription):
 CLOUD_BINARY_SENSORS: tuple[NanitCloudBinarySensorEntityDescription, ...] = (
     NanitCloudBinarySensorEntityDescription(
         key="cloud_motion",
-        translation_key="cloud_motion",
+        translation_key="motion",
         device_class=BinarySensorDeviceClass.MOTION,
         entity_registry_enabled_default=True,
         event_type="MOTION",
     ),
     NanitCloudBinarySensorEntityDescription(
         key="cloud_sound",
-        translation_key="cloud_sound",
+        translation_key="sound",
         device_class=BinarySensorDeviceClass.SOUND,
         entity_registry_enabled_default=True,
         event_type="SOUND",

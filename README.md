@@ -19,10 +19,12 @@
 |------|----------|--------------------|
 | Camera | RTMPS live stream with on/off control | Yes |
 | Sensor | Temperature, Humidity, Light level | Yes |
-| Binary Sensor | Motion, Sound (cloud-polled) | Yes |
-| Binary Sensor | Motion, Sound, Connectivity (local push) | No |
-| Switch | Night light, Camera power, Status LED, Mic mute | Night light, Camera power |
+| Binary Sensor | Motion, Sound (cloud-polled), Connectivity | Motion, Sound |
+| Switch | Night Light, Camera Power | Yes |
 | Number | Volume (0–100 %) | No |
+
+> [!NOTE]
+> Not all Nanit features are supported yet. If you'd like to add a missing feature, contributions are welcome — check the [AGENTS.md](AGENTS.md) guide for architecture details and development guidelines.
 
 ## Installation
 

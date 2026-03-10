@@ -2,6 +2,12 @@
 
 All notable changes to the Nanit Home Assistant integration are documented in this file.
 
+## [1.0.15] – 2026-03-10
+
+### Fixed
+- Fix illuminance sensor only updating once on startup — camera firmware does not push light values via WebSocket, so a periodic `GET_SENSOR_DATA` poll (every 120 s) now keeps illuminance up-to-date
+- Fix volume number entity not reflecting the new value in HA after changing it — `async_write_ha_state()` was missing after the settings command
+
 
 ## [1.0.14] – 2026-03-10
 

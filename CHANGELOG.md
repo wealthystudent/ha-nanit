@@ -3,7 +3,7 @@
 All notable changes to the Nanit Home Assistant integration are documented in this file.
 
 
-## [Unreleased]
+## [1.0.14] – 2026-03-10
 
 ### Fixed
 - Fix switch state bouncing after toggle commands — stale WebSocket push events from the camera no longer override the commanded state during a 15-second grace period

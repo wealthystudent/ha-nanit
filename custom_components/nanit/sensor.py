@@ -16,6 +16,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import NanitConfigEntry
+from .const import CONF_CAMERA_UID
 from .coordinator import NanitPushCoordinator
 from .entity import NanitEntity
 
@@ -83,7 +84,8 @@ class NanitSensor(NanitEntity, SensorEntity):
         """Initialize."""
         super().__init__(coordinator)
         self.entity_description = description
-        self._attr_unique_id = f"{coordinator.config_entry.unique_id}_{description.key}"
+        camera_uid = coordinator.config_entry.data.get(CONF_CAMERA_UID, coordinator.config_entry.entry_id)
+        self._attr_unique_id = f"{camera_uid}_{description.key}"
 
     @property
     def native_value(self) -> float | int | None:

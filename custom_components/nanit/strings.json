@@ -26,9 +26,16 @@
           "mfa_code": "Verification Code"
         }
       },
+      "select_camera": {
+        "title": "Select Camera",
+        "description": "Choose which camera to set up.",
+        "data": {
+          "camera_uid": "Camera"
+        }
+      },
       "camera_ip": {
         "title": "Camera IP (Optional)",
-        "description": "Enter your camera's local IP address for local-first connectivity. Leave blank to use cloud only.",
+        "description": "Setting up **{camera_name}**. Enter the camera's local IP address for local-first connectivity. Leave blank to use cloud only.",
         "data": {
           "camera_ip": "Camera IP Address"
         }
@@ -64,6 +71,8 @@
     },
     "abort": {
       "already_configured": "This Nanit camera is already configured",
+      "all_cameras_configured": "All cameras on this account are already configured",
+      "no_cameras_found": "No cameras found on this Nanit account",
       "reauth_successful": "Re-authentication successful",
       "reconfigure_successful": "Reconfiguration successful"
     }

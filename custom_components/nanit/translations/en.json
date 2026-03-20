@@ -30,12 +30,12 @@
         "title": "Select Camera",
         "description": "Choose which camera to set up.",
         "data": {
-          "camera_uid": "Camera"
+          "camera_uid": "Baby / Camera"
         }
       },
       "camera_ip": {
         "title": "Camera IP (Optional)",
-        "description": "Enter your camera's local IP address for local-first connectivity. Leave blank to use cloud only.",
+        "description": "Setting up **{camera_name}** ({selection_method}). Enter the camera's local IP address for local-first connectivity. Leave blank to use cloud only.",
         "data": {
           "camera_ip": "Camera IP Address"
         }

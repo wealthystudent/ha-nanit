@@ -63,11 +63,12 @@ async def async_setup_entry(
     entry: NanitConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up Nanit sensors."""
-    coordinator = entry.runtime_data.push_coordinator
-    async_add_entities(
-        NanitSensor(coordinator, description) for description in SENSORS
-    )
+    """Set up Nanit sensors for all cameras on the account."""
+    entities: list[NanitSensor] = []
+    for cam_data in entry.runtime_data.cameras.values():
+        for description in SENSORS:
+            entities.append(NanitSensor(cam_data.push_coordinator, description))
+    async_add_entities(entities)
 
 
 class NanitSensor(NanitEntity, SensorEntity):
@@ -83,7 +84,7 @@ class NanitSensor(NanitEntity, SensorEntity):
         """Initialize."""
         super().__init__(coordinator)
         self.entity_description = description
-        self._attr_unique_id = f"{coordinator.config_entry.unique_id}_{description.key}"
+        self._attr_unique_id = f"{coordinator.camera.uid}_{description.key}"
 
     @property
     def native_value(self) -> float | int | None:

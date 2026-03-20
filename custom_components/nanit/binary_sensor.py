@@ -18,12 +18,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import NanitConfigEntry
-from .const import (
-    CLOUD_EVENT_WINDOW,
-    CONF_BABY_NAME,
-    CONF_CAMERA_UID,
-    DOMAIN,
-)
+from .const import CLOUD_EVENT_WINDOW, DOMAIN
 from .coordinator import NanitCloudCoordinator, NanitPushCoordinator
 from .entity import NanitEntity
 
@@ -84,23 +79,24 @@ async def async_setup_entry(
     entry: NanitConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up Nanit binary sensors."""
+    """Set up Nanit binary sensors for all cameras on the account."""
     entities: list[BinarySensorEntity] = []
 
-    # Local binary sensors (from camera WebSocket push)
-    coordinator = entry.runtime_data.push_coordinator
-    entities.extend(
-        NanitBinarySensor(coordinator, description)
-        for description in BINARY_SENSORS
-    )
+    for cam_data in entry.runtime_data.cameras.values():
+        # Local binary sensors (from camera WebSocket push)
+        for description in BINARY_SENSORS:
+            entities.append(
+                NanitBinarySensor(cam_data.push_coordinator, description)
+            )
 
-    # Cloud binary sensors (from Nanit cloud events API)
-    cloud_coordinator = entry.runtime_data.cloud_coordinator
-    if cloud_coordinator is not None:
-        entities.extend(
-            NanitCloudBinarySensor(cloud_coordinator, entry, description)
-            for description in CLOUD_BINARY_SENSORS
-        )
+        # Cloud binary sensors (from Nanit cloud events API)
+        if cam_data.cloud_coordinator is not None:
+            for description in CLOUD_BINARY_SENSORS:
+                entities.append(
+                    NanitCloudBinarySensor(
+                        cam_data.cloud_coordinator, description
+                    )
+                )
 
     async_add_entities(entities)
 
@@ -118,10 +114,7 @@ class NanitBinarySensor(NanitEntity, BinarySensorEntity):
         """Initialize."""
         super().__init__(coordinator)
         self.entity_description = description
-        self._attr_unique_id = (
-            f"{coordinator.config_entry.data.get(CONF_CAMERA_UID, coordinator.config_entry.entry_id)}"
-            f"_{description.key}"
-        )
+        self._attr_unique_id = f"{coordinator.camera.uid}_{description.key}"
 
     @property
     def available(self) -> bool:
@@ -162,24 +155,19 @@ class NanitCloudBinarySensor(
     def __init__(
         self,
         coordinator: NanitCloudCoordinator,
-        entry: NanitConfigEntry,
         description: NanitCloudBinarySensorEntityDescription,
     ) -> None:
         """Initialize."""
         super().__init__(coordinator)
-        self._entry = entry
         self.entity_description = description
-        camera_uid = entry.data.get(CONF_CAMERA_UID, entry.entry_id)
-        self._attr_unique_id = f"{camera_uid}_{description.key}"
+        self._attr_unique_id = f"{coordinator.baby.camera_uid}_{description.key}"
 
     @property
     def device_info(self) -> DeviceInfo:
         """Return device info."""
         return DeviceInfo(
-            identifiers={
-                (DOMAIN, self._entry.data.get(CONF_CAMERA_UID, self._entry.entry_id))
-            },
-            name=self._entry.data.get(CONF_BABY_NAME, "Nanit Camera"),
+            identifiers={(DOMAIN, self.coordinator.baby.camera_uid)},
+            name=self.coordinator.baby.name,
             manufacturer="Nanit",
         )
 

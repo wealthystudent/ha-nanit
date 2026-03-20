@@ -299,6 +299,7 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors["base"] = "unknown"
             else:
                 reauth_entry = self._get_reauth_entry()
+                self._update_sibling_tokens(reauth_entry, access_token, refresh_token)
                 new_data = {**reauth_entry.data}
                 new_data[CONF_ACCESS_TOKEN] = access_token
                 new_data[CONF_REFRESH_TOKEN] = refresh_token
@@ -347,6 +348,7 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors["base"] = "unknown"
             else:
                 reauth_entry = self._get_reauth_entry()
+                self._update_sibling_tokens(reauth_entry, access_token, refresh_token)
                 new_data = {**reauth_entry.data}
                 new_data[CONF_ACCESS_TOKEN] = access_token
                 new_data[CONF_REFRESH_TOKEN] = refresh_token
@@ -395,6 +397,26 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
                 }
             ),
         )
+
+    def _update_sibling_tokens(
+        self, reauth_entry: ConfigEntry, access_token: str, refresh_token: str
+    ) -> None:
+        """Update tokens on all config entries sharing the same account."""
+        email = reauth_entry.data.get(CONF_EMAIL)
+        if not email:
+            return
+        for entry in self.hass.config_entries.async_entries(DOMAIN):
+            if entry.entry_id == reauth_entry.entry_id:
+                continue
+            if entry.data.get(CONF_EMAIL) == email:
+                self.hass.config_entries.async_update_entry(
+                    entry,
+                    data={
+                        **entry.data,
+                        CONF_ACCESS_TOKEN: access_token,
+                        CONF_REFRESH_TOKEN: refresh_token,
+                    },
+                )
 
     @staticmethod
     @callback

@@ -52,7 +52,6 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
         self._baby_name: str = ""
         self._babies: list[Any] = []  # cached baby list (Baby objects) for selection
         self._reuse_hub: bool = False  # whether we're reusing an existing hub
-        self._auto_selected: bool = False  # camera was auto-selected (only one available)
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -192,15 +191,6 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
         if not available:
             return self.async_abort(reason="all_cameras_configured")
 
-        # Auto-select if only one camera available
-        if len(available) == 1 and user_input is None:
-            baby = available[0]
-            self._baby_uid = baby.uid
-            self._camera_uid = baby.camera_uid
-            self._baby_name = baby.name
-            self._auto_selected = True
-            return await self.async_step_camera_ip()
-
         if user_input is not None:
             selected_uid = user_input["camera_uid"]
             baby = next((b for b in available if b.camera_uid == selected_uid), None)
@@ -253,7 +243,6 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
                 data=data,
             )
 
-        selection_method = "auto-detected" if self._auto_selected else "selected"
         return self.async_show_form(
             step_id="camera_ip",
             data_schema=vol.Schema(
@@ -263,7 +252,6 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
             ),
             description_placeholders={
                 "camera_name": self._baby_name,
-                "selection_method": selection_method,
             },
         )
 

@@ -43,6 +43,17 @@ def _account_key(entry: ConfigEntry) -> str:
     return entry.data.get(CONF_EMAIL) or entry.entry_id
 
 
+async def _release_hub(hass: HomeAssistant, account: str) -> None:
+    """Decrement hub ref count and close if zero. Used on setup failure cleanup."""
+    hub_record = hass.data.get(DOMAIN, {}).get(account)
+    if hub_record is None:
+        return
+    hub_record["ref_count"] -= 1
+    if hub_record["ref_count"] <= 0:
+        await hub_record["hub"].async_close()
+        del hass.data[DOMAIN][account]
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: NanitConfigEntry) -> bool:
     """Set up Nanit from a config entry."""
     hass.data.setdefault(DOMAIN, {})
@@ -97,14 +108,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: NanitConfigEntry) -> boo
             local_ip=camera_ip,
         )
     except NanitAuthError as err:
+        _release_hub(hass, account)
         raise ConfigEntryAuthFailed(err) from err
 
     push_coordinator = NanitPushCoordinator(hass, camera)
     try:
         await push_coordinator.async_setup()
     except NanitAuthError as err:
+        _release_hub(hass, account)
         raise ConfigEntryAuthFailed(err) from err
     except NanitConnectionError as err:
+        _release_hub(hass, account)
         raise ConfigEntryNotReady(
             f"Cannot connect to Nanit camera {camera_uid}: {err}"
         ) from err
@@ -114,6 +128,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: NanitConfigEntry) -> boo
         cloud_coordinator = NanitCloudCoordinator(hass, hub, baby_uid)
         await cloud_coordinator.async_config_entry_first_refresh()
     except NanitAuthError as err:
+        _release_hub(hass, account)
         raise ConfigEntryAuthFailed(err) from err
     except NanitConnectionError:
         LOGGER.warning("Cloud event coordinator failed to start; cloud sensors disabled")
@@ -143,11 +158,5 @@ async def async_unload_entry(hass: HomeAssistant, entry: NanitConfigEntry) -> bo
         # Remove this entry's camera from the shared hub
         await data.hub.async_remove_camera(camera_uid)
 
-        account = _account_key(entry)
-        hub_record = hass.data[DOMAIN].get(account)
-        if hub_record is not None:
-            hub_record["ref_count"] -= 1
-            if hub_record["ref_count"] <= 0:
-                await hub_record["hub"].async_close()
-                del hass.data[DOMAIN][account]
+        await _release_hub(hass, _account_key(entry))
     return unload_ok

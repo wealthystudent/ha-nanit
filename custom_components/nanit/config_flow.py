@@ -50,11 +50,31 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
         self._baby_uid: str = ""
         self._camera_uid: str = ""
         self._baby_name: str = ""
+        self._babies: list[Any] = []  # cached baby list (Baby objects) for selection
+        self._reuse_hub: bool = False  # whether we're reusing an existing hub
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Handle the initial user step — enter credentials."""
+        """Handle the initial user step — detect existing account or enter credentials."""
+        # Check for an existing hub we can reuse
+        domain_data = self.hass.data.get(DOMAIN, {})
+        for entry in self.hass.config_entries.async_entries(DOMAIN):
+            email = entry.data.get(CONF_EMAIL)
+            if email and email in domain_data:
+                hub_record = domain_data[email]
+                hub = hub_record["hub"]
+                try:
+                    self._babies = await hub.async_get_babies()
+                except (NanitAuthError, NanitConnectionError):
+                    # Stale tokens or connection issue — fall through to login
+                    break
+                else:
+                    self._email = email
+                    self._access_token = entry.data.get(CONF_ACCESS_TOKEN, "")
+                    self._refresh_token = entry.data.get(CONF_REFRESH_TOKEN, "")
+                    self._reuse_hub = True
+                    return await self.async_step_select_camera()
         return await self.async_step_credentials(user_input)
 
     async def async_step_credentials(
@@ -141,25 +161,64 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
         )
 
     async def _async_fetch_babies_and_continue(self) -> ConfigFlowResult:
-        """Fetch baby list and continue to camera IP step."""
+        """Fetch baby list and continue to camera selection."""
         session = async_get_clientsession(self.hass)
         client = NanitClient(session)
         client.restore_tokens(self._access_token, self._refresh_token)
 
         try:
-            babies = await client.async_get_babies()
-            if babies:
-                baby = babies[0]
-                self._baby_uid = baby.uid
-                self._camera_uid = baby.camera_uid
-                self._baby_name = baby.name
-            else:
-                self._baby_name = "Nanit Camera"
+            self._babies = await client.async_get_babies()
         except Exception:
-            LOGGER.exception("Failed to fetch babies, using defaults")
-            self._baby_name = "Nanit Camera"
+            LOGGER.exception("Failed to fetch babies")
+            self._babies = []
 
-        return await self.async_step_camera_ip()
+        return await self.async_step_select_camera()
+
+    async def async_step_select_camera(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle camera selection from the baby list."""
+        # Filter out already-configured cameras
+        configured_uids = {
+            entry.data.get(CONF_CAMERA_UID)
+            for entry in self.hass.config_entries.async_entries(DOMAIN)
+        }
+        available = [b for b in self._babies if b.camera_uid not in configured_uids]
+
+        if not self._babies:
+            return self.async_abort(reason="no_cameras_found")
+
+        if not available:
+            return self.async_abort(reason="all_cameras_configured")
+
+        # Auto-select if only one camera available
+        if len(available) == 1 and user_input is None:
+            baby = available[0]
+            self._baby_uid = baby.uid
+            self._camera_uid = baby.camera_uid
+            self._baby_name = baby.name
+            return await self.async_step_camera_ip()
+
+        if user_input is not None:
+            selected_uid = user_input["camera_uid"]
+            baby = next((b for b in available if b.camera_uid == selected_uid), None)
+            if baby is None:
+                # Race condition: camera was configured between form display and submit
+                return await self.async_step_select_camera()
+            self._baby_uid = baby.uid
+            self._camera_uid = baby.camera_uid
+            self._baby_name = baby.name
+            return await self.async_step_camera_ip()
+
+        camera_options = {b.camera_uid: b.name for b in available}
+        return self.async_show_form(
+            step_id="select_camera",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("camera_uid"): vol.In(camera_options),
+                }
+            ),
+        )
 
     async def async_step_camera_ip(
         self, user_input: dict[str, Any] | None = None
@@ -178,13 +237,13 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
                 CONF_CAMERA_UID: self._camera_uid,
                 CONF_BABY_NAME: self._baby_name,
                 CONF_STORE_CREDENTIALS: self._store_credentials,
+                CONF_EMAIL: self._email,  # Always store for hub sharing
             }
 
             if camera_ip:
                 data[CONF_CAMERA_IP] = camera_ip
 
             if self._store_credentials:
-                data[CONF_EMAIL] = self._email
                 data[CONF_PASSWORD] = self._password
 
             return self.async_create_entry(

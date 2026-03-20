@@ -43,14 +43,20 @@ Copy `custom_components/nanit/` into your HA `config/custom_components/` directo
 1. **Settings → Devices & Services → Add Integration → Nanit**
 2. Sign in with your Nanit email and password.
 3. Enter the MFA code sent to your device.
-4. *(Optional)* Enter your camera's local IP for faster, LAN-first connectivity.
+4. Select which camera to set up.
+5. *(Optional)* Enter the camera's local IP for faster, LAN-first connectivity.
 
 | Field | Required | Description |
 |-------|----------|-------------|
 | Email | Yes | Nanit account email |
 | Password | Yes | Nanit account password |
 | Store credentials | No | Saves credentials for easier re-auth |
+| Camera | Yes | Which camera to configure (shown if multiple exist) |
 | Camera IP | No | LAN IP of the camera (port 442) |
+
+### Multiple cameras
+
+If you have more than one Nanit camera on the same account, repeat **Add Integration → Nanit** for each camera. The integration detects your existing session and skips login — you'll go straight to camera selection.
 
 ## How it works
 

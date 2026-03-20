@@ -21,8 +21,8 @@ _LOGGER = logging.getLogger(__name__)
 class NanitHub:
     """Manages the NanitClient, token persistence, and camera instances.
 
-    One hub per config entry. The hub owns the NanitClient and is stored
-    in ConfigEntry.runtime_data.
+    Shared across config entries for the same Nanit account. Stored in
+    hass.data[DOMAIN] and ref-counted by async_setup_entry / async_unload_entry.
     """
 
     def __init__(
@@ -75,6 +75,12 @@ class NanitHub:
         )
         self._cameras[camera_uid] = cam
         return cam
+
+    async def async_remove_camera(self, camera_uid: str) -> None:
+        """Stop and remove a single camera from the hub."""
+        cam = self._cameras.pop(camera_uid, None)
+        if cam is not None:
+            await cam.async_stop()
 
     async def async_get_babies(self) -> list[Baby]:
         """Fetch babies from the Nanit cloud API."""

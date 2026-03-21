@@ -1,19 +1,16 @@
 """Coordinators for the Nanit integration.
 
 NanitPushCoordinator: Push-based coordinator that wraps NanitCamera.subscribe().
-    Fires async_set_updated_data on every CameraEvent callback (sensor, settings,
-    control, status, connection changes). No polling — all data arrives via
-    WebSocket push.
-
-NanitCloudCoordinator: Polls the Nanit cloud API for motion/sound events every
-    CLOUD_POLL_INTERVAL seconds.
+NanitCloudCoordinator: Polls the Nanit cloud API for motion/sound events.
+NanitSoundLightCoordinator: Push-based coordinator wrapping NanitSoundLight.subscribe().
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import timedelta
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
@@ -21,6 +18,9 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from aionanit import NanitAuthError, NanitCamera, NanitConnectionError
 from aionanit.models import CameraEvent, CameraEventKind, CameraState, CloudEvent
+
+from .aionanit_sl.models import SoundLightEvent, SoundLightEventKind, SoundLightFullState
+from .aionanit_sl.sound_light import NanitSoundLight
 
 from .const import CLOUD_POLL_INTERVAL, DOMAIN
 
@@ -60,10 +60,7 @@ class NanitPushCoordinator(DataUpdateCoordinator[CameraState]):
         self._unsubscribe: Callable[[], None] | None = None
 
     async def async_setup(self) -> None:
-        """Start the camera and subscribe to push events.
-
-        Called once from async_setup_entry after the coordinator is created.
-        """
+        """Start the camera and subscribe to push events."""
         self._unsubscribe = self.camera.subscribe(self._on_camera_event)
         await self.camera.async_start()
         # Seed initial data from the camera's current state
@@ -93,11 +90,7 @@ class NanitPushCoordinator(DataUpdateCoordinator[CameraState]):
 
 
 class NanitCloudCoordinator(DataUpdateCoordinator[list[CloudEvent]]):
-    """Polling coordinator for Nanit cloud motion/sound events.
-
-    Polls GET /babies/{uid}/messages every CLOUD_POLL_INTERVAL seconds.
-    Entities check event timestamps against a window to determine on/off state.
-    """
+    """Polling coordinator for Nanit cloud motion/sound events."""
 
     config_entry: NanitConfigEntry
 
@@ -127,3 +120,59 @@ class NanitCloudCoordinator(DataUpdateCoordinator[list[CloudEvent]]):
             raise ConfigEntryAuthFailed(err) from err
         except NanitConnectionError as err:
             raise UpdateFailed(f"Cloud event fetch failed: {err}") from err
+
+
+class NanitSoundLightCoordinator(DataUpdateCoordinator[SoundLightFullState]):
+    """Push-based coordinator for the Nanit Sound & Light Machine.
+
+    Wraps NanitSoundLight.subscribe() — receives state updates from
+    the S&L device's local WebSocket (raw protobuf over wss://{ip}:442).
+    No polling — all state is pushed by the device.
+    """
+
+    config_entry: NanitConfigEntry
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        sound_light: NanitSoundLight,
+    ) -> None:
+        """Initialize the Sound & Light coordinator."""
+        super().__init__(
+            hass,
+            _LOGGER,
+            name=f"{DOMAIN}_{sound_light.speaker_uid}_sound_light",
+        )
+        self.sound_light = sound_light
+        self.connected: bool = False
+        self._unsubscribe: Callable[[], None] | None = None
+
+    async def async_setup(self) -> None:
+        """Start the S&L device and subscribe to push events."""
+        self._unsubscribe = self.sound_light.subscribe(self._on_sl_event)
+        await self.sound_light.async_start()
+        self.connected = self.sound_light.connected
+        self.async_set_updated_data(self.sound_light.state)
+
+    @callback
+    def _on_sl_event(self, event: SoundLightEvent) -> None:
+        """Handle a push event from NanitSoundLight.subscribe()."""
+        if event.kind == SoundLightEventKind.CONNECTION_CHANGE:
+            self.connected = self.sound_light.connected
+            if not self.connected:
+                _LOGGER.debug(
+                    "S&L %s disconnected",
+                    self.sound_light.speaker_uid,
+                )
+        else:
+            self.connected = True
+
+        self.async_set_updated_data(event.state)
+
+    async def async_shutdown(self) -> None:
+        """Stop the S&L device and unsubscribe."""
+        if self._unsubscribe is not None:
+            self._unsubscribe()
+            self._unsubscribe = None
+        await self.sound_light.async_stop()
+        await super().async_shutdown()

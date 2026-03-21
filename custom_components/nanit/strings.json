@@ -27,10 +27,11 @@
         }
       },
       "camera_ip": {
-        "title": "Camera IP (Optional)",
-        "description": "Enter your camera's local IP address for local-first connectivity. Leave blank to use cloud only.",
+        "title": "Device IPs (Optional)",
+        "description": "Enter local IP addresses for direct connectivity. Leave blank to use cloud only.",
         "data": {
-          "camera_ip": "Camera IP Address"
+          "camera_ip": "Camera IP Address",
+          "speaker_ip": "Sound & Light Machine IP Address"
         }
       },
       "reauth_confirm": {
@@ -50,9 +51,10 @@
       },
       "reconfigure": {
         "title": "Reconfigure Nanit",
-        "description": "Update the camera IP address for local access.",
+        "description": "Update device IP addresses for local access.",
         "data": {
-          "camera_ip": "Camera IP Address"
+          "camera_ip": "Camera IP Address",
+          "speaker_ip": "Sound & Light Machine IP Address"
         }
       }
     },
@@ -72,9 +74,10 @@
     "step": {
       "init": {
         "title": "Nanit Options",
-        "description": "Configure the camera IP address for local access. Leave blank to use cloud only.",
+        "description": "Configure device IP addresses for local access. Leave blank to use cloud only.",
         "data": {
-          "camera_ip": "Camera IP Address"
+          "camera_ip": "Camera IP Address",
+          "speaker_ip": "Sound & Light Machine IP Address"
         }
       }
     }
@@ -83,19 +86,36 @@
     "sensor": {
       "temperature": { "name": "Temperature" },
       "humidity": { "name": "Humidity" },
-      "light": { "name": "Light Level" }
+      "light": { "name": "Light Level" },
+      "sl_temperature": { "name": "Temperature" },
+      "sl_humidity": { "name": "Humidity" }
     },
     "binary_sensor": {
       "motion": { "name": "Motion" },
       "sound": { "name": "Sound" },
-      "connectivity": { "name": "Connectivity" }
+      "night_mode": { "name": "Night Mode" },
+      "connectivity": { "name": "Connectivity" },
+      "cloud_motion": { "name": "Cloud Motion" },
+      "cloud_sound": { "name": "Cloud Sound" }
     },
     "switch": {
       "night_light": { "name": "Night Light" },
-      "camera_power": { "name": "Camera Power" }
+      "camera_power": { "name": "Camera Power" },
+      "status_led": { "name": "Status LED" },
+      "mic_mute": { "name": "Microphone Mute" },
+      "sound_machine_switch": { "name": "Sound Machine Power" },
+      "sl_light_switch": { "name": "Night Light" },
+      "sl_sound_switch": { "name": "Sound" }
     },
     "number": {
-      "volume": { "name": "Volume" }
+      "volume": { "name": "Volume" },
+      "sound_machine_volume": { "name": "Sound Machine Volume" }
+    },
+    "light": {
+      "sound_light_light": { "name": "Night Light" }
+    },
+    "select": {
+      "sound_machine_sound": { "name": "Sound" }
     },
     "camera": {
       "camera": { "name": "Camera" }

@@ -13,6 +13,8 @@ PLATFORMS = [
     Platform.SWITCH,
     Platform.NUMBER,
     Platform.CAMERA,
+    Platform.LIGHT,
+    Platform.SELECT,
 ]
 
 # Cloud event detection window (seconds)
@@ -30,3 +32,19 @@ CONF_BABY_UID = "baby_uid"
 CONF_CAMERA_UID = "camera_uid"
 CONF_BABY_NAME = "baby_name"
 CONF_CAMERA_IP = "camera_ip"
+CONF_SPEAKER_UID = "speaker_uid"
+CONF_SPEAKER_IP = "speaker_ip"
+
+# Default sound list (used when API doesn't return available_sounds)
+DEFAULT_SOUND_MACHINE_SOUNDS = (
+    "white_noise",
+    "birds",
+    "waves",
+    "wind",
+    "rain",
+    "water_stream",
+    "fan",
+    "heartbeat",
+    "dryer",
+    "vacuum",
+)

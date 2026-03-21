@@ -28,6 +28,8 @@ from .const import (
     CONF_MFA_CODE,
     CONF_MFA_TOKEN,
     CONF_REFRESH_TOKEN,
+    CONF_SPEAKER_IP,
+    CONF_SPEAKER_UID,
     CONF_STORE_CREDENTIALS,
     DOMAIN,
     LOGGER,
@@ -50,6 +52,7 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
         self._baby_uid: str = ""
         self._camera_uid: str = ""
         self._baby_name: str = ""
+        self._speaker_uid: str | None = None
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -153,6 +156,7 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
                 self._baby_uid = baby.uid
                 self._camera_uid = baby.camera_uid
                 self._baby_name = baby.name
+                self._speaker_uid = baby.speaker_uid
             else:
                 self._baby_name = "Nanit Camera"
         except Exception:
@@ -164,9 +168,10 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_camera_ip(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Handle optional camera IP entry for local access."""
+        """Handle optional camera/speaker IP entry for local access."""
         if user_input is not None:
             camera_ip = user_input.get(CONF_CAMERA_IP, "").strip()
+            speaker_ip = user_input.get(CONF_SPEAKER_IP, "").strip()
 
             await self.async_set_unique_id(self._camera_uid or self._email)
             self._abort_if_unique_id_configured()
@@ -180,8 +185,14 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
                 CONF_STORE_CREDENTIALS: self._store_credentials,
             }
 
+            if self._speaker_uid:
+                data[CONF_SPEAKER_UID] = self._speaker_uid
+
             if camera_ip:
                 data[CONF_CAMERA_IP] = camera_ip
+
+            if speaker_ip:
+                data[CONF_SPEAKER_IP] = speaker_ip
 
             if self._store_credentials:
                 data[CONF_EMAIL] = self._email
@@ -197,6 +208,7 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
             data_schema=vol.Schema(
                 {
                     vol.Optional(CONF_CAMERA_IP, default=""): cv.string,
+                    vol.Optional(CONF_SPEAKER_IP, default=""): cv.string,
                 }
             ),
         )
@@ -311,15 +323,20 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Handle reconfiguration — update camera IP."""
+        """Handle reconfiguration — update camera/speaker IP."""
         if user_input is not None:
             reconfigure_entry = self._get_reconfigure_entry()
             new_data = {**reconfigure_entry.data}
             camera_ip = user_input.get(CONF_CAMERA_IP, "").strip()
+            speaker_ip = user_input.get(CONF_SPEAKER_IP, "").strip()
             if camera_ip:
                 new_data[CONF_CAMERA_IP] = camera_ip
             else:
                 new_data.pop(CONF_CAMERA_IP, None)
+            if speaker_ip:
+                new_data[CONF_SPEAKER_IP] = speaker_ip
+            else:
+                new_data.pop(CONF_SPEAKER_IP, None)
             return self.async_update_reload_and_abort(
                 reconfigure_entry, data=new_data
             )
@@ -333,6 +350,10 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
                         CONF_CAMERA_IP,
                         default=reconfigure_entry.data.get(CONF_CAMERA_IP, ""),
                     ): cv.string,
+                    vol.Optional(
+                        CONF_SPEAKER_IP,
+                        default=reconfigure_entry.data.get(CONF_SPEAKER_IP, ""),
+                    ): cv.string,
                 }
             ),
         )
@@ -345,7 +366,7 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class NanitOptionsFlow(OptionsFlow):
-    """Handle Nanit options — configure camera IP for local access."""
+    """Handle Nanit options — configure camera/speaker IP for local access."""
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -353,14 +374,21 @@ class NanitOptionsFlow(OptionsFlow):
         """Manage the options."""
         if user_input is not None:
             camera_ip = user_input.get(CONF_CAMERA_IP, "").strip()
-            return self.async_create_entry(
-                title="",
-                data={CONF_CAMERA_IP: camera_ip} if camera_ip else {},
-            )
+            speaker_ip = user_input.get(CONF_SPEAKER_IP, "").strip()
+            data: dict[str, str] = {}
+            if camera_ip:
+                data[CONF_CAMERA_IP] = camera_ip
+            if speaker_ip:
+                data[CONF_SPEAKER_IP] = speaker_ip
+            return self.async_create_entry(title="", data=data)
 
-        current_ip = self.config_entry.options.get(
+        current_camera_ip = self.config_entry.options.get(
             CONF_CAMERA_IP,
             self.config_entry.data.get(CONF_CAMERA_IP, ""),
+        )
+        current_speaker_ip = self.config_entry.options.get(
+            CONF_SPEAKER_IP,
+            self.config_entry.data.get(CONF_SPEAKER_IP, ""),
         )
         return self.async_show_form(
             step_id="init",
@@ -368,7 +396,11 @@ class NanitOptionsFlow(OptionsFlow):
                 {
                     vol.Optional(
                         CONF_CAMERA_IP,
-                        default=current_ip,
+                        default=current_camera_ip,
+                    ): cv.string,
+                    vol.Optional(
+                        CONF_SPEAKER_IP,
+                        default=current_speaker_ip,
                     ): cv.string,
                 }
             ),

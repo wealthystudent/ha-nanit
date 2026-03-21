@@ -11,21 +11,23 @@ from typing import Any
 from homeassistant.components.switch import SwitchDeviceClass, SwitchEntity, SwitchEntityDescription
 from homeassistant.const import STATE_ON
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 from . import NanitConfigEntry
 from .const import CONF_CAMERA_UID
-from .coordinator import NanitPushCoordinator
-from .entity import NanitEntity
+from .coordinator import NanitPushCoordinator, NanitSoundLightCoordinator
+from .entity import NanitEntity, NanitSoundLightEntity
 
 from aionanit import NanitCamera
 from aionanit.models import CameraState, NightLightState
 
+from .aionanit_sl.exceptions import NanitTransportError
+from .aionanit_sl.sound_light import NanitSoundLight
+
 _LOGGER = logging.getLogger(__name__)
 
 # After a command, ignore contradicting push updates for this many seconds.
-# The Nanit camera may echo the *old* state before processing the command;
-# empirical data shows the stale-then-confirmed cycle completes within ~12 s.
 _COMMAND_GRACE_PERIOD: float = 15.0
 
 @dataclass(frozen=True, kw_only=True)
@@ -70,7 +72,27 @@ SWITCHES: tuple[NanitSwitchEntityDescription, ...] = (
         turn_on_fn=lambda cam: cam.async_set_settings(sleep_mode=False),
         turn_off_fn=lambda cam: cam.async_set_settings(sleep_mode=True),
     ),
-    )
+    NanitSwitchEntityDescription(
+        key="status_led",
+        translation_key="status_led",
+        entity_category=EntityCategory.CONFIG,
+        entity_registry_enabled_default=False,
+        device_class=SwitchDeviceClass.SWITCH,
+        value_fn=lambda state: state.settings.status_light_on if state.settings.status_light_on is not None else None,
+        turn_on_fn=lambda cam: cam.async_set_settings(status_light_on=True),
+        turn_off_fn=lambda cam: cam.async_set_settings(status_light_on=False),
+    ),
+    NanitSwitchEntityDescription(
+        key="mic_mute",
+        translation_key="mic_mute",
+        entity_category=EntityCategory.CONFIG,
+        entity_registry_enabled_default=False,
+        device_class=SwitchDeviceClass.SWITCH,
+        value_fn=lambda state: state.settings.mic_mute_on if state.settings.mic_mute_on is not None else None,
+        turn_on_fn=lambda cam: cam.async_set_settings(mic_mute_on=True),
+        turn_off_fn=lambda cam: cam.async_set_settings(mic_mute_on=False),
+    ),
+)
 
 
 async def async_setup_entry(
@@ -81,9 +103,18 @@ async def async_setup_entry(
     """Set up Nanit switches."""
     coordinator = entry.runtime_data.push_coordinator
     camera = entry.runtime_data.camera
-    async_add_entities(
+    entities: list[SwitchEntity] = [
         NanitSwitch(coordinator, camera, description) for description in SWITCHES
-    )
+    ]
+
+    # Sound & Light Machine switches (optional)
+    sl_coordinator = entry.runtime_data.sound_light_coordinator
+    if sl_coordinator is not None:
+        entities.append(NanitSLPowerSwitch(sl_coordinator, entry))
+        entities.append(NanitSLLightSwitch(sl_coordinator, entry))
+        entities.append(NanitSLSoundSwitch(sl_coordinator, entry))
+
+    async_add_entities(entities)
 
 
 class NanitSwitch(NanitEntity, RestoreEntity, SwitchEntity):
@@ -121,11 +152,7 @@ class NanitSwitch(NanitEntity, RestoreEntity, SwitchEntity):
 
     @property
     def is_on(self) -> bool | None:
-        """Return true if the switch is on.
-
-        Returns None (unknown) when no live or restored data is available,
-        so that the HA frontend does not misleadingly show 'off'.
-        """
+        """Return true if the switch is on."""
         return self._attr_is_on
 
     def _handle_coordinator_update(self) -> None:
@@ -133,9 +160,7 @@ class NanitSwitch(NanitEntity, RestoreEntity, SwitchEntity):
 
         After a command, push events that contradict the expected state are
         suppressed for ``_COMMAND_GRACE_PERIOD`` seconds to prevent the
-        camera's stale echo from bouncing the HA state.  Once the push
-        state matches the command (confirming it was applied) or the grace
-        period expires, normal push handling resumes.
+        camera's stale echo from bouncing the HA state.
         """
         if self.coordinator.data is not None:
             new_value = self.entity_description.value_fn(self.coordinator.data)
@@ -162,7 +187,6 @@ class NanitSwitch(NanitEntity, RestoreEntity, SwitchEntity):
                         self._attr_is_on = new_value
                 else:
                     self._attr_is_on = new_value
-            # If new_value is None, keep the previous _attr_is_on (last-known).
         self.async_write_ha_state()
 
     async def async_turn_on(self, **kwargs: Any) -> None:
@@ -200,3 +224,132 @@ class NanitSwitch(NanitEntity, RestoreEntity, SwitchEntity):
             self._command_state = None
             self.async_write_ha_state()
             raise
+
+
+# --- Sound & Light Machine switches ---
+
+
+class NanitSLPowerSwitch(NanitSoundLightEntity, SwitchEntity):
+    """Power switch for the Nanit Sound & Light Machine."""
+
+    _attr_translation_key = "sound_machine_switch"
+    _attr_icon = "mdi:power"
+    _attr_device_class = SwitchDeviceClass.SWITCH
+
+    def __init__(
+        self,
+        coordinator: NanitSoundLightCoordinator,
+        entry: NanitConfigEntry,
+    ) -> None:
+        """Initialize."""
+        super().__init__(coordinator)
+        self._entry = entry
+        self._attr_unique_id = (
+            f"{entry.data.get(CONF_CAMERA_UID, entry.entry_id)}"
+            "_sound_machine_switch"
+        )
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True if the device is powered on."""
+        if self.coordinator.data is None:
+            return None
+        return self.coordinator.data.power_on
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Turn the device on."""
+        try:
+            await self.coordinator.sound_light.async_set_power(True)
+        except (NanitTransportError, Exception) as err:
+            _LOGGER.error("Failed to turn on S&L device: %s", err)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Turn the device off."""
+        try:
+            await self.coordinator.sound_light.async_set_power(False)
+        except (NanitTransportError, Exception) as err:
+            _LOGGER.error("Failed to turn off S&L device: %s", err)
+
+
+class NanitSLLightSwitch(NanitSoundLightEntity, SwitchEntity):
+    """Night light on/off switch for the Nanit Sound & Light Machine."""
+
+    _attr_translation_key = "sl_light_switch"
+    _attr_icon = "mdi:lightbulb"
+    _attr_device_class = SwitchDeviceClass.SWITCH
+
+    def __init__(
+        self,
+        coordinator: NanitSoundLightCoordinator,
+        entry: NanitConfigEntry,
+    ) -> None:
+        """Initialize."""
+        super().__init__(coordinator)
+        self._entry = entry
+        self._attr_unique_id = (
+            f"{entry.data.get(CONF_CAMERA_UID, entry.entry_id)}"
+            "_sl_light_switch"
+        )
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True if the night light is on."""
+        if self.coordinator.data is None:
+            return None
+        return self.coordinator.data.light_enabled
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Turn the night light on."""
+        try:
+            await self.coordinator.sound_light.async_set_light_enabled(True)
+        except (NanitTransportError, Exception) as err:
+            _LOGGER.error("Failed to turn on S&L night light: %s", err)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Turn the night light off."""
+        try:
+            await self.coordinator.sound_light.async_set_light_enabled(False)
+        except (NanitTransportError, Exception) as err:
+            _LOGGER.error("Failed to turn off S&L night light: %s", err)
+
+
+class NanitSLSoundSwitch(NanitSoundLightEntity, SwitchEntity):
+    """Sound on/off switch for the Nanit Sound & Light Machine."""
+
+    _attr_translation_key = "sl_sound_switch"
+    _attr_icon = "mdi:music-note"
+    _attr_device_class = SwitchDeviceClass.SWITCH
+
+    def __init__(
+        self,
+        coordinator: NanitSoundLightCoordinator,
+        entry: NanitConfigEntry,
+    ) -> None:
+        """Initialize."""
+        super().__init__(coordinator)
+        self._entry = entry
+        self._attr_unique_id = (
+            f"{entry.data.get(CONF_CAMERA_UID, entry.entry_id)}"
+            "_sl_sound_switch"
+        )
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True if sound is on."""
+        if self.coordinator.data is None:
+            return None
+        return self.coordinator.data.sound_on
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Turn sound on."""
+        try:
+            await self.coordinator.sound_light.async_set_sound_on(True)
+        except (NanitTransportError, Exception) as err:
+            _LOGGER.error("Failed to turn on S&L sound: %s", err)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Turn sound off."""
+        try:
+            await self.coordinator.sound_light.async_set_sound_on(False)
+        except (NanitTransportError, Exception) as err:
+            _LOGGER.error("Failed to turn off S&L sound: %s", err)

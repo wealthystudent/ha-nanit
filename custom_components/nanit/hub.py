@@ -15,15 +15,13 @@ from aionanit import (
 )
 from aionanit.models import Baby
 
+from .aionanit_sl.sound_light import NanitSoundLight
+
 _LOGGER = logging.getLogger(__name__)
 
 
 class NanitHub:
-    """Manages the NanitClient, token persistence, and camera instances.
-
-    One hub per config entry. The hub owns the NanitClient and is stored
-    in ConfigEntry.runtime_data.
-    """
+    """Manages the NanitClient, token persistence, and camera instances."""
 
     def __init__(
         self,
@@ -35,6 +33,7 @@ class NanitHub:
         self._client = NanitClient(session)
         self._client.restore_tokens(access_token, refresh_token)
         self._cameras: dict[str, NanitCamera] = {}
+        self._sound_lights: dict[str, NanitSoundLight] = {}
         self._unsubscribe_tokens: Callable[[], None] | None = None
 
     @property
@@ -46,11 +45,7 @@ class NanitHub:
         self,
         callback: Callable[[str, str], None],
     ) -> None:
-        """Register a callback for token refreshes (to persist to config entry).
-
-        Args:
-            callback: Called with (access_token, refresh_token) on refresh.
-        """
+        """Register a callback for token refreshes."""
         tm = self._client.token_manager
         if tm is not None:
             self._unsubscribe_tokens = tm.on_tokens_refreshed(callback)
@@ -63,7 +58,7 @@ class NanitHub:
         prefer_local: bool = True,
         local_ip: str | None = None,
     ) -> NanitCamera:
-        """Get or create a NanitCamera (delegates to NanitClient.camera())."""
+        """Get or create a NanitCamera."""
         if camera_uid in self._cameras:
             return self._cameras[camera_uid]
 
@@ -76,6 +71,30 @@ class NanitHub:
         self._cameras[camera_uid] = cam
         return cam
 
+    def get_sound_light(
+        self,
+        speaker_uid: str,
+        device_ip: str,
+    ) -> NanitSoundLight:
+        """Get or create a NanitSoundLight."""
+        if speaker_uid in self._sound_lights:
+            return self._sound_lights[speaker_uid]
+
+        # NanitSoundLight needs token_manager, rest_client, and session from NanitClient
+        if self._client.token_manager is None:
+            from aionanit import NanitAuthError
+            raise NanitAuthError("Not authenticated — call async_login first")
+
+        sl = NanitSoundLight(
+            speaker_uid=speaker_uid,
+            device_ip=device_ip,
+            token_manager=self._client.token_manager,
+            rest_client=self._client.rest_client,
+            session=self._client._session,
+        )
+        self._sound_lights[speaker_uid] = sl
+        return sl
+
     async def async_get_babies(self) -> list[Baby]:
         """Fetch babies from the Nanit cloud API."""
         return await self._client.async_get_babies()
@@ -87,3 +106,10 @@ class NanitHub:
             self._unsubscribe_tokens = None
         await self._client.async_close()
         self._cameras.clear()
+        # Also stop S&L instances
+        for sl in list(self._sound_lights.values()):
+            try:
+                await sl.async_stop()
+            except Exception:
+                _LOGGER.debug("Error stopping S&L during close")
+        self._sound_lights.clear()

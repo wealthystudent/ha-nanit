@@ -17,11 +17,13 @@ from .const import (
     CONF_CAMERA_IP,
     CONF_CAMERA_UID,
     CONF_REFRESH_TOKEN,
+    CONF_SPEAKER_IP,
+    CONF_SPEAKER_UID,
     DOMAIN,
     LOGGER,
     PLATFORMS,
 )
-from .coordinator import NanitCloudCoordinator, NanitPushCoordinator
+from .coordinator import NanitCloudCoordinator, NanitPushCoordinator, NanitSoundLightCoordinator
 from .hub import NanitHub
 
 
@@ -33,6 +35,7 @@ class NanitData:
     camera: NanitCamera
     push_coordinator: NanitPushCoordinator
     cloud_coordinator: NanitCloudCoordinator | None
+    sound_light_coordinator: NanitSoundLightCoordinator | None
 
 
 type NanitConfigEntry = ConfigEntry[NanitData]
@@ -96,11 +99,51 @@ async def async_setup_entry(hass: HomeAssistant, entry: NanitConfigEntry) -> boo
         LOGGER.warning("Cloud event coordinator failed to start; cloud sensors disabled")
         cloud_coordinator = None
 
+    # Sound & Light Machine coordinator (optional — local WebSocket push)
+    sound_light_coordinator: NanitSoundLightCoordinator | None = None
+    speaker_uid = entry.data.get(CONF_SPEAKER_UID)
+    speaker_ip = entry.data.get(CONF_SPEAKER_IP)
+
+    # Migration: if speaker_uid not yet stored, try to fetch it from /babies
+    if not speaker_uid:
+        try:
+            babies = await hub.async_get_babies()
+            if babies and babies[0].speaker_uid:
+                speaker_uid = babies[0].speaker_uid
+                LOGGER.info(
+                    "Discovered speaker UID %s; persisting to config entry", speaker_uid
+                )
+                hass.config_entries.async_update_entry(
+                    entry,
+                    data={**entry.data, CONF_SPEAKER_UID: speaker_uid},
+                )
+        except Exception:
+            LOGGER.debug("Could not fetch babies to discover speaker UID")
+
+    if speaker_uid and speaker_ip:
+        try:
+            sound_light = hub.get_sound_light(speaker_uid, speaker_ip)
+            sound_light_coordinator = NanitSoundLightCoordinator(hass, sound_light)
+            await sound_light_coordinator.async_setup()
+        except NanitAuthError as err:
+            raise ConfigEntryAuthFailed(err) from err
+        except Exception:
+            LOGGER.info(
+                "Sound & Light Machine coordinator failed to start; sound/light entities disabled"
+            )
+            sound_light_coordinator = None
+    else:
+        LOGGER.debug(
+            "No speaker UID/IP available; Sound & Light Machine entities skipped "
+            "(speaker_uid=%s, speaker_ip=%s)", speaker_uid, speaker_ip,
+        )
+
     entry.runtime_data = NanitData(
         hub=hub,
         camera=camera,
         push_coordinator=push_coordinator,
         cloud_coordinator=cloud_coordinator,
+        sound_light_coordinator=sound_light_coordinator,
     )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

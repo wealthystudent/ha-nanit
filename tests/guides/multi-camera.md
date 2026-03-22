@@ -1,109 +1,218 @@
-# Multi-camera support
+# Testing: Multi-camera support
 
-Tests that the integration correctly discovers and manages multiple cameras on one Nanit account.
+Step-by-step guide to verify that multiple cameras on one Nanit account work correctly.
 
 **Related:** PR #12, Issue #9
 
-## Prerequisites
+---
 
-- Dev HA running (`just dev`)
-- Integration added with your Nanit credentials
+## Part 1 — Run the unit tests
 
-## A. Multiple physical cameras
-
-If you have multiple cameras on the same Nanit account, no code changes are needed. All cameras appear automatically after adding the integration.
-
-### Verification
-
-- [ ] All cameras appear as separate devices in Settings → Devices
-- [ ] Each camera has its own entities (temperature, humidity, light, switches, stream)
-- [ ] Entity unique IDs follow `{camera_uid}_{key}` pattern (check via Developer Tools → States)
-- [ ] Per-camera IP config: Settings → Nanit → Configure → select camera → enter IP
-- [ ] `just dev-restart` → all cameras reconnect
-- [ ] Remove integration → all cameras + entities removed
-- [ ] Re-add integration → all cameras reappear
-
-## B. Single camera (simulated multi-camera)
-
-Clone your real baby with a different UID so the hub discovers two cameras. Both connect to the same physical device over LAN.
-
-### Code change
-
-In `custom_components/nanit/hub.py`, method `async_setup()`, add after **line 96** (`babies = await self._client.async_get_babies()`):
-
-```python
-# --- DEV ONLY: clone camera for multi-device testing. Remove before committing. ---
-from aionanit.models import Baby
-babies.append(Baby(uid="clone_baby", name="Clone Camera", camera_uid="clone_cam"))
-```
-
-The full context around the change:
-
-```python
-    async def async_setup(self) -> None:
-        ...
-        # Fetch babies (also validates tokens)
-        babies = await self._client.async_get_babies()
-
-        # --- DEV ONLY: clone camera for multi-device testing. Remove before committing. ---
-        from aionanit.models import Baby
-        babies.append(Baby(uid="clone_baby", name="Clone Camera", camera_uid="clone_cam"))
-
-        if not babies:
-            ...
-```
-
-### Steps
-
-1. Apply the code change above
-2. `just dev-restart`
-3. Go to Settings → Nanit → Configure
-4. Select "Clone Camera" → enter your real camera's LAN IP (e.g. `192.168.1.x`)
-5. HA reloads the integration — both cameras now connect to the same physical device
-
-### What works on the clone
-
-| Feature | Works? | Why |
-|---------|--------|-----|
-| Temperature, humidity, light sensors | Yes | Local WebSocket push |
-| Night light switch | Yes | Local WebSocket command |
-| Camera power switch | Yes | Local WebSocket command |
-| Volume control | Yes | Local WebSocket command |
-| Camera stream (RTMPS) | Yes | Stream URL from cloud API |
-| Motion/sound detection | No | Cloud doesn't know `clone_cam` |
-| Connectivity sensor | Yes | Tracks local WebSocket state |
-
-### Verification
-
-- [ ] Two devices in Settings → Devices: real camera + "Clone Camera"
-- [ ] Both show live sensor data (temperature, humidity, light)
-- [ ] Both camera streams work simultaneously
-- [ ] Switches work independently on both (night light, power)
-- [ ] Cloud sensors (motion, sound) work on real camera, unavailable on clone
-- [ ] Options flow shows camera selector with both cameras
-- [ ] `just dev-restart` → both cameras reconnect
-- [ ] Remove the code change, `just dev-restart` → only real camera remains
-
-### Cleanup
-
-Remove the three injected lines from `hub.py`. Verify the file matches the committed version:
+These test multi-camera logic without any hardware.
 
 ```bash
-git diff custom_components/nanit/hub.py  # should be empty
+just test
 ```
 
-## C. Migration (v1 → v2)
+Expected: **30/30 pass**. If any fail, stop here and fix them first.
 
-If testing upgrade from an existing single-camera installation:
+---
 
-1. Start with the old code (v1), add integration, verify camera works
-2. Replace `custom_components/nanit/` with the new code
-3. `just dev-restart`
-4. Check logs for: `Migrated Nanit config entry to version 2`
+## Part 2 — Start the dev HA instance
 
-### Verification
+```bash
+just dev
+```
 
-- [ ] Camera still works, same entities, same entity IDs
-- [ ] Dashboards and automations unchanged
-- [ ] Settings → Nanit → Configure shows per-camera IP options flow
-- [ ] Previously configured camera IP preserved in new options
+Wait ~30 seconds for HA to boot, then open http://localhost:8123 in your browser.
+
+If this is your first time, you'll go through the HA onboarding wizard (create user, pick location, etc.). This only happens once.
+
+---
+
+## Part 3 — Add the Nanit integration
+
+1. Go to **Settings → Devices & Services**
+2. Click **Add Integration** (bottom right)
+3. Search for **Nanit**
+4. Enter your Nanit **email** and **password**
+5. Check **Store email and password** (makes testing easier)
+6. Click **Submit**
+7. If prompted, enter the **MFA code** sent to your phone
+8. The integration is now added. Your camera should appear as a device.
+
+**Verify:**
+- [ ] Go to **Settings → Devices & Services → Nanit** — you see one device
+- [ ] Click the device — you see entities: temperature, humidity, light, night light, camera power, volume, camera, connectivity, motion, sound
+
+---
+
+## Part 4 — Simulate a second camera
+
+Since you only have one physical camera, you'll inject a fake second baby into the code. This makes the integration think there are two cameras on your account.
+
+### 4.1 — Edit hub.py
+
+Open `custom_components/nanit/hub.py` in your editor.
+
+Find this line (around line 96):
+
+```python
+        babies = await self._client.async_get_babies()
+```
+
+Add these three lines **directly below it**:
+
+```python
+        # --- DEV ONLY: remove before committing ---
+        from aionanit.models import Baby
+        babies.append(Baby(uid="clone_baby", name="Clone Camera", camera_uid="clone_cam"))
+```
+
+Save the file.
+
+### 4.2 — Restart HA
+
+```bash
+just dev-restart
+```
+
+Wait ~15 seconds for HA to restart.
+
+### 4.3 — Verify two devices appear
+
+1. Open http://localhost:8123
+2. Go to **Settings → Devices & Services → Nanit**
+3. You should now see **2 devices**
+4. Click each device to confirm:
+   - Your real camera — all entities working (temperature has a value, etc.)
+   - "Clone Camera" — entities exist but show **unavailable** (expected, no real camera behind it)
+
+- [ ] Two devices visible
+- [ ] Real camera entities have live data
+- [ ] Clone camera entities show unavailable
+
+---
+
+## Part 5 — Connect the clone to your real camera
+
+Make the clone device actually connect to your physical camera via its local IP.
+
+### 5.1 — Open the options flow
+
+1. Go to **Settings → Devices & Services → Nanit**
+2. Click the **Configure** button (gear icon)
+3. You should see a **camera selector dropdown** with both cameras listed
+4. Select **Clone Camera**
+5. Click **Submit**
+
+### 5.2 — Enter your camera's local IP
+
+1. Enter your camera's LAN IP address (e.g. `192.168.1.x`, port 442)
+2. Click **Submit**
+3. HA will reload the integration
+
+### 5.3 — Verify both devices have live data
+
+1. Go to **Settings → Devices & Services → Nanit**
+2. Click on **Clone Camera**
+3. The local sensors should now have live data:
+
+- [ ] Temperature shows a value
+- [ ] Humidity shows a value
+- [ ] Night light switch works (toggle it — the physical light turns on/off)
+- [ ] Camera power switch works
+- [ ] Camera stream works (click the camera entity → you see video)
+
+> **Note:** Motion and sound sensors will still show unavailable on the clone — that's expected. Those come from the Nanit cloud API which doesn't know about `clone_cam`.
+
+---
+
+## Part 6 — Test isolation
+
+Verify that the two cameras operate independently.
+
+### 6.1 — Restart HA
+
+```bash
+just dev-restart
+```
+
+- [ ] Both cameras reconnect after restart
+- [ ] Both still have live sensor data
+
+### 6.2 — Test the options flow with the real camera
+
+1. Go to **Settings → Devices & Services → Nanit → Configure**
+2. Select your **real camera** from the dropdown
+3. Set or change its local IP
+4. Submit — HA reloads
+5. Real camera still works with the new IP
+
+- [ ] Options flow lets you configure each camera independently
+
+---
+
+## Part 7 — Clean up
+
+### 7.1 — Remove the dev hack
+
+Open `custom_components/nanit/hub.py` and delete the three lines you added:
+
+```python
+        # --- DEV ONLY: remove before committing ---
+        from aionanit.models import Baby
+        babies.append(Baby(uid="clone_baby", name="Clone Camera", camera_uid="clone_cam"))
+```
+
+Save the file.
+
+### 7.2 — Restart and verify
+
+```bash
+just dev-restart
+```
+
+1. Go to **Settings → Devices & Services → Nanit**
+2. Only your real camera should remain
+
+- [ ] Clone Camera is gone
+- [ ] Real camera still works normally
+
+### 7.3 — Confirm no leftover changes
+
+```bash
+git diff custom_components/nanit/hub.py
+```
+
+This should show **no output** (file matches the committed version).
+
+---
+
+## Part 8 — Test remove and re-add
+
+1. Go to **Settings → Devices & Services → Nanit**
+2. Click the **three dots** menu → **Delete**
+3. Confirm deletion
+4. Verify the Nanit integration is gone from the list
+5. Add it again (repeat Part 3)
+6. Camera reappears with all entities
+
+- [ ] Clean removal — no orphaned entities
+- [ ] Clean re-add — everything works fresh
+
+---
+
+## Part 9 — Stop the dev instance
+
+When you're done testing:
+
+```bash
+just dev-stop
+```
+
+To wipe all state for a completely fresh test next time:
+
+```bash
+just dev-reset
+```

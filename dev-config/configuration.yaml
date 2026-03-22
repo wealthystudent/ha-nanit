@@ -3,5 +3,4 @@ default_config:
 logger:
   default: info
   logs:
-    custom_components.nanit: debug
-    aionanit: debug
+    custom_components: debug

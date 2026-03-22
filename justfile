@@ -3,6 +3,48 @@
 default:
     @just --list
 
+# --- Development ---
+
+# Start dev HA instance (http://localhost:8123)
+dev:
+    docker compose -f docker-compose.dev.yml up -d
+    @echo "HA running at http://localhost:8123"
+
+# Stop dev HA instance
+dev-stop:
+    docker compose -f docker-compose.dev.yml down
+
+# Restart dev HA (after code changes)
+dev-restart:
+    docker compose -f docker-compose.dev.yml restart homeassistant
+
+# Tail dev HA logs (Ctrl+C to stop)
+dev-logs:
+    docker compose -f docker-compose.dev.yml logs -f homeassistant
+
+# Wipe dev HA state for a fresh start
+dev-reset:
+    docker compose -f docker-compose.dev.yml down
+    rm -rf dev-config/.storage dev-config/home-assistant_v2.db*
+    @echo "Dev state wiped. Run 'just dev' to start fresh."
+
+# --- Testing ---
+
+# Run integration tests (config flow, migration, hub)
+test:
+    python3 -m pytest tests/ -v
+
+# Run aionanit library tests
+test-lib:
+    cd packages/aionanit && python3 -m pytest tests/ -v
+
+# Run all tests
+test-all:
+    python3 -m pytest tests/ -v
+    cd packages/aionanit && python3 -m pytest tests/ -v
+
+# --- Tools ---
+
 # Login to Nanit cloud (saves session to .nanit-session)
 login *args:
     python3 tools/nanit-login.py {{args}}
@@ -11,6 +53,8 @@ login *args:
 # Examples: just events    |    just events --limit 5
 events *args:
     python3 tools/nanit-events.py {{args}}
+
+# --- Release ---
 
 # Create a GitHub release by bumping the latest version.
 # Usage: just release <patch|minor|major>

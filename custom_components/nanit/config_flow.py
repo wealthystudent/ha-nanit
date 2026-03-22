@@ -166,10 +166,10 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
             CONF_ACCESS_TOKEN: self._access_token,
             CONF_REFRESH_TOKEN: self._refresh_token,
             CONF_STORE_CREDENTIALS: self._store_credentials,
+            CONF_EMAIL: self._email,
         }
 
         if self._store_credentials:
-            data[CONF_EMAIL] = self._email
             data[CONF_PASSWORD] = self._password
 
         return self.async_create_entry(title=title, data=data)
@@ -220,8 +220,8 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
                 new_data = {**reauth_entry.data}
                 new_data[CONF_ACCESS_TOKEN] = access_token
                 new_data[CONF_REFRESH_TOKEN] = refresh_token
+                new_data[CONF_EMAIL] = email
                 if reauth_entry.data.get(CONF_STORE_CREDENTIALS):
-                    new_data[CONF_EMAIL] = email
                     new_data[CONF_PASSWORD] = password
                 return self.async_update_reload_and_abort(
                     reauth_entry, data=new_data
@@ -268,8 +268,8 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
                 new_data = {**reauth_entry.data}
                 new_data[CONF_ACCESS_TOKEN] = access_token
                 new_data[CONF_REFRESH_TOKEN] = refresh_token
+                new_data[CONF_EMAIL] = self._email
                 if reauth_entry.data.get(CONF_STORE_CREDENTIALS):
-                    new_data[CONF_EMAIL] = self._email
                     new_data[CONF_PASSWORD] = self._password
                 return self.async_update_reload_and_abort(
                     reauth_entry, data=new_data
@@ -313,14 +313,14 @@ class NanitOptionsFlow(OptionsFlow):
     ) -> ConfigFlowResult:
         """Select which camera to configure."""
         hub = self.config_entry.runtime_data.hub
-        cameras = hub.camera_data
+        babies = hub.babies
 
-        if not cameras:
+        if not babies:
             return self.async_abort(reason="no_cameras")
 
         # Single camera — skip selection, go straight to IP config
-        if len(cameras) == 1:
-            self._selected_camera_uid = next(iter(cameras))
+        if len(babies) == 1:
+            self._selected_camera_uid = babies[0].camera_uid
             return await self.async_step_camera_ip(user_input)
 
         if user_input is not None:
@@ -328,7 +328,7 @@ class NanitOptionsFlow(OptionsFlow):
             return await self.async_step_camera_ip()
 
         camera_options = {
-            uid: cam_data.baby.name for uid, cam_data in cameras.items()
+            baby.camera_uid: baby.name for baby in babies
         }
 
         return self.async_show_form(

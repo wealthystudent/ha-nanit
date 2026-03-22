@@ -62,6 +62,7 @@ class NanitHub:
         self._entry = entry
         self._client = NanitClient(session)
         self._camera_data: dict[str, CameraData] = {}
+        self._babies: list[Baby] = []
         self._unsubscribe_tokens: Callable[[], None] | None = None
 
     @property
@@ -73,6 +74,11 @@ class NanitHub:
     def camera_data(self) -> dict[str, CameraData]:
         """Return per-camera runtime data, keyed by camera_uid."""
         return self._camera_data
+
+    @property
+    def babies(self) -> list[Baby]:
+        """Return all discovered babies (including ones that failed to connect)."""
+        return self._babies
 
     async def async_setup(self) -> None:
         """Restore tokens, discover babies, create cameras and coordinators.
@@ -95,6 +101,8 @@ class NanitHub:
 
         # Fetch babies (also validates tokens)
         babies = await self._client.async_get_babies()
+
+        self._babies = list(babies)
 
         if not babies:
             _LOGGER.warning("No babies/cameras found on Nanit account")

@@ -41,9 +41,9 @@ def mock_entry_data_v2(
         CONF_ACCESS_TOKEN: MOCK_ACCESS_TOKEN,
         CONF_REFRESH_TOKEN: MOCK_REFRESH_TOKEN,
         CONF_STORE_CREDENTIALS: store_credentials,
+        CONF_EMAIL: MOCK_EMAIL,
     }
     if store_credentials:
-        data[CONF_EMAIL] = MOCK_EMAIL
         data[CONF_PASSWORD] = MOCK_PASSWORD
     return data
 

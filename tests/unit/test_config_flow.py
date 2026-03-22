@@ -283,11 +283,7 @@ async def test_options_flow_init_single_camera_goes_to_camera_ip(
     hass = await _resolve_hass(hass)
     entry = MockConfigEntry(domain=DOMAIN, options={})
     entry.runtime_data = SimpleNamespace(
-        hub=SimpleNamespace(
-            camera_data={
-                MOCK_BABY_1.camera_uid: SimpleNamespace(baby=MOCK_BABY_1),
-            }
-        )
+        hub=SimpleNamespace(babies=[MOCK_BABY_1])
     )
     entry.add_to_hass(hass)
 
@@ -303,12 +299,7 @@ async def test_options_flow_init_multiple_cameras_shows_selector(
     hass = await _resolve_hass(hass)
     entry = MockConfigEntry(domain=DOMAIN, options={})
     entry.runtime_data = SimpleNamespace(
-        hub=SimpleNamespace(
-            camera_data={
-                MOCK_BABY_1.camera_uid: SimpleNamespace(baby=MOCK_BABY_1),
-                MOCK_BABY_2.camera_uid: SimpleNamespace(baby=MOCK_BABY_2),
-            }
-        )
+        hub=SimpleNamespace(babies=[MOCK_BABY_1, MOCK_BABY_2])
     )
     entry.add_to_hass(hass)
 
@@ -322,11 +313,7 @@ async def test_options_flow_camera_ip_sets_ip(hass: HomeAssistant) -> None:
     hass = await _resolve_hass(hass)
     entry = MockConfigEntry(domain=DOMAIN, options={CONF_CAMERA_IPS: {}})
     entry.runtime_data = SimpleNamespace(
-        hub=SimpleNamespace(
-            camera_data={
-                MOCK_BABY_1.camera_uid: SimpleNamespace(baby=MOCK_BABY_1),
-            }
-        )
+        hub=SimpleNamespace(babies=[MOCK_BABY_1])
     )
     entry.add_to_hass(hass)
 
@@ -350,11 +337,7 @@ async def test_options_flow_camera_ip_clears_ip_when_empty(
         options={CONF_CAMERA_IPS: {MOCK_BABY_1.camera_uid: "192.168.1.30"}},
     )
     entry.runtime_data = SimpleNamespace(
-        hub=SimpleNamespace(
-            camera_data={
-                MOCK_BABY_1.camera_uid: SimpleNamespace(baby=MOCK_BABY_1),
-            }
-        )
+        hub=SimpleNamespace(babies=[MOCK_BABY_1])
     )
     entry.add_to_hass(hass)
 

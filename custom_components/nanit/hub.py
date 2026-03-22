@@ -22,6 +22,7 @@ from aionanit import (
     NanitClient,
     NanitConnectionError,
 )
+from aionanit.exceptions import NanitCameraUnavailable
 from aionanit.models import Baby
 
 from .const import CONF_CAMERA_IPS, CONF_REFRESH_TOKEN, DOMAIN
@@ -110,7 +111,7 @@ class NanitHub:
             except NanitAuthError:
                 # Auth errors are account-level — propagate immediately
                 raise
-            except NanitConnectionError as err:
+            except (NanitConnectionError, NanitCameraUnavailable) as err:
                 _LOGGER.warning(
                     "Camera %s (%s) failed to connect: %s",
                     baby.name,

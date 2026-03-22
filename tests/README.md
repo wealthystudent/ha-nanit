@@ -1,5 +1,19 @@
 # Testing
 
+## Directory structure
+
+```
+tests/
+├── README.md              ← you are here
+├── unit/                  # Automated pytest tests
+│   ├── conftest.py        #   Shared fixtures and mock data
+│   ├── test_config_flow.py
+│   ├── test_init.py
+│   └── test_hub.py
+└── guides/                # Per-feature manual test guides
+    └── multi-camera.md    #   Multi-camera support (simulated + real)
+```
+
 ## Unit tests (no hardware needed)
 
 ```bash
@@ -10,17 +24,13 @@ just test-all      # Both
 
 First time setup: `pip install -r requirements-test.txt`
 
-> **Note:** The two suites run separately (not together) due to a `tests/` namespace collision.
-
-### What the integration tests cover
+### What the unit tests cover
 
 | File | # | Covers |
 |------|---|--------|
 | `test_config_flow.py` | 12 | Login, MFA, duplicate email abort, options flow (per-camera IP) |
 | `test_init.py` | 9 | Setup/unload, auth/connection errors, v1→v2 migration (5 cases) |
 | `test_hub.py` | 9 | Multi-baby discovery (1/3/0 babies), partial failure, token refresh |
-
-Multi-camera scenarios are fully tested via mocks — no camera hardware required.
 
 ## Dev HA instance (Docker)
 
@@ -36,13 +46,13 @@ The entire `custom_components/` directory is mounted read-only — any custom co
 
 State lives in `dev-config/` (gitignored except `configuration.yaml`).
 
-## Feature-specific test guides
+## Manual test guides
 
-See `tests/docs/` for step-by-step instructions for testing specific features:
+Step-by-step instructions for testing specific features with the dev HA instance:
 
 | Guide | Feature |
 |-------|---------|
-| [docs/multi-camera.md](docs/multi-camera.md) | Multi-camera support (simulated + real) |
+| [guides/multi-camera.md](guides/multi-camera.md) | Multi-camera support (simulated + real) |
 
 ## Pre-release checklist
 

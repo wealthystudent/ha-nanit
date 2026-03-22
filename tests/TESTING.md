@@ -38,11 +38,11 @@ State lives in `dev-config/` (gitignored except `configuration.yaml`).
 
 ## Feature-specific test guides
 
-See `testing/docs/` for step-by-step instructions for testing specific features:
+See `tests/docs/` for step-by-step instructions for testing specific features:
 
 | Guide | Feature |
 |-------|---------|
-| [multi-camera.md](docs/multi-camera.md) | Multi-camera support (simulated + real) |
+| [docs/multi-camera.md](docs/multi-camera.md) | Multi-camera support (simulated + real) |
 
 ## Pre-release checklist
 

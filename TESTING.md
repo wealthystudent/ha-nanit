@@ -3,17 +3,14 @@
 ## 1. Unit tests (no hardware needed)
 
 ```bash
-# Install (once)
-pip install -r requirements-test.txt
-
-# Integration tests (30 tests — config flow, migration, hub, lifecycle)
-python -m pytest tests/ -v
-
-# aionanit library tests (183 tests — protocol, REST, auth, transport)
-cd packages/aionanit && python -m pytest tests/ -v && cd ../..
+just test          # Integration tests (30 — config flow, migration, hub, lifecycle)
+just test-lib      # aionanit library tests (183 — protocol, REST, auth, transport)
+just test-all      # Both
 ```
 
-> **Note:** Run the two test suites separately (not together) due to a `tests/` namespace collision.
+First time setup: `pip install -r requirements-test.txt`
+
+> **Note:** The two suites run separately (not together) due to a `tests/` namespace collision.
 
 ### What the integration tests cover
 
@@ -28,15 +25,16 @@ Multi-camera scenarios are fully tested via mocks — no camera hardware require
 ## 2. Dev HA instance (Docker)
 
 ```bash
-docker compose -f docker-compose.dev.yml up -d     # Start → http://localhost:8123
-docker compose -f docker-compose.dev.yml logs -f    # Tail logs (debug logging enabled)
-docker compose -f docker-compose.dev.yml restart     # Restart after code changes
-docker compose -f docker-compose.dev.yml down        # Stop and remove
+just dev           # Start → http://localhost:8123
+just dev-logs      # Tail logs (debug logging for all custom_components)
+just dev-restart   # Restart after code changes
+just dev-stop      # Stop
+just dev-reset     # Wipe all state for a fresh start
 ```
 
-Source files are mounted read-only — edit code normally, then `docker compose restart`.
+The entire `custom_components/` directory is mounted read-only — any custom component you put there is available in the dev HA. Edit source files normally, then `just dev-restart`.
 
-State lives in `dev-config/` (gitignored except `configuration.yaml`). To start fresh, stop the container and `rm -rf dev-config/.storage dev-config/home-assistant_v2.db*`.
+State lives in `dev-config/` (gitignored except `configuration.yaml`).
 
 ## 3. Testing with multiple cameras
 
@@ -63,11 +61,11 @@ real = babies[0]
 babies.append(Baby(uid="clone_baby", name="Clone Camera", camera_uid="clone_cam"))
 ```
 
-**Step 2:** Set the clone's local IP to your real camera's IP. In the options flow (Settings → Nanit → Configure), select "Clone Camera" and enter your camera's LAN IP (e.g. `192.168.1.x`). This makes the clone connect to the same physical camera over the local network.
+**Step 2:** `just dev-restart` to pick up the change.
+
+**Step 3:** Set the clone's local IP to your real camera's IP. In the options flow (Settings → Nanit → Configure), select "Clone Camera" and enter your camera's LAN IP (e.g. `192.168.1.x`). This makes the clone connect to the same physical camera over the local network.
 
 > The clone's cloud coordinator will fail (the cloud doesn't know `clone_cam`) — this is expected. Cloud-based motion/sound sensors will be unavailable on the clone. All local data (temperature, humidity, night light, camera stream, etc.) will work on both devices.
-
-**Step 3:** Restart HA (or `docker compose restart`).
 
 **Step 4:** Verify:
 
@@ -97,8 +95,8 @@ If you already have the integration installed (v1, single camera):
 
 ## 5. Checklist before release
 
-- [ ] `python -m pytest tests/ -v` → 30/30 pass
-- [ ] `cd packages/aionanit && python -m pytest tests/ -v` → 183/183 pass
+- [ ] `just test` → 30/30 pass
+- [ ] `just test-lib` → 183/183 pass
 - [ ] Docker dev instance: add integration, all cameras appear
 - [ ] Docker dev instance: options flow works (set/clear camera IP)
 - [ ] Docker dev instance: restart HA → cameras reconnect

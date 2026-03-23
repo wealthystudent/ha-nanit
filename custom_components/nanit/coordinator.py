@@ -22,7 +22,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from aionanit import NanitAuthError, NanitCamera, NanitConnectionError
 from aionanit.models import Baby, CameraEvent, CameraEventKind, CameraState, CloudEvent
 
-from .const import CLOUD_POLL_INTERVAL, DOMAIN
+from .const import CLOUD_POLL_INTERVAL, DOMAIN, LOGGER
 
 if TYPE_CHECKING:
     from . import NanitConfigEntry
@@ -128,8 +128,19 @@ class NanitCloudCoordinator(DataUpdateCoordinator[list[CloudEvent]]):
         try:
             client = self._hub.client
             token = await client.token_manager.async_get_access_token()
-            return await client.rest_client.async_get_events(token, self.baby.uid)
+            events: list[CloudEvent] = await client.rest_client.async_get_events(
+                token, self.baby.uid
+            )
+            return events
         except NanitAuthError as err:
-            raise ConfigEntryAuthFailed(err) from err
+            raise ConfigEntryAuthFailed(
+                translation_domain=DOMAIN,
+                translation_key="auth_failed",
+                translation_placeholders={"error": str(err)},
+            ) from err
         except NanitConnectionError as err:
-            raise UpdateFailed(f"Cloud event fetch failed: {err}") from err
+            raise UpdateFailed(
+                translation_domain=DOMAIN,
+                translation_key="cloud_fetch_failed",
+                translation_placeholders={"error": str(err)},
+            ) from err

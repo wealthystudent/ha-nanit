@@ -1,15 +1,6 @@
 {
   "config": {
     "step": {
-      "user": {
-        "title": "Connect to Nanit",
-        "description": "Enter your Nanit account credentials. All cameras on this account will be added automatically.",
-        "data": {
-          "email": "Email",
-          "password": "Password",
-          "store_credentials": "Store email and password (enables easier re-authentication)"
-        }
-      },
       "credentials": {
         "title": "Connect to Nanit",
         "description": "Enter your Nanit account credentials. All cameras on this account will be added automatically.",
@@ -70,6 +61,23 @@
           "camera_ip": "Camera IP Address"
         }
       }
+    }
+  },
+  "exceptions": {
+    "auth_failed": {
+      "message": "Authentication failed: {error}"
+    },
+    "connection_failed": {
+      "message": "Could not connect to Nanit: {error}"
+    },
+    "cloud_fetch_failed": {
+      "message": "Failed to fetch cloud events: {error}"
+    }
+  },
+  "issues": {
+    "camera_connection_failed": {
+      "title": "Nanit camera failed to connect",
+      "description": "Camera **{camera_name}** could not be reached. It will be retried on next reload.\n\nError: {error}"
     }
   },
   "entity": {

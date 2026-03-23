@@ -20,7 +20,7 @@ _LOGGER = logging.getLogger(__name__)
 # Connection parameters — aligned with the Go reference implementation.
 _KEEPALIVE_INTERVAL: float = 25.0  # seconds between protobuf keepalive msgs
 _HEARTBEAT_INTERVAL: float = 60.0  # aiohttp TCP-level heartbeat
-_HANDSHAKE_TIMEOUT: float = 15.0  # ws_connect timeout
+_HANDSHAKE_TIMEOUT: float = 15.0
 _INITIAL_BACKOFF: float = 1.85
 _BACKOFF_FACTOR: float = 1.618  # golden ratio
 _MAX_BACKOFF: float = 60.0
@@ -178,14 +178,15 @@ class WsTransport:
             self._transport_kind = kind
             self._closed = False
 
+            ssl_param: ssl.SSLContext | bool | None = ssl_context
             self._on_connection_change(ConnectionState.CONNECTING, kind, None)
             try:
                 self._ws = await self._session.ws_connect(
                     url,
                     headers=headers,
                     heartbeat=_HEARTBEAT_INTERVAL,
-                    timeout=_HANDSHAKE_TIMEOUT,
-                    ssl=ssl_context,
+                    timeout=aiohttp.ClientWSTimeout(ws_close=_HANDSHAKE_TIMEOUT),
+                    ssl=ssl_param,  # type: ignore[arg-type]
                 )
             except Exception as err:
                 self._on_connection_change(
@@ -292,12 +293,13 @@ class WsTransport:
                         self._headers = await self._get_headers()
                     except Exception as hdr_err:  # noqa: BLE001
                         _LOGGER.warning("Failed to refresh headers: %s", hdr_err)
+                assert self._url is not None
                 self._ws = await self._session.ws_connect(
                     self._url,
                     headers=self._headers,
                     heartbeat=_HEARTBEAT_INTERVAL,
-                    timeout=_HANDSHAKE_TIMEOUT,
-                    ssl=self._ssl_context,
+                    timeout=aiohttp.ClientWSTimeout(ws_close=_HANDSHAKE_TIMEOUT),
+                    ssl=self._ssl_context,  # type: ignore[arg-type]
                 )
                 loop = asyncio.get_running_loop()
                 self._recv_task = loop.create_task(self._recv_loop())

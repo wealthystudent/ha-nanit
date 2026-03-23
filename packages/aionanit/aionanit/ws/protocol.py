@@ -20,7 +20,8 @@ from aionanit.proto import (
 
 def encode_message(msg: Message) -> bytes:
     """Serialize a protobuf Message to bytes."""
-    return msg.SerializeToString()
+    result: bytes = msg.SerializeToString()
+    return result
 
 
 def decode_message(data: bytes) -> Message:

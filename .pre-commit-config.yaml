@@ -1,0 +1,18 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.9.10
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.15.0
+    hooks:
+      - id: mypy
+        additional_dependencies:
+          - aiohttp>=3.9.0
+          - homeassistant-stubs
+        args: [--config-file, pyproject.toml]
+        pass_filenames: false
+        entry: mypy custom_components/nanit packages/aionanit/aionanit

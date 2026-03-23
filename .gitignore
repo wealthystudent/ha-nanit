@@ -42,3 +42,7 @@ htmlcov/
 # Local dev config
 .env
 .nanit-session
+
+# Dev HA instance (docker-compose.dev.yml)
+dev-config/
+!dev-config/configuration.yaml

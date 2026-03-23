@@ -14,7 +14,6 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 from . import NanitConfigEntry
-from .const import CONF_CAMERA_UID
 from .coordinator import NanitPushCoordinator
 from .entity import NanitEntity
 
@@ -78,12 +77,16 @@ async def async_setup_entry(
     entry: NanitConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up Nanit switches."""
-    coordinator = entry.runtime_data.push_coordinator
-    camera = entry.runtime_data.camera
-    async_add_entities(
-        NanitSwitch(coordinator, camera, description) for description in SWITCHES
-    )
+    """Set up Nanit switches for all cameras on the account."""
+    entities: list[NanitSwitch] = []
+    for cam_data in entry.runtime_data.cameras.values():
+        for description in SWITCHES:
+            entities.append(
+                NanitSwitch(
+                    cam_data.push_coordinator, cam_data.camera, description
+                )
+            )
+    async_add_entities(entities)
 
 
 class NanitSwitch(NanitEntity, RestoreEntity, SwitchEntity):
@@ -105,10 +108,7 @@ class NanitSwitch(NanitEntity, RestoreEntity, SwitchEntity):
         # Track the last command so stale push events are suppressed.
         self._command_state: bool | None = None
         self._command_ts: float = 0.0
-        self._attr_unique_id = (
-            f"{coordinator.config_entry.data.get(CONF_CAMERA_UID, coordinator.config_entry.entry_id)}"
-            f"_{description.key}"
-        )
+        self._attr_unique_id = f"{camera.uid}_{description.key}"
         if coordinator.data is not None:
             self._attr_is_on = self.entity_description.value_fn(coordinator.data)
 

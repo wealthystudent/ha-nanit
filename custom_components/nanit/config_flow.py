@@ -365,6 +365,13 @@ class NanitOptionsFlow(OptionsFlow):
             CONF_CAMERA_IPS, {}
         ).get(self._selected_camera_uid, "")
 
+        # Resolve camera name for the description placeholder
+        camera_name = self._selected_camera_uid
+        for baby in self.config_entry.runtime_data.hub.babies:
+            if baby.camera_uid == self._selected_camera_uid:
+                camera_name = baby.name
+                break
+
         return self.async_show_form(
             step_id="camera_ip",
             data_schema=vol.Schema(
@@ -375,4 +382,5 @@ class NanitOptionsFlow(OptionsFlow):
                     ): cv.string,
                 }
             ),
+            description_placeholders={"camera_name": camera_name},
         )

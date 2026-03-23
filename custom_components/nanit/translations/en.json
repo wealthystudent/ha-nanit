@@ -64,8 +64,8 @@
         }
       },
       "camera_ip": {
-        "title": "Camera IP (Optional)",
-        "description": "Enter the camera's local IP address for local-first connectivity. Leave blank to use cloud only.",
+        "title": "Camera IP for {camera_name}",
+        "description": "Enter the local IP address for **{camera_name}** for local-first connectivity. Leave blank to use cloud only.",
         "data": {
           "camera_ip": "Camera IP Address"
         }

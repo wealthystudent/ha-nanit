@@ -1,13 +1,12 @@
 from __future__ import annotations
 
+import importlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from homeassistant.const import CONF_ACCESS_TOKEN
 from homeassistant.core import HomeAssistant
 
 from pytest_homeassistant_custom_component.common import MockConfigEntry
-
-from aionanit import NanitAuthError, NanitConnectionError
 
 from custom_components.nanit.const import CONF_CAMERA_IPS, CONF_REFRESH_TOKEN, DOMAIN
 from custom_components.nanit.hub import NanitHub
@@ -21,7 +20,9 @@ from .conftest import (
 )
 
 
-def _make_entry(hass: HomeAssistant, options: dict | None = None) -> MockConfigEntry:
+def _make_entry(
+    hass: HomeAssistant, options: dict[str, object] | None = None
+) -> MockConfigEntry:
     entry = MockConfigEntry(
         domain=DOMAIN,
         data=mock_entry_data_v2(),
@@ -43,6 +44,11 @@ def _make_mock_camera(uid: str, baby_uid: str) -> MagicMock:
     cam.async_start = AsyncMock()
     cam.async_stop = AsyncMock()
     return cam
+
+
+aionanit = importlib.import_module("aionanit")
+NanitAuthError = aionanit.NanitAuthError
+NanitConnectionError = aionanit.NanitConnectionError
 
 
 async def test_setup_single_baby(hass: HomeAssistant, mock_nanit_client) -> None:
@@ -159,6 +165,59 @@ async def test_setup_reads_camera_ips_from_options(
 
     mock_nanit_client.camera.assert_called_once_with(
         uid="cam_1", baby_uid="baby_1", prefer_local=True, local_ip="10.0.0.8"
+    )
+
+
+async def test_camera_connection_failure_creates_repair_issue(
+    hass: HomeAssistant, mock_nanit_client
+) -> None:
+    entry = _make_entry(hass)
+    hub = NanitHub(hass, MagicMock(), entry)
+
+    with patch("custom_components.nanit.hub.NanitPushCoordinator") as push_cls, patch(
+        "custom_components.nanit.hub.ir.async_create_issue"
+    ) as mock_create_issue:
+        push_cls.return_value = MagicMock(
+            async_setup=AsyncMock(side_effect=NanitConnectionError("unreachable"))
+        )
+
+        try:
+            await hub.async_setup()
+            raise AssertionError("Expected NanitConnectionError")
+        except NanitConnectionError:
+            pass
+
+    mock_create_issue.assert_called_once()
+    call_args = mock_create_issue.call_args
+    assert call_args.args[0] is hass
+    assert call_args.args[1] == DOMAIN
+    assert call_args.args[2] == f"camera_connection_failed_{MOCK_BABY_1.camera_uid}"
+    assert call_args.kwargs["is_fixable"] is False
+    assert call_args.kwargs["is_persistent"] is False
+    assert call_args.kwargs["translation_key"] == "camera_connection_failed"
+    assert call_args.kwargs["translation_placeholders"] == {
+        "camera_name": MOCK_BABY_1.name,
+        "error": "unreachable",
+    }
+
+
+async def test_successful_camera_setup_deletes_repair_issue(
+    hass: HomeAssistant, mock_nanit_client
+) -> None:
+    entry = _make_entry(hass)
+    hub = NanitHub(hass, MagicMock(), entry)
+
+    with patch("custom_components.nanit.hub.NanitPushCoordinator") as push_cls, patch(
+        "custom_components.nanit.hub.NanitCloudCoordinator"
+    ) as cloud_cls, patch(
+        "custom_components.nanit.hub.ir.async_delete_issue"
+    ) as mock_delete_issue:
+        push_cls.return_value = MagicMock(async_setup=AsyncMock())
+        cloud_cls.return_value = MagicMock(async_config_entry_first_refresh=AsyncMock())
+        await hub.async_setup()
+
+    mock_delete_issue.assert_called_once_with(
+        hass, DOMAIN, f"camera_connection_failed_{MOCK_BABY_1.camera_uid}"
     )
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+import importlib
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -8,8 +9,6 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 
 from pytest_homeassistant_custom_component.common import MockConfigEntry
-
-from aionanit import NanitAuthError, NanitConnectionError
 
 from custom_components.nanit import async_migrate_entry, async_setup_entry, async_unload_entry
 from custom_components.nanit.const import (
@@ -22,6 +21,10 @@ from custom_components.nanit.const import (
 )
 
 from .conftest import MOCK_BABY_1, MOCK_EMAIL, mock_entry_data_v1, mock_entry_data_v2
+
+aionanit = importlib.import_module("aionanit")
+NanitAuthError = aionanit.NanitAuthError
+NanitConnectionError = aionanit.NanitConnectionError
 
 
 async def test_async_setup_entry_success(
@@ -111,6 +114,74 @@ async def test_async_unload_entry_success(
         assert await async_unload_entry(hass, entry)
 
     mock_nanit_client.async_close.assert_awaited_once()
+
+
+async def test_stale_device_removed_when_camera_no_longer_on_account(
+    hass: HomeAssistant,
+    mock_nanit_client,
+) -> None:
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=mock_entry_data_v2(),
+        version=2,
+        unique_id=MOCK_EMAIL,
+    )
+    entry.add_to_hass(hass)
+
+    mock_device_registry = MagicMock()
+    stale_device = MagicMock()
+    stale_device.identifiers = {(DOMAIN, "cam_stale")}
+    stale_device.id = "device_stale"
+    stale_device.name = "Stale Camera"
+
+    with patch.object(
+        hass.config_entries,
+        "async_forward_entry_setups",
+        AsyncMock(return_value=True),
+    ), patch(
+        "homeassistant.helpers.device_registry.async_get",
+        return_value=mock_device_registry,
+    ), patch(
+        "homeassistant.helpers.device_registry.async_entries_for_config_entry",
+        return_value=[stale_device],
+    ):
+        assert await async_setup_entry(hass, entry)
+
+    mock_device_registry.async_remove_device.assert_called_once_with("device_stale")
+
+
+async def test_active_device_not_removed(
+    hass: HomeAssistant,
+    mock_nanit_client,
+) -> None:
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=mock_entry_data_v2(),
+        version=2,
+        unique_id=MOCK_EMAIL,
+    )
+    entry.add_to_hass(hass)
+
+    mock_device_registry = MagicMock()
+    active_device = MagicMock()
+    active_device.identifiers = {(DOMAIN, MOCK_BABY_1.camera_uid)}
+    active_device.id = "device_active"
+    active_device.name = "Active Camera"
+
+    with patch.object(
+        hass.config_entries,
+        "async_forward_entry_setups",
+        AsyncMock(return_value=True),
+    ), patch(
+        "homeassistant.helpers.device_registry.async_get",
+        return_value=mock_device_registry,
+    ), patch(
+        "homeassistant.helpers.device_registry.async_entries_for_config_entry",
+        return_value=[active_device],
+    ):
+        assert await async_setup_entry(hass, entry)
+
+    mock_device_registry.async_remove_device.assert_not_called()
 
 
 # --- Migration tests ---

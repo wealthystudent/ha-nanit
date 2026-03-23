@@ -2,6 +2,22 @@
 
 All notable changes to the Nanit Home Assistant integration are documented in this file.
 
+## [1.1.0] – 2026-03-23
+
+### Added
+- Multi-camera support — all cameras on a Nanit account are auto-discovered during setup (one config entry per account)
+- Per-camera local IP configuration via options flow (Settings → Nanit → Configure → select camera → enter IP)
+- Config entry v1→v2 automatic migration for existing single-camera setups (entity unique IDs preserved)
+- Graceful partial failure — if one camera is unreachable, others still set up
+- Camera name shown on the IP configuration page
+- 30 integration tests (config flow, migration, hub discovery, lifecycle)
+- Docker dev HA instance and testing documentation
+
+### Changed
+- Config flow simplified: login + MFA creates one entry per account (no baby selection or camera IP steps)
+- Options flow replaces the reconfigure step for camera IP management
+- Email is always stored in config entry data (only password gated by "store credentials" toggle)
+
 ## [1.0.15] – 2026-03-10
 
 ### Fixed

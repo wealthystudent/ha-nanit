@@ -101,7 +101,7 @@ class NanitCameraEntity(NanitEntity, Camera):
         if not self.is_on:
             return None
         try:
-            image: bytes = await self._camera.async_get_snapshot()
+            image: bytes | None = await self._camera.async_get_snapshot()
             return image
         except Exception:  # noqa: BLE001
             _LOGGER.debug("Failed to get camera snapshot", exc_info=True)

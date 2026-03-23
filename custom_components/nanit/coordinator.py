@@ -128,6 +128,7 @@ class NanitCloudCoordinator(DataUpdateCoordinator[list[CloudEvent]]):
         """Fetch cloud events from the Nanit API."""
         try:
             client = self._hub.client
+            assert client.token_manager is not None
             token = await client.token_manager.async_get_access_token()
             events: list[CloudEvent] = await client.rest_client.async_get_events(
                 token, self.baby.uid

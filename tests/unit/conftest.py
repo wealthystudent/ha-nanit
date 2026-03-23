@@ -101,7 +101,11 @@ def mock_nanit_client():
 @pytest.fixture
 def mock_config_flow_client():
     """Patch NanitClient for config flow tests (different import path)."""
-    with patch("custom_components.nanit.config_flow.NanitClient", autospec=True) as mock_cls:
+    with (
+        patch("custom_components.nanit.config_flow.NanitClient", autospec=True) as mock_cls,
+        patch("custom_components.nanit.async_setup_entry", return_value=True),
+        patch("custom_components.nanit.async_unload_entry", return_value=True),
+    ):
         client = mock_cls.return_value
         client.async_login = AsyncMock(
             return_value={

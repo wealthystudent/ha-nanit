@@ -36,8 +36,8 @@ class NanitSwitchEntityDescription(SwitchEntityDescription):
     """Describe a Nanit switch."""
 
     value_fn: Callable[[CameraState], bool | None]
-    turn_on_fn: Callable[[NanitCamera], Coroutine[Any, Any, None]]
-    turn_off_fn: Callable[[NanitCamera], Coroutine[Any, Any, None]]
+    turn_on_fn: Callable[[NanitCamera], Coroutine[Any, Any, Any]]
+    turn_off_fn: Callable[[NanitCamera], Coroutine[Any, Any, Any]]
 
 
 def _night_light_value(state: CameraState) -> bool | None:

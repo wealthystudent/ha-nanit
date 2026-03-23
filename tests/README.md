@@ -5,13 +5,11 @@
 ```
 tests/
 ├── README.md              ← you are here
-├── unit/                  # Automated pytest tests
-│   ├── conftest.py        #   Shared fixtures and mock data
-│   ├── test_config_flow.py
-│   ├── test_init.py
-│   └── test_hub.py
-└── guides/                # Per-feature manual test guides
-    └── multi-camera.md    #   Multi-camera support (simulated + real)
+└── unit/                  # Automated pytest tests
+    ├── conftest.py        #   Shared fixtures and mock data
+    ├── test_config_flow.py
+    ├── test_init.py
+    └── test_hub.py
 ```
 
 ## Unit tests (no hardware needed)
@@ -22,7 +20,7 @@ just test-lib      # aionanit library tests (183 — protocol, REST, auth, trans
 just test-all      # Both
 ```
 
-First time setup: `pip install -r requirements-test.txt`
+First time setup: `just setup`
 
 ### What the unit tests cover
 
@@ -44,7 +42,7 @@ just dev-reset     # Wipe all state for a fresh start
 
 The entire `custom_components/` directory is mounted read-only — any custom component you put there is available in the dev HA. Edit source files normally, then `just dev-restart`.
 
-State lives in `dev-config/` (gitignored except `configuration.yaml`).
+State lives in `dev/ha-config/` (gitignored except `configuration.yaml`).
 
 ## Manual test guides
 
@@ -52,7 +50,7 @@ Step-by-step instructions for testing specific features with the dev HA instance
 
 | Guide | Feature |
 |-------|---------|
-| [guides/multi-camera.md](guides/multi-camera.md) | Multi-camera support (simulated + real) |
+| [docs/testing-multi-camera.md](../docs/testing-multi-camera.md) | Multi-camera support (simulated + real) |
 
 ## Pre-release checklist
 

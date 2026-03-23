@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 56" width="800" height="56">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#1a1a2e;stop-opacity:1"/>
+      <stop offset="100%" style="stop-color:#16213e;stop-opacity:1"/>
+    </linearGradient>
+    <linearGradient id="shine" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#f0c27f;stop-opacity:1"/>
+      <stop offset="100%" style="stop-color:#fc5c7d;stop-opacity:1"/>
+    </linearGradient>
+  </defs>
+  <rect width="800" height="56" rx="10" fill="url(#bg)"/>
+  <g transform="translate(24, 28)">
+    <polygon points="0,-12 3.5,-4 12,-4 5.5,2 7.5,11 0,6 -7.5,11 -5.5,2 -12,-4 -3.5,-4" fill="#FFD700">
+      <animate attributeName="opacity" values="1;0.4;1" dur="2s" repeatCount="indefinite"/>
+    </polygon>
+  </g>
+  <text x="48" y="33" fill="#e0e0e0" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="15" font-weight="500">Want an official Nanit API? </text>
+  <text x="262" y="33" fill="url(#shine)" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="15" font-weight="700">Star this repo</text>
+  <text x="370" y="33" fill="#e0e0e0" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="15" font-weight="500"> to show Nanit the community wants it.</text>
+  <g transform="translate(776, 28)">
+    <polygon points="0,-12 3.5,-4 12,-4 5.5,2 7.5,11 0,6 -7.5,11 -5.5,2 -12,-4 -3.5,-4" fill="#FFD700">
+      <animate attributeName="opacity" values="1;0.4;1" dur="2s" repeatCount="indefinite" begin="1s"/>
+    </polygon>
+  </g>
+</svg>

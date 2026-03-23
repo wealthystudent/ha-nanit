@@ -5,11 +5,10 @@ This file is a quick lookup for agents working in this repo. Read it before maki
 ## Repo overview
 
 Home Assistant custom integration for Nanit baby cameras.
-Three main parts:
+Two main parts:
 
 - **Python integration**: `custom_components/nanit/`
 - **aionanit client library**: `packages/aionanit/` (pure-Python async Nanit API client)
-- **Go add-on (legacy, deprecated)**: `nanitd/` — no longer used by the integration as of v1.0
 
 ## Architecture (high level)
 
@@ -65,24 +64,25 @@ custom_components/nanit/
 - `aionanit/auth.py` — `TokenManager` (automatic refresh, callback on token change)
 - `aionanit/rest.py` — `NanitRestClient` (login, MFA, babies, events, snapshots)
 - `aionanit/camera.py` — `NanitCamera` (state machine, subscribe, commands)
+- `aionanit/parsers.py` — Protobuf → model parsing helpers (extracted from camera.py)
 - `aionanit/client.py` — `NanitClient` (top-level entrypoint, camera factory)
 - `aionanit/models.py` — `CameraState`, `CameraEvent`, `Baby`, `CloudEvent`, etc.
 - `aionanit/proto/nanit_pb2.py` — google protobuf generated types (via `protoc`)
 - `aionanit/ws/transport.py` — `WsTransport` (WebSocket connection, reconnect, keepalive)
 - `aionanit/ws/protocol.py` — protobuf encode/decode
 - `aionanit/ws/pending.py` — `PendingRequests` (request/response correlation)
-- `tests/` — 135 unit tests (pytest, aioresponses)
+- `tests/` — 183 unit tests (pytest, aioresponses)
 
-### Legacy (deprecated)
+### Development infrastructure (`dev/`)
 
-- `nanitd/` — Go daemon source (no longer used by integration)
-- `.github/workflows/build-addon.yaml` — add-on build pipeline (legacy)
+- `dev/docker-compose.yml` — dev HA instance
+- `dev/ha-config/` — dev HA state (gitignored except `configuration.yaml`)
+- `dev/requirements.txt` — all development dependencies
 
 ### Other
 
-- `IMPLEMENTATION_PLAN.md` — detailed v1.0 rewrite plan (reference doc)
 - `CHANGELOG.md` — release history
-- `justfile` — release helper (bumps versions + creates tag)
+- `justfile` — CLI entry point for all repo operations (`just --list`)
 - `hacs.json` — HACS custom integration config
 - `README.md` — user-facing docs
 
@@ -107,7 +107,7 @@ custom_components/nanit/
 - WebSocket keepalive: ping every 25s, read deadline 60s.
 - Local camera connections use self-signed TLS (`ssl.CERT_NONE`).
 - Maximum 1 WebSocket connection per camera (local port 442 limit is 2, but we use 1).
-- Run tests: `cd packages/aionanit && pytest`
+- Run tests: `just test-lib`
 
 ## Commits & releases
 
@@ -131,18 +131,13 @@ just release major
 ## Verification (required)
 
 - **Verify features work** in a Home Assistant instance.
-- Run aionanit tests:
-
-```
-cd packages/aionanit
-pytest
-```
-
-- If new tests or linters are added, run them as part of the change.
+- Run all checks before submitting: `just check`
+- Run tests individually: `just test` (integration) / `just test-lib` (aionanit)
 
 ## CI / automation
 
-- Add-on builds (legacy) are handled by `.github/workflows/build-addon.yaml`.
+- Tests and linting are handled by `.github/workflows/ci.yaml`.
+- PyPI publishing is handled by `.github/workflows/publish-aionanit.yaml`.
 
 ## Questions before changes
 

@@ -8,23 +8,52 @@
   <em>Keep an eye on your little one — right from your Home Assistant dashboard.</em>
 </p>
 
-> [!IMPORTANT]
-> **v1.x is here.** The integration is now fully standalone — no add-on or Go daemon required. Just install, log in, and you're set. Previous 0.x.x releases (which required the `nanitd` add-on) are still available. See [LEGACY_INSTALL.md](LEGACY_INSTALL.md) for the old setup guide.
+<a href="https://github.com/wealthystudent/ha-nanit">
+  <img src="docs/star-banner.svg" alt="Star this repo to help us get an official Nanit API" width="100%" />
+</a>
 
 ---
 
-## Entities
+A custom [Home Assistant](https://www.home-assistant.io/) integration for [Nanit](https://www.nanit.com/) baby cameras. View live streams, monitor nursery conditions, control the night light, and automate your smart home — all without leaving Home Assistant.
 
-| Type | Entities | Enabled by default |
-|------|----------|--------------------|
-| Camera | RTMPS live stream with on/off control | Yes |
-| Sensor | Temperature, Humidity, Light level | Yes |
-| Binary Sensor | Motion, Sound (cloud-polled), Connectivity | Motion, Sound |
-| Switch | Night Light, Camera Power | Yes |
-| Number | Volume (0–100 %) | No |
+## Supported devices
+
+| Device | Status |
+|--------|--------|
+| Nanit Pro | Fully supported |
+| Nanit Plus | Fully supported |
+| Nanit Pro Camera (standalone) | Supported (no sound machine features) |
 
 > [!NOTE]
-> Not all Nanit features are supported yet. If you'd like to add a missing feature, contributions are welcome — check the [AGENTS.md](AGENTS.md) guide for architecture details and development guidelines.
+> All Nanit cameras that work with the official Nanit app should work with this integration. If you have a model not listed above, please [open an issue](https://github.com/wealthystudent/ha-nanit/issues/new?template=bug_report.yml) to help us update this list.
+
+## Entities
+
+| Platform | Entity | Description | Enabled |
+|----------|--------|-------------|---------|
+| Camera | Camera | RTMPS live stream with on/off control. Supports HA Stream integration. | Yes |
+| Sensor | Temperature | Nursery temperature in °C. | Yes |
+| Sensor | Humidity | Relative humidity (%). | Yes |
+| Sensor | Light Level | Ambient light in lux. | No |
+| Binary Sensor | Motion | Motion detected (cloud-polled, 5-min window). | Yes |
+| Binary Sensor | Sound | Sound detected (cloud-polled, 5-min window). | Yes |
+| Binary Sensor | Connectivity | Camera-to-cloud connection status. | No |
+| Switch | Night Light | Toggle the camera's built-in night light. | Yes |
+| Switch | Camera Power | Toggle camera on/off (sleep mode). | Yes |
+| Number | Volume | Camera speaker volume (0–100%). | No |
+
+Entities marked "No" under Enabled are created but disabled by default. Enable them in **Settings → Devices & Services → Nanit → Entities**.
+
+> [!NOTE]
+> Not all Nanit features are supported yet. Contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Use cases
+
+- **Nursery dashboard** — Camera stream, temperature, humidity, and motion on a single HA panel.
+- **Temperature alerts** — Get notified if the nursery gets too hot or cold.
+- **Motion-triggered automations** — Turn on lights, send a notification, or trigger a routine when motion is detected.
+- **Bedtime routine** — Automate night light, volume, and camera power on a schedule.
+- **Multi-camera overview** — Monitor multiple rooms at once if you have more than one Nanit camera.
 
 ## Installation
 
@@ -45,21 +74,41 @@ Copy `custom_components/nanit/` into your HA `config/custom_components/` directo
 3. Enter the MFA code sent to your device.
 4. All cameras on your account are discovered automatically.
 
-| Field | Required | Description |
-|-------|----------|-------------|
-| Email | Yes | Nanit account email |
-| Password | Yes | Nanit account password |
-| Store credentials | No | Saves password for easier re-auth |
+### Setup parameters
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| Email | Yes | — | Your Nanit account email. Used as the unique identifier for this config entry. |
+| Password | Yes | — | Your Nanit account password. |
+| Store credentials | No | Off | Saves your email and password so re-authentication can be completed without re-entering them. |
+| MFA Code | Yes | — | One-time code sent to your device. Codes expire quickly — use the latest one. |
 
 ### Camera IP configuration (optional)
 
 For faster LAN-first connectivity, configure a local IP per camera:
 
-**Settings → Devices & Services → Nanit → Configure** → select camera → enter IP (port 442).
+**Settings → Devices & Services → Nanit → Configure** → select camera → enter IP.
 
-## How it works
+| Field | Required | Description |
+|-------|----------|-------------|
+| Camera | Yes (multi-camera only) | Which camera to configure. Skipped if you only have one. |
+| Camera IP Address | No | Local IP (port 442). Leave blank for cloud-only mode. |
 
-The integration communicates directly with the Nanit cloud and (optionally) your camera over the local network. No intermediary services.
+When a camera IP is set, the integration connects directly over your LAN for sensor data and controls, using the cloud only for authentication and event detection. Clear the IP to return to cloud-only mode.
+
+## How data is updated
+
+The integration uses two update mechanisms — no unnecessary polling for real-time data:
+
+| Data | Method | Interval | Source |
+|------|--------|----------|--------|
+| Temperature, humidity, light | **WebSocket push** | Instant (on change) | Camera (local or cloud) |
+| Night light, volume, sleep mode | **WebSocket push** | Instant (on change) | Camera (local or cloud) |
+| Camera connection status | **WebSocket push** | Instant (on change) | Camera (local or cloud) |
+| Motion and sound events | **Cloud polling** | Every 30 seconds | Nanit cloud API |
+| Live video stream | **On demand** | When viewed | RTMPS via Nanit media server |
+
+Push data arrives via a persistent WebSocket connection to the camera. If the connection drops, it reconnects automatically and logs the event.
 
 ```
 Home Assistant              Nanit Camera (LAN)        Nanit Cloud
@@ -76,12 +125,71 @@ Home Assistant              Nanit Camera (LAN)        Nanit Cloud
 | **Cloud only** | Default. All communication via Nanit cloud. |
 | **Cloud + Local** | Cloud for auth and events, local WebSocket for sensors and controls. |
 
-## Migrating from v0.x
+## Example automations
 
-1. Update the integration via HACS (or replace the files manually).
-2. Delete the existing Nanit config entry in **Settings → Devices & Services**.
-3. Re-add the integration. Entity unique IDs are preserved.
-4. Uninstall the `nanitd` add-on — it's no longer needed.
+### Temperature alert
+
+```yaml
+automation:
+  - alias: "Nursery too warm"
+    trigger:
+      - platform: numeric_state
+        entity_id: sensor.nursery_temperature
+        above: 24
+        for: "00:05:00"
+    action:
+      - service: notify.mobile_app
+        data:
+          title: "Nursery Alert"
+          message: "Temperature is {{ states('sensor.nursery_temperature') }}°C"
+```
+
+### Motion notification
+
+```yaml
+automation:
+  - alias: "Nursery motion detected"
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.nursery_motion
+        to: "on"
+    action:
+      - service: notify.mobile_app
+        data:
+          title: "Nursery"
+          message: "Motion detected in the nursery"
+```
+
+### Bedtime routine
+
+```yaml
+automation:
+  - alias: "Bedtime"
+    trigger:
+      - platform: time
+        at: "19:30:00"
+    action:
+      - service: switch.turn_on
+        target:
+          entity_id: switch.nursery_night_light
+      - service: number.set_value
+        target:
+          entity_id: number.nursery_volume
+        data:
+          value: 30
+```
+
+## Known limitations
+
+| Limitation | Detail |
+|------------|--------|
+| **One account per integration** | Each config entry maps to a single Nanit account. Multiple accounts require multiple integration entries. |
+| **Cloud dependency** | Authentication, motion/sound events, and live streaming always require the Nanit cloud — there is no fully offline mode. |
+| **Self-signed TLS (local)** | Local camera connections use self-signed certificates. The integration accepts these automatically. |
+| **RTMPS streaming** | Live video uses `rtmps://media-secured.nanit.com`. Your HA instance must be able to reach this address. |
+| **Motion/sound is cloud-polled** | Motion and sound detection comes from the Nanit cloud API (polled every 30s), not from the camera directly. There may be up to ~30s delay. |
+| **No sound machine control** | Sound machine / white noise features are not yet supported. |
+| **Session expiry** | Nanit access tokens expire. The integration refreshes them automatically, but if refresh fails, a re-authentication notification will appear. |
 
 ## Troubleshooting
 
@@ -89,9 +197,21 @@ Home Assistant              Nanit Camera (LAN)        Nanit Cloud
 |---------|-----|
 | Integration won't load | Check **Settings → System → Logs** and filter for `nanit`. |
 | MFA code rejected | Codes expire quickly — use the latest one and finish setup promptly. |
-| Stream not playing | Streams start on demand. Verify HA can reach `rtmps://media-secured.nanit.com`. |
-| Sensors unavailable | The WebSocket may have dropped. It reconnects automatically — check logs. |
-| Local connection failing | Confirm the camera IP is correct and port 442 is reachable from HA. |
+| Stream not playing | Streams start on demand. Verify HA can reach `rtmps://media-secured.nanit.com`. Check that the HA Stream integration is enabled. |
+| Sensors unavailable | The WebSocket may have dropped. It reconnects automatically — check logs. If persistent, try reloading the integration. |
+| Local connection failing | Confirm the camera IP is correct and port 442 is reachable from HA. Try pinging the IP. |
+| Motion/sound always off | Verify your Nanit app shows events. Cloud events are polled every 30s with a 5-minute detection window. |
+| Re-authentication required | Your session expired and auto-refresh failed. Click the notification to re-enter credentials. |
+| Camera shows as unavailable | The camera may be offline or disconnected from Wi-Fi. Check the Connectivity binary sensor for status. |
+| Diagnostics | **Settings → Devices & Services → Nanit → ⋮ → Download diagnostics** for a redacted debug report. |
+
+## Removing the integration
+
+1. Go to **Settings → Devices & Services → Nanit**.
+2. Click the three-dot menu (⋮) → **Delete**.
+3. Confirm deletion. All Nanit devices and entities are removed.
+
+No leftover files or services remain after removal.
 
 ## Requirements
 
@@ -101,4 +221,4 @@ Home Assistant              Nanit Camera (LAN)        Nanit Cloud
 
 ## License
 
-MIT
+[MIT](LICENSE)

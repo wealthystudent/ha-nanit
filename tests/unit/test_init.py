@@ -4,10 +4,8 @@ import importlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
-
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.nanit import async_migrate_entry, async_setup_entry, async_unload_entry
@@ -134,16 +132,20 @@ async def test_stale_device_removed_when_camera_no_longer_on_account(
     stale_device.id = "device_stale"
     stale_device.name = "Stale Camera"
 
-    with patch.object(
-        hass.config_entries,
-        "async_forward_entry_setups",
-        AsyncMock(return_value=True),
-    ), patch(
-        "homeassistant.helpers.device_registry.async_get",
-        return_value=mock_device_registry,
-    ), patch(
-        "homeassistant.helpers.device_registry.async_entries_for_config_entry",
-        return_value=[stale_device],
+    with (
+        patch.object(
+            hass.config_entries,
+            "async_forward_entry_setups",
+            AsyncMock(return_value=True),
+        ),
+        patch(
+            "homeassistant.helpers.device_registry.async_get",
+            return_value=mock_device_registry,
+        ),
+        patch(
+            "homeassistant.helpers.device_registry.async_entries_for_config_entry",
+            return_value=[stale_device],
+        ),
     ):
         assert await async_setup_entry(hass, entry)
 
@@ -168,16 +170,20 @@ async def test_active_device_not_removed(
     active_device.id = "device_active"
     active_device.name = "Active Camera"
 
-    with patch.object(
-        hass.config_entries,
-        "async_forward_entry_setups",
-        AsyncMock(return_value=True),
-    ), patch(
-        "homeassistant.helpers.device_registry.async_get",
-        return_value=mock_device_registry,
-    ), patch(
-        "homeassistant.helpers.device_registry.async_entries_for_config_entry",
-        return_value=[active_device],
+    with (
+        patch.object(
+            hass.config_entries,
+            "async_forward_entry_setups",
+            AsyncMock(return_value=True),
+        ),
+        patch(
+            "homeassistant.helpers.device_registry.async_get",
+            return_value=mock_device_registry,
+        ),
+        patch(
+            "homeassistant.helpers.device_registry.async_entries_for_config_entry",
+            return_value=[active_device],
+        ),
     ):
         assert await async_setup_entry(hass, entry)
 
@@ -188,9 +194,7 @@ async def test_active_device_not_removed(
 
 
 async def test_migrate_v1_to_v2_moves_camera_ip_to_options(hass: HomeAssistant) -> None:
-    entry = MockConfigEntry(
-        domain=DOMAIN, data=mock_entry_data_v1(), version=1, unique_id="cam_1"
-    )
+    entry = MockConfigEntry(domain=DOMAIN, data=mock_entry_data_v1(), version=1, unique_id="cam_1")
     entry.add_to_hass(hass)
 
     assert await async_migrate_entry(hass, entry)
@@ -200,9 +204,7 @@ async def test_migrate_v1_to_v2_moves_camera_ip_to_options(hass: HomeAssistant) 
 
 
 async def test_migrate_v1_to_v2_removes_baby_camera_fields(hass: HomeAssistant) -> None:
-    entry = MockConfigEntry(
-        domain=DOMAIN, data=mock_entry_data_v1(), version=1, unique_id="cam_1"
-    )
+    entry = MockConfigEntry(domain=DOMAIN, data=mock_entry_data_v1(), version=1, unique_id="cam_1")
     entry.add_to_hass(hass)
 
     assert await async_migrate_entry(hass, entry)
@@ -212,9 +214,7 @@ async def test_migrate_v1_to_v2_removes_baby_camera_fields(hass: HomeAssistant) 
 
 
 async def test_migrate_v1_to_v2_updates_unique_id_to_email(hass: HomeAssistant) -> None:
-    entry = MockConfigEntry(
-        domain=DOMAIN, data=mock_entry_data_v1(), version=1, unique_id="cam_1"
-    )
+    entry = MockConfigEntry(domain=DOMAIN, data=mock_entry_data_v1(), version=1, unique_id="cam_1")
     entry.add_to_hass(hass)
 
     assert await async_migrate_entry(hass, entry)
@@ -226,9 +226,7 @@ async def test_migrate_v1_to_v2_preserves_unique_id_without_email(
 ) -> None:
     data = mock_entry_data_v1()
     data.pop("email")
-    entry = MockConfigEntry(
-        domain=DOMAIN, data=data, version=1, unique_id="cam_1"
-    )
+    entry = MockConfigEntry(domain=DOMAIN, data=data, version=1, unique_id="cam_1")
     entry.add_to_hass(hass)
 
     assert await async_migrate_entry(hass, entry)

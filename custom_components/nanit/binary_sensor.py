@@ -15,12 +15,12 @@ from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+from aionanit.models import CameraState, CloudEvent, ConnectionState
+
 from . import NanitConfigEntry
 from .const import CLOUD_EVENT_WINDOW
 from .coordinator import NanitCloudCoordinator, NanitPushCoordinator
 from .entity import NanitCloudEntity, NanitEntity
-
-from aionanit.models import CameraState, CloudEvent, ConnectionState
 
 PARALLEL_UPDATES = 0
 
@@ -84,17 +84,11 @@ async def async_setup_entry(
 
     for cam_data in entry.runtime_data.cameras.values():
         for push_desc in BINARY_SENSORS:
-            entities.append(
-                NanitBinarySensor(cam_data.push_coordinator, push_desc)
-            )
+            entities.append(NanitBinarySensor(cam_data.push_coordinator, push_desc))
 
         if cam_data.cloud_coordinator is not None:
             for cloud_desc in CLOUD_BINARY_SENSORS:
-                entities.append(
-                    NanitCloudBinarySensor(
-                        cam_data.cloud_coordinator, cloud_desc
-                    )
-                )
+                entities.append(NanitCloudBinarySensor(cam_data.cloud_coordinator, cloud_desc))
 
     async_add_entities(entities)
 
@@ -123,10 +117,7 @@ class NanitBinarySensor(NanitEntity, BinarySensorEntity):
         report the disconnected state instead of going unavailable.
         """
         if self.entity_description.always_available:
-            return (
-                self.coordinator.last_update_success
-                and self.coordinator.data is not None
-            )
+            return self.coordinator.last_update_success and self.coordinator.data is not None
         return super().available
 
     @property

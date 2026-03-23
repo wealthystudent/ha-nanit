@@ -49,9 +49,7 @@ class NanitClient:
     # Auth
     # ------------------------------------------------------------------
 
-    async def async_login(
-        self, email: str, password: str
-    ) -> dict[str, str]:
+    async def async_login(self, email: str, password: str) -> dict[str, str]:
         """Login via REST API and create a TokenManager.
 
         Returns the raw token dict: {"access_token": ..., "refresh_token": ...}.
@@ -60,6 +58,7 @@ class NanitClient:
             NanitMfaRequiredError: If MFA is required.
             NanitAuthError: If credentials are invalid.
             NanitConnectionError: If the API is unreachable.
+
         """
         tokens = await self._rest.async_login(email, password)
         self._token_manager = TokenManager(
@@ -83,10 +82,9 @@ class NanitClient:
         Raises:
             NanitAuthError: If MFA code is invalid.
             NanitConnectionError: If the API is unreachable.
+
         """
-        tokens = await self._rest.async_login_mfa(
-            email, password, mfa_token, mfa_code
-        )
+        tokens = await self._rest.async_login_mfa(email, password, mfa_token, mfa_code)
         self._token_manager = TokenManager(
             self._rest,
             tokens["access_token"],
@@ -94,9 +92,7 @@ class NanitClient:
         )
         return tokens
 
-    def restore_tokens(
-        self, access_token: str, refresh_token: str
-    ) -> None:
+    def restore_tokens(self, access_token: str, refresh_token: str) -> None:
         """Restore tokens from storage without a login call.
 
         Creates a TokenManager from previously persisted tokens.
@@ -121,6 +117,7 @@ class NanitClient:
         Raises:
             NanitAuthError: If not authenticated or token is invalid.
             NanitConnectionError: If the API is unreachable.
+
         """
         if self._token_manager is None:
             raise NanitAuthError("Not authenticated — call async_login first")
@@ -143,6 +140,7 @@ class NanitClient:
 
         Raises:
             NanitAuthError: If not authenticated.
+
         """
         if self._token_manager is None:
             raise NanitAuthError("Not authenticated — call async_login first")
@@ -174,8 +172,6 @@ class NanitClient:
         for cam in list(self._cameras.values()):
             try:
                 await cam.async_stop()
-            except Exception:  # noqa: BLE001
-                _LOGGER.debug(
-                    "Error stopping camera %s during close", cam.uid
-                )
+            except Exception:
+                _LOGGER.debug("Error stopping camera %s during close", cam.uid)
         self._cameras.clear()

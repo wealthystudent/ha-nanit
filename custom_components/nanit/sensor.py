@@ -15,11 +15,11 @@ from homeassistant.const import LIGHT_LUX, PERCENTAGE, UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+from aionanit.models import CameraState
+
 from . import NanitConfigEntry
 from .coordinator import NanitPushCoordinator
 from .entity import NanitEntity
-
-from aionanit.models import CameraState
 
 PARALLEL_UPDATES = 0
 

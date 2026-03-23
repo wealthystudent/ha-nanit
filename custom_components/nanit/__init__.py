@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_ACCESS_TOKEN, CONF_EMAIL
+from homeassistant.const import CONF_EMAIL
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import device_registry as dr
@@ -19,7 +19,6 @@ from .const import (
     CONF_CAMERA_IP,
     CONF_CAMERA_IPS,
     CONF_CAMERA_UID,
-    CONF_REFRESH_TOKEN,
     DOMAIN,
     LOGGER,
     PLATFORMS,
@@ -79,9 +78,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: NanitConfigEntry) -> bo
     return unload_ok
 
 
-async def async_migrate_entry(
-    hass: HomeAssistant, config_entry: ConfigEntry
-) -> bool:
+async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
     """Migrate config entry from v1 (single-camera) to v2 (multi-camera per account).
 
     v1 stored baby/camera info in entry.data and had unique_id = camera_uid.
@@ -122,9 +119,7 @@ async def async_migrate_entry(
             version=2,
         )
 
-        LOGGER.info(
-            "Migrated Nanit config entry to version 2 (multi-camera support)"
-        )
+        LOGGER.info("Migrated Nanit config entry to version 2 (multi-camera support)")
 
     return True
 
@@ -138,9 +133,7 @@ def _async_remove_stale_devices(
 
     for device in dr.async_entries_for_config_entry(device_reg, entry.entry_id):
         device_uids = {
-            identifier[1]
-            for identifier in device.identifiers
-            if identifier[0] == DOMAIN
+            identifier[1] for identifier in device.identifiers if identifier[0] == DOMAIN
         }
         if device_uids and not device_uids & known_camera_uids:
             LOGGER.info(
@@ -150,8 +143,6 @@ def _async_remove_stale_devices(
             device_reg.async_remove_device(device.id)
 
 
-async def _async_options_update_listener(
-    hass: HomeAssistant, entry: NanitConfigEntry
-) -> None:
+async def _async_options_update_listener(hass: HomeAssistant, entry: NanitConfigEntry) -> None:
     """Reload entry when options change (e.g. camera IPs updated)."""
     await hass.config_entries.async_reload(entry.entry_id)

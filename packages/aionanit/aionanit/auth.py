@@ -52,9 +52,7 @@ class TokenManager:
         self._refresh_token = refresh_token
         self._expires_at = time.monotonic() + expires_in
 
-    async def async_get_access_token(
-        self, min_ttl: float = 60.0
-    ) -> str:
+    async def async_get_access_token(self, min_ttl: float = 60.0) -> str:
         async with self._lock:
             if time.monotonic() + min_ttl >= self._expires_at:
                 await self._async_refresh()
@@ -66,9 +64,7 @@ class TokenManager:
 
     async def _async_refresh(self) -> None:
         try:
-            tokens = await self._rest.async_refresh_token(
-                self._access_token, self._refresh_token
-            )
+            tokens = await self._rest.async_refresh_token(self._access_token, self._refresh_token)
         except NanitAuthError:
             raise
         except Exception as err:
@@ -81,9 +77,7 @@ class TokenManager:
         for callback in self._callbacks:
             callback(self._access_token, self._refresh_token)
 
-    def on_tokens_refreshed(
-        self, callback: Callable[[str, str], None]
-    ) -> Callable[[], None]:
+    def on_tokens_refreshed(self, callback: Callable[[str, str], None]) -> Callable[[], None]:
         """Register a callback invoked with (access_token, refresh_token) after refresh.
 
         Returns an unsubscribe function that removes the callback.

@@ -45,23 +45,23 @@ class SensorReading:
 
 @dataclass(frozen=True)
 class SensorState:
-    temperature: float | None = None    # Celsius, from value_milli / 1000
-    humidity: float | None = None       # Percentage
-    light: int | None = None            # Lux
+    temperature: float | None = None  # Celsius, from value_milli / 1000
+    humidity: float | None = None  # Percentage
+    light: int | None = None  # Lux
     sound_alert: bool = False
     motion_alert: bool = False
-    night: bool = False                 # True = dark / night mode active
+    night: bool = False  # True = dark / night mode active
 
 
 @dataclass(frozen=True)
 class SettingsState:
     night_vision: bool | None = None
-    volume: int | None = None           # 0-100
+    volume: int | None = None  # 0-100
     sleep_mode: bool | None = None
     status_light_on: bool | None = None
     mic_mute_on: bool | None = None
-    wifi_band: str | None = None        # "any", "2.4ghz", "5ghz"
-    mounting_mode: str | None = None    # "stand", "travel", "switch"
+    wifi_band: str | None = None  # "any", "2.4ghz", "5ghz"
+    mounting_mode: str | None = None  # "stand", "travel", "switch"
 
 
 @dataclass(frozen=True)
@@ -124,6 +124,6 @@ class Baby:
 class CloudEvent:
     """Event from the Nanit cloud API (motion/sound notifications)."""
 
-    event_type: str     # "MOTION", "SOUND", etc.
-    timestamp: float    # Unix timestamp
+    event_type: str  # "MOTION", "SOUND", etc.
+    timestamp: float  # Unix timestamp
     baby_uid: str

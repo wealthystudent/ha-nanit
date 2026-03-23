@@ -6,7 +6,7 @@ This module provides flat aliases that match the names used throughout
 the codebase so consumers don't need to know the nesting.
 """
 
-from .nanit_pb2 import (  # noqa: F401
+from .nanit_pb2 import (
     Control,
     GetControl,
     GetLogs,

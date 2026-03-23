@@ -22,21 +22,16 @@ def main() -> None:
         str(PROTO_DIR / "nanit.proto"),
     ]
 
-    print(f"Running: {' '.join(cmd)}")
     result = subprocess.run(cmd, check=False, capture_output=True, text=True)
 
     if result.returncode != 0:
-        print(f"STDERR: {result.stderr}", file=sys.stderr)
         sys.exit(result.returncode)
-
-    print(f"Generated protobuf code in {OUT_DIR}")
 
     # protoc --python_out generates nanit_pb2.py directly in OUT_DIR.
     generated = OUT_DIR / "nanit_pb2.py"
     if generated.exists():
-        print(f"OK: {generated}")
+        pass
     else:
-        print(f"WARNING: Expected {generated} not found", file=sys.stderr)
         sys.exit(1)
 
 

@@ -12,8 +12,9 @@ NanitCloudCoordinator: Polls the Nanit cloud API for motion/sound events every
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import timedelta
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
@@ -22,7 +23,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from aionanit import NanitAuthError, NanitCamera, NanitConnectionError
 from aionanit.models import Baby, CameraEvent, CameraEventKind, CameraState, CloudEvent
 
-from .const import CLOUD_POLL_INTERVAL, DOMAIN, LOGGER
+from .const import CLOUD_POLL_INTERVAL, DOMAIN
 
 if TYPE_CHECKING:
     from . import NanitConfigEntry

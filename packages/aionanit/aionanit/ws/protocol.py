@@ -55,14 +55,18 @@ def build_request(
 
     Returns serialized bytes ready to send over WebSocket.
     """
-    payload = {k: v for k, v in dict(
-        streaming=streaming,
-        settings=settings,
-        control=control,
-        get_status=get_status,
-        get_sensor_data=get_sensor_data,
-        get_control=get_control,
-    ).items() if v is not None}
+    payload = {
+        k: v
+        for k, v in dict(
+            streaming=streaming,
+            settings=settings,
+            control=control,
+            get_status=get_status,
+            get_sensor_data=get_sensor_data,
+            get_control=get_control,
+        ).items()
+        if v is not None
+    }
 
     req = Request(id=request_id, type=request_type, **payload)
     msg = Message(type=MessageType.REQUEST, request=req)

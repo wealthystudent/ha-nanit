@@ -5,21 +5,16 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from homeassistant.const import CONF_ACCESS_TOKEN, CONF_EMAIL, CONF_PASSWORD
-from homeassistant.core import HomeAssistant
 
 from aionanit.models import Baby
-
 from custom_components.nanit.const import (
     CONF_BABY_NAME,
     CONF_BABY_UID,
     CONF_CAMERA_IP,
-    CONF_CAMERA_IPS,
     CONF_CAMERA_UID,
     CONF_REFRESH_TOKEN,
     CONF_STORE_CREDENTIALS,
-    DOMAIN,
 )
 
 MOCK_EMAIL = "test@example.com"
@@ -70,11 +65,10 @@ def auto_enable_custom_integrations(enable_custom_integrations):
 @pytest.fixture
 def mock_nanit_client():
     """Patch NanitClient and NanitCloudCoordinator for the entire integration."""
-    with patch(
-        "custom_components.nanit.hub.NanitClient", autospec=True
-    ) as mock_cls, patch(
-        "custom_components.nanit.hub.NanitCloudCoordinator"
-    ) as mock_cloud_cls:
+    with (
+        patch("custom_components.nanit.hub.NanitClient", autospec=True) as mock_cls,
+        patch("custom_components.nanit.hub.NanitCloudCoordinator") as mock_cloud_cls,
+    ):
         client = mock_cls.return_value
 
         mock_tm = MagicMock()
@@ -99,9 +93,7 @@ def mock_nanit_client():
         client.rest_client = MagicMock()
         client.rest_client.async_get_events = AsyncMock(return_value=[])
 
-        mock_cloud_cls.return_value = MagicMock(
-            async_config_entry_first_refresh=AsyncMock()
-        )
+        mock_cloud_cls.return_value = MagicMock(async_config_entry_first_refresh=AsyncMock())
 
         yield client
 
@@ -109,9 +101,7 @@ def mock_nanit_client():
 @pytest.fixture
 def mock_config_flow_client():
     """Patch NanitClient for config flow tests (different import path)."""
-    with patch(
-        "custom_components.nanit.config_flow.NanitClient", autospec=True
-    ) as mock_cls:
+    with patch("custom_components.nanit.config_flow.NanitClient", autospec=True) as mock_cls:
         client = mock_cls.return_value
         client.async_login = AsyncMock(
             return_value={

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -49,9 +49,7 @@ class TestGetAccessToken:
         token_manager._expires_at = time.monotonic() - 1
         token = await token_manager.async_get_access_token()
         assert token == "new_access"
-        mock_rest.async_refresh_token.assert_called_once_with(
-            "initial_access", "initial_refresh"
-        )
+        mock_rest.async_refresh_token.assert_called_once_with("initial_access", "initial_refresh")
 
     async def test_refreshes_when_within_min_ttl(
         self, token_manager: TokenManager, mock_rest: MagicMock
@@ -108,9 +106,7 @@ class TestForceRefresh:
 
 
 class TestUpdateTokens:
-    def test_update_tokens_sets_new_values(
-        self, token_manager: TokenManager
-    ) -> None:
+    def test_update_tokens_sets_new_values(self, token_manager: TokenManager) -> None:
         token_manager.update_tokens("manual_access", "manual_refresh", 1800.0)
         assert token_manager.access_token == "manual_access"
         assert token_manager.refresh_token == "manual_refresh"
@@ -159,9 +155,7 @@ class TestRefreshFailure:
     async def test_auth_error_propagated(
         self, token_manager: TokenManager, mock_rest: MagicMock
     ) -> None:
-        mock_rest.async_refresh_token.side_effect = NanitAuthError(
-            "Refresh token expired"
-        )
+        mock_rest.async_refresh_token.side_effect = NanitAuthError("Refresh token expired")
         token_manager._expires_at = time.monotonic() - 1
 
         with pytest.raises(NanitAuthError, match="Refresh token expired"):

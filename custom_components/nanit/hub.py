@@ -6,16 +6,15 @@ babies/cameras on the account and creates a camera + coordinators for each.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-import logging
 from typing import TYPE_CHECKING
 
 import aiohttp
-
 from homeassistant.const import CONF_ACCESS_TOKEN
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers import device_registry as dr, issue_registry as ir
+from homeassistant.helpers import issue_registry as ir
 
 from aionanit import (
     NanitAuthError,
@@ -87,6 +86,7 @@ class NanitHub:
         Raises:
             NanitAuthError: If tokens are invalid (triggers reauth).
             NanitConnectionError: If ALL cameras fail to connect.
+
         """
         # Restore tokens from persisted config entry data
         access_token = self._entry.data[CONF_ACCESS_TOKEN]
@@ -96,9 +96,7 @@ class NanitHub:
         # Register callback to persist refreshed tokens
         tm = self._client.token_manager
         if tm is not None:
-            self._unsubscribe_tokens = tm.on_tokens_refreshed(
-                self._on_tokens_refreshed
-            )
+            self._unsubscribe_tokens = tm.on_tokens_refreshed(self._on_tokens_refreshed)
 
         # Fetch babies (also validates tokens)
         babies = await self._client.async_get_babies()
@@ -149,8 +147,7 @@ class NanitHub:
 
         if failed_cameras:
             _LOGGER.warning(
-                "Some cameras failed to connect: %s. "
-                "They will be retried on next reload.",
+                "Some cameras failed to connect: %s. They will be retried on next reload.",
                 ", ".join(failed_cameras),
             )
 
@@ -167,16 +164,12 @@ class NanitHub:
             local_ip=camera_ip,
         )
 
-        push_coordinator = NanitPushCoordinator(
-            self._hass, self._entry, camera, baby
-        )
+        push_coordinator = NanitPushCoordinator(self._hass, self._entry, camera, baby)
         await push_coordinator.async_setup()
 
         cloud_coordinator: NanitCloudCoordinator | None = None
         try:
-            cloud_coordinator = NanitCloudCoordinator(
-                self._hass, self._entry, self, baby
-            )
+            cloud_coordinator = NanitCloudCoordinator(self._hass, self._entry, self, baby)
             await cloud_coordinator.async_config_entry_first_refresh()
         except NanitAuthError:
             raise
@@ -187,9 +180,7 @@ class NanitHub:
             )
             cloud_coordinator = None
 
-        ir.async_delete_issue(
-            self._hass, DOMAIN, f"camera_connection_failed_{baby.camera_uid}"
-        )
+        ir.async_delete_issue(self._hass, DOMAIN, f"camera_connection_failed_{baby.camera_uid}")
 
         self._camera_data[baby.camera_uid] = CameraData(
             camera=camera,

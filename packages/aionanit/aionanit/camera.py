@@ -6,7 +6,7 @@ import asyncio
 import dataclasses
 import logging
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import aiohttp
@@ -50,8 +50,8 @@ from .proto import (
     RequestType,
     Response,
     Settings,
-    Streaming,
     StreamIdentifier,
+    Streaming,
     StreamingStatus,
 )
 from .rest import NanitRestClient
@@ -166,9 +166,7 @@ class NanitCamera:
         if self._prefer_local and self._local_ip:
             try:
                 token = await self._token_manager.async_get_access_token()
-                await self._transport.async_connect_local(
-                    self._local_ip, token
-                )
+                await self._transport.async_connect_local(self._local_ip, token)
                 connected = True
             except (NanitConnectionError, NanitTransportError) as err:
                 _LOGGER.info(
@@ -194,10 +192,7 @@ class NanitCamera:
         await self._async_enable_sensor_push()
 
         # Start local probe if on cloud and local_ip is configured.
-        if (
-            self._transport.transport_kind == TransportKind.CLOUD
-            and self._local_ip
-        ):
+        if self._transport.transport_kind == TransportKind.CLOUD and self._local_ip:
             self._start_local_probe()
 
         # Start periodic session health check.
@@ -219,9 +214,7 @@ class NanitCamera:
     # Subscriptions
     # ------------------------------------------------------------------
 
-    def subscribe(
-        self, callback: Callable[[CameraEvent], None]
-    ) -> Callable[[], None]:
+    def subscribe(self, callback: Callable[[CameraEvent], None]) -> Callable[[], None]:
         """Register a callback for state changes.
 
         Returns an unsubscribe function.
@@ -251,9 +244,7 @@ class NanitCamera:
         """GET_SETTINGS request."""
         resp = await self._send_request(RequestType.GET_SETTINGS)
         settings = _parse_settings(resp)
-        self._update_state(
-            settings=settings, kind=CameraEventKind.SETTINGS_UPDATE
-        )
+        self._update_state(settings=settings, kind=CameraEventKind.SETTINGS_UPDATE)
         return settings
 
     async def async_get_control(self) -> ControlState:
@@ -263,9 +254,7 @@ class NanitCamera:
             get_control=GetControl(night_light=True),
         )
         control = _parse_control(resp)
-        self._update_state(
-            control=control, kind=CameraEventKind.CONTROL_UPDATE
-        )
+        self._update_state(control=control, kind=CameraEventKind.CONTROL_UPDATE)
         return control
 
     async def async_get_sensor_data(self) -> SensorState:
@@ -275,9 +264,7 @@ class NanitCamera:
             get_sensor_data=GetSensorData(all=True),
         )
         sensors = _parse_sensor_data(resp.sensor_data, self._state.sensors)
-        self._update_state(
-            sensors=sensors, kind=CameraEventKind.SENSOR_UPDATE
-        )
+        self._update_state(sensors=sensors, kind=CameraEventKind.SENSOR_UPDATE)
         return sensors
 
     # ------------------------------------------------------------------
@@ -310,7 +297,7 @@ class NanitCamera:
             RequestType.PUT_SETTINGS,
             settings=proto_settings,
         )
-        if resp.HasField('settings'):
+        if resp.HasField("settings"):
             new_settings = _parse_settings(resp)
         else:
             # Camera didn't echo settings back — apply optimistic merge.
@@ -326,9 +313,7 @@ class NanitCamera:
             if mic_mute_on is not None:
                 requested["mic_mute_on"] = mic_mute_on
             new_settings = dataclasses.replace(self._state.settings, **requested)
-        self._update_state(
-            settings=new_settings, kind=CameraEventKind.SETTINGS_UPDATE
-        )
+        self._update_state(settings=new_settings, kind=CameraEventKind.SETTINGS_UPDATE)
         return new_settings
 
     async def async_set_control(
@@ -352,7 +337,7 @@ class NanitCamera:
             RequestType.PUT_CONTROL,
             control=proto_control,
         )
-        if resp.HasField('control'):
+        if resp.HasField("control"):
             new_control = _parse_control(resp)
         else:
             # Camera didn't echo control back — apply optimistic merge.
@@ -362,9 +347,7 @@ class NanitCamera:
             if night_light_timeout is not None:
                 requested["night_light_timeout"] = night_light_timeout
             new_control = dataclasses.replace(self._state.control, **requested)
-        self._update_state(
-            control=new_control, kind=CameraEventKind.CONTROL_UPDATE
-        )
+        self._update_state(control=new_control, kind=CameraEventKind.CONTROL_UPDATE)
         return new_control
 
     # ------------------------------------------------------------------
@@ -377,9 +360,7 @@ class NanitCamera:
         Returns: rtmps://media-secured.nanit.com/nanit/{baby_uid}.{access_token}
         """
         token = await self._token_manager.async_get_access_token()
-        return (
-            f"rtmps://media-secured.nanit.com/nanit/{self._baby_uid}.{token}"
-        )
+        return f"rtmps://media-secured.nanit.com/nanit/{self._baby_uid}.{token}"
 
     async def async_start_streaming(self) -> None:
         """Send PUT_STREAMING with status=STARTED to camera."""
@@ -428,7 +409,7 @@ class NanitCamera:
                 resp.status,
                 self._baby_uid,
             )
-        except Exception as err:  # noqa: BLE001
+        except Exception as err:
             _LOGGER.debug("Snapshot fetch failed: %s", err)
         return None
 
@@ -485,33 +466,23 @@ class NanitCamera:
         req_type = request.type
 
         if req_type == RequestType.PUT_SENSOR_DATA:
-            sensors = _parse_sensor_data(
-                request.sensor_data, self._state.sensors
-            )
-            self._update_state(
-                sensors=sensors, kind=CameraEventKind.SENSOR_UPDATE
-            )
+            sensors = _parse_sensor_data(request.sensor_data, self._state.sensors)
+            self._update_state(sensors=sensors, kind=CameraEventKind.SENSOR_UPDATE)
 
         elif req_type == RequestType.PUT_STATUS:
-            if request.HasField('status'):
+            if request.HasField("status"):
                 status = _parse_status_from_proto(request.status)
-                self._update_state(
-                    status=status, kind=CameraEventKind.STATUS_UPDATE
-                )
+                self._update_state(status=status, kind=CameraEventKind.STATUS_UPDATE)
 
         elif req_type == RequestType.PUT_SETTINGS:
-            if request.HasField('settings'):
+            if request.HasField("settings"):
                 settings = _parse_settings_from_proto(request.settings)
-                self._update_state(
-                    settings=settings, kind=CameraEventKind.SETTINGS_UPDATE
-                )
+                self._update_state(settings=settings, kind=CameraEventKind.SETTINGS_UPDATE)
 
         elif req_type == RequestType.PUT_CONTROL:
-            if request.HasField('control'):
+            if request.HasField("control"):
                 control = _parse_control_from_proto(request.control)
-                self._update_state(
-                    control=control, kind=CameraEventKind.CONTROL_UPDATE
-                )
+                self._update_state(control=control, kind=CameraEventKind.CONTROL_UPDATE)
 
         else:
             _LOGGER.debug("Unhandled push request type: %s", req_type)
@@ -527,7 +498,7 @@ class NanitCamera:
         error: str | None,
     ) -> None:
         """Handle connection state transitions."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         old_conn = self._state.connection
 
         new_conn = ConnectionInfo(
@@ -547,20 +518,13 @@ class NanitCamera:
         self._state = dataclasses.replace(self._state, connection=new_conn)
 
         if state == ConnectionState.DISCONNECTED:
-            self._pending.cancel_all(
-                NanitTransportError("Connection lost")
-            )
+            self._pending.cancel_all(NanitTransportError("Connection lost"))
 
         self._notify_subscribers(CameraEventKind.CONNECTION_CHANGE)
 
         # After a successful reconnect, re-initialize the session.
-        if (
-            state == ConnectionState.CONNECTED
-            and old_conn.reconnect_attempts > 0
-        ):
-            asyncio.get_running_loop().create_task(
-                self._async_on_reconnected()
-            )
+        if state == ConnectionState.CONNECTED and old_conn.reconnect_attempts > 0:
+            asyncio.get_running_loop().create_task(self._async_on_reconnected())
 
     async def _async_on_reconnected(self) -> None:
         """Re-initialize session after a successful reconnect.
@@ -607,7 +571,7 @@ class NanitCamera:
         for callback in self._subscribers:
             try:
                 callback(event)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 _LOGGER.exception("Error in camera event subscriber")
 
     # ------------------------------------------------------------------
@@ -647,9 +611,7 @@ class NanitCamera:
                     raise NanitCameraUnavailable(
                         f"Camera {self._uid} not reachable after reconnect"
                     )
-                _LOGGER.warning(
-                    "Not connected to camera %s, reconnecting", self._uid
-                )
+                _LOGGER.warning("Not connected to camera %s, reconnecting", self._uid)
                 await self._async_reconnect()
 
             request_id = self._pending.next_id()
@@ -668,12 +630,11 @@ class NanitCamera:
 
             try:
                 return await asyncio.wait_for(future, timeout=timeout)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 _ = self._pending.resolve(request_id, Response())
                 if attempt == 0:
                     _LOGGER.warning(
-                        "Request %s (id=%s) timed out after %.1fs, "
-                        "reconnecting and retrying",
+                        "Request %s (id=%s) timed out after %.1fs, reconnecting and retrying",
                         RequestType.Name(request_type),
                         request_id,
                         timeout,
@@ -682,7 +643,7 @@ class NanitCamera:
                     continue
                 raise NanitRequestTimeout(
                     RequestType.Name(request_type), request_id, timeout
-                )
+                ) from None
 
         # Should never be reached — the loop always returns or raises.
         raise NanitCameraUnavailable(f"Camera {self._uid} request failed")
@@ -739,9 +700,7 @@ class NanitCamera:
     def _start_local_probe(self) -> None:
         """Start background task to probe for local connectivity."""
         self._cancel_local_probe()
-        self._local_probe_task = asyncio.get_running_loop().create_task(
-            self._local_probe_loop()
-        )
+        self._local_probe_task = asyncio.get_running_loop().create_task(self._local_probe_loop())
 
     def _cancel_local_probe(self) -> None:
         """Cancel the local probe task if running."""
@@ -780,12 +739,8 @@ class NanitCamera:
             connected = False
             if self._prefer_local and self._local_ip:
                 try:
-                    token = (
-                        await self._token_manager.async_get_access_token()
-                    )
-                    await self._transport.async_connect_local(
-                        self._local_ip, token
-                    )
+                    token = await self._token_manager.async_get_access_token()
+                    await self._transport.async_connect_local(self._local_ip, token)
                     connected = True
                 except (NanitConnectionError, NanitTransportError) as err:
                     _LOGGER.info(
@@ -796,23 +751,14 @@ class NanitCamera:
 
             if not connected:
                 try:
-                    token = (
-                        await self._token_manager.async_get_access_token()
-                    )
-                    await self._transport.async_connect_cloud(
-                        self._uid, token
-                    )
+                    token = await self._token_manager.async_get_access_token()
+                    await self._transport.async_connect_cloud(self._uid, token)
                 except (NanitConnectionError, NanitTransportError) as err:
-                    raise NanitCameraUnavailable(
-                        f"Cannot reach camera {self._uid}: {err}"
-                    ) from err
+                    raise NanitCameraUnavailable(f"Cannot reach camera {self._uid}: {err}") from err
 
             await self._async_enable_sensor_push()
 
-            if (
-                self._transport.transport_kind == TransportKind.CLOUD
-                and self._local_ip
-            ):
+            if self._transport.transport_kind == TransportKind.CLOUD and self._local_ip:
                 self._start_local_probe()
 
             # Restart sensor polling after reconnect.
@@ -825,16 +771,11 @@ class NanitCamera:
     def _start_health_check(self) -> None:
         """Start the periodic session health-check task."""
         self._cancel_health_check()
-        self._health_check_task = asyncio.get_running_loop().create_task(
-            self._health_check_loop()
-        )
+        self._health_check_task = asyncio.get_running_loop().create_task(self._health_check_loop())
 
     def _cancel_health_check(self) -> None:
         """Cancel the health-check task if running."""
-        if (
-            self._health_check_task is not None
-            and not self._health_check_task.done()
-        ):
+        if self._health_check_task is not None and not self._health_check_task.done():
             self._health_check_task.cancel()
         self._health_check_task = None
 
@@ -859,14 +800,11 @@ class NanitCamera:
                     NanitTransportError,
                     NanitCameraUnavailable,
                 ):
-                    _LOGGER.info(
-                        "Session health check failed — reconnect triggered"
-                    )
-                except Exception:  # noqa: BLE001
+                    _LOGGER.info("Session health check failed — reconnect triggered")
+                except Exception:
                     _LOGGER.debug("Health check error", exc_info=True)
         except asyncio.CancelledError:
             return
-
 
     # ------------------------------------------------------------------
     # Internal — periodic sensor polling
@@ -881,16 +819,11 @@ class NanitCamera:
         up-to-date.
         """
         self._cancel_sensor_poll()
-        self._sensor_poll_task = asyncio.get_running_loop().create_task(
-            self._sensor_poll_loop()
-        )
+        self._sensor_poll_task = asyncio.get_running_loop().create_task(self._sensor_poll_loop())
 
     def _cancel_sensor_poll(self) -> None:
         """Cancel the sensor-poll task if running."""
-        if (
-            self._sensor_poll_task is not None
-            and not self._sensor_poll_task.done()
-        ):
+        if self._sensor_poll_task is not None and not self._sensor_poll_task.done():
             self._sensor_poll_task.cancel()
         self._sensor_poll_task = None
 
@@ -915,10 +848,11 @@ class NanitCamera:
                     NanitCameraUnavailable,
                 ):
                     _LOGGER.debug("Sensor poll failed — will retry next cycle")
-                except Exception:  # noqa: BLE001
+                except Exception:
                     _LOGGER.debug("Sensor poll error", exc_info=True)
         except asyncio.CancelledError:
             return
+
     # ------------------------------------------------------------------
     # Internal — local probe
     # ------------------------------------------------------------------
@@ -937,9 +871,7 @@ class NanitCamera:
                     return
 
                 try:
-                    _LOGGER.debug(
-                        "Probing local camera at %s", self._local_ip
-                    )
+                    _LOGGER.debug("Probing local camera at %s", self._local_ip)
                     token = await self._token_manager.async_get_access_token()
                     # Create a temporary transport to test local.
                     probe = WsTransport(
@@ -954,30 +886,21 @@ class NanitCamera:
                         )
                         # Local is reachable — promote.
                         await probe.async_close()
-                    except (
-                        NanitConnectionError,
-                        NanitTransportError,
-                        asyncio.TimeoutError,
-                    ):
+                    except (TimeoutError, NanitConnectionError, NanitTransportError):
                         _LOGGER.debug("Local probe failed, staying on cloud")
                         continue
 
-                    _LOGGER.info(
-                        "Local camera reachable, promoting from cloud to local"
-                    )
+                    _LOGGER.info("Local camera reachable, promoting from cloud to local")
                     # Close cloud, connect local.
                     self._pending.cancel_all()
                     await self._transport.async_close()
-                    await self._transport.async_connect_local(
-                        self._local_ip, token
-                    )
+                    await self._transport.async_connect_local(self._local_ip, token)
                     await self._async_request_initial_state()
                     await self._async_enable_sensor_push()
                     return  # Stop probing — now on local.
 
-                except Exception as err:  # noqa: BLE001
+                except Exception as err:
                     _LOGGER.debug("Local probe error: %s", err)
 
         except asyncio.CancelledError:
             return
-

@@ -35,9 +35,7 @@ async def async_get_config_entry_diagnostics(
             "baby_uid": cam_data.baby.uid,
             "push_coordinator": {
                 "last_update_success": push.last_update_success,
-                "last_exception": (
-                    str(push.last_exception) if push.last_exception else None
-                ),
+                "last_exception": (str(push.last_exception) if push.last_exception else None),
                 "connected": push.connected,
                 "data": asdict(push.data) if push.data is not None else None,
             },
@@ -46,14 +44,8 @@ async def async_get_config_entry_diagnostics(
         if cloud is not None:
             cam_diag["cloud_coordinator"] = {
                 "last_update_success": cloud.last_update_success,
-                "last_exception": (
-                    str(cloud.last_exception) if cloud.last_exception else None
-                ),
-                "data": (
-                    [asdict(e) for e in cloud.data]
-                    if cloud.data is not None
-                    else None
-                ),
+                "last_exception": (str(cloud.last_exception) if cloud.last_exception else None),
+                "data": ([asdict(e) for e in cloud.data] if cloud.data is not None else None),
             }
 
         cameras_diag[camera_uid] = cam_diag

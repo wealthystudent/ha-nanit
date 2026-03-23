@@ -8,11 +8,11 @@ from homeassistant.components.camera import Camera, CameraEntityFeature
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+from aionanit import NanitCamera
+
 from . import NanitConfigEntry
 from .coordinator import NanitPushCoordinator
 from .entity import NanitEntity
-
-from aionanit import NanitCamera
 
 PARALLEL_UPDATES = 0
 

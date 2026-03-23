@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any
 
 import voluptuous as vol
-
 from homeassistant.config_entries import (
     ConfigEntry,
     ConfigFlow,
@@ -49,9 +48,7 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
         self._access_token: str = ""
         self._refresh_token: str = ""
 
-    async def async_step_user(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
+    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Handle the initial user step — enter credentials."""
         return await self.async_step_credentials(user_input)
 
@@ -88,9 +85,7 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
-    async def async_step_mfa(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
+    async def async_step_mfa(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Handle MFA code entry."""
         return await self._async_handle_mfa_step(
             user_input=user_input,
@@ -179,9 +174,7 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
-    async def _async_finish_login(
-        self, access_token: str, refresh_token: str
-    ) -> ConfigFlowResult:
+    async def _async_finish_login(self, access_token: str, refresh_token: str) -> ConfigFlowResult:
         """Persist tokens and create the account entry."""
         self._access_token = access_token
         self._refresh_token = refresh_token
@@ -226,9 +219,7 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
     # Reauth flow
     # ------------------------------------------------------------------
 
-    async def async_step_reauth(
-        self, entry_data: dict[str, Any]
-    ) -> ConfigFlowResult:
+    async def async_step_reauth(self, entry_data: dict[str, Any]) -> ConfigFlowResult:
         """Handle reauth trigger."""
         return await self.async_step_reauth_confirm()
 
@@ -319,9 +310,7 @@ class NanitOptionsFlow(OptionsFlow):
         """Initialize."""
         self._selected_camera_uid: str = ""
 
-    async def async_step_init(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Select which camera to configure."""
         hub = self.config_entry.runtime_data.hub
         babies = hub.babies
@@ -338,9 +327,7 @@ class NanitOptionsFlow(OptionsFlow):
             self._selected_camera_uid = user_input["camera"]
             return await self.async_step_camera_ip()
 
-        camera_options = {
-            baby.camera_uid: baby.name for baby in babies
-        }
+        camera_options = {baby.camera_uid: baby.name for baby in babies}
 
         return self.async_show_form(
             step_id="init",
@@ -359,9 +346,7 @@ class NanitOptionsFlow(OptionsFlow):
             camera_ip = user_input.get(CONF_CAMERA_IP, "").strip()
 
             # Merge with existing camera IPs
-            current_ips = dict(
-                self.config_entry.options.get(CONF_CAMERA_IPS, {})
-            )
+            current_ips = dict(self.config_entry.options.get(CONF_CAMERA_IPS, {}))
             if camera_ip:
                 current_ips[self._selected_camera_uid] = camera_ip
             else:
@@ -372,9 +357,9 @@ class NanitOptionsFlow(OptionsFlow):
                 data={CONF_CAMERA_IPS: current_ips},
             )
 
-        current_ip = self.config_entry.options.get(
-            CONF_CAMERA_IPS, {}
-        ).get(self._selected_camera_uid, "")
+        current_ip = self.config_entry.options.get(CONF_CAMERA_IPS, {}).get(
+            self._selected_camera_uid, ""
+        )
 
         # Resolve camera name for the description placeholder
         camera_name = self._selected_camera_uid

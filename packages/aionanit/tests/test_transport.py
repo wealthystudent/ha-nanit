@@ -17,13 +17,14 @@ def _make_transport(
     on_message: MagicMock | None = None,
     on_connection_change: MagicMock | None = None,
     get_headers: AsyncMock | None = None,
-    ) -> tuple[WsTransport, MagicMock, MagicMock, MagicMock]:
+) -> tuple[WsTransport, MagicMock, MagicMock, MagicMock]:
     """Create a WsTransport with mocked session and callbacks."""
     session = MagicMock(spec=aiohttp.ClientSession)
     msg_cb = on_message or MagicMock()
     conn_cb = on_connection_change or MagicMock()
     transport = WsTransport(session, msg_cb, conn_cb, get_headers=get_headers)
     return transport, session, msg_cb, conn_cb
+
 
 class TestInitialState:
     def test_connected_is_false(self) -> None:
@@ -57,9 +58,7 @@ class TestAsyncClose:
     async def test_fires_disconnected_callback(self) -> None:
         t, _, _, conn_cb = _make_transport()
         await t.async_close()
-        conn_cb.assert_called_with(
-            ConnectionState.DISCONNECTED, TransportKind.NONE, None
-        )
+        conn_cb.assert_called_with(ConnectionState.DISCONNECTED, TransportKind.NONE, None)
 
 
 class TestAsyncConnectCloud:

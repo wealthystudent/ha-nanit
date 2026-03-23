@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
 import pytest
@@ -20,8 +20,6 @@ from aionanit.camera import (
     _parse_status_from_proto,
 )
 from aionanit.exceptions import (
-    NanitCameraUnavailable,
-    NanitConnectionError,
     NanitRequestTimeout,
     NanitTransportError,
 )
@@ -40,8 +38,6 @@ from aionanit.proto import (
     Control,
     ControlNightLight,
     ControlSensorDataTransfer,
-    GetControl,
-    GetSensorData,
     GetStatus,
     Message,
     MessageType,
@@ -50,17 +46,15 @@ from aionanit.proto import (
     RequestType,
     Response,
     SensorData,
-    SensorType as ProtoSensorType,
     Settings,
     SettingsWifiBand,
     Status,
     StatusConnectionToServer,
-    Streaming,
-    StreamIdentifier,
-    StreamingStatus,
+)
+from aionanit.proto import (
+    SensorType as ProtoSensorType,
 )
 from aionanit.rest import NanitRestClient
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -179,9 +173,7 @@ class TestSubscriptions:
 class TestConnectionChange:
     def test_connected_updates_state(self) -> None:
         cam, *_ = _make_camera()
-        cam._on_connection_change(
-            ConnectionState.CONNECTED, TransportKind.CLOUD, None
-        )
+        cam._on_connection_change(ConnectionState.CONNECTED, TransportKind.CLOUD, None)
         assert cam.state.connection.state == ConnectionState.CONNECTED
         assert cam.state.connection.transport == TransportKind.CLOUD
         assert cam.state.connection.last_seen is not None
@@ -189,33 +181,23 @@ class TestConnectionChange:
 
     def test_reconnecting_increments_attempts(self) -> None:
         cam, *_ = _make_camera()
-        cam._on_connection_change(
-            ConnectionState.RECONNECTING, TransportKind.CLOUD, "err"
-        )
+        cam._on_connection_change(ConnectionState.RECONNECTING, TransportKind.CLOUD, "err")
         assert cam.state.connection.reconnect_attempts == 1
 
-        cam._on_connection_change(
-            ConnectionState.RECONNECTING, TransportKind.CLOUD, "err2"
-        )
+        cam._on_connection_change(ConnectionState.RECONNECTING, TransportKind.CLOUD, "err2")
         assert cam.state.connection.reconnect_attempts == 2
 
     async def test_connected_resets_attempts(self) -> None:
         cam, *_ = _make_camera()
-        cam._on_connection_change(
-            ConnectionState.RECONNECTING, TransportKind.CLOUD, "err"
-        )
-        cam._on_connection_change(
-            ConnectionState.CONNECTED, TransportKind.CLOUD, None
-        )
+        cam._on_connection_change(ConnectionState.RECONNECTING, TransportKind.CLOUD, "err")
+        cam._on_connection_change(ConnectionState.CONNECTED, TransportKind.CLOUD, None)
         assert cam.state.connection.reconnect_attempts == 0
 
     async def test_disconnected_cancels_pending(self) -> None:
         cam, *_ = _make_camera()
         future = cam._pending.track(cam._pending.next_id())
 
-        cam._on_connection_change(
-            ConnectionState.DISCONNECTED, TransportKind.NONE, "lost"
-        )
+        cam._on_connection_change(ConnectionState.DISCONNECTED, TransportKind.NONE, "lost")
 
         assert future.done()
 
@@ -224,9 +206,7 @@ class TestConnectionChange:
         events: list[object] = []
         cam.subscribe(lambda e: events.append(e))
 
-        cam._on_connection_change(
-            ConnectionState.CONNECTED, TransportKind.CLOUD, None
-        )
+        cam._on_connection_change(ConnectionState.CONNECTED, TransportKind.CLOUD, None)
         assert len(events) == 1
         assert events[0].kind == CameraEventKind.CONNECTION_CHANGE
 
@@ -407,6 +387,7 @@ class TestParseSettings:
         result = _parse_settings_from_proto(proto_settings)
         assert result.sleep_mode is None
 
+
 class TestParseControl:
     def test_empty_response(self) -> None:
         resp = Response()
@@ -426,8 +407,12 @@ class TestParseControl:
     def test_parses_sensor_transfer_enabled(self) -> None:
         proto_control = Control(
             sensor_data_transfer=ControlSensorDataTransfer(
-                sound=True, motion=True, temperature=False,
-                humidity=False, light=False, night=False,
+                sound=True,
+                motion=True,
+                temperature=False,
+                humidity=False,
+                light=False,
+                night=False,
             )
         )
         result = _parse_control_from_proto(proto_control)
@@ -456,6 +441,7 @@ class TestParseControl:
         proto_control = Control(night_light_timeout=60)
         result = _parse_control_from_proto(proto_control)
         assert result.night_light is None
+
 
 # ---------------------------------------------------------------------------
 # Push event handling
@@ -746,6 +732,7 @@ class TestSetSettings:
         assert len(events) == 1
         assert events[0].kind == CameraEventKind.SETTINGS_UPDATE
 
+
 class TestSetControl:
     async def test_updates_state_when_response_has_control(self) -> None:
         """If PUT_CONTROL response echoes back control, state is updated."""
@@ -814,6 +801,8 @@ class TestSetControl:
         await cam.async_set_control(night_light=NightLightState.ON)
         assert len(events) == 1
         assert events[0].kind == CameraEventKind.CONTROL_UPDATE
+
+
 # ---------------------------------------------------------------------------
 # Streaming
 # ---------------------------------------------------------------------------
@@ -864,9 +853,7 @@ class TestSnapshot:
 
     async def test_snapshot_returns_none_on_exception(self) -> None:
         cam, tm, session = _make_camera()
-        tm.async_get_access_token = AsyncMock(
-            side_effect=aiohttp.ClientError("network error")
-        )
+        tm.async_get_access_token = AsyncMock(side_effect=aiohttp.ClientError("network error"))
 
         result = await cam.async_get_snapshot()
         assert result is None
@@ -935,15 +922,11 @@ class TestOnReconnected:
         cam._async_on_reconnected = AsyncMock()
 
         # Simulate RECONNECTING first (sets reconnect_attempts to 1)
-        cam._on_connection_change(
-            ConnectionState.RECONNECTING, TransportKind.CLOUD, None
-        )
+        cam._on_connection_change(ConnectionState.RECONNECTING, TransportKind.CLOUD, None)
         assert cam.state.connection.reconnect_attempts == 1
 
         # Now simulate CONNECTED — should schedule reinit
-        cam._on_connection_change(
-            ConnectionState.CONNECTED, TransportKind.CLOUD, None
-        )
+        cam._on_connection_change(ConnectionState.CONNECTED, TransportKind.CLOUD, None)
 
         # Give the scheduled task a moment to run
         await asyncio.sleep(0.05)
@@ -955,9 +938,7 @@ class TestOnReconnected:
         cam._async_on_reconnected = AsyncMock()
 
         # First connection — reconnect_attempts is 0
-        cam._on_connection_change(
-            ConnectionState.CONNECTED, TransportKind.CLOUD, None
-        )
+        cam._on_connection_change(ConnectionState.CONNECTED, TransportKind.CLOUD, None)
 
         await asyncio.sleep(0.05)
         cam._async_on_reconnected.assert_not_awaited()
@@ -1168,6 +1149,7 @@ class TestHealthCheckLifecycle:
         fake_task.cancel.assert_called_once()
         assert cam._health_check_task is None
 
+
 # ---------------------------------------------------------------------------
 # Sensor poll lifecycle
 # ---------------------------------------------------------------------------
@@ -1282,6 +1264,7 @@ class TestSensorPollLifecycle:
         assert call_count >= 2
 
         cam._cancel_sensor_poll()
+
 
 # ---------------------------------------------------------------------------
 # WsTransport constructed with get_headers

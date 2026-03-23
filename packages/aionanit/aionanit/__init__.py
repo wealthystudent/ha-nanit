@@ -33,14 +33,6 @@ from .models import (
 from .rest import NanitRestClient
 
 __all__ = [
-    # auth
-    "TokenManager",
-    # camera
-    "NanitCamera",
-    # client
-    "NanitClient",
-    # rest
-    "NanitRestClient",
     # models
     "Baby",
     "CameraEvent",
@@ -50,20 +42,28 @@ __all__ = [
     "ConnectionInfo",
     "ConnectionState",
     "ControlState",
+    # exceptions
+    "NanitAuthError",
+    # camera
+    "NanitCamera",
+    "NanitCameraUnavailable",
+    # client
+    "NanitClient",
+    "NanitConnectionError",
+    "NanitError",
+    "NanitMfaRequiredError",
+    "NanitProtocolError",
+    "NanitRequestTimeout",
+    # rest
+    "NanitRestClient",
+    "NanitTransportError",
     "NightLightState",
     "SensorReading",
     "SensorState",
     "SensorType",
     "SettingsState",
     "StatusState",
+    # auth
+    "TokenManager",
     "TransportKind",
-    # exceptions
-    "NanitAuthError",
-    "NanitCameraUnavailable",
-    "NanitConnectionError",
-    "NanitError",
-    "NanitMfaRequiredError",
-    "NanitProtocolError",
-    "NanitRequestTimeout",
-    "NanitTransportError",
 ]

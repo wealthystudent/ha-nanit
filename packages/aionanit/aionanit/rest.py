@@ -23,6 +23,7 @@ NANIT_API_HEADERS: dict[str, str] = {
     "User-Agent": "Nanit/767 CFNetwork/1498.700.2 Darwin/23.6.0",
 }
 
+
 class NanitRestClient:
     """Async HTTP client for the Nanit cloud REST API.
 
@@ -61,9 +62,7 @@ class NanitRestClient:
         }
         return await self._async_auth_request(data)
 
-    async def _async_auth_request(
-        self, data: dict[str, Any]
-    ) -> dict[str, str]:
+    async def _async_auth_request(self, data: dict[str, Any]) -> dict[str, str]:
         try:
             resp = await self._session.post(
                 f"{self._base_url}/login",

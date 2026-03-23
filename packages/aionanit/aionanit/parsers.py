@@ -67,7 +67,7 @@ def _parse_sensor_data(
 
 
 def _parse_status(resp: Response) -> StatusState:
-    if resp.HasField('status'):
+    if resp.HasField("status"):
         return _parse_status_from_proto(resp.status)
     return StatusState()
 
@@ -79,10 +79,8 @@ def _parse_status_from_proto(status: object) -> StatusState:
         return StatusState()
 
     connected: bool | None = None
-    if status.HasField('connection_to_server'):
-        connected = (
-            status.connection_to_server == StatusConnectionToServer.CONNECTED
-        )
+    if status.HasField("connection_to_server"):
+        connected = status.connection_to_server == StatusConnectionToServer.CONNECTED
 
     return StatusState(
         connected_to_server=connected,
@@ -93,7 +91,7 @@ def _parse_status_from_proto(status: object) -> StatusState:
 
 
 def _parse_settings(resp: Response) -> SettingsState:
-    if resp.HasField('settings'):
+    if resp.HasField("settings"):
         return _parse_settings_from_proto(resp.settings)
     return SettingsState()
 
@@ -105,18 +103,22 @@ def _parse_settings_from_proto(settings: object) -> SettingsState:
         return SettingsState()
 
     return SettingsState(
-        night_vision=settings.night_vision if settings.HasField('night_vision') else None,
-        volume=settings.volume if settings.HasField('volume') else None,
-        sleep_mode=settings.sleep_mode if settings.HasField('sleep_mode') else None,
-        status_light_on=settings.status_light_on if settings.HasField('status_light_on') else None,
-        mic_mute_on=settings.mic_mute_on if settings.HasField('mic_mute_on') else None,
-        wifi_band=_WIFI_BAND_MAP.get(settings.wifi_band) if settings.HasField('wifi_band') else None,
-        mounting_mode=_MOUNTING_MODE_MAP.get(settings.mounting_mode) if settings.HasField('mounting_mode') else None,
+        night_vision=settings.night_vision if settings.HasField("night_vision") else None,
+        volume=settings.volume if settings.HasField("volume") else None,
+        sleep_mode=settings.sleep_mode if settings.HasField("sleep_mode") else None,
+        status_light_on=settings.status_light_on if settings.HasField("status_light_on") else None,
+        mic_mute_on=settings.mic_mute_on if settings.HasField("mic_mute_on") else None,
+        wifi_band=_WIFI_BAND_MAP.get(settings.wifi_band)
+        if settings.HasField("wifi_band")
+        else None,
+        mounting_mode=_MOUNTING_MODE_MAP.get(settings.mounting_mode)
+        if settings.HasField("mounting_mode")
+        else None,
     )
 
 
 def _parse_control(resp: Response) -> ControlState:
-    if resp.HasField('control'):
+    if resp.HasField("control"):
         return _parse_control_from_proto(resp.control)
     return ControlState()
 
@@ -128,14 +130,14 @@ def _parse_control_from_proto(control: object) -> ControlState:
         return ControlState()
 
     night_light: NightLightState | None = None
-    if control.HasField('night_light'):
+    if control.HasField("night_light"):
         if control.night_light == ControlNightLight.LIGHT_ON:
             night_light = NightLightState.ON
         else:
             night_light = NightLightState.OFF
 
     sensor_transfer_enabled: bool | None = None
-    if control.HasField('sensor_data_transfer'):
+    if control.HasField("sensor_data_transfer"):
         sdt = control.sensor_data_transfer
         sensor_transfer_enabled = any(
             [sdt.sound, sdt.motion, sdt.temperature, sdt.humidity, sdt.light, sdt.night]
@@ -143,6 +145,8 @@ def _parse_control_from_proto(control: object) -> ControlState:
 
     return ControlState(
         night_light=night_light,
-        night_light_timeout=control.night_light_timeout if control.HasField('night_light_timeout') else None,
+        night_light_timeout=control.night_light_timeout
+        if control.HasField("night_light_timeout")
+        else None,
         sensor_data_transfer_enabled=sensor_transfer_enabled,
     )

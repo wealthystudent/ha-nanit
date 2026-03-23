@@ -51,27 +51,31 @@ class TestAsyncLogin:
 
     async def test_login_propagates_auth_error(self) -> None:
         client, _ = _make_client()
-        with patch.object(
-            client.rest_client,
-            "async_login",
-            new_callable=AsyncMock,
-            side_effect=NanitAuthError("Invalid credentials"),
+        with (
+            patch.object(
+                client.rest_client,
+                "async_login",
+                new_callable=AsyncMock,
+                side_effect=NanitAuthError("Invalid credentials"),
+            ),
+            pytest.raises(NanitAuthError, match="Invalid credentials"),
         ):
-            with pytest.raises(NanitAuthError, match="Invalid credentials"):
-                await client.async_login("user@example.com", "wrong")
+            await client.async_login("user@example.com", "wrong")
 
         assert client.token_manager is None
 
     async def test_login_propagates_mfa_required(self) -> None:
         client, _ = _make_client()
-        with patch.object(
-            client.rest_client,
-            "async_login",
-            new_callable=AsyncMock,
-            side_effect=NanitMfaRequiredError("mfa_tok_abc"),
+        with (
+            patch.object(
+                client.rest_client,
+                "async_login",
+                new_callable=AsyncMock,
+                side_effect=NanitMfaRequiredError("mfa_tok_abc"),
+            ),
+            pytest.raises(NanitMfaRequiredError),
         ):
-            with pytest.raises(NanitMfaRequiredError):
-                await client.async_login("user@example.com", "pass")
+            await client.async_login("user@example.com", "pass")
 
         assert client.token_manager is None
 
@@ -88,9 +92,7 @@ class TestAsyncVerifyMfa:
                 "refresh_token": "mfa_rt",
             },
         ):
-            tokens = await client.async_verify_mfa(
-                "user@example.com", "pass", "mfa_tok", "123456"
-            )
+            tokens = await client.async_verify_mfa("user@example.com", "pass", "mfa_tok", "123456")
 
         assert tokens["access_token"] == "mfa_at"
         assert client.token_manager is not None
@@ -140,16 +142,19 @@ class TestAsyncGetBabies:
         expected_babies = [
             Baby(uid="baby1", name="Baby One", camera_uid="cam1"),
         ]
-        with patch.object(
-            client.rest_client,
-            "async_refresh_token",
-            new_callable=AsyncMock,
-            return_value={"access_token": "new_at", "refresh_token": "new_rt"},
-        ), patch.object(
-            client.rest_client,
-            "async_get_babies",
-            new_callable=AsyncMock,
-            return_value=expected_babies,
+        with (
+            patch.object(
+                client.rest_client,
+                "async_refresh_token",
+                new_callable=AsyncMock,
+                return_value={"access_token": "new_at", "refresh_token": "new_rt"},
+            ),
+            patch.object(
+                client.rest_client,
+                "async_get_babies",
+                new_callable=AsyncMock,
+                return_value=expected_babies,
+            ),
         ):
             babies = await client.async_get_babies()
 

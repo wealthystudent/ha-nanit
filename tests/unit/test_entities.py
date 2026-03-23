@@ -1,14 +1,14 @@
 from __future__ import annotations
-# pyright: basic, reportUnusedFunction=false
 
-from collections.abc import Iterator
 import importlib
 import sys
+
+# pyright: basic, reportUnusedFunction=false
+from collections.abc import Iterator
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from homeassistant.core import HomeAssistant
 
 _ = sys.modules.setdefault("turbojpeg", MagicMock(TurboJPEG=MagicMock()))
@@ -33,8 +33,8 @@ from custom_components.nanit.binary_sensor import (
 from custom_components.nanit.camera import NanitCameraEntity
 from custom_components.nanit.const import CLOUD_EVENT_WINDOW
 from custom_components.nanit.number import NanitVolume
-from custom_components.nanit.sensor import NanitSensor, SENSORS
-from custom_components.nanit.switch import NanitSwitch, SWITCHES
+from custom_components.nanit.sensor import SENSORS, NanitSensor
+from custom_components.nanit.switch import SWITCHES, NanitSwitch
 
 pytestmark = [
     pytest.mark.filterwarnings("ignore::pytest.PytestRemovedIn9Warning"),
@@ -147,18 +147,14 @@ def test_sensor_returns_none_when_no_data() -> None:
 
 
 def test_binary_sensor_connectivity_on_when_connected() -> None:
-    coordinator = _push_coordinator(
-        _camera_state(connection_state=ConnectionState.CONNECTED)
-    )
+    coordinator = _push_coordinator(_camera_state(connection_state=ConnectionState.CONNECTED))
     entity = NanitBinarySensor(coordinator, _binary_description("connectivity"))
 
     assert entity.is_on is True
 
 
 def test_binary_sensor_connectivity_off_when_disconnected() -> None:
-    coordinator = _push_coordinator(
-        _camera_state(connection_state=ConnectionState.DISCONNECTED)
-    )
+    coordinator = _push_coordinator(_camera_state(connection_state=ConnectionState.DISCONNECTED))
     entity = NanitBinarySensor(coordinator, _binary_description("connectivity"))
 
     assert entity.is_on is False

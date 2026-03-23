@@ -72,11 +72,14 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.13"
 
       - name: Install dependencies
         run: |
           pip install -r dev/requirements.txt
 
-      - name: Run mypy
-        run: mypy custom_components/nanit packages/aionanit/aionanit --config-file pyproject.toml
+      - name: Run mypy on aionanit (strict)
+        run: mypy packages/aionanit/aionanit --strict --ignore-missing-imports
+
+      - name: Run mypy on integration
+        run: mypy custom_components/nanit --config-file pyproject.toml --python-version 3.13

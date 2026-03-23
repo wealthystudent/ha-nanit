@@ -13,12 +13,13 @@ from homeassistant.const import STATE_ON
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
-from . import NanitConfigEntry
-from .coordinator import NanitPushCoordinator
-from .entity import NanitEntity
 
 from aionanit import NanitCamera
 from aionanit.models import CameraState, NightLightState
+
+from . import NanitConfigEntry
+from .coordinator import NanitPushCoordinator
+from .entity import NanitEntity
 
 PARALLEL_UPDATES = 0
 
@@ -28,6 +29,7 @@ _LOGGER = logging.getLogger(__name__)
 # The Nanit camera may echo the *old* state before processing the command;
 # empirical data shows the stale-then-confirmed cycle completes within ~12 s.
 _COMMAND_GRACE_PERIOD: float = 15.0
+
 
 @dataclass(frozen=True, kw_only=True)
 class NanitSwitchEntityDescription(SwitchEntityDescription):
@@ -65,14 +67,12 @@ SWITCHES: tuple[NanitSwitchEntityDescription, ...] = (
         entity_registry_enabled_default=True,
         device_class=SwitchDeviceClass.SWITCH,
         value_fn=lambda state: (
-            not state.settings.sleep_mode
-            if state.settings.sleep_mode is not None
-            else None
+            not state.settings.sleep_mode if state.settings.sleep_mode is not None else None
         ),
         turn_on_fn=lambda cam: cam.async_set_settings(sleep_mode=False),
         turn_off_fn=lambda cam: cam.async_set_settings(sleep_mode=True),
     ),
-    )
+)
 
 
 async def async_setup_entry(
@@ -84,11 +84,7 @@ async def async_setup_entry(
     entities: list[NanitSwitch] = []
     for cam_data in entry.runtime_data.cameras.values():
         for description in SWITCHES:
-            entities.append(
-                NanitSwitch(
-                    cam_data.push_coordinator, cam_data.camera, description
-                )
-            )
+            entities.append(NanitSwitch(cam_data.push_coordinator, cam_data.camera, description))
     async_add_entities(entities)
 
 
@@ -118,9 +114,11 @@ class NanitSwitch(NanitEntity, RestoreEntity, SwitchEntity):
     async def async_added_to_hass(self) -> None:
         """Restore last known state on startup."""
         await super().async_added_to_hass()
-        if self._attr_is_on is None:
-            if (last_state := await self.async_get_last_state()) is not None:
-                self._attr_is_on = last_state.state == STATE_ON
+        if (
+            self._attr_is_on is None
+            and (last_state := await self.async_get_last_state()) is not None
+        ):
+            self._attr_is_on = last_state.state == STATE_ON
 
     @property
     def is_on(self) -> bool | None:
@@ -178,9 +176,7 @@ class NanitSwitch(NanitEntity, RestoreEntity, SwitchEntity):
         try:
             await self.entity_description.turn_on_fn(self._camera)
         except Exception:
-            _LOGGER.warning(
-                "Failed to turn on %s, reverting state", self.entity_description.key
-            )
+            _LOGGER.warning("Failed to turn on %s, reverting state", self.entity_description.key)
             self._attr_is_on = previous
             self._command_state = None
             self.async_write_ha_state()
@@ -196,9 +192,7 @@ class NanitSwitch(NanitEntity, RestoreEntity, SwitchEntity):
         try:
             await self.entity_description.turn_off_fn(self._camera)
         except Exception:
-            _LOGGER.warning(
-                "Failed to turn off %s, reverting state", self.entity_description.key
-            )
+            _LOGGER.warning("Failed to turn off %s, reverting state", self.entity_description.key)
             self._attr_is_on = previous
             self._command_state = None
             self.async_write_ha_state()

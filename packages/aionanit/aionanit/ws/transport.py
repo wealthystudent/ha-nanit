@@ -42,9 +42,7 @@ class WsTransport:
         self,
         session: aiohttp.ClientSession,
         on_message: Callable[[bytes], None],
-        on_connection_change: Callable[
-            [ConnectionState, TransportKind, str | None], None
-        ],
+        on_connection_change: Callable[[ConnectionState, TransportKind, str | None], None],
         get_headers: Callable[[], Awaitable[dict[str, str]]] | None = None,
     ) -> None:
         self._session = session
@@ -92,17 +90,13 @@ class WsTransport:
     # Public API
     # ------------------------------------------------------------------
 
-    async def async_connect_cloud(
-        self, camera_uid: str, access_token: str
-    ) -> None:
+    async def async_connect_cloud(self, camera_uid: str, access_token: str) -> None:
         """Connect to the Nanit cloud relay.
 
         URL:  wss://api.nanit.com/focus/cameras/{camera_uid}/user_connect
         Auth: Authorization: Bearer {access_token}
         """
-        url = (
-            f"wss://api.nanit.com/focus/cameras/{camera_uid}/user_connect"
-        )
+        url = f"wss://api.nanit.com/focus/cameras/{camera_uid}/user_connect"
         headers = {"Authorization": f"Bearer {access_token}"}
         await self._async_connect(url, headers, TransportKind.CLOUD, ssl_context=None)
 
@@ -146,9 +140,7 @@ class WsTransport:
         self._closed = True
         await self._async_close_ws()
         self._transport_kind = TransportKind.NONE
-        self._on_connection_change(
-            ConnectionState.DISCONNECTED, TransportKind.NONE, None
-        )
+        self._on_connection_change(ConnectionState.DISCONNECTED, TransportKind.NONE, None)
 
     async def async_force_reconnect(self) -> None:
         """Force-close the WebSocket so the recv loop triggers a reconnect.
@@ -189,9 +181,7 @@ class WsTransport:
                     ssl=ssl_param,  # type: ignore[arg-type]
                 )
             except Exception as err:
-                self._on_connection_change(
-                    ConnectionState.DISCONNECTED, kind, str(err)
-                )
+                self._on_connection_change(ConnectionState.DISCONNECTED, kind, str(err))
                 raise NanitConnectionError(str(err)) from err
 
             loop = asyncio.get_running_loop()
@@ -236,13 +226,11 @@ class WsTransport:
                     _LOGGER.debug("WebSocket closed by server")
                     break
                 elif msg.type == aiohttp.WSMsgType.ERROR:
-                    _LOGGER.error(
-                        "WebSocket error: %s", self._ws.exception()
-                    )
+                    _LOGGER.error("WebSocket error: %s", self._ws.exception())
                     break
         except asyncio.CancelledError:
             return
-        except Exception as err:  # noqa: BLE001
+        except Exception as err:
             _LOGGER.error("Recv loop error: %s", err)
 
         # If we weren't explicitly closed, attempt to reconnect.
@@ -274,9 +262,7 @@ class WsTransport:
 
         while not self._closed:
             await self._async_close_ws()
-            self._on_connection_change(
-                ConnectionState.RECONNECTING, self._transport_kind, None
-            )
+            self._on_connection_change(ConnectionState.RECONNECTING, self._transport_kind, None)
 
             wait_time = backoff + jitter
             jitter = 0.0  # only first retry gets jitter
@@ -291,7 +277,7 @@ class WsTransport:
                 if self._get_headers is not None:
                     try:
                         self._headers = await self._get_headers()
-                    except Exception as hdr_err:  # noqa: BLE001
+                    except Exception as hdr_err:
                         _LOGGER.warning("Failed to refresh headers: %s", hdr_err)
                 assert self._url is not None
                 self._ws = await self._session.ws_connect(
@@ -304,11 +290,9 @@ class WsTransport:
                 loop = asyncio.get_running_loop()
                 self._recv_task = loop.create_task(self._recv_loop())
                 self._keepalive_task = loop.create_task(self._keepalive_loop())
-                self._on_connection_change(
-                    ConnectionState.CONNECTED, self._transport_kind, None
-                )
+                self._on_connection_change(ConnectionState.CONNECTED, self._transport_kind, None)
                 _LOGGER.info("Reconnected successfully")
                 return
-            except Exception as err:  # noqa: BLE001
+            except Exception as err:
                 _LOGGER.warning("Reconnect failed: %s", err)
                 backoff = min(backoff * _BACKOFF_FACTOR, _MAX_BACKOFF)

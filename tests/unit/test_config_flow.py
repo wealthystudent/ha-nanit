@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from pathlib import Path
 import sys
-from types import SimpleNamespace
 from collections.abc import Iterator
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
-
 from homeassistant.const import (
     CONF_ACCESS_TOKEN,
     CONF_EMAIL,
@@ -15,11 +14,9 @@ from homeassistant.const import (
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
-
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.nanit import config_flow as nanit_config_flow
-
 from custom_components.nanit.const import (
     CONF_CAMERA_IP,
     CONF_CAMERA_IPS,
@@ -38,6 +35,7 @@ async def _resolve_hass(hass: Any) -> HomeAssistant:
     if hasattr(hass, "__anext__"):
         return await hass.__anext__()
     return cast(HomeAssistant, hass)
+
 
 from .conftest import (
     MOCK_ACCESS_TOKEN,
@@ -293,8 +291,8 @@ async def test_mfa_connection_error_shows_error(
     mock_config_flow_client.async_login.side_effect = nanit_config_flow.NanitMfaRequiredError(
         mfa_token=MOCK_MFA_TOKEN
     )
-    mock_config_flow_client.async_verify_mfa.side_effect = (
-        nanit_config_flow.NanitConnectionError("offline")
+    mock_config_flow_client.async_verify_mfa.side_effect = nanit_config_flow.NanitConnectionError(
+        "offline"
     )
 
     result = await hass.config_entries.flow.async_init(
@@ -646,8 +644,8 @@ async def test_reauth_mfa_connection_error_shows_error(
     mock_config_flow_client.async_login.side_effect = nanit_config_flow.NanitMfaRequiredError(
         mfa_token=MOCK_MFA_TOKEN
     )
-    mock_config_flow_client.async_verify_mfa.side_effect = (
-        nanit_config_flow.NanitConnectionError("offline")
+    mock_config_flow_client.async_verify_mfa.side_effect = nanit_config_flow.NanitConnectionError(
+        "offline"
     )
 
     result = await hass.config_entries.flow.async_init(
@@ -676,9 +674,7 @@ async def test_reauth_mfa_connection_error_shows_error(
 async def test_options_flow_init_no_cameras_aborts(hass: HomeAssistant) -> None:
     hass = await _resolve_hass(hass)
     entry = MockConfigEntry(domain=DOMAIN, options={})
-    entry.runtime_data = SimpleNamespace(
-        hub=SimpleNamespace(babies=[])
-    )
+    entry.runtime_data = SimpleNamespace(hub=SimpleNamespace(babies=[]))
     entry.add_to_hass(hass)
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
@@ -692,9 +688,7 @@ async def test_options_flow_init_single_camera_goes_to_camera_ip(
 ) -> None:
     hass = await _resolve_hass(hass)
     entry = MockConfigEntry(domain=DOMAIN, options={})
-    entry.runtime_data = SimpleNamespace(
-        hub=SimpleNamespace(babies=[MOCK_BABY_1])
-    )
+    entry.runtime_data = SimpleNamespace(hub=SimpleNamespace(babies=[MOCK_BABY_1]))
     entry.add_to_hass(hass)
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
@@ -708,9 +702,7 @@ async def test_options_flow_init_multiple_cameras_shows_selector(
 ) -> None:
     hass = await _resolve_hass(hass)
     entry = MockConfigEntry(domain=DOMAIN, options={})
-    entry.runtime_data = SimpleNamespace(
-        hub=SimpleNamespace(babies=[MOCK_BABY_1, MOCK_BABY_2])
-    )
+    entry.runtime_data = SimpleNamespace(hub=SimpleNamespace(babies=[MOCK_BABY_1, MOCK_BABY_2]))
     entry.add_to_hass(hass)
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
@@ -722,9 +714,7 @@ async def test_options_flow_init_multiple_cameras_shows_selector(
 async def test_options_flow_camera_ip_sets_ip(hass: HomeAssistant) -> None:
     hass = await _resolve_hass(hass)
     entry = MockConfigEntry(domain=DOMAIN, options={CONF_CAMERA_IPS: {}})
-    entry.runtime_data = SimpleNamespace(
-        hub=SimpleNamespace(babies=[MOCK_BABY_1])
-    )
+    entry.runtime_data = SimpleNamespace(hub=SimpleNamespace(babies=[MOCK_BABY_1]))
     entry.add_to_hass(hass)
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
@@ -743,9 +733,7 @@ async def test_options_flow_multi_camera_select_then_set_ip(
 ) -> None:
     hass = await _resolve_hass(hass)
     entry = MockConfigEntry(domain=DOMAIN, options={CONF_CAMERA_IPS: {}})
-    entry.runtime_data = SimpleNamespace(
-        hub=SimpleNamespace(babies=[MOCK_BABY_1, MOCK_BABY_2])
-    )
+    entry.runtime_data = SimpleNamespace(hub=SimpleNamespace(babies=[MOCK_BABY_1, MOCK_BABY_2]))
     entry.add_to_hass(hass)
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
@@ -777,9 +765,7 @@ async def test_options_flow_camera_ip_clears_ip_when_empty(
         domain=DOMAIN,
         options={CONF_CAMERA_IPS: {MOCK_BABY_1.camera_uid: "192.168.1.30"}},
     )
-    entry.runtime_data = SimpleNamespace(
-        hub=SimpleNamespace(babies=[MOCK_BABY_1])
-    )
+    entry.runtime_data = SimpleNamespace(hub=SimpleNamespace(babies=[MOCK_BABY_1]))
     entry.add_to_hass(hass)
 
     result = await hass.config_entries.options.async_init(entry.entry_id)

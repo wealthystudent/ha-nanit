@@ -1,24 +1,11 @@
 name: Bug Report
-description: Report a bug with the Nanit integration or add-on
+description: Report a bug with the Nanit integration
 labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: |
         Thanks for taking the time to report a bug. Please fill in as much detail as you can — it helps us fix things faster.
-
-  - type: dropdown
-    id: component
-    attributes:
-      label: Component
-      description: Which part of the integration is affected?
-      options:
-        - Integration (Python / HACS)
-        - Add-on / Daemon (nanitd)
-        - Both
-        - Not sure
-    validations:
-      required: true
 
   - type: dropdown
     id: install-type
@@ -96,7 +83,6 @@ body:
       description: |
         Paste any relevant logs from Home Assistant or the add-on.
         Integration logs: Settings → System → Logs (filter by "nanit")
-        Add-on logs: Settings → Add-ons → Nanit Daemon → Log
       render: text
     validations:
       required: false

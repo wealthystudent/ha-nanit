@@ -3,9 +3,6 @@
 
 Reads session from .nanit-session (created by nanit-login.py).
 Calls: GET https://api.nanit.com/babies/{baby_uid}/messages?limit=N
-
-This is the same API call that powers the activity event entity
-in the Home Assistant integration (via nanitd's /api/events proxy).
 """
 
 from __future__ import annotations
@@ -18,9 +15,9 @@ from pathlib import Path
 
 import aiohttp
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-SESSION_FILE = REPO_ROOT / ".nanit-session"
-NANIT_API_BASE = "https://api.nanit.com"
+from aionanit.rest import NANIT_API_HEADERS
+
+SESSION_FILE = Path(__file__).resolve().parents[1] / ".nanit-session"
 
 
 async def async_main() -> int:
@@ -36,11 +33,11 @@ async def async_main() -> int:
     token = data["access_token"]
     baby_uid = data["baby_uid"]
 
-    url = f"{NANIT_API_BASE}/babies/{baby_uid}/messages?limit={args.limit}"
-    headers = {"Authorization": token}
+    url = f"https://api.nanit.com/babies/{baby_uid}/messages"
+    headers = {**NANIT_API_HEADERS, "Authorization": token}
 
     async with aiohttp.ClientSession() as session:
-        async with session.get(url, headers=headers) as resp:
+        async with session.get(url, params={"limit": args.limit}, headers=headers) as resp:
             if resp.status == 401:
                 print("Token expired. Run: just login", file=sys.stderr)
                 return 1

@@ -15,16 +15,9 @@ from pathlib import Path
 
 import aiohttp
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-SESSION_FILE = REPO_ROOT / ".nanit-session"
-sys.path.insert(0, str(REPO_ROOT))
+from aionanit import NanitAuthError, NanitClient, NanitConnectionError, NanitMfaRequiredError
 
-from custom_components.nanit.api import (  # noqa: E402
-    NanitAuthClient,
-    NanitAuthError,
-    NanitConnectionError,
-    NanitMfaRequiredError,
-)
+SESSION_FILE = Path(__file__).resolve().parents[1] / ".nanit-session"
 
 
 async def async_main() -> int:
@@ -38,16 +31,16 @@ async def async_main() -> int:
 
     async with aiohttp.ClientSession() as session:
         try:
-            auth = NanitAuthClient(session)
+            client = NanitClient(session)
             try:
-                result = await auth.login(email, password)
+                result = await client.async_login(email, password)
             except NanitMfaRequiredError as err:
                 code = getpass("MFA code: ")
-                result = await auth.verify_mfa(email, password, err.mfa_token, code)
+                result = await client.async_verify_mfa(email, password, err.mfa_token, code)
 
             access_token = result["access_token"]
             refresh_token = result["refresh_token"]
-            babies = await auth.get_babies(access_token)
+            babies = await client.async_get_babies()
 
             if not babies:
                 print("Error: no babies found on account", file=sys.stderr)
@@ -57,9 +50,9 @@ async def async_main() -> int:
             session_data = {
                 "access_token": access_token,
                 "refresh_token": refresh_token,
-                "baby_uid": baby.get("uid", ""),
-                "camera_uid": baby.get("camera_uid", ""),
-                "baby_name": baby.get("name", ""),
+                "baby_uid": baby.uid,
+                "camera_uid": baby.camera_uid,
+                "baby_name": baby.name,
             }
 
             SESSION_FILE.write_text(json.dumps(session_data, indent=2) + "\n")

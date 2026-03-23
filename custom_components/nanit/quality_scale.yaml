@@ -7,7 +7,7 @@ rules:
   appropriate-polling: done
   brands: done
   common-modules: done
-  config-flow-test-coverage: todo
+  config-flow-test-coverage: done
   config-flow: done
   dependency-transparency: done
   docs-actions:
@@ -15,7 +15,7 @@ rules:
     comment: This integration does not register any actions.
   docs-high-level-description: done
   docs-installation-instructions: done
-  docs-removal-instructions: todo
+  docs-removal-instructions: done
   entity-event-setup:
     status: exempt
     comment: This integration does not use any events.
@@ -31,14 +31,14 @@ rules:
     status: exempt
     comment: This integration does not register any actions.
   config-entry-unloading: done
-  docs-configuration-parameters: todo
-  docs-installation-parameters: todo
+  docs-configuration-parameters: done
+  docs-installation-parameters: done
   entity-unavailable: done
   integration-owner: done
   log-when-unavailable: done
-  parallel-updates: todo
+  parallel-updates: done
   reauthentication-flow: done
-  test-coverage: todo
+  test-coverage: done
 
   # Gold
   devices: done
@@ -49,27 +49,27 @@ rules:
   discovery:
     status: exempt
     comment: Nanit cameras are cloud-authenticated and do not support local network discovery.
-  docs-data-update: todo
-  docs-examples: todo
-  docs-known-limitations: todo
-  docs-supported-devices: todo
-  docs-supported-functions: todo
-  docs-troubleshooting: todo
-  docs-use-cases: todo
+  docs-data-update: done
+  docs-examples: done
+  docs-known-limitations: done
+  docs-supported-devices: done
+  docs-supported-functions: done
+  docs-troubleshooting: done
+  docs-use-cases: done
   dynamic-devices: done
   entity-category: done
   entity-device-class: done
   entity-disabled-by-default: done
   entity-translations: done
-  exception-translations: todo
-  icon-translations: todo
+  exception-translations: done
+  icon-translations: done
   reconfiguration-flow:
     status: exempt
     comment: Camera IPs are configured via the options flow. Account credentials are updated via reauth.
-  repair-issues: todo
-  stale-devices: todo
+  repair-issues: done
+  stale-devices: done
 
   # Platinum
   async-dependency: done
   inject-websession: done
-  strict-typing: todo
+  strict-typing: done

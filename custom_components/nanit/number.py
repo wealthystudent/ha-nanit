@@ -13,6 +13,8 @@ from .entity import NanitEntity
 
 from aionanit import NanitCamera
 
+PARALLEL_UPDATES = 0
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -52,7 +54,8 @@ class NanitVolume(NanitEntity, NumberEntity):
         """Return the current volume."""
         if self.coordinator.data is None:
             return None
-        return self.coordinator.data.settings.volume
+        val = self.coordinator.data.settings.volume
+        return float(val) if val is not None else None
 
     async def async_set_native_value(self, value: float) -> None:
         """Set the volume."""

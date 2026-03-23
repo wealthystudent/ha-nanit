@@ -1,0 +1,36 @@
+{
+  "entity": {
+    "sensor": {
+      "temperature": { "default": "mdi:thermometer" },
+      "humidity": { "default": "mdi:water-percent" },
+      "light": { "default": "mdi:brightness-6" }
+    },
+    "binary_sensor": {
+      "motion": { "default": "mdi:motion-sensor" },
+      "sound": { "default": "mdi:ear-hearing" },
+      "connectivity": { "default": "mdi:wifi" }
+    },
+    "switch": {
+      "night_light": {
+        "default": "mdi:lightbulb-night",
+        "state": {
+          "on": "mdi:lightbulb-on",
+          "off": "mdi:lightbulb-night"
+        }
+      },
+      "camera_power": {
+        "default": "mdi:power",
+        "state": {
+          "on": "mdi:power-plug",
+          "off": "mdi:power-plug-off"
+        }
+      }
+    },
+    "number": {
+      "volume": { "default": "mdi:volume-medium" }
+    },
+    "camera": {
+      "camera": { "default": "mdi:baby-face-outline" }
+    }
+  }
+}

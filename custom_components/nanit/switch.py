@@ -20,6 +20,8 @@ from .entity import NanitEntity
 from aionanit import NanitCamera
 from aionanit.models import CameraState, NightLightState
 
+PARALLEL_UPDATES = 0
+
 _LOGGER = logging.getLogger(__name__)
 
 # After a command, ignore contradicting push updates for this many seconds.
@@ -41,7 +43,8 @@ def _night_light_value(state: CameraState) -> bool | None:
     nl = state.control.night_light
     if nl is None:
         return None
-    return nl == NightLightState.ON
+    is_on: bool = nl == NightLightState.ON
+    return is_on
 
 
 SWITCHES: tuple[NanitSwitchEntityDescription, ...] = (

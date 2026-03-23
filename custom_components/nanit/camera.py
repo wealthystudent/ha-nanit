@@ -14,6 +14,8 @@ from .entity import NanitEntity
 
 from aionanit import NanitCamera
 
+PARALLEL_UPDATES = 0
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -85,7 +87,7 @@ class NanitCameraEntity(NanitEntity, Camera):
         if not self.is_on:
             return None
         try:
-            url = await self._camera.async_get_stream_rtmps_url()
+            url: str = await self._camera.async_get_stream_rtmps_url()
             await self._camera.async_start_streaming()
             return url
         except Exception:  # noqa: BLE001
@@ -99,7 +101,8 @@ class NanitCameraEntity(NanitEntity, Camera):
         if not self.is_on:
             return None
         try:
-            return await self._camera.async_get_snapshot()
+            image: bytes = await self._camera.async_get_snapshot()
+            return image
         except Exception:  # noqa: BLE001
             _LOGGER.debug("Failed to get camera snapshot", exc_info=True)
             return None

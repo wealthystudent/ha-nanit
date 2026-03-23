@@ -1,2 +1,8 @@
+aiohttp
+homeassistant
 pytest-homeassistant-custom-component
+pytest-cov
 aionanit @ file:packages/aionanit
+ruff
+mypy
+pre-commit

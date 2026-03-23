@@ -31,9 +31,6 @@ home-assistant_v2.db
 home-assistant_v2.db-shm
 home-assistant_v2.db-wal
 
-# Go binaries
-nanitd/src/nanitd
-
 # Test
 .pytest_cache/
 .coverage
@@ -43,6 +40,6 @@ htmlcov/
 .env
 .nanit-session
 
-# Dev HA instance (docker-compose.dev.yml)
-dev-config/
-!dev-config/configuration.yaml
+# Dev HA instance (dev/docker-compose.yml)
+dev/ha-config/
+!dev/ha-config/configuration.yaml

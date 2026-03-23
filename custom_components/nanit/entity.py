@@ -1,4 +1,4 @@
-"""Base entity for Nanit."""
+"""Base entities for Nanit."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
-from .coordinator import NanitPushCoordinator
+from .coordinator import NanitCloudCoordinator, NanitPushCoordinator
 
 
 class NanitEntity(CoordinatorEntity[NanitPushCoordinator]):
@@ -34,4 +34,19 @@ class NanitEntity(CoordinatorEntity[NanitPushCoordinator]):
             self.coordinator.last_update_success
             and self.coordinator.data is not None
             and self.coordinator.connected
+        )
+
+
+class NanitCloudEntity(CoordinatorEntity[NanitCloudCoordinator]):
+    """Base entity for Nanit cloud-polled data."""
+
+    _attr_has_entity_name = True
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Return device info."""
+        return DeviceInfo(
+            identifiers={(DOMAIN, self.coordinator.baby.camera_uid)},
+            name=self.coordinator.baby.name,
+            manufacturer="Nanit",
         )

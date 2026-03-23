@@ -11,18 +11,18 @@ from homeassistant.components.binary_sensor import (
     BinarySensorEntity,
     BinarySensorEntityDescription,
 )
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import DeviceInfo
-from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import NanitConfigEntry
-from .const import CLOUD_EVENT_WINDOW, DOMAIN
+from .const import CLOUD_EVENT_WINDOW
 from .coordinator import NanitCloudCoordinator, NanitPushCoordinator
-from .entity import NanitEntity
+from .entity import NanitCloudEntity, NanitEntity
 
 from aionanit.models import CameraState, CloudEvent, ConnectionState
+
+PARALLEL_UPDATES = 0
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -83,18 +83,16 @@ async def async_setup_entry(
     entities: list[BinarySensorEntity] = []
 
     for cam_data in entry.runtime_data.cameras.values():
-        # Local binary sensors (from camera WebSocket push)
-        for description in BINARY_SENSORS:
+        for push_desc in BINARY_SENSORS:
             entities.append(
-                NanitBinarySensor(cam_data.push_coordinator, description)
+                NanitBinarySensor(cam_data.push_coordinator, push_desc)
             )
 
-        # Cloud binary sensors (from Nanit cloud events API)
         if cam_data.cloud_coordinator is not None:
-            for description in CLOUD_BINARY_SENSORS:
+            for cloud_desc in CLOUD_BINARY_SENSORS:
                 entities.append(
                     NanitCloudBinarySensor(
-                        cam_data.cloud_coordinator, description
+                        cam_data.cloud_coordinator, cloud_desc
                     )
                 )
 
@@ -139,9 +137,7 @@ class NanitBinarySensor(NanitEntity, BinarySensorEntity):
         return self.entity_description.value_fn(self.coordinator.data)
 
 
-class NanitCloudBinarySensor(
-    CoordinatorEntity[NanitCloudCoordinator], BinarySensorEntity
-):
+class NanitCloudBinarySensor(NanitCloudEntity, BinarySensorEntity):
     """Cloud-based binary sensor that detects motion/sound from Nanit cloud events.
 
     Polls the cloud API every 30s and checks for events within a 5-minute window.
@@ -149,7 +145,6 @@ class NanitCloudBinarySensor(
     Otherwise it is OFF (automatically clears after 5 minutes from the last event).
     """
 
-    _attr_has_entity_name = True
     entity_description: NanitCloudBinarySensorEntityDescription
 
     def __init__(
@@ -161,15 +156,6 @@ class NanitCloudBinarySensor(
         super().__init__(coordinator)
         self.entity_description = description
         self._attr_unique_id = f"{coordinator.baby.camera_uid}_{description.key}"
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        """Return device info."""
-        return DeviceInfo(
-            identifiers={(DOMAIN, self.coordinator.baby.camera_uid)},
-            name=self.coordinator.baby.name,
-            manufacturer="Nanit",
-        )
 
     @property
     def is_on(self) -> bool | None:

@@ -23,7 +23,6 @@ from .const import (
     CONF_CAMERA_IP,
     CONF_CAMERA_IPS,
     CONF_MFA_CODE,
-    CONF_MFA_TOKEN,
     CONF_REFRESH_TOKEN,
     CONF_STORE_CREDENTIALS,
     DOMAIN,
@@ -66,28 +65,16 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
             self._email = user_input[CONF_EMAIL]
             self._password = user_input[CONF_PASSWORD]
             self._store_credentials = user_input.get(CONF_STORE_CREDENTIALS, False)
-
-            session = async_get_clientsession(self.hass)
-            client = NanitClient(session)
-
-            try:
-                result = await client.async_login(self._email, self._password)
-                self._access_token = result["access_token"]
-                self._refresh_token = result["refresh_token"]
-
-            except NanitMfaRequiredError as err:
-                self._mfa_token = err.mfa_token
-                return await self.async_step_mfa()
-
-            except NanitAuthError:
-                errors["base"] = "invalid_auth"
-            except NanitConnectionError:
-                errors["base"] = "cannot_connect"
-            except Exception:
-                LOGGER.exception("Unexpected error during login")
-                errors["base"] = "unknown"
-            else:
-                return await self._async_create_account_entry()
+            result = await self._async_attempt_login(
+                email=self._email,
+                password=self._password,
+                unknown_error_log="Unexpected error during login",
+                errors=errors,
+                on_mfa_step=self.async_step_mfa,
+                on_success=self._async_finish_login,
+            )
+            if result is not None:
+                return result
 
         return self.async_show_form(
             step_id="credentials",
@@ -105,6 +92,59 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Handle MFA code entry."""
+        return await self._async_handle_mfa_step(
+            user_input=user_input,
+            step_id="mfa",
+            unknown_error_log="Unexpected error during MFA verification",
+            on_success=self._async_finish_login,
+        )
+
+    async def _async_attempt_login(
+        self,
+        *,
+        email: str,
+        password: str,
+        unknown_error_log: str,
+        errors: dict[str, str],
+        on_mfa_step: Any,
+        on_success: Any,
+    ) -> ConfigFlowResult | None:
+        """Attempt login and normalize expected errors."""
+        session = async_get_clientsession(self.hass)
+        client = NanitClient(session)
+
+        try:
+            result = await client.async_login(email, password)
+        except NanitMfaRequiredError as err:
+            self._email = email
+            self._password = password
+            self._mfa_token = err.mfa_token
+            step_result: ConfigFlowResult = await on_mfa_step()
+            return step_result
+        except NanitAuthError:
+            errors["base"] = "invalid_auth"
+        except NanitConnectionError:
+            errors["base"] = "cannot_connect"
+        except Exception:
+            LOGGER.exception(unknown_error_log)
+            errors["base"] = "unknown"
+        else:
+            success_result: ConfigFlowResult = await on_success(
+                result["access_token"], result["refresh_token"]
+            )
+            return success_result
+
+        return None
+
+    async def _async_handle_mfa_step(
+        self,
+        *,
+        user_input: dict[str, Any] | None,
+        step_id: str,
+        unknown_error_log: str,
+        on_success: Any,
+    ) -> ConfigFlowResult:
+        """Handle MFA verification and shared form/error behavior."""
         errors: dict[str, str] = {}
 
         if user_input is not None:
@@ -116,21 +156,21 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
                 result = await client.async_verify_mfa(
                     self._email, self._password, self._mfa_token, mfa_code
                 )
-                self._access_token = result["access_token"]
-                self._refresh_token = result["refresh_token"]
-
             except NanitAuthError:
                 errors["base"] = "invalid_mfa_code"
             except NanitConnectionError:
                 errors["base"] = "cannot_connect"
             except Exception:
-                LOGGER.exception("Unexpected error during MFA verification")
+                LOGGER.exception(unknown_error_log)
                 errors["base"] = "unknown"
             else:
-                return await self._async_create_account_entry()
+                mfa_success: ConfigFlowResult = await on_success(
+                    result["access_token"], result["refresh_token"]
+                )
+                return mfa_success
 
         return self.async_show_form(
-            step_id="mfa",
+            step_id=step_id,
             data_schema=vol.Schema(
                 {
                     vol.Required(CONF_MFA_CODE): cv.string,
@@ -138,6 +178,14 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
             ),
             errors=errors,
         )
+
+    async def _async_finish_login(
+        self, access_token: str, refresh_token: str
+    ) -> ConfigFlowResult:
+        """Persist tokens and create the account entry."""
+        self._access_token = access_token
+        self._refresh_token = refresh_token
+        return await self._async_create_account_entry()
 
     async def _async_create_account_entry(self) -> ConfigFlowResult:
         """Create a config entry for this Nanit account.
@@ -193,39 +241,21 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             email = user_input[CONF_EMAIL]
             password = user_input[CONF_PASSWORD]
-
-            session = async_get_clientsession(self.hass)
-            client = NanitClient(session)
-
-            try:
-                result = await client.async_login(email, password)
-                access_token = result["access_token"]
-                refresh_token = result["refresh_token"]
-
-            except NanitMfaRequiredError as err:
-                self._email = email
-                self._password = password
-                self._mfa_token = err.mfa_token
-                return await self.async_step_reauth_mfa()
-
-            except NanitAuthError:
-                errors["base"] = "invalid_auth"
-            except NanitConnectionError:
-                errors["base"] = "cannot_connect"
-            except Exception:
-                LOGGER.exception("Unexpected error during reauth")
-                errors["base"] = "unknown"
-            else:
-                reauth_entry = self._get_reauth_entry()
-                new_data = {**reauth_entry.data}
-                new_data[CONF_ACCESS_TOKEN] = access_token
-                new_data[CONF_REFRESH_TOKEN] = refresh_token
-                new_data[CONF_EMAIL] = email
-                if reauth_entry.data.get(CONF_STORE_CREDENTIALS):
-                    new_data[CONF_PASSWORD] = password
-                return self.async_update_reload_and_abort(
-                    reauth_entry, data=new_data
-                )
+            result = await self._async_attempt_login(
+                email=email,
+                password=password,
+                unknown_error_log="Unexpected error during reauth",
+                errors=errors,
+                on_mfa_step=self.async_step_reauth_mfa,
+                on_success=lambda access_token, refresh_token: self._async_finish_reauth(
+                    access_token=access_token,
+                    refresh_token=refresh_token,
+                    email=email,
+                    password=password,
+                ),
+            )
+            if result is not None:
+                return result
 
         return self.async_show_form(
             step_id="reauth_confirm",
@@ -242,48 +272,29 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Handle MFA during reauth."""
-        errors: dict[str, str] = {}
-
-        if user_input is not None:
-            mfa_code = user_input[CONF_MFA_CODE]
-            session = async_get_clientsession(self.hass)
-            client = NanitClient(session)
-
-            try:
-                result = await client.async_verify_mfa(
-                    self._email, self._password, self._mfa_token, mfa_code
-                )
-                access_token = result["access_token"]
-                refresh_token = result["refresh_token"]
-
-            except NanitAuthError:
-                errors["base"] = "invalid_mfa_code"
-            except NanitConnectionError:
-                errors["base"] = "cannot_connect"
-            except Exception:
-                LOGGER.exception("Unexpected error during reauth MFA")
-                errors["base"] = "unknown"
-            else:
-                reauth_entry = self._get_reauth_entry()
-                new_data = {**reauth_entry.data}
-                new_data[CONF_ACCESS_TOKEN] = access_token
-                new_data[CONF_REFRESH_TOKEN] = refresh_token
-                new_data[CONF_EMAIL] = self._email
-                if reauth_entry.data.get(CONF_STORE_CREDENTIALS):
-                    new_data[CONF_PASSWORD] = self._password
-                return self.async_update_reload_and_abort(
-                    reauth_entry, data=new_data
-                )
-
-        return self.async_show_form(
+        return await self._async_handle_mfa_step(
+            user_input=user_input,
             step_id="reauth_mfa",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_MFA_CODE): cv.string,
-                }
-            ),
-            errors=errors,
+            unknown_error_log="Unexpected error during reauth MFA",
+            on_success=self._async_finish_reauth,
         )
+
+    async def _async_finish_reauth(
+        self,
+        access_token: str,
+        refresh_token: str,
+        email: str | None = None,
+        password: str | None = None,
+    ) -> ConfigFlowResult:
+        """Update the reauth entry with fresh credentials/tokens."""
+        reauth_entry = self._get_reauth_entry()
+        new_data = {**reauth_entry.data}
+        new_data[CONF_ACCESS_TOKEN] = access_token
+        new_data[CONF_REFRESH_TOKEN] = refresh_token
+        new_data[CONF_EMAIL] = email or self._email
+        if reauth_entry.data.get(CONF_STORE_CREDENTIALS):
+            new_data[CONF_PASSWORD] = password or self._password
+        return self.async_update_reload_and_abort(reauth_entry, data=new_data)
 
     # ------------------------------------------------------------------
     # Options flow

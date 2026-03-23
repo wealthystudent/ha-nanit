@@ -15,6 +15,7 @@ import aiohttp
 
 from homeassistant.const import CONF_ACCESS_TOKEN
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import device_registry as dr, issue_registry as ir
 
 from aionanit import (
     NanitAuthError,
@@ -127,6 +128,19 @@ class NanitHub:
                     err,
                 )
                 failed_cameras.append(baby.name)
+                ir.async_create_issue(
+                    self._hass,
+                    DOMAIN,
+                    f"camera_connection_failed_{baby.camera_uid}",
+                    is_fixable=False,
+                    is_persistent=False,
+                    severity=ir.IssueSeverity.WARNING,
+                    translation_key="camera_connection_failed",
+                    translation_placeholders={
+                        "camera_name": baby.name,
+                        "error": str(err),
+                    },
+                )
 
         if not self._camera_data and failed_cameras:
             raise NanitConnectionError(
@@ -172,6 +186,10 @@ class NanitHub:
                 baby.name,
             )
             cloud_coordinator = None
+
+        ir.async_delete_issue(
+            self._hass, DOMAIN, f"camera_connection_failed_{baby.camera_uid}"
+        )
 
         self._camera_data[baby.camera_uid] = CameraData(
             camera=camera,

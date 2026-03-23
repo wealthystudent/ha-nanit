@@ -8,6 +8,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_ACCESS_TOKEN, CONF_EMAIL
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from aionanit import NanitAuthError, NanitConnectionError
@@ -46,11 +47,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: NanitConfigEntry) -> boo
     try:
         await hub.async_setup()
     except NanitAuthError as err:
-        raise ConfigEntryAuthFailed(err) from err
+        raise ConfigEntryAuthFailed(
+            translation_domain=DOMAIN,
+            translation_key="auth_failed",
+            translation_placeholders={"error": str(err)},
+        ) from err
     except NanitConnectionError as err:
-        raise ConfigEntryNotReady(str(err)) from err
+        raise ConfigEntryNotReady(
+            translation_domain=DOMAIN,
+            translation_key="connection_failed",
+            translation_placeholders={"error": str(err)},
+        ) from err
 
     entry.runtime_data = NanitData(hub=hub, cameras=hub.camera_data)
+
+    _async_remove_stale_devices(hass, entry, hub)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
@@ -116,6 +127,27 @@ async def async_migrate_entry(
         )
 
     return True
+
+
+def _async_remove_stale_devices(
+    hass: HomeAssistant, entry: NanitConfigEntry, hub: NanitHub
+) -> None:
+    """Remove HA devices for cameras no longer on the Nanit account."""
+    device_reg = dr.async_get(hass)
+    known_camera_uids = {baby.camera_uid for baby in hub.babies}
+
+    for device in dr.async_entries_for_config_entry(device_reg, entry.entry_id):
+        device_uids = {
+            identifier[1]
+            for identifier in device.identifiers
+            if identifier[0] == DOMAIN
+        }
+        if device_uids and not device_uids & known_camera_uids:
+            LOGGER.info(
+                "Removing stale device %s (camera no longer on account)",
+                device.name,
+            )
+            device_reg.async_remove_device(device.id)
 
 
 async def _async_options_update_listener(

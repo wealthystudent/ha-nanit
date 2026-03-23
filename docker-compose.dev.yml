@@ -1,0 +1,11 @@
+services:
+  homeassistant:
+    image: ghcr.io/home-assistant/home-assistant:stable
+    container_name: ha-nanit-dev
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./dev-config:/config
+      - ./custom_components:/config/custom_components:ro
+    environment:
+      - TZ=Europe/Oslo

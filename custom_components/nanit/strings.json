@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Connect to Nanit",
-        "description": "Enter your Nanit account credentials.",
+        "description": "Enter your Nanit account credentials. All cameras on this account will be added automatically.",
         "data": {
           "email": "Email",
           "password": "Password",
@@ -12,7 +12,7 @@
       },
       "credentials": {
         "title": "Connect to Nanit",
-        "description": "Enter your Nanit account credentials.",
+        "description": "Enter your Nanit account credentials. All cameras on this account will be added automatically.",
         "data": {
           "email": "Email",
           "password": "Password",
@@ -24,13 +24,6 @@
         "description": "Enter the verification code sent to your device.",
         "data": {
           "mfa_code": "Verification Code"
-        }
-      },
-      "camera_ip": {
-        "title": "Camera IP (Optional)",
-        "description": "Enter your camera's local IP address for local-first connectivity. Leave blank to use cloud only.",
-        "data": {
-          "camera_ip": "Camera IP Address"
         }
       },
       "reauth_confirm": {
@@ -47,13 +40,6 @@
         "data": {
           "mfa_code": "Verification Code"
         }
-      },
-      "reconfigure": {
-        "title": "Reconfigure Nanit",
-        "description": "Update the camera IP address for local access.",
-        "data": {
-          "camera_ip": "Camera IP Address"
-        }
       }
     },
     "error": {
@@ -63,16 +49,23 @@
       "unknown": "Unexpected error occurred"
     },
     "abort": {
-      "already_configured": "This Nanit camera is already configured",
+      "already_configured": "This Nanit account is already configured",
       "reauth_successful": "Re-authentication successful",
-      "reconfigure_successful": "Reconfiguration successful"
+      "no_cameras": "No cameras found on this Nanit account"
     }
   },
   "options": {
     "step": {
       "init": {
         "title": "Nanit Options",
-        "description": "Configure the camera IP address for local access. Leave blank to use cloud only.",
+        "description": "Select a camera to configure its local IP address.",
+        "data": {
+          "camera": "Camera"
+        }
+      },
+      "camera_ip": {
+        "title": "Camera IP for {camera_name}",
+        "description": "Enter the local IP address for **{camera_name}** for local-first connectivity. Leave blank to use cloud only.",
         "data": {
           "camera_ip": "Camera IP Address"
         }

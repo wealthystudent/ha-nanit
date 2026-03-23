@@ -32,15 +32,28 @@ custom_components/nanit/
 - **Camera stream**: `camera.stream_source()` returns an RTMPS URL with a fresh access token
 - **Commands** (night light, volume, etc.): Entity → `NanitCamera.async_set_settings()` / `async_set_control()` → WebSocket → camera
 
+### Multi-camera architecture
+
+- **One config entry per Nanit account** (unique_id = email). All babies/cameras on the account are auto-discovered during `async_setup_entry`.
+- **Config entry version 2** with migration from v1 (single-camera per entry).
+- `NanitHub` fetches all babies from the API and creates a `NanitCamera` + coordinators for each.
+- `CameraData` (in `hub.py`) groups per-camera runtime objects: `NanitCamera`, `Baby`, `NanitPushCoordinator`, `NanitCloudCoordinator`.
+- `NanitData.cameras` is a `dict[str, CameraData]` keyed by `camera_uid`.
+- Platform files iterate `entry.runtime_data.cameras.values()` to create entities for all cameras.
+- Entity unique IDs are `{camera_uid}_{key}` — preserved across the v1→v2 migration.
+- Camera IPs are stored per-camera in `entry.options["camera_ips"]` (dict keyed by camera_uid).
+- Options flow: select camera → enter/clear IP. Entry reloads on options change.
+- New cameras added to the Nanit account appear automatically on HA restart or entry reload.
+
 ## Key paths
 
 ### Integration (`custom_components/nanit/`)
 
 - `manifest.json` — integration metadata + version
-- `__init__.py` — `async_setup_entry` / `async_unload_entry`, `NanitData` dataclass
-- `hub.py` — `NanitHub` lifecycle management (wraps `NanitClient` + `NanitCamera`)
-- `config_flow.py` — UI setup + reauth/reconfigure (no add-on detection)
-- `coordinator.py` — `NanitPushCoordinator` (WebSocket push) + `NanitCloudCoordinator` (polling)
+- `__init__.py` — `async_setup_entry` / `async_unload_entry` / `async_migrate_entry`, `NanitData` dataclass
+- `hub.py` — `NanitHub` lifecycle management (wraps `NanitClient` + all `NanitCamera` instances), `CameraData` dataclass
+- `config_flow.py` — UI setup (credentials + MFA), reauth, options flow (per-camera IP config)
+- `coordinator.py` — `NanitPushCoordinator` (WebSocket push) + `NanitCloudCoordinator` (polling), each with `baby` attribute
 - `entity.py` — `NanitEntity` base class with Shelly-style availability
 - `camera.py`, `sensor.py`, `binary_sensor.py`, `switch.py`, `number.py` — entity platforms
 - `diagnostics.py` — redacted debug output

@@ -20,7 +20,7 @@ from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from aionanit import NanitAuthError, NanitCamera, NanitConnectionError
-from aionanit.models import CameraEvent, CameraEventKind, CameraState, CloudEvent
+from aionanit.models import Baby, CameraEvent, CameraEventKind, CameraState, CloudEvent
 
 from .const import CLOUD_POLL_INTERVAL, DOMAIN
 
@@ -46,16 +46,20 @@ class NanitPushCoordinator(DataUpdateCoordinator[CameraState]):
     def __init__(
         self,
         hass: HomeAssistant,
+        entry: NanitConfigEntry,
         camera: NanitCamera,
+        baby: Baby,
     ) -> None:
         """Initialize the push coordinator."""
         super().__init__(
             hass,
             _LOGGER,
+            config_entry=entry,
             name=f"{DOMAIN}_{camera.uid}",
             # No update_interval — purely push-based
         )
         self.camera = camera
+        self.baby = baby
         self.connected: bool = False
         self._unsubscribe: Callable[[], None] | None = None
 
@@ -104,25 +108,27 @@ class NanitCloudCoordinator(DataUpdateCoordinator[list[CloudEvent]]):
     def __init__(
         self,
         hass: HomeAssistant,
+        entry: NanitConfigEntry,
         hub: NanitHub,
-        baby_uid: str,
+        baby: Baby,
     ) -> None:
         """Initialize the cloud coordinator."""
         super().__init__(
             hass,
             _LOGGER,
-            name=f"{DOMAIN}_{baby_uid}_cloud",
+            config_entry=entry,
+            name=f"{DOMAIN}_{baby.uid}_cloud",
             update_interval=timedelta(seconds=CLOUD_POLL_INTERVAL),
         )
         self._hub = hub
-        self._baby_uid = baby_uid
+        self.baby = baby
 
     async def _async_update_data(self) -> list[CloudEvent]:
         """Fetch cloud events from the Nanit API."""
         try:
             client = self._hub.client
             token = await client.token_manager.async_get_access_token()
-            return await client.rest_client.async_get_events(token, self._baby_uid)
+            return await client.rest_client.async_get_events(token, self.baby.uid)
         except NanitAuthError as err:
             raise ConfigEntryAuthFailed(err) from err
         except NanitConnectionError as err:

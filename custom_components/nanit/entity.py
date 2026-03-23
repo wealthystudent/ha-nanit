@@ -5,7 +5,7 @@ from __future__ import annotations
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import CONF_BABY_NAME, CONF_CAMERA_UID, DOMAIN
+from .const import DOMAIN
 from .coordinator import NanitPushCoordinator
 
 
@@ -18,8 +18,8 @@ class NanitEntity(CoordinatorEntity[NanitPushCoordinator]):
     def device_info(self) -> DeviceInfo:
         """Return device info."""
         return DeviceInfo(
-            identifiers={(DOMAIN, self.coordinator.config_entry.data[CONF_CAMERA_UID])},
-            name=self.coordinator.config_entry.data[CONF_BABY_NAME],
+            identifiers={(DOMAIN, self.coordinator.camera.uid)},
+            name=self.coordinator.baby.name,
             manufacturer="Nanit",
         )
 

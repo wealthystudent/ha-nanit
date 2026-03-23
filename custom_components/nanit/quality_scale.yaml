@@ -56,20 +56,18 @@ rules:
   docs-supported-functions: todo
   docs-troubleshooting: todo
   docs-use-cases: todo
-  dynamic-devices:
-    status: exempt
-    comment: Single camera per config entry.
+  dynamic-devices: done
   entity-category: done
   entity-device-class: done
   entity-disabled-by-default: done
   entity-translations: done
   exception-translations: todo
   icon-translations: todo
-  reconfiguration-flow: done
-  repair-issues: todo
-  stale-devices:
+  reconfiguration-flow:
     status: exempt
-    comment: Single camera per config entry; no stale device scenario.
+    comment: Camera IPs are configured via the options flow. Account credentials are updated via reauth.
+  repair-issues: todo
+  stale-devices: todo
 
   # Platinum
   async-dependency: done

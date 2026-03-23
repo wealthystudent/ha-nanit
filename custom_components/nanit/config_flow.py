@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import aiohttp
 import voluptuous as vol
 
 from homeassistant.config_entries import (
@@ -18,13 +17,11 @@ from homeassistant.core import callback
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from aionanit import NanitClient, NanitAuthError, NanitConnectionError, NanitMfaRequiredError
+from aionanit import NanitAuthError, NanitClient, NanitConnectionError, NanitMfaRequiredError
 
 from .const import (
-    CONF_BABY_NAME,
-    CONF_BABY_UID,
     CONF_CAMERA_IP,
-    CONF_CAMERA_UID,
+    CONF_CAMERA_IPS,
     CONF_MFA_CODE,
     CONF_MFA_TOKEN,
     CONF_REFRESH_TOKEN,
@@ -35,9 +32,14 @@ from .const import (
 
 
 class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
-    """Handle a config flow for Nanit."""
+    """Handle a config flow for Nanit.
 
-    VERSION = 1
+    v2: One config entry per Nanit account. All babies/cameras on the
+    account are auto-discovered during setup. Camera IPs are configured
+    via the options flow.
+    """
+
+    VERSION = 2
 
     def __init__(self) -> None:
         """Initialize."""
@@ -47,9 +49,6 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
         self._mfa_token: str = ""
         self._access_token: str = ""
         self._refresh_token: str = ""
-        self._baby_uid: str = ""
-        self._camera_uid: str = ""
-        self._baby_name: str = ""
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -88,7 +87,7 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
                 LOGGER.exception("Unexpected error during login")
                 errors["base"] = "unknown"
             else:
-                return await self._async_fetch_babies_and_continue()
+                return await self._async_create_account_entry()
 
         return self.async_show_form(
             step_id="credentials",
@@ -128,7 +127,7 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
                 LOGGER.exception("Unexpected error during MFA verification")
                 errors["base"] = "unknown"
             else:
-                return await self._async_fetch_babies_and_continue()
+                return await self._async_create_account_entry()
 
         return self.async_show_form(
             step_id="mfa",
@@ -140,66 +139,44 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
-    async def _async_fetch_babies_and_continue(self) -> ConfigFlowResult:
-        """Fetch baby list and continue to camera IP step."""
-        session = async_get_clientsession(self.hass)
-        client = NanitClient(session)
-        client.restore_tokens(self._access_token, self._refresh_token)
+    async def _async_create_account_entry(self) -> ConfigFlowResult:
+        """Create a config entry for this Nanit account.
 
+        One entry per account — unique_id is the email address.
+        All cameras on the account are auto-discovered during setup.
+        """
+        await self.async_set_unique_id(self._email)
+        self._abort_if_unique_id_configured()
+
+        # Determine a friendly title (try to fetch baby names)
+        title = "Nanit"
         try:
+            session = async_get_clientsession(self.hass)
+            client = NanitClient(session)
+            client.restore_tokens(self._access_token, self._refresh_token)
             babies = await client.async_get_babies()
-            if babies:
-                baby = babies[0]
-                self._baby_uid = baby.uid
-                self._camera_uid = baby.camera_uid
-                self._baby_name = baby.name
-            else:
-                self._baby_name = "Nanit Camera"
+            if len(babies) == 1:
+                title = babies[0].name
+            elif len(babies) > 1:
+                title = f"Nanit ({len(babies)} cameras)"
         except Exception:
-            LOGGER.exception("Failed to fetch babies, using defaults")
-            self._baby_name = "Nanit Camera"
+            LOGGER.debug("Failed to fetch babies for entry title", exc_info=True)
 
-        return await self.async_step_camera_ip()
+        data: dict[str, Any] = {
+            CONF_ACCESS_TOKEN: self._access_token,
+            CONF_REFRESH_TOKEN: self._refresh_token,
+            CONF_STORE_CREDENTIALS: self._store_credentials,
+            CONF_EMAIL: self._email,
+        }
 
-    async def async_step_camera_ip(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Handle optional camera IP entry for local access."""
-        if user_input is not None:
-            camera_ip = user_input.get(CONF_CAMERA_IP, "").strip()
+        if self._store_credentials:
+            data[CONF_PASSWORD] = self._password
 
-            await self.async_set_unique_id(self._camera_uid or self._email)
-            self._abort_if_unique_id_configured()
+        return self.async_create_entry(title=title, data=data)
 
-            data: dict[str, Any] = {
-                CONF_ACCESS_TOKEN: self._access_token,
-                CONF_REFRESH_TOKEN: self._refresh_token,
-                CONF_BABY_UID: self._baby_uid,
-                CONF_CAMERA_UID: self._camera_uid,
-                CONF_BABY_NAME: self._baby_name,
-                CONF_STORE_CREDENTIALS: self._store_credentials,
-            }
-
-            if camera_ip:
-                data[CONF_CAMERA_IP] = camera_ip
-
-            if self._store_credentials:
-                data[CONF_EMAIL] = self._email
-                data[CONF_PASSWORD] = self._password
-
-            return self.async_create_entry(
-                title=self._baby_name,
-                data=data,
-            )
-
-        return self.async_show_form(
-            step_id="camera_ip",
-            data_schema=vol.Schema(
-                {
-                    vol.Optional(CONF_CAMERA_IP, default=""): cv.string,
-                }
-            ),
-        )
+    # ------------------------------------------------------------------
+    # Reauth flow
+    # ------------------------------------------------------------------
 
     async def async_step_reauth(
         self, entry_data: dict[str, Any]
@@ -243,8 +220,8 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
                 new_data = {**reauth_entry.data}
                 new_data[CONF_ACCESS_TOKEN] = access_token
                 new_data[CONF_REFRESH_TOKEN] = refresh_token
+                new_data[CONF_EMAIL] = email
                 if reauth_entry.data.get(CONF_STORE_CREDENTIALS):
-                    new_data[CONF_EMAIL] = email
                     new_data[CONF_PASSWORD] = password
                 return self.async_update_reload_and_abort(
                     reauth_entry, data=new_data
@@ -291,8 +268,8 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
                 new_data = {**reauth_entry.data}
                 new_data[CONF_ACCESS_TOKEN] = access_token
                 new_data[CONF_REFRESH_TOKEN] = refresh_token
+                new_data[CONF_EMAIL] = self._email
                 if reauth_entry.data.get(CONF_STORE_CREDENTIALS):
-                    new_data[CONF_EMAIL] = self._email
                     new_data[CONF_PASSWORD] = self._password
                 return self.async_update_reload_and_abort(
                     reauth_entry, data=new_data
@@ -308,34 +285,9 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
-    async def async_step_reconfigure(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Handle reconfiguration — update camera IP."""
-        if user_input is not None:
-            reconfigure_entry = self._get_reconfigure_entry()
-            new_data = {**reconfigure_entry.data}
-            camera_ip = user_input.get(CONF_CAMERA_IP, "").strip()
-            if camera_ip:
-                new_data[CONF_CAMERA_IP] = camera_ip
-            else:
-                new_data.pop(CONF_CAMERA_IP, None)
-            return self.async_update_reload_and_abort(
-                reconfigure_entry, data=new_data
-            )
-
-        reconfigure_entry = self._get_reconfigure_entry()
-        return self.async_show_form(
-            step_id="reconfigure",
-            data_schema=vol.Schema(
-                {
-                    vol.Optional(
-                        CONF_CAMERA_IP,
-                        default=reconfigure_entry.data.get(CONF_CAMERA_IP, ""),
-                    ): cv.string,
-                }
-            ),
-        )
+    # ------------------------------------------------------------------
+    # Options flow
+    # ------------------------------------------------------------------
 
     @staticmethod
     @callback
@@ -345,25 +297,83 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class NanitOptionsFlow(OptionsFlow):
-    """Handle Nanit options — configure camera IP for local access."""
+    """Handle Nanit options — configure camera IPs for local access.
+
+    Two-step flow:
+    1. Select which camera to configure (if multiple exist)
+    2. Enter or clear the camera IP for local connectivity
+    """
+
+    def __init__(self) -> None:
+        """Initialize."""
+        self._selected_camera_uid: str = ""
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Manage the options."""
+        """Select which camera to configure."""
+        hub = self.config_entry.runtime_data.hub
+        babies = hub.babies
+
+        if not babies:
+            return self.async_abort(reason="no_cameras")
+
+        # Single camera — skip selection, go straight to IP config
+        if len(babies) == 1:
+            self._selected_camera_uid = babies[0].camera_uid
+            return await self.async_step_camera_ip(user_input)
+
+        if user_input is not None:
+            self._selected_camera_uid = user_input["camera"]
+            return await self.async_step_camera_ip()
+
+        camera_options = {
+            baby.camera_uid: baby.name for baby in babies
+        }
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("camera"): vol.In(camera_options),
+                }
+            ),
+        )
+
+    async def async_step_camera_ip(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Configure IP for the selected camera."""
         if user_input is not None:
             camera_ip = user_input.get(CONF_CAMERA_IP, "").strip()
+
+            # Merge with existing camera IPs
+            current_ips = dict(
+                self.config_entry.options.get(CONF_CAMERA_IPS, {})
+            )
+            if camera_ip:
+                current_ips[self._selected_camera_uid] = camera_ip
+            else:
+                current_ips.pop(self._selected_camera_uid, None)
+
             return self.async_create_entry(
                 title="",
-                data={CONF_CAMERA_IP: camera_ip} if camera_ip else {},
+                data={CONF_CAMERA_IPS: current_ips},
             )
 
         current_ip = self.config_entry.options.get(
-            CONF_CAMERA_IP,
-            self.config_entry.data.get(CONF_CAMERA_IP, ""),
-        )
+            CONF_CAMERA_IPS, {}
+        ).get(self._selected_camera_uid, "")
+
+        # Resolve camera name for the description placeholder
+        camera_name = self._selected_camera_uid
+        for baby in self.config_entry.runtime_data.hub.babies:
+            if baby.camera_uid == self._selected_camera_uid:
+                camera_name = baby.name
+                break
+
         return self.async_show_form(
-            step_id="init",
+            step_id="camera_ip",
             data_schema=vol.Schema(
                 {
                     vol.Optional(
@@ -372,4 +382,5 @@ class NanitOptionsFlow(OptionsFlow):
                     ): cv.string,
                 }
             ),
+            description_placeholders={"camera_name": camera_name},
         )

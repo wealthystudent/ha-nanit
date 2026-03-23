@@ -8,7 +8,6 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import NanitConfigEntry
-from .const import CONF_CAMERA_UID
 from .coordinator import NanitPushCoordinator
 from .entity import NanitEntity
 
@@ -20,10 +19,11 @@ async def async_setup_entry(
     entry: NanitConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up Nanit number entities."""
-    coordinator = entry.runtime_data.push_coordinator
-    camera = entry.runtime_data.camera
-    async_add_entities([NanitVolume(coordinator, camera)])
+    """Set up Nanit number entities for all cameras on the account."""
+    async_add_entities(
+        NanitVolume(cam_data.push_coordinator, cam_data.camera)
+        for cam_data in entry.runtime_data.cameras.values()
+    )
 
 
 class NanitVolume(NanitEntity, NumberEntity):
@@ -45,10 +45,7 @@ class NanitVolume(NanitEntity, NumberEntity):
         """Initialize."""
         super().__init__(coordinator)
         self._camera = camera
-        self._attr_unique_id = (
-            f"{coordinator.config_entry.data.get(CONF_CAMERA_UID, coordinator.config_entry.entry_id)}"
-            "_volume"
-        )
+        self._attr_unique_id = f"{camera.uid}_volume"
 
     @property
     def native_value(self) -> float | None:

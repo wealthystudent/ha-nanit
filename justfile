@@ -80,7 +80,7 @@ release bump:
     # Update aionanit pyproject.toml
     sed -i '' 's/^version = "[0-9]*\.[0-9]*\.[0-9]*"/version = "'"${new}"'"/' packages/aionanit/pyproject.toml
     git add custom_components/nanit/manifest.json packages/aionanit/pyproject.toml
-    git commit -m "Bump version to ${new}"
+    git commit --no-gpg-sign -m "Bump version to ${new}"
     git tag "${tag}"
     git push && git push --tags
     gh release create "${tag}" --title "${tag}" --generate-notes

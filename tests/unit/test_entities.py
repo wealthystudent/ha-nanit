@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.core import HomeAssistant
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 _ = sys.modules.setdefault("turbojpeg", MagicMock(TurboJPEG=MagicMock()))
 
@@ -32,9 +33,15 @@ from custom_components.nanit.binary_sensor import (
 )
 from custom_components.nanit.camera import NanitCameraEntity
 from custom_components.nanit.const import CLOUD_EVENT_WINDOW
+from custom_components.nanit.coordinator import (
+    _AVAILABILITY_GRACE_SECONDS,
+    NanitPushCoordinator,
+)
 from custom_components.nanit.number import NanitVolume
 from custom_components.nanit.sensor import SENSORS, NanitSensor
 from custom_components.nanit.switch import SWITCHES, NanitSwitch
+
+from .conftest import MOCK_BABY_1
 
 pytestmark = [
     pytest.mark.filterwarnings("ignore::pytest.PytestRemovedIn9Warning"),
@@ -428,3 +435,130 @@ async def test_camera_stream_source_returns_none_when_camera_api_fails() -> None
 
     assert source is None
     camera.async_start_streaming.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_availability_grace_period_hides_brief_disconnect(hass: HomeAssistant) -> None:
+    entry = MockConfigEntry(domain="nanit", data={}, version=2, unique_id="test@example.com")
+    entry.add_to_hass(hass)
+
+    camera = MagicMock(uid="cam_1", baby_uid="baby_1")
+    camera.connected = False
+    camera.state = _camera_state(connection_state=ConnectionState.DISCONNECTED)
+    camera.subscribe = MagicMock(return_value=lambda: None)
+    camera.async_start = AsyncMock()
+    camera.async_stop = AsyncMock()
+
+    coordinator = NanitPushCoordinator(hass, entry, camera, MOCK_BABY_1)
+    coordinator.connected = True
+
+    cancel_timer = MagicMock()
+    with patch(
+        "custom_components.nanit.coordinator.async_call_later",
+        return_value=cancel_timer,
+    ) as mock_call_later:
+        coordinator._on_camera_event(
+            _MODELS.CameraEvent(
+                kind=_MODELS.CameraEventKind.CONNECTION_CHANGE,
+                state=_camera_state(connection_state=ConnectionState.DISCONNECTED),
+            )
+        )
+
+    assert coordinator.connected is True
+    mock_call_later.assert_called_once()
+    assert mock_call_later.call_args.args[1] == _AVAILABILITY_GRACE_SECONDS
+    assert coordinator._availability_timer is cancel_timer
+
+
+@pytest.mark.asyncio
+async def test_availability_grace_period_expires(hass: HomeAssistant) -> None:
+    entry = MockConfigEntry(domain="nanit", data={}, version=2, unique_id="test@example.com")
+    entry.add_to_hass(hass)
+
+    camera = MagicMock(uid="cam_1", baby_uid="baby_1")
+    camera.connected = False
+    camera.state = _camera_state(connection_state=ConnectionState.DISCONNECTED)
+    camera.subscribe = MagicMock(return_value=lambda: None)
+    camera.async_start = AsyncMock()
+    camera.async_stop = AsyncMock()
+
+    coordinator = NanitPushCoordinator(hass, entry, camera, MOCK_BABY_1)
+    coordinator.connected = True
+    coordinator.async_update_listeners = MagicMock()
+
+    timeout_callback: Any | None = None
+
+    def _capture_timer(_hass: HomeAssistant, _seconds: float, callback):
+        nonlocal timeout_callback
+        timeout_callback = callback
+        return MagicMock()
+
+    with patch(
+        "custom_components.nanit.coordinator.async_call_later",
+        side_effect=_capture_timer,
+    ):
+        coordinator._on_camera_event(
+            _MODELS.CameraEvent(
+                kind=_MODELS.CameraEventKind.CONNECTION_CHANGE,
+                state=_camera_state(connection_state=ConnectionState.DISCONNECTED),
+            )
+        )
+
+    assert coordinator.connected is True
+    assert timeout_callback is not None
+    baseline_calls = coordinator.async_update_listeners.call_count
+    timeout_callback(None)
+    assert coordinator.connected is False
+    assert coordinator.async_update_listeners.call_count == baseline_calls + 1
+
+
+@pytest.mark.asyncio
+async def test_reconnect_within_grace_cancels_timer(hass: HomeAssistant) -> None:
+    entry = MockConfigEntry(domain="nanit", data={}, version=2, unique_id="test@example.com")
+    entry.add_to_hass(hass)
+
+    camera = MagicMock(uid="cam_1", baby_uid="baby_1")
+    camera.connected = False
+    camera.state = _camera_state(connection_state=ConnectionState.DISCONNECTED)
+    camera.subscribe = MagicMock(return_value=lambda: None)
+    camera.async_start = AsyncMock()
+    camera.async_stop = AsyncMock()
+
+    coordinator = NanitPushCoordinator(hass, entry, camera, MOCK_BABY_1)
+    coordinator.connected = True
+    coordinator.async_update_listeners = MagicMock()
+
+    timeout_callback: Any | None = None
+    cancel_timer = MagicMock()
+
+    def _capture_timer(_hass: HomeAssistant, _seconds: float, callback):
+        nonlocal timeout_callback
+        timeout_callback = callback
+        return cancel_timer
+
+    with patch(
+        "custom_components.nanit.coordinator.async_call_later",
+        side_effect=_capture_timer,
+    ):
+        coordinator._on_camera_event(
+            _MODELS.CameraEvent(
+                kind=_MODELS.CameraEventKind.CONNECTION_CHANGE,
+                state=_camera_state(connection_state=ConnectionState.DISCONNECTED),
+            )
+        )
+
+    camera.connected = True
+    coordinator._on_camera_event(
+        _MODELS.CameraEvent(
+            kind=_MODELS.CameraEventKind.CONNECTION_CHANGE,
+            state=_camera_state(connection_state=ConnectionState.CONNECTED),
+        )
+    )
+
+    assert coordinator.connected is True
+    cancel_timer.assert_called_once()
+    assert timeout_callback is not None
+    baseline_calls = coordinator.async_update_listeners.call_count
+    timeout_callback(None)
+    assert coordinator.connected is True
+    assert coordinator.async_update_listeners.call_count == baseline_calls

@@ -5,6 +5,9 @@ NanitPushCoordinator: Push-based coordinator that wraps NanitCamera.subscribe().
     control, status, connection changes). No polling — all data arrives via
     WebSocket push.
 
+    Entity availability uses a grace period so that brief reconnections (e.g.,
+    pre-emptive token refresh) do not surface as "Unavailable" in HA.
+
 NanitCloudCoordinator: Polls the Nanit cloud API for motion/sound events every
     CLOUD_POLL_INTERVAL seconds.
 """
@@ -16,19 +19,25 @@ from collections.abc import Callable
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from aionanit import NanitAuthError, NanitCamera, NanitConnectionError
-from aionanit.models import Baby, CameraEvent, CameraEventKind, CameraState, CloudEvent
+from aionanit.models import Baby, CameraEvent, CameraState, CloudEvent
 
 from .const import CLOUD_POLL_INTERVAL, DOMAIN
 
 if TYPE_CHECKING:
     from . import NanitConfigEntry
     from .hub import NanitHub
+
 _LOGGER = logging.getLogger(__name__)
+
+# How long to wait before marking entities unavailable after a disconnect.
+# If the WebSocket reconnects within this window, entities never go unavailable.
+_AVAILABILITY_GRACE_SECONDS: float = 30.0
 
 
 class NanitPushCoordinator(DataUpdateCoordinator[CameraState]):
@@ -36,10 +45,8 @@ class NanitPushCoordinator(DataUpdateCoordinator[CameraState]):
 
     No polling is configured — async_set_updated_data() is called by the camera
     callback on every state change. Entity availability is driven by the
-    ``connected`` flag which tracks the WebSocket connection state.
-
-    Pattern based on satel_integra (pure push) + Shelly (connected flag for
-    availability).
+    ``connected`` flag which tracks the WebSocket connection state, debounced
+    by a grace period so brief reconnections don't flash "Unavailable".
     """
 
     config_entry: NanitConfigEntry
@@ -57,12 +64,12 @@ class NanitPushCoordinator(DataUpdateCoordinator[CameraState]):
             _LOGGER,
             config_entry=entry,
             name=f"{DOMAIN}_{camera.uid}",
-            # No update_interval — purely push-based
         )
         self.camera = camera
         self.baby = baby
         self.connected: bool = False
         self._unsubscribe: Callable[[], None] | None = None
+        self._availability_timer: CALLBACK_TYPE | None = None
 
     async def async_setup(self) -> None:
         """Start the camera and subscribe to push events.
@@ -71,25 +78,65 @@ class NanitPushCoordinator(DataUpdateCoordinator[CameraState]):
         """
         self._unsubscribe = self.camera.subscribe(self._on_camera_event)
         await self.camera.async_start()
-        # Seed initial data from the camera's current state
         self.connected = self.camera.connected
         self.async_set_updated_data(self.camera.state)
 
     @callback
     def _on_camera_event(self, event: CameraEvent) -> None:
         """Handle a push event from NanitCamera.subscribe()."""
-        # Always derive connected from the actual transport state.
-        self.connected = self.camera.connected
-        if event.kind == CameraEventKind.CONNECTION_CHANGE and not self.connected:
+        transport_connected = self.camera.connected
+
+        if transport_connected:
+            # Connection is up — cancel any pending unavailability timer
+            # and mark connected immediately.
+            self._cancel_availability_timer()
+            if not self.connected:
+                _LOGGER.info("Camera %s reconnected", self.camera.uid)
+            self.connected = True
+        elif self.connected:
+            # Connection just dropped — start the grace period.
+            # Don't mark unavailable yet; give the transport time to reconnect.
             _LOGGER.debug(
-                "Camera %s disconnected: %s",
+                "Camera %s disconnected (grace period %.0fs): %s",
                 self.camera.uid,
+                _AVAILABILITY_GRACE_SECONDS,
                 event.state.connection.last_error,
             )
+            self._start_availability_timer()
+        # If already disconnected (self.connected is False) and transport is
+        # still disconnected, do nothing — timer is already running or fired.
+
         self.async_set_updated_data(event.state)
+
+    @callback
+    def _on_availability_timeout(self, _now: object) -> None:
+        """Grace period expired — mark entities unavailable."""
+        self._availability_timer = None
+        if not self.camera.connected:
+            _LOGGER.warning(
+                "Camera %s still disconnected after %.0fs grace period",
+                self.camera.uid,
+                _AVAILABILITY_GRACE_SECONDS,
+            )
+            self.connected = False
+            self.async_update_listeners()
+
+    def _start_availability_timer(self) -> None:
+        """Start (or restart) the grace period timer."""
+        self._cancel_availability_timer()
+        self._availability_timer = async_call_later(
+            self.hass, _AVAILABILITY_GRACE_SECONDS, self._on_availability_timeout
+        )
+
+    def _cancel_availability_timer(self) -> None:
+        """Cancel the grace period timer if running."""
+        if self._availability_timer is not None:
+            self._availability_timer()
+            self._availability_timer = None
 
     async def async_shutdown(self) -> None:
         """Stop the camera and unsubscribe."""
+        self._cancel_availability_timer()
         if self._unsubscribe is not None:
             self._unsubscribe()
             self._unsubscribe = None

@@ -99,14 +99,31 @@ custom_components/nanit/
 - **Do not change entity unique IDs or class names** without a migration plan.
 - Never log or store credentials/tokens unredacted (see `diagnostics.py`).
 
+## Connection reliability
+
+Three mechanisms ensure entities never go unavailable and commands never fail due to token expiry or transient disconnections:
+
+### Pre-emptive token refresh (Fix A — `NanitCamera._token_refresh_loop`)
+Nanit access tokens expire after 3600s (1 hour). Instead of waiting for the server to close the WebSocket, a background task in `NanitCamera` calculates the time remaining until token expiry and forces a reconnect ~5 minutes before. The transport's reconnect loop fetches fresh headers (via `_get_headers` → `TokenManager.async_get_access_token`), so the new connection uses a valid token. This eliminates server-initiated disconnects entirely.
+
+### Availability grace period (Fix B — `NanitPushCoordinator`)
+When the WebSocket disconnects, the coordinator does NOT immediately mark entities as unavailable. Instead, it starts a 30-second timer (`_AVAILABILITY_GRACE_SECONDS`). If the connection recovers within the grace period (which it should in 2-4 seconds), the timer is cancelled and entities were never marked unavailable. Only if the grace period expires with no reconnection does `connected` flip to `False`.
+
+### Command wait-for-connection (Fix C — `NanitCamera._connected_event`)
+An `asyncio.Event` tracks the connection state. When a command (`_send_request`) is called while the transport is disconnected, it waits up to 15 seconds for the event to be set (indicating reconnection completed). If reconnection happens within the window, the command proceeds normally. If the timeout expires, it falls through to the existing inline reconnect + retry logic.
+
+**Together**: A prevents most disconnects. B hides the brief ones that do happen. C ensures commands survive them.
+
 ## Development guidelines (aionanit)
 
 - All I/O must be async (`aiohttp`, `asyncio`).
 - Use the shared `aiohttp.ClientSession` passed to `NanitClient` (do not create your own).
 - Protobuf types are generated from `proto/nanit.proto` via `scripts/generate_proto.py`.
 - WebSocket keepalive: ping every 25s, read deadline 60s.
+- Token lifetime: 3600s. Pre-emptive refresh at ~3300s (5 min before expiry).
 - Local camera connections use self-signed TLS (`ssl.CERT_NONE`).
 - Maximum 1 WebSocket connection per camera (local port 442 limit is 2, but we use 1).
+- When adding new background tasks to `NanitCamera`, follow the `_start_*` / `_cancel_*` pattern and wire into `async_start()` / `async_stop()` / `_async_reconnect()`.
 - Run tests: `just test-lib`
 
 ## Commits & releases
@@ -133,6 +150,7 @@ just release major
 - **Verify features work** in a Home Assistant instance.
 - Run all checks before submitting: `just check`
 - Run tests individually: `just test` (integration) / `just test-lib` (aionanit)
+- **New features must include tests.** Integration test coverage threshold: 80% (enforced in CI).
 
 ## CI / automation
 

@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 import aiohttp
 
@@ -41,19 +42,11 @@ from .parsers import (
     _parse_status_from_proto,
 )
 from .proto import (
-    Control,
     ControlNightLight,
     ControlSensorDataTransfer,
-    GetControl,
-    GetSensorData,
-    GetStatus,
-    RequestType,
-    Response,
-    Settings,
-    StreamIdentifier,
-    Streaming,
     StreamingStatus,
 )
+from .proto import nanit_pb2 as proto
 from .rest import NanitRestClient
 from .ws.pending import PendingRequests
 from .ws.protocol import (
@@ -65,6 +58,17 @@ from .ws.protocol import (
 from .ws.transport import WsTransport
 
 _LOGGER = logging.getLogger(__name__)
+
+Control = proto.Control
+GetControl = proto.GetControl
+GetSensorData = proto.GetSensorData
+GetStatus = proto.GetStatus
+ProtoRequest = proto.Request
+RequestType = proto.RequestType
+Response = proto.Response
+Settings = proto.Settings
+StreamIdentifier = proto.StreamIdentifier
+Streaming = proto.Streaming
 
 _DEFAULT_REQUEST_TIMEOUT: float = 10.0
 _LOCAL_PROBE_INTERVAL: float = 300.0  # 5 minutes
@@ -119,8 +123,11 @@ class NanitCamera:
         self._local_probe_task: asyncio.Task[None] | None = None
         self._health_check_task: asyncio.Task[None] | None = None
         self._sensor_poll_task: asyncio.Task[None] | None = None
+        self._token_refresh_task: asyncio.Task[None] | None = None
         self._reconnect_lock: asyncio.Lock = asyncio.Lock()
         self._stopped: bool = False
+        self._connected_event: asyncio.Event = asyncio.Event()
+        self._connected_event.set()
 
     # ------------------------------------------------------------------
     # Properties
@@ -201,9 +208,12 @@ class NanitCamera:
         # Start periodic sensor polling (light values are not pushed).
         self._start_sensor_poll()
 
+        self._start_token_refresh()
+
     async def async_stop(self) -> None:
         """Stop the camera connection. Cancel all tasks, close transport."""
         self._stopped = True
+        self._cancel_token_refresh()
         self._cancel_local_probe()
         self._cancel_health_check()
         self._cancel_sensor_poll()
@@ -259,9 +269,12 @@ class NanitCamera:
 
     async def async_get_sensor_data(self) -> SensorState:
         """GET_SENSOR_DATA request (all sensors)."""
-        resp = await self._send_request(
-            RequestType.GET_SENSOR_DATA,
-            get_sensor_data=GetSensorData(all=True),
+        resp = cast(
+            Any,
+            await self._send_request(
+                RequestType.GET_SENSOR_DATA,
+                get_sensor_data=GetSensorData(all=True),
+            ),
         )
         sensors = _parse_sensor_data(resp.sensor_data, self._state.sensors)
         self._update_state(sensors=sensors, kind=CameraEventKind.SENSOR_UPDATE)
@@ -293,9 +306,12 @@ class NanitCamera:
         if mic_mute_on is not None:
             proto_settings.mic_mute_on = mic_mute_on
 
-        resp = await self._send_request(
-            RequestType.PUT_SETTINGS,
-            settings=proto_settings,
+        resp = cast(
+            Any,
+            await self._send_request(
+                RequestType.PUT_SETTINGS,
+                settings=proto_settings,
+            ),
         )
         if resp.HasField("settings"):
             new_settings = _parse_settings(resp)
@@ -333,9 +349,12 @@ class NanitCamera:
         if night_light_timeout is not None:
             proto_control.night_light_timeout = night_light_timeout
 
-        resp = await self._send_request(
-            RequestType.PUT_CONTROL,
-            control=proto_control,
+        resp = cast(
+            Any,
+            await self._send_request(
+                RequestType.PUT_CONTROL,
+                control=proto_control,
+            ),
         )
         if resp.HasField("control"):
             new_control = _parse_control(resp)
@@ -457,31 +476,29 @@ class NanitCamera:
 
     def _handle_push_event(self, request: object) -> None:
         """Process a push REQUEST from the camera."""
-        # request is proto Request type from extract_request
-        from .proto import Request as ProtoRequest
-
         if not isinstance(request, ProtoRequest):
             return
 
-        req_type = request.type
+        proto_request = cast(Any, request)
+        req_type = proto_request.type
 
         if req_type == RequestType.PUT_SENSOR_DATA:
-            sensors = _parse_sensor_data(request.sensor_data, self._state.sensors)
+            sensors = _parse_sensor_data(proto_request.sensor_data, self._state.sensors)
             self._update_state(sensors=sensors, kind=CameraEventKind.SENSOR_UPDATE)
 
         elif req_type == RequestType.PUT_STATUS:
-            if request.HasField("status"):
-                status = _parse_status_from_proto(request.status)
+            if proto_request.HasField("status"):
+                status = _parse_status_from_proto(proto_request.status)
                 self._update_state(status=status, kind=CameraEventKind.STATUS_UPDATE)
 
         elif req_type == RequestType.PUT_SETTINGS:
-            if request.HasField("settings"):
-                settings = _parse_settings_from_proto(request.settings)
+            if proto_request.HasField("settings"):
+                settings = _parse_settings_from_proto(proto_request.settings)
                 self._update_state(settings=settings, kind=CameraEventKind.SETTINGS_UPDATE)
 
         elif req_type == RequestType.PUT_CONTROL:
-            if request.HasField("control"):
-                control = _parse_control_from_proto(request.control)
+            if proto_request.HasField("control"):
+                control = _parse_control_from_proto(proto_request.control)
                 self._update_state(control=control, kind=CameraEventKind.CONTROL_UPDATE)
 
         else:
@@ -516,6 +533,11 @@ class NanitCamera:
         )
 
         self._state = dataclasses.replace(self._state, connection=new_conn)
+
+        if state == ConnectionState.CONNECTED:
+            self._connected_event.set()
+        elif state in (ConnectionState.DISCONNECTED, ConnectionState.RECONNECTING):
+            self._connected_event.clear()
 
         if state == ConnectionState.DISCONNECTED:
             self._pending.cancel_all(NanitTransportError("Connection lost"))
@@ -580,16 +602,22 @@ class NanitCamera:
 
     async def _send_request(
         self,
-        request_type: RequestType,
+        request_type: int,
         timeout: float = _DEFAULT_REQUEST_TIMEOUT,
         **kwargs: Any,
-    ) -> Response:
+    ) -> Any:
         """Send a protobuf request and await the correlated response.
 
         Includes automatic stale-connection detection and one transparent
         retry after inline reconnect so that commands succeed even when the
         server-side session has silently expired.
         """
+        if not self._transport.connected:
+            try:
+                await asyncio.wait_for(self._connected_event.wait(), timeout=15.0)
+            except TimeoutError:
+                pass
+
         for attempt in range(2):
             # Pre-send gate: if the connection has been idle longer than
             # the threshold, the server-side session is likely dead.
@@ -735,6 +763,7 @@ class NanitCamera:
 
             _LOGGER.info("Reconnecting camera %s inline", self._uid)
             self._cancel_local_probe()
+            self._cancel_token_refresh()
 
             connected = False
             if self._prefer_local and self._local_ip:
@@ -763,6 +792,35 @@ class NanitCamera:
 
             # Restart sensor polling after reconnect.
             self._start_sensor_poll()
+
+            self._start_token_refresh()
+
+    def _start_token_refresh(self) -> None:
+        self._cancel_token_refresh()
+        self._token_refresh_task = asyncio.get_running_loop().create_task(
+            self._token_refresh_loop()
+        )
+
+    def _cancel_token_refresh(self) -> None:
+        if self._token_refresh_task is not None and not self._token_refresh_task.done():
+            self._token_refresh_task.cancel()
+        self._token_refresh_task = None
+
+    async def _token_refresh_loop(self) -> None:
+        try:
+            while not self._stopped:
+                ttl = self._token_manager._expires_at - time.monotonic()
+                sleep_for = max(ttl - 300.0, 60.0)
+                await asyncio.sleep(sleep_for)
+                if self._stopped or not self._transport.connected:
+                    continue
+                _LOGGER.info("Pre-emptive token refresh: forcing reconnect before expiry")
+                try:
+                    await self._transport.async_force_reconnect()
+                except Exception:
+                    _LOGGER.debug("Pre-emptive reconnect trigger failed", exc_info=True)
+        except asyncio.CancelledError:
+            return
 
     # ------------------------------------------------------------------
     # Internal — session health check

@@ -258,11 +258,30 @@ class NanitSoundLight:
     # ------------------------------------------------------------------
 
     async def _async_fetch_device_token(self) -> None:
-        """Fetch the RS256 device token from /speakers/{uid}/udtokens."""
+        """Fetch the RS256 device token from /speakers/{uid}/udtokens.
+
+        Uses the rest client's method if available, otherwise makes the
+        API call directly (for compatibility with aionanit < 1.1).
+        """
         access_token = await self._token_manager.async_get_access_token()
-        self._device_token = await self._rest.async_get_device_token(
-            access_token, self._speaker_uid
-        )
+
+        if hasattr(self._rest, "async_get_device_token"):
+            self._device_token = await self._rest.async_get_device_token(
+                access_token, self._speaker_uid
+            )
+        else:
+            # Inline fallback for aionanit versions without this method
+            resp = await self._session.post(
+                f"{self._rest._base_url}/speakers/{self._speaker_uid}/udtokens",
+                headers={"Authorization": access_token},
+            )
+            if resp.status == 401:
+                from aionanit import NanitAuthError
+                raise NanitAuthError("Access token invalid for device token request")
+            resp.raise_for_status()
+            body = await resp.json()
+            self._device_token = body["token"]
+
         _LOGGER.debug(
             "Fetched device token for speaker %s (len=%d)",
             self._speaker_uid,

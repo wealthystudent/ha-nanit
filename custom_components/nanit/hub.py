@@ -223,10 +223,11 @@ class NanitHub:
             except NanitAuthError:
                 raise
             except Exception:
-                _LOGGER.info(
+                _LOGGER.warning(
                     "Sound & Light Machine coordinator for %s failed to start; "
                     "sound/light entities disabled",
                     baby.name,
+                    exc_info=True,
                 )
                 sound_light_coordinator = None
         else:
@@ -277,7 +278,7 @@ class NanitHub:
             device_ip=device_ip,
             token_manager=self._client.token_manager,
             rest_client=self._client.rest_client,
-            session=self._client.session,
+            session=getattr(self._client, "session", self._client._session),
         )
         self._sound_lights[speaker_uid] = sl
         return sl

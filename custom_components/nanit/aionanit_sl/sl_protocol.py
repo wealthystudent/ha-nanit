@@ -150,6 +150,98 @@ class SLDecodedState:
     timezone_rule: str | None = None
 
 
+def _parse_state_fields(state_fields: list[ProtoField]) -> SLDecodedState:
+    """Parse state fields into an SLDecodedState.
+
+    Shared by both local and cloud relay decoders. The state field structure
+    is identical in both framing formats.
+    """
+    result = SLDecodedState()
+
+    # Field 1: brightness (FIXED32 float)
+    f_brightness = get_field(state_fields, 1)
+    if f_brightness is not None and f_brightness.wire_type == FIXED32:
+        result.brightness = fixed32_to_float(f_brightness.value)
+
+    # Field 2: light config submessage { 1: light_enabled, 2: color_a, 3: color_b }
+    f_light = get_field(state_fields, 2)
+    if f_light is not None and f_light.wire_type == LENGTH_DELIMITED:
+        light_fields = decode_fields(f_light.value)
+        # Sub-1: light enabled flag (varint, INVERTED convention!)
+        # Device uses: absent or 0 = ON, 1 = OFF
+        f_light_en = get_field(light_fields, 1)
+        if f_light_en is not None and f_light_en.wire_type == VARINT:
+            result.light_enabled = f_light_en.value == 0
+        else:
+            result.light_enabled = True  # absent means ON
+        # Sub-2: color param A (hue)
+        f_color_a = get_field(light_fields, 2)
+        if f_color_a is not None and f_color_a.wire_type == FIXED32:
+            result.color_r = fixed32_to_float(f_color_a.value)
+        # Sub-3: color param B (saturation)
+        f_color_b = get_field(light_fields, 3)
+        if f_color_b is not None and f_color_b.wire_type == FIXED32:
+            result.color_g = fixed32_to_float(f_color_b.value)
+
+    # Field 3: VOLUME (FIXED32 float, 0.0-1.0)
+    f_vol = get_field(state_fields, 3)
+    if f_vol is not None and f_vol.wire_type == FIXED32:
+        result.volume = fixed32_to_float(f_vol.value)
+
+    # Field 4: sound config submessage { 1: sound_on, 2: track_name }
+    f_sound = get_field(state_fields, 4)
+    if f_sound is not None and f_sound.wire_type == LENGTH_DELIMITED:
+        sound_fields = decode_fields(f_sound.value)
+        # Sub-1: sound enabled flag (varint, INVERTED convention!)
+        f_sound_en = get_field(sound_fields, 1)
+        if f_sound_en is not None and f_sound_en.wire_type == VARINT:
+            result.sound_on = f_sound_en.value == 0
+        else:
+            result.sound_on = True  # absent means ON
+        # Sub-2: track name
+        f_name = get_field(sound_fields, 2)
+        if f_name is not None and f_name.wire_type == LENGTH_DELIMITED:
+            result.current_track = try_decode_string(f_name.value)
+
+    # Field 5: power on/off (varint, 0 or 1)
+    f_power = get_field(state_fields, 5)
+    if f_power is not None and f_power.wire_type == VARINT:
+        result.power_on = bool(f_power.value)
+
+    # Field 6: available sounds (submessage with repeated field 1 = strings)
+    f_sounds = get_field(state_fields, 6)
+    if f_sounds is not None and f_sounds.wire_type == LENGTH_DELIMITED:
+        sounds_fields = decode_fields(f_sounds.value)
+        tracks = []
+        for f in get_fields(sounds_fields, 1):
+            if f.wire_type == LENGTH_DELIMITED:
+                name = try_decode_string(f.value)
+                if name:
+                    tracks.append(name)
+        if tracks:
+            result.available_tracks = tracks
+
+    # Field 7: temperature (FIXED32 float)
+    f_temp = get_field(state_fields, 7)
+    if f_temp is not None and f_temp.wire_type == FIXED32:
+        result.temperature_c = fixed32_to_float(f_temp.value)
+
+    # Field 8: humidity (FIXED32 float)
+    f_hum = get_field(state_fields, 8)
+    if f_hum is not None and f_hum.wire_type == FIXED32:
+        result.humidity_pct = fixed32_to_float(f_hum.value)
+
+    # Field 11: timezone info
+    f_tz = get_field(state_fields, 11)
+    if f_tz is not None and f_tz.wire_type == LENGTH_DELIMITED:
+        tz_fields = decode_fields(f_tz.value)
+        f_tz_rule = get_field(tz_fields, 2)
+        if f_tz_rule is not None and f_tz_rule.wire_type == LENGTH_DELIMITED:
+            result.timezone_rule = try_decode_string(f_tz_rule.value)
+
+    return result
+
+
 def decode_full_state(data: bytes) -> SLDecodedState | None:
     """Decode message type 0 — full device state.
 
@@ -176,100 +268,62 @@ def decode_full_state(data: bytes) -> SLDecodedState | None:
                 return None  # This is a routines message
 
         state_fields = decode_fields(f6.value)
-        result = SLDecodedState()
-
-        # Field 1: brightness (FIXED32 float)
-        f_brightness = get_field(state_fields, 1)
-        if f_brightness is not None and f_brightness.wire_type == FIXED32:
-            result.brightness = fixed32_to_float(f_brightness.value)
-
-        # Field 2: light config submessage { 1: light_enabled, 2: color_a, 3: color_b }
-        f_light = get_field(state_fields, 2)
-        if f_light is not None and f_light.wire_type == LENGTH_DELIMITED:
-            light_fields = decode_fields(f_light.value)
-            # Sub-1: light enabled flag (varint, INVERTED convention!)
-            # Device uses: absent or 0 = ON, 1 = OFF
-            # Original capture had no sub-1 and light was ON.
-            # User confirmed: sending sub-1=1 turns light OFF.
-            f_light_en = get_field(light_fields, 1)
-            if f_light_en is not None and f_light_en.wire_type == VARINT:
-                result.light_enabled = f_light_en.value == 0
-            else:
-                result.light_enabled = True  # absent means ON
-            # Sub-2: color param A (hue)
-            f_color_a = get_field(light_fields, 2)
-            if f_color_a is not None and f_color_a.wire_type == FIXED32:
-                result.color_r = fixed32_to_float(f_color_a.value)
-            # Sub-3: color param B (saturation)
-            f_color_b = get_field(light_fields, 3)
-            if f_color_b is not None and f_color_b.wire_type == FIXED32:
-                result.color_g = fixed32_to_float(f_color_b.value)
-
-        # Field 3: VOLUME (FIXED32 float, 0.0-1.0)
-        # Confirmed by user testing: setting color accidentally sent
-        # saturation as field 3, which changed the device volume.
-        f_vol = get_field(state_fields, 3)
-        if f_vol is not None and f_vol.wire_type == FIXED32:
-            result.volume = fixed32_to_float(f_vol.value)
-
-        # Field 4: sound config submessage { 1: sound_on, 2: track_name }
-        f_sound = get_field(state_fields, 4)
-        if f_sound is not None and f_sound.wire_type == LENGTH_DELIMITED:
-            sound_fields = decode_fields(f_sound.value)
-            # Sub-1: sound enabled flag (varint, INVERTED convention!)
-            # Device uses: absent or 0 = ON, 1 = OFF (same as light)
-            f_sound_en = get_field(sound_fields, 1)
-            if f_sound_en is not None and f_sound_en.wire_type == VARINT:
-                result.sound_on = f_sound_en.value == 0
-            else:
-                result.sound_on = True  # absent means ON
-            # Sub-2: track name
-            f_name = get_field(sound_fields, 2)
-            if f_name is not None and f_name.wire_type == LENGTH_DELIMITED:
-                result.current_track = try_decode_string(f_name.value)
-
-        # Field 5: power on/off (varint, 0 or 1)
-        # User confirmed: this is the device power switch, not sound on/off.
-        f_power = get_field(state_fields, 5)
-        if f_power is not None and f_power.wire_type == VARINT:
-            result.power_on = bool(f_power.value)
-
-        # Field 6: available sounds (submessage with repeated field 1 = strings)
-        f_sounds = get_field(state_fields, 6)
-        if f_sounds is not None and f_sounds.wire_type == LENGTH_DELIMITED:
-            sounds_fields = decode_fields(f_sounds.value)
-            tracks = []
-            for f in get_fields(sounds_fields, 1):
-                if f.wire_type == LENGTH_DELIMITED:
-                    name = try_decode_string(f.value)
-                    if name:
-                        tracks.append(name)
-            if tracks:
-                result.available_tracks = tracks
-
-        # Field 7: temperature (FIXED32 float)
-        f_temp = get_field(state_fields, 7)
-        if f_temp is not None and f_temp.wire_type == FIXED32:
-            result.temperature_c = fixed32_to_float(f_temp.value)
-
-        # Field 8: humidity (FIXED32 float)
-        f_hum = get_field(state_fields, 8)
-        if f_hum is not None and f_hum.wire_type == FIXED32:
-            result.humidity_pct = fixed32_to_float(f_hum.value)
-
-        # Field 11: timezone info
-        f_tz = get_field(state_fields, 11)
-        if f_tz is not None and f_tz.wire_type == LENGTH_DELIMITED:
-            tz_fields = decode_fields(f_tz.value)
-            f_tz_rule = get_field(tz_fields, 2)
-            if f_tz_rule is not None and f_tz_rule.wire_type == LENGTH_DELIMITED:
-                result.timezone_rule = try_decode_string(f_tz_rule.value)
-
-        return result
+        return _parse_state_fields(state_fields)
 
     except Exception as err:
         _LOGGER.debug("Failed to decode S&L full state: %s", err)
         return None
+
+
+def decode_cloud_relay(data: bytes) -> SLDecodedState | None:
+    """Decode a cloud relay message — state wrapped in HTTP-like envelope.
+
+    Cloud relay structure: field 2 { field 2=status, field 3=text, field 4 { state } }
+    The state fields inside field 4 are the same format as local field 1.6.
+    """
+    try:
+        outer = decode_fields(data)
+        f2 = get_field(outer, 2)
+        if f2 is None or f2.wire_type != LENGTH_DELIMITED:
+            return None
+
+        inner = decode_fields(f2.value)
+
+        # Check for HTTP status (field 2 varint)
+        f_status = get_field(inner, 2)
+        if f_status is None or f_status.wire_type != VARINT:
+            return None
+
+        status_code = f_status.value
+        if status_code != 200:
+            # Non-200 (e.g. 403 Forbidden) — ignore silently
+            return None
+
+        # Extract state payload from field 4
+        f_payload = get_field(inner, 4)
+        if f_payload is None or f_payload.wire_type != LENGTH_DELIMITED:
+            return None
+
+        state_fields = decode_fields(f_payload.value)
+        return _parse_state_fields(state_fields)
+
+    except Exception as err:
+        _LOGGER.debug("Failed to decode S&L cloud relay message: %s", err)
+        return None
+
+
+def is_cloud_relay_forbidden(data: bytes) -> bool:
+    """Check if a message is a cloud relay 403 Forbidden (periodic, ignorable)."""
+    try:
+        outer = decode_fields(data)
+        f2 = get_field(outer, 2)
+        if f2 is None or f2.wire_type != LENGTH_DELIMITED:
+            return False
+        inner = decode_fields(f2.value)
+        f_status = get_field(inner, 2)
+        return f_status is not None and f_status.wire_type == VARINT and f_status.value == 403
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -508,6 +562,20 @@ def build_sl_keepalive() -> bytes:
     # field 1 { } — empty submessage
     inner = b""
     return _encode_length_delimited(1, inner)
+
+
+def build_state_request() -> bytes:
+    """Build a state request probe to prompt the device to send its full state.
+
+    Sends: 1 { 6 { } }  — an empty state body inside the command wrapper.
+
+    On a local WebSocket the device sends full state on connect, but the
+    cloud relay does not forward that initial dump. Sending this probe
+    after a cloud relay connect (and periodically thereafter) triggers the
+    device to echo back its current state.
+    """
+    field_6 = _encode_length_delimited(6, b"")
+    return _encode_length_delimited(1, field_6)
 
 
 def build_power_cmd(on: bool) -> bytes:

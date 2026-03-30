@@ -212,7 +212,7 @@ class NanitHub:
         if not speaker_uid:
             speaker_uid = getattr(baby, "speaker_uid", None)
 
-        if speaker_uid and speaker_ip:
+        if speaker_uid:
             try:
                 sound_light = self.get_sound_light(speaker_uid, speaker_ip)
                 sound_light_coordinator = NanitSoundLightCoordinator(
@@ -232,11 +232,8 @@ class NanitHub:
                 sound_light_coordinator = None
         else:
             _LOGGER.debug(
-                "No speaker UID/IP for %s; Sound & Light Machine entities skipped "
-                "(speaker_uid=%s, speaker_ip=%s)",
+                "No speaker UID for %s; Sound & Light Machine entities skipped",
                 baby.name,
-                speaker_uid,
-                speaker_ip,
             )
 
         ir.async_delete_issue(self._hass, DOMAIN, f"camera_connection_failed_{baby.camera_uid}")
@@ -264,7 +261,7 @@ class NanitHub:
     def get_sound_light(
         self,
         speaker_uid: str,
-        device_ip: str,
+        device_ip: str | None = None,
     ) -> NanitSoundLight:
         """Get or create a NanitSoundLight instance."""
         if speaker_uid in self._sound_lights:
@@ -275,10 +272,10 @@ class NanitHub:
 
         sl = NanitSoundLight(
             speaker_uid=speaker_uid,
-            device_ip=device_ip,
             token_manager=self._client.token_manager,
             rest_client=self._client.rest_client,
             session=getattr(self._client, "session", self._client._session),
+            device_ip=device_ip,
         )
         self._sound_lights[speaker_uid] = sl
         return sl

@@ -28,7 +28,6 @@ from .sl_protocol import (
     build_color_cmd,
     build_light_enabled_cmd,
     build_power_cmd,
-    build_sl_keepalive,
     build_sound_on_cmd,
     build_track_cmd,
     build_volume_cmd,
@@ -38,12 +37,12 @@ from .sl_protocol import (
     decode_routines,
     decode_sensors,
     is_cloud_relay_ack,
+    is_cloud_relay_error,
     is_cloud_relay_forbidden,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
-_KEEPALIVE_INTERVAL: float = 25.0
 _HEARTBEAT_INTERVAL: float = 60.0
 _HANDSHAKE_TIMEOUT: float = 15.0
 _INITIAL_BACKOFF: float = 1.85
@@ -103,7 +102,6 @@ class NanitSoundLight:
         # WebSocket state
         self._ws: aiohttp.ClientWebSocketResponse | None = None
         self._recv_task: asyncio.Task[None] | None = None
-        self._keepalive_task: asyncio.Task[None] | None = None
         self._poll_task: asyncio.Task[None] | None = None
         self._token_refresh_task: asyncio.Task[None] | None = None
         self._ssl_ctx: ssl.SSLContext | None = None
@@ -451,7 +449,6 @@ class NanitSoundLight:
             self._connected = True
             loop = asyncio.get_running_loop()
             self._recv_task = loop.create_task(self._recv_loop())
-            self._keepalive_task = loop.create_task(self._keepalive_loop())
 
             # Start token refresh task if not already running
             if self._token_refresh_task is None or self._token_refresh_task.done():
@@ -477,16 +474,14 @@ class NanitSoundLight:
             )
 
     async def _async_close_ws(self) -> None:
-        """Close WebSocket and cancel recv/keepalive tasks."""
-        for task in (self._recv_task, self._keepalive_task):
-            if task is not None and not task.done():
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
+        """Close WebSocket and cancel recv task."""
+        if self._recv_task is not None and not self._recv_task.done():
+            self._recv_task.cancel()
+            try:
+                await self._recv_task
+            except asyncio.CancelledError:
+                pass
         self._recv_task = None
-        self._keepalive_task = None
 
         if self._ws is not None and not self._ws.closed:
             await self._ws.close()
@@ -575,8 +570,12 @@ class NanitSoundLight:
             self._apply_state(cloud_state)
             return
 
-        # Silently ignore cloud relay 403 Forbidden (periodic keepalive noise)
+        # Silently ignore cloud relay 403 Forbidden (periodic noise)
         if is_cloud_relay_forbidden(data):
+            return
+
+        # Silently ignore other error responses (e.g. 400 "Failed to parse request")
+        if is_cloud_relay_error(data):
             return
 
         # Silently ignore cloud relay command acknowledgments (field 3 envelope)
@@ -634,23 +633,8 @@ class NanitSoundLight:
             )
 
     # ------------------------------------------------------------------
-    # Internal — keepalive and reconnect
+    # Internal — poll and reconnect
     # ------------------------------------------------------------------
-
-    async def _keepalive_loop(self) -> None:
-        """Send keepalive messages periodically."""
-        try:
-            while True:
-                await asyncio.sleep(_KEEPALIVE_INTERVAL)
-                if self._ws is None or self._ws.closed:
-                    break
-                try:
-                    await self._async_send(build_sl_keepalive())
-                except NanitTransportError:
-                    _LOGGER.warning("S&L keepalive failed, triggering reconnect")
-                    break
-        except asyncio.CancelledError:
-            return
 
     async def _poll_loop(self) -> None:
         """Periodically reconnect to refresh state from the device.

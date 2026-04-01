@@ -326,6 +326,28 @@ def is_cloud_relay_forbidden(data: bytes) -> bool:
         return False
 
 
+def is_cloud_relay_error(data: bytes) -> bool:
+    """Check if a message is a non-200 error response in field 2 envelope.
+
+    The device (and cloud relay) may return error responses such as
+    400 "Failed to parse request". These use the same field 2 envelope
+    as cloud relay messages but with a non-200 status code.
+    """
+    try:
+        outer = decode_fields(data)
+        f2 = get_field(outer, 2)
+        if f2 is None or f2.wire_type != LENGTH_DELIMITED:
+            return False
+        inner = decode_fields(f2.value)
+        f_status = get_field(inner, 2)
+        if f_status is None or f_status.wire_type != VARINT:
+            return False
+        # Any status code that isn't 200 (success) or 403 (handled separately)
+        return f_status.value not in (200, 403)
+    except Exception:
+        return False
+
+
 def is_cloud_relay_ack(data: bytes) -> bool:
     """Check if a message is a cloud relay command acknowledgment.
 
@@ -569,18 +591,6 @@ def _encode_varint_field(field_number: int, value: int) -> bytes:
 def _encode_fixed32_field(field_number: int, data: bytes) -> bytes:
     """Encode a FIXED32 field."""
     return _encode_tag(field_number, FIXED32) + data
-
-
-def build_sl_keepalive() -> bytes:
-    """Build a minimal keepalive message for the S&L device.
-
-    We send a minimal valid protobuf message. The actual keepalive format
-    may differ — this is our best guess and will be refined in testing.
-    """
-    # Try an empty message — just a valid protobuf wrapper
-    # field 1 { } — empty submessage
-    inner = b""
-    return _encode_length_delimited(1, inner)
 
 
 def build_power_cmd(on: bool) -> bytes:

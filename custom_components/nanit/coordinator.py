@@ -223,6 +223,10 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator[SoundLightFullState]):
     Persists the last known state to HA storage so that entities show
     their previous values on restart (instead of "unknown") until the
     first live update arrives from the device.
+
+    Uses a grace period for disconnections so brief reconnections
+    (e.g. during hourly access-token refresh) do not flash entities
+    as "Unavailable" in HA.
     """
 
     config_entry: NanitConfigEntry
@@ -248,16 +252,19 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator[SoundLightFullState]):
             _SL_STORE_VERSION,
             f"{DOMAIN}_sl_state_{sound_light.speaker_uid}",
         )
+        self._sl_connected: bool = False
+        self._availability_timer: CALLBACK_TYPE | None = None
 
     @property
     def connected(self) -> bool:
-        """Derive connection state from the underlying S&L device."""
-        return self.sound_light.connected
+        """Return debounced connection state (survives brief reconnections)."""
+        return self._sl_connected
 
     async def async_setup(self) -> None:
         """Start the S&L device and subscribe to push events."""
         self._unsubscribe = self.sound_light.subscribe(self._on_sl_event)
         await self.sound_light.async_start()
+        self._sl_connected = self.sound_light.connected
 
         # If the device hasn't sent initial state yet (cloud relay),
         # restore the last known state from disk so entities aren't "unknown".
@@ -318,11 +325,30 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator[SoundLightFullState]):
     @callback
     def _on_sl_event(self, event: SoundLightEvent) -> None:
         """Handle a push event from NanitSoundLight.subscribe()."""
-        if event.kind == SoundLightEventKind.CONNECTION_CHANGE and not self.connected:
-            _LOGGER.debug(
-                "S&L %s disconnected",
-                self.sound_light.speaker_uid,
-            )
+        if event.kind == SoundLightEventKind.CONNECTION_CHANGE:
+            transport_connected = self.sound_light.connected
+            if transport_connected:
+                # Connection is up — cancel any pending unavailability timer
+                # and mark connected immediately.
+                self._cancel_availability_timer()
+                if not self._sl_connected:
+                    _LOGGER.info(
+                        "S&L %s reconnected",
+                        self.sound_light.speaker_uid,
+                    )
+                self._sl_connected = True
+            elif self._sl_connected:
+                # Connection just dropped — start the grace period.
+                # Don't mark unavailable yet; give the transport time to reconnect.
+                _LOGGER.debug(
+                    "S&L %s disconnected (grace period %.0fs)",
+                    self.sound_light.speaker_uid,
+                    _AVAILABILITY_GRACE_SECONDS,
+                )
+                self._start_availability_timer()
+            # If already disconnected and transport still disconnected,
+            # do nothing — timer is already running or fired.
+
         self.async_set_updated_data(event.state)
 
         # Save state to disk on every meaningful update so it survives restarts
@@ -332,8 +358,35 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator[SoundLightFullState]):
         ):
             self.hass.async_create_task(self._async_save_state(event.state))
 
+    @callback
+    def _on_availability_timeout(self, _now: object) -> None:
+        """Grace period expired — mark S&L entities unavailable."""
+        self._availability_timer = None
+        if not self.sound_light.connected:
+            _LOGGER.warning(
+                "S&L %s still disconnected after %.0fs grace period",
+                self.sound_light.speaker_uid,
+                _AVAILABILITY_GRACE_SECONDS,
+            )
+            self._sl_connected = False
+            self.async_update_listeners()
+
+    def _start_availability_timer(self) -> None:
+        """Start (or restart) the grace period timer."""
+        self._cancel_availability_timer()
+        self._availability_timer = async_call_later(
+            self.hass, _AVAILABILITY_GRACE_SECONDS, self._on_availability_timeout
+        )
+
+    def _cancel_availability_timer(self) -> None:
+        """Cancel the grace period timer if running."""
+        if self._availability_timer is not None:
+            self._availability_timer()
+            self._availability_timer = None
+
     async def async_shutdown(self) -> None:
         """Stop the S&L device and unsubscribe."""
+        self._cancel_availability_timer()
         if self._unsubscribe is not None:
             self._unsubscribe()
             self._unsubscribe = None

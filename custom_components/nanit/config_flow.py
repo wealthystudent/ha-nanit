@@ -390,11 +390,11 @@ class NanitOptionsFlow(OptionsFlow):
                 {
                     vol.Optional(
                         CONF_CAMERA_IP,
-                        default=current_ip,
+                        description={"suggested_value": current_ip},
                     ): cv.string,
                     vol.Optional(
                         CONF_SPEAKER_IP,
-                        default=current_speaker_ip,
+                        description={"suggested_value": current_speaker_ip},
                     ): cv.string,
                 }
             ),

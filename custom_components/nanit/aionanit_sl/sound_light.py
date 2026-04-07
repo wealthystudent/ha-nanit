@@ -170,11 +170,22 @@ class NanitSoundLight:
 
         When no IP is configured, connects via cloud relay
         (wss://remote.nanit.com) directly.
+
+        If the initial connection fails, a background reconnect loop is
+        started so the coordinator can still set up entities (they will
+        show as unavailable until the connection succeeds).
         """
         self._stopped = False
         # Reset preference based on whether IP is available
         self._use_cloud_relay = self._device_ip is None
-        await self._async_connect()
+        try:
+            await self._async_connect()
+        except (NanitTransportError, NanitConnectionError):
+            _LOGGER.warning(
+                "S&L %s initial connection failed; will retry in background",
+                self._speaker_uid,
+            )
+            asyncio.get_running_loop().create_task(self._reconnect_loop())
 
     async def async_stop(self) -> None:
         """Stop the S&L connection gracefully."""
@@ -434,7 +445,7 @@ class NanitSoundLight:
                     # Track that we ended up on cloud relay (affects poll strategy)
                     self._use_cloud_relay = True
                 except Exception as err:
-                    _LOGGER.debug(
+                    _LOGGER.warning(
                         "Cloud relay failed for S&L %s: %s",
                         self._speaker_uid,
                         err,

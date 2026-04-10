@@ -309,7 +309,7 @@ class NanitCamera:
         if mic_mute_on is not None:
             proto_settings.mic_mute_on = mic_mute_on
         if night_light_brightness is not None:
-            proto_settings.night_light_brightness = night_light_brightness
+            proto_settings.night_light_brightness = max(0, min(100, night_light_brightness))
 
         resp = cast(
             Any,

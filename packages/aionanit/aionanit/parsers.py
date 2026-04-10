@@ -114,7 +114,7 @@ def _parse_settings_from_proto(settings: object) -> SettingsState:
         mounting_mode=_MOUNTING_MODE_MAP.get(settings.mounting_mode)
         if settings.HasField("mounting_mode")
         else None,
-        night_light_brightness=settings.night_light_brightness
+        night_light_brightness=max(0, min(100, settings.night_light_brightness))
         if settings.HasField("night_light_brightness")
         else None,
     )

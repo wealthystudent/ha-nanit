@@ -138,7 +138,7 @@ PR merged to main
   just promote
   │
   ├─ Creates stable GitHub release (v X.Y.Z)
-  ├─ Deletes the beta release + tag
+  ├─ Retains beta release + tag for historical record
   └─ GitHub Actions: CI gate → publish aionanit stable to PyPI → attach nanit.zip
 ```
 

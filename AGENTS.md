@@ -236,5 +236,4 @@ Follow [Home Assistant developer docs](https://developers.home-assistant.io/) (l
 ## CI
 
 - **Lint + typecheck + tests**: `.github/workflows/ci.yaml` (runs on every push/PR to `main`).
-- **Beta publish**: `.github/workflows/release-beta.yaml` (triggers on pre-release published, publishes aionanit beta to PyPI).
-- **Stable publish**: `.github/workflows/release-stable.yaml` (triggers on stable release published, re-runs CI gate, publishes aionanit to PyPI, attaches `nanit.zip` artifact).
+- **Release**: `.github/workflows/release.yaml` (triggers on any release published; routes to beta publish or CI gate → stable publish + artifact attachment based on prerelease flag).

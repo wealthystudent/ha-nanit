@@ -142,9 +142,6 @@ promote:
     git commit --no-gpg-sign -m "chore: bump version to ${stable}"
     git tag "v${stable}"
     git push && git push --tags
-    gh release delete "${beta_tag}" --yes
-    git push origin --delete "${beta_tag}"
-    git tag -d "${beta_tag}"
     gh release create "v${stable}" --title "v${stable}" --generate-notes --latest
     echo "✅ v${stable} released. GitHub Actions will publish to PyPI and attach artifacts."
 

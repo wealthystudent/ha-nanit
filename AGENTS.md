@@ -1,162 +1,204 @@
 # ha-nanit — AGENTS.md
 
-This file is a quick lookup for agents working in this repo. Read it before making changes.
+> For AI agents. Read the section relevant to your task — you don't need to read everything every time.
+> Use the [Context Router](#context-router) to find which sections apply.
+> Human contributors: see [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Repo overview
+## Context Router
 
-Home Assistant custom integration for Nanit baby cameras.
-Two main parts:
+| If your task involves…              | Read sections                                      |
+|--------------------------------------|----------------------------------------------------|
+| Any code change                      | [Code Standards](#code-standards), [Git Workflow](#git-workflow), [Guardrails](#guardrails) |
+| Integration code (`custom_components/`) | Above + [Architecture](#architecture), [HA Integration Patterns](#ha-integration-patterns) |
+| Client library (`packages/aionanit/`)  | Above + [Architecture](#architecture), [aionanit Patterns](#aionanit-patterns) |
+| Connection/WebSocket work            | Above + [docs/CONNECTION_RELIABILITY.md](docs/CONNECTION_RELIABILITY.md) |
+| Security review                      | [Security](#security), [docs/SECURITY_AUDIT_CHECKLIST.md](docs/SECURITY_AUDIT_CHECKLIST.md) |
+| PR review                            | [Git Workflow](#git-workflow), [Security](#security), [Guardrails](#guardrails) |
+| Release                              | [Git Workflow → Releases](#releases), [Security](#security) |
 
-- **Python integration**: `custom_components/nanit/`
-- **aionanit client library**: `packages/aionanit/` (pure-Python async Nanit API client)
+---
 
-## Architecture (high level)
+## Architecture
+
+Monorepo with two packages for Nanit baby camera Home Assistant integration:
 
 ```
-Home Assistant (Python)
-custom_components/nanit/
-         │
-         ├── aionanit (PyPI package)
-         │      ├── WebSocket (wss) ──► Nanit Camera (local:442, self-signed TLS)
-         │      ├── WebSocket (wss) ──► Nanit Cloud  (api.nanit.com/focus/*)
-         │      └── HTTPS (REST)   ──► Nanit Cloud  (api.nanit.com)
-         │
-         └── HA Stream integration ──► rtmps://media-secured.nanit.com (live video)
+custom_components/nanit/   ← HA integration (Python, async)
+packages/aionanit/         ← Nanit API client library (published to PyPI)
+tests/unit/                ← Integration tests (80% coverage threshold)
+dev/                       ← Docker-based dev HA instance
+tools/                     ← CLI utilities (login, events, probe)
+docs/                      ← Security checklist, connection reliability, testing
 ```
 
-### Data flow
+**Data flow:**
+- **Push sensors**: Camera → WebSocket → `NanitCamera.subscribe()` → `NanitPushCoordinator` → entities
+- **Cloud events**: `NanitCloudCoordinator` polls `GET /babies/{uid}/messages` every 30s
+- **Camera stream**: `camera.stream_source()` returns RTMPS URL with fresh access token
+- **Commands**: Entity → `NanitCamera` → WebSocket → camera
 
-- **Push-based sensors**: Camera → WebSocket → `NanitCamera.subscribe()` → `NanitPushCoordinator.async_set_updated_data()` → entities
-- **Cloud events (motion/sound)**: `NanitCloudCoordinator` polls `GET /babies/{uid}/messages` every 30s
-- **Camera stream**: `camera.stream_source()` returns an RTMPS URL with a fresh access token
-- **Commands** (night light, volume, etc.): Entity → `NanitCamera.async_set_settings()` / `async_set_control()` → WebSocket → camera
+**Multi-camera**: One config entry per Nanit account (unique_id = email). `NanitHub` auto-discovers all babies/cameras. Entity unique IDs: `{camera_uid}_{key}`.
 
-### Multi-camera architecture
+### Key files
 
-- **One config entry per Nanit account** (unique_id = email). All babies/cameras on the account are auto-discovered during `async_setup_entry`.
-- **Config entry version 2** with migration from v1 (single-camera per entry).
-- `NanitHub` fetches all babies from the API and creates a `NanitCamera` + coordinators for each.
-- `CameraData` (in `hub.py`) groups per-camera runtime objects: `NanitCamera`, `Baby`, `NanitPushCoordinator`, `NanitCloudCoordinator`.
-- `NanitData.cameras` is a `dict[str, CameraData]` keyed by `camera_uid`.
-- Platform files iterate `entry.runtime_data.cameras.values()` to create entities for all cameras.
-- Entity unique IDs are `{camera_uid}_{key}` — preserved across the v1→v2 migration.
-- Camera IPs are stored per-camera in `entry.options["camera_ips"]` (dict keyed by camera_uid).
-- Options flow: select camera → enter/clear IP. Entry reloads on options change.
-- New cameras added to the Nanit account appear automatically on HA restart or entry reload.
+| File | Purpose |
+|------|---------|
+| `__init__.py` | Entry setup/unload/migrate, `NanitData` dataclass |
+| `hub.py` | `NanitHub` lifecycle, `CameraData` per-camera grouping |
+| `config_flow.py` | Credentials + MFA, reauth, per-camera IP options |
+| `coordinator.py` | `NanitPushCoordinator` (WebSocket push) + `NanitCloudCoordinator` (polling) |
+| `entity.py` | `NanitEntity` base class with availability logic |
+| `camera.py`, `sensor.py`, `binary_sensor.py`, `switch.py`, `number.py` | Entity platforms |
+| `manifest.json` | Version, requirements, HA metadata |
+| `aionanit/camera.py` | `NanitCamera` state machine, subscribe, commands |
+| `aionanit/auth.py` | `TokenManager` (auto-refresh, token change callback) |
+| `aionanit/ws/transport.py` | `WsTransport` (WebSocket connection, reconnect, keepalive) |
 
-## Key paths
+---
 
-### Integration (`custom_components/nanit/`)
+## Code Standards
 
-- `manifest.json` — integration metadata + version
-- `__init__.py` — `async_setup_entry` / `async_unload_entry` / `async_migrate_entry`, `NanitData` dataclass
-- `hub.py` — `NanitHub` lifecycle management (wraps `NanitClient` + all `NanitCamera` instances), `CameraData` dataclass
-- `config_flow.py` — UI setup (credentials + MFA), reauth, options flow (per-camera IP config)
-- `coordinator.py` — `NanitPushCoordinator` (WebSocket push) + `NanitCloudCoordinator` (polling), each with `baby` attribute
-- `entity.py` — `NanitEntity` base class with Shelly-style availability
-- `camera.py`, `sensor.py`, `binary_sensor.py`, `switch.py`, `number.py` — entity platforms
-- `diagnostics.py` — redacted debug output
-- `strings.json` + `translations/en.json` — user-facing strings
+- **Python**: 3.12+ target. Fully async — no blocking I/O in the event loop.
+- **Linter**: Ruff (rules: B, BLE, C4, D, E, F, I, ICN, N, PGH, PIE, RUF, SIM, T20, UP, W). Line length: 100.
+- **Type checking**: mypy strict mode. All functions must have type hints.
+- **Formatting**: Ruff formatter (enforced via pre-commit).
+- **Strings**: User-facing text in `strings.json` / `translations/en.json` — no hardcoded English.
+- **Imports**: isort via Ruff. Known first-party: `aionanit`, `custom_components.nanit`.
+- **Naming**: Follow existing patterns. Never change entity unique IDs or class names without a migration plan.
+- **Tests**: New features must include tests. Coverage threshold: 80% (enforced in CI).
 
-### Client library (`packages/aionanit/`)
+### Commands
 
-- `aionanit/__init__.py` — public API exports
-- `aionanit/auth.py` — `TokenManager` (automatic refresh, callback on token change)
-- `aionanit/rest.py` — `NanitRestClient` (login, MFA, babies, events, snapshots)
-- `aionanit/camera.py` — `NanitCamera` (state machine, subscribe, commands)
-- `aionanit/parsers.py` — Protobuf → model parsing helpers (extracted from camera.py)
-- `aionanit/client.py` — `NanitClient` (top-level entrypoint, camera factory)
-- `aionanit/models.py` — `CameraState`, `CameraEvent`, `Baby`, `CloudEvent`, etc.
-- `aionanit/proto/nanit_pb2.py` — google protobuf generated types (via `protoc`)
-- `aionanit/ws/transport.py` — `WsTransport` (WebSocket connection, reconnect, keepalive)
-- `aionanit/ws/protocol.py` — protobuf encode/decode
-- `aionanit/ws/pending.py` — `PendingRequests` (request/response correlation)
-- `tests/` — 183 unit tests (pytest, aioresponses)
+```bash
+just setup        # Install deps, tooling, pre-commit hooks
+just check        # Run ALL checks (lint + format + typecheck + tests) — use before any PR
+just lint         # Ruff lint
+just format       # Ruff format
+just typecheck    # mypy strict
+just test         # Integration tests (custom_components)
+just test-lib     # aionanit library tests
+just test-all     # Both test suites
+just dev          # Start dev HA instance → http://localhost:8123
+just dev-restart  # Restart after code changes
+```
 
-### Development infrastructure (`dev/`)
+---
 
-- `dev/docker-compose.yml` — dev HA instance
-- `dev/ha-config/` — dev HA state (gitignored except `configuration.yaml`)
-- `dev/requirements.txt` — all development dependencies
+## Git Workflow
 
-### Other
+### Branching (trunk-based)
 
-- `CHANGELOG.md` — release history
-- `justfile` — CLI entry point for all repo operations (`just --list`)
-- `hacs.json` — HACS custom integration config
-- `README.md` — user-facing docs
+- **`main`** is the only long-lived branch. All work branches off `main` and merges back via PR.
+- Feature branches: `feat/<description>`, `fix/<description>`, `chore/<description>`.
+- Keep branches short-lived. Rebase on `main` before merge. Squash if commits are noisy.
 
-## Development guidelines (Home Assistant)
+### Commit messages (conventional commits)
 
-- **Always use the latest Home Assistant version, API, and developer docs**
-  from https://developers.home-assistant.io/.
-- Minimum supported HA version: **2025.12+** (per README).
-- Keep integration **fully async**; no blocking I/O in the event loop.
-- Use `ConfigEntry.runtime_data` for runtime objects (clients/coordinators).
-- Push-based coordinator: use `DataUpdateCoordinator.async_set_updated_data()` for WebSocket push data.
-- Polling coordinator: use `DataUpdateCoordinator` with `update_interval` for cloud events.
-- Avoid hardcoded English strings; use `strings.json`/translations.
-- **Do not change entity unique IDs or class names** without a migration plan.
-- Never log or store credentials/tokens unredacted (see `diagnostics.py`).
+Format: `<type>: <description>`
 
-## Connection reliability
+| Type | Use for |
+|------|---------|
+| `feat:` | New feature or capability |
+| `fix:` | Bug fix |
+| `refactor:` | Code restructuring (no behavior change) |
+| `docs:` | Documentation only |
+| `test:` | Adding or updating tests |
+| `chore:` | Tooling, deps, CI, config |
 
-Three mechanisms ensure entities never go unavailable and commands never fail due to token expiry or transient disconnections:
+Rules:
+- One logical change per commit. Keep it atomic.
+- Description: imperative mood, lowercase, no period. e.g., `feat: add night vision toggle`
+- If behavior or user-facing functionality changes, update `README.md` in the same commit.
 
-### Pre-emptive token refresh (Fix A — `NanitCamera._token_refresh_loop`)
-Nanit access tokens expire after 3600s (1 hour). Instead of waiting for the server to close the WebSocket, a background task in `NanitCamera` calculates the time remaining until token expiry and forces a reconnect ~5 minutes before. The transport's reconnect loop fetches fresh headers (via `_get_headers` → `TokenManager.async_get_access_token`), so the new connection uses a valid token. This eliminates server-initiated disconnects entirely.
+### PR process
 
-### Availability grace period (Fix B — `NanitPushCoordinator`)
-When the WebSocket disconnects, the coordinator does NOT immediately mark entities as unavailable. Instead, it starts a 30-second timer (`_AVAILABILITY_GRACE_SECONDS`). If the connection recovers within the grace period (which it should in 2-4 seconds), the timer is cancelled and entities were never marked unavailable. Only if the grace period expires with no reconnection does `connected` flip to `False`.
+1. Branch from `main` → make changes → `just check` passes locally.
+2. Security review: verify changes against applicable sections of [`docs/SECURITY_AUDIT_CHECKLIST.md`](docs/SECURITY_AUDIT_CHECKLIST.md).
+3. Open PR against `main`. CI must pass (lint, typecheck, tests).
+4. Merge only after security review passes. Block on any Critical or High finding.
 
-### Command wait-for-connection (Fix C — `NanitCamera._connected_event`)
-An `asyncio.Event` tracks the connection state. When a command (`_send_request`) is called while the transport is disconnected, it waits up to 15 seconds for the event to be set (indicating reconnection completed). If reconnection happens within the window, the command proceeds normally. If the timeout expires, it falls through to the existing inline reconnect + retry logic.
+### Releases
 
-**Together**: A prevents most disconnects. B hides the brief ones that do happen. C ensures commands survive them.
+Version is in `custom_components/nanit/manifest.json` → `"version"` and `packages/aionanit/pyproject.toml`.
 
-## Development guidelines (aionanit)
+```bash
+just release patch   # 1.3.0 → 1.3.1
+just release minor   # 1.3.0 → 1.4.0
+just release major   # 1.3.0 → 2.0.0
+```
 
-- All I/O must be async (`aiohttp`, `asyncio`).
-- Use the shared `aiohttp.ClientSession` passed to `NanitClient` (do not create your own).
-- Protobuf types are generated from `proto/nanit.proto` via `scripts/generate_proto.py`.
+This bumps version, commits, tags, pushes, and creates a GitHub release with auto-generated notes.
+Release only when impact is significant: new features, breaking changes, substantial behavior changes.
+
+---
+
+## Security
+
+**Every PR and release MUST pass security review before merge.**
+
+Full checklist: [`docs/SECURITY_AUDIT_CHECKLIST.md`](docs/SECURITY_AUDIT_CHECKLIST.md) (24 categories, 202 items).
+
+### For AI agents performing reviews
+
+1. Read `docs/SECURITY_AUDIT_CHECKLIST.md`.
+2. Use the [File → Section Map](docs/SECURITY_AUDIT_CHECKLIST.md#file-to-section-map) to scope the review.
+3. Report each item as **PASS** (with evidence), **FAIL [severity]** (with file:line + fix), or **N/A**.
+4. Block merge on any Critical or High failure.
+
+### Key constraints (ha-nanit-specific)
+
+- `ssl.CERT_NONE` for local camera connections is an accepted risk (Nanit self-signed certs). Cloud MUST verify TLS.
+- RTMPS stream URLs contain embedded access tokens — never log these.
+- Protobuf over WebSocket is the primary untrusted deserialization surface. Handle malformed data gracefully.
+- Baby/camera names from Nanit API become HA entity names — sanitize to prevent stored XSS.
+- All secrets in `entry.data` only. Diagnostics must use `async_redact_data()`.
+- No `eval()`, `exec()`, `os.system()`, or `subprocess(shell=True)`.
+
+---
+
+## Guardrails
+
+### Must do
+- Run `just check` before any PR or merge.
+- Follow existing code patterns — read neighboring files before writing new ones.
+- Ask questions before starting work if anything is unclear. Do not guess.
+- Verify changes work in a Home Assistant instance.
+
+### Must not
+- Suppress type errors (`# type: ignore`, `cast()` to bypass, `Any` as escape hatch).
+- Change entity unique IDs or device identifiers without a migration plan.
+- Introduce blocking I/O in async code paths.
+- Log or store credentials, tokens, or URLs containing tokens.
+- Add dependencies without full supply chain review (Section 10 of security checklist).
+- Commit directly to `main` — always use a PR.
+
+---
+
+## HA Integration Patterns
+
+Follow [Home Assistant developer docs](https://developers.home-assistant.io/) (latest version). Minimum HA: **2025.12+**.
+
+- **Config flow**: Credentials → MFA → reauth support. Options flow for per-camera settings.
+- **Runtime data**: Use `ConfigEntry.runtime_data` (typed as `NanitData`) — not `hass.data`.
+- **Push coordinator**: `DataUpdateCoordinator.async_set_updated_data()` for WebSocket push data. Do NOT poll.
+- **Polling coordinator**: `DataUpdateCoordinator` with `update_interval` for cloud events.
+- **Entity base**: Subclass `NanitEntity` (in `entity.py`). Availability is managed by the coordinator.
+- **Platform setup**: Iterate `entry.runtime_data.cameras.values()` to create entities for all cameras.
+- **Config entry**: Version 2 with migration from v1. `unique_id` = account email.
+
+## aionanit Patterns
+
+- All I/O: async (`aiohttp`, `asyncio`). Use the shared `aiohttp.ClientSession` — do not create your own.
+- Protobuf: generated from `proto/nanit.proto` via `scripts/generate_proto.py`.
 - WebSocket keepalive: ping every 25s, read deadline 60s.
 - Token lifetime: 3600s. Pre-emptive refresh at ~3300s (5 min before expiry).
-- Local camera connections use self-signed TLS (`ssl.CERT_NONE`).
-- Maximum 1 WebSocket connection per camera (local port 442 limit is 2, but we use 1).
-- When adding new background tasks to `NanitCamera`, follow the `_start_*` / `_cancel_*` pattern and wire into `async_start()` / `async_stop()` / `_async_reconnect()`.
-- Run tests: `just test-lib`
+- Local connections: self-signed TLS (`ssl.CERT_NONE`). Max 1 WebSocket per camera.
+- Background tasks: follow `_start_*` / `_cancel_*` pattern, wire into `async_start()` / `async_stop()` / `_async_reconnect()`.
+- Connection reliability details: [docs/CONNECTION_RELIABILITY.md](docs/CONNECTION_RELIABILITY.md).
 
-## Commits & releases
+---
 
-- **One task/feature per commit**, with a compact description.
-- If behavior or user-facing functionality changes, **update `README.md`**.
-- **Release when impact is significant** (new features, breaking changes,
-  substantial behavior changes). Minor internal changes can remain unreleased.
+## CI
 
-### Versioning
-
-Version is stored in `custom_components/nanit/manifest.json` → `"version"`.
-
-Use the helper in `justfile`:
-
-```
-just release patch
-just release minor
-just release major
-```
-
-## Verification (required)
-
-- **Verify features work** in a Home Assistant instance.
-- Run all checks before submitting: `just check`
-- Run tests individually: `just test` (integration) / `just test-lib` (aionanit)
-- **New features must include tests.** Integration test coverage threshold: 80% (enforced in CI).
-
-## CI / automation
-
-- Tests and linting are handled by `.github/workflows/ci.yaml`.
-- PyPI publishing is handled by `.github/workflows/publish-aionanit.yaml`.
-
-## Questions before changes
-
-- If anything is unclear, **address questions before work begins**. Do not guess.
+- **Lint + typecheck + tests**: `.github/workflows/ci.yaml` (runs on every push/PR).
+- **PyPI publish**: `.github/workflows/publish-aionanit.yaml` (triggers on release tag, OIDC trusted publishing).

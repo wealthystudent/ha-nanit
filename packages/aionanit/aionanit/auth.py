@@ -42,25 +42,35 @@ class TokenManager:
     def refresh_token(self) -> str:
         return self._refresh_token
 
-    def update_tokens(
+    async def update_tokens(
         self,
         access_token: str,
         refresh_token: str,
         expires_in: float = 3600.0,
     ) -> None:
-        self._access_token = access_token
-        self._refresh_token = refresh_token
-        self._expires_at = time.monotonic() + expires_in
+        async with self._lock:
+            self._access_token = access_token
+            self._refresh_token = refresh_token
+            self._expires_at = time.monotonic() + expires_in
 
     async def async_get_access_token(self, min_ttl: float = 60.0) -> str:
+        callbacks_to_fire: list[Callable[[str, str], None]] = []
         async with self._lock:
             if time.monotonic() + min_ttl >= self._expires_at:
                 await self._async_refresh()
-            return self._access_token
+                callbacks_to_fire = list(self._callbacks)
+
+        for callback in callbacks_to_fire:
+            callback(self._access_token, self._refresh_token)
+
+        return self._access_token
 
     async def async_force_refresh(self) -> None:
         async with self._lock:
             await self._async_refresh()
+
+        for callback in self._callbacks:
+            callback(self._access_token, self._refresh_token)
 
     async def _async_refresh(self) -> None:
         try:
@@ -73,9 +83,6 @@ class TokenManager:
         self._access_token = tokens["access_token"]
         self._refresh_token = tokens["refresh_token"]
         self._expires_at = time.monotonic() + 3600.0
-
-        for callback in self._callbacks:
-            callback(self._access_token, self._refresh_token)
 
     def on_tokens_refreshed(self, callback: Callable[[str, str], None]) -> Callable[[], None]:
         """Register a callback invoked with (access_token, refresh_token) after refresh.

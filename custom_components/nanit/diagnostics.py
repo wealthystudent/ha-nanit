@@ -17,6 +17,10 @@ TO_REDACT = {
     "refresh_token",
     "mfa_token",
     "mfa_code",
+    "baby_uid",
+    "camera_uid",
+    "camera_ip",
+    "camera_ips",
 }
 
 
@@ -52,7 +56,7 @@ async def async_get_config_entry_diagnostics(
 
     return {
         "config_entry_data": async_redact_data(dict(entry.data), TO_REDACT),
-        "config_entry_options": dict(entry.options),
+        "config_entry_options": async_redact_data(dict(entry.options), TO_REDACT),
         "camera_count": len(cameras_diag),
-        "cameras": cameras_diag,
+        "cameras": async_redact_data(cameras_diag, TO_REDACT),
     }

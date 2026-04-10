@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 from typing import Any
 
 import voluptuous as vol
@@ -279,10 +280,15 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Update the reauth entry with fresh credentials/tokens."""
         reauth_entry = self._get_reauth_entry()
+        provided_email = email or self._email
+
+        # Prevent credential swap: the reauth email must match the original.
+        if provided_email.lower() != reauth_entry.data[CONF_EMAIL].lower():
+            return self.async_abort(reason="reauth_email_mismatch")
+
         new_data = {**reauth_entry.data}
         new_data[CONF_ACCESS_TOKEN] = access_token
         new_data[CONF_REFRESH_TOKEN] = refresh_token
-        new_data[CONF_EMAIL] = email or self._email
         if reauth_entry.data.get(CONF_STORE_CREDENTIALS):
             new_data[CONF_PASSWORD] = password or self._password
         return self.async_update_reload_and_abort(reauth_entry, data=new_data)
@@ -342,20 +348,28 @@ class NanitOptionsFlow(OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Configure IP for the selected camera."""
+        errors: dict[str, str] = {}
+
         if user_input is not None:
             camera_ip = user_input.get(CONF_CAMERA_IP, "").strip()
 
-            # Merge with existing camera IPs
-            current_ips = dict(self.config_entry.options.get(CONF_CAMERA_IPS, {}))
             if camera_ip:
-                current_ips[self._selected_camera_uid] = camera_ip
-            else:
-                current_ips.pop(self._selected_camera_uid, None)
+                try:
+                    ipaddress.ip_address(camera_ip)
+                except ValueError:
+                    errors[CONF_CAMERA_IP] = "invalid_ip"
 
-            return self.async_create_entry(
-                title="",
-                data={CONF_CAMERA_IPS: current_ips},
-            )
+            if not errors:
+                current_ips = dict(self.config_entry.options.get(CONF_CAMERA_IPS, {}))
+                if camera_ip:
+                    current_ips[self._selected_camera_uid] = camera_ip
+                else:
+                    current_ips.pop(self._selected_camera_uid, None)
+
+                return self.async_create_entry(
+                    title="",
+                    data={CONF_CAMERA_IPS: current_ips},
+                )
 
         current_ip = self.config_entry.options.get(CONF_CAMERA_IPS, {}).get(
             self._selected_camera_uid, ""
@@ -379,4 +393,5 @@ class NanitOptionsFlow(OptionsFlow):
                 }
             ),
             description_placeholders={"camera_name": camera_name},
+            errors=errors,
         )

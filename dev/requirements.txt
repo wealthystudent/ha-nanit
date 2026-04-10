@@ -1,4 +1,5 @@
 aiohttp
+aioresponses
 homeassistant
 pytest-homeassistant-custom-component
 pytest-cov

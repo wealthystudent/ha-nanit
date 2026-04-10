@@ -37,6 +37,7 @@ from custom_components.nanit.coordinator import (
     _AVAILABILITY_GRACE_SECONDS,
     NanitPushCoordinator,
 )
+from custom_components.nanit.light import NanitNightLight
 from custom_components.nanit.number import NanitVolume
 from custom_components.nanit.sensor import SENSORS, NanitSensor
 from custom_components.nanit.switch import SWITCHES, NanitSwitch
@@ -69,6 +70,7 @@ def _camera_state(
     sleep_mode: bool | None = False,
     night_vision: bool | None = True,
     night_light: NightLightState | None = NightLightState.OFF,
+    night_light_brightness: int | None = None,
     connection_state: ConnectionState = ConnectionState.CONNECTED,
 ) -> CameraState:
     return CameraState(
@@ -81,6 +83,7 @@ def _camera_state(
             volume=volume,
             sleep_mode=sleep_mode,
             night_vision=night_vision,
+            night_light_brightness=night_light_brightness,
         ),
         control=ControlState(night_light=night_light),
         connection=ConnectionInfo(state=connection_state),
@@ -239,36 +242,6 @@ def test_cloud_binary_sensor_off_when_no_events() -> None:
     assert entity.is_on is False
 
 
-async def test_switch_turn_on_calls_night_light_control() -> None:
-    coordinator = _push_coordinator(_camera_state(night_light=NightLightState.OFF))
-    camera = MagicMock(uid="cam_1")
-    camera.async_set_control = AsyncMock()
-    camera.async_set_settings = AsyncMock()
-    entity = NanitSwitch(coordinator, camera, _switch_description("night_light"))
-    _disable_state_writes(entity)
-
-    with patch("custom_components.nanit.switch.time.monotonic", return_value=100.0):
-        await entity.async_turn_on()
-
-    camera.async_set_control.assert_awaited_once_with(night_light=NightLightState.ON)
-    assert entity.is_on is True
-
-
-async def test_switch_turn_off_calls_night_light_control() -> None:
-    coordinator = _push_coordinator(_camera_state(night_light=NightLightState.ON))
-    camera = MagicMock(uid="cam_1")
-    camera.async_set_control = AsyncMock()
-    camera.async_set_settings = AsyncMock()
-    entity = NanitSwitch(coordinator, camera, _switch_description("night_light"))
-    _disable_state_writes(entity)
-
-    with patch("custom_components.nanit.switch.time.monotonic", return_value=100.0):
-        await entity.async_turn_off()
-
-    camera.async_set_control.assert_awaited_once_with(night_light=NightLightState.OFF)
-    assert entity.is_on is False
-
-
 async def test_switch_camera_power_turn_off_calls_sleep_mode() -> None:
     coordinator = _push_coordinator(_camera_state(sleep_mode=False))
     camera = MagicMock(uid="cam_1")
@@ -284,79 +257,126 @@ async def test_switch_camera_power_turn_off_calls_sleep_mode() -> None:
     assert entity.is_on is False
 
 
-async def test_switch_grace_period_suppresses_stale_push_echo() -> None:
+async def test_light_turn_on() -> None:
     coordinator = _push_coordinator(_camera_state(night_light=NightLightState.OFF))
     camera = MagicMock(uid="cam_1")
     camera.async_set_control = AsyncMock()
     camera.async_set_settings = AsyncMock()
-    entity = NanitSwitch(coordinator, camera, _switch_description("night_light"))
+    entity = NanitNightLight(coordinator, camera)
     _disable_state_writes(entity)
 
-    with patch("custom_components.nanit.switch.time.monotonic", return_value=100.0):
+    with patch("custom_components.nanit.light.time.monotonic", return_value=100.0):
+        await entity.async_turn_on()
+
+    camera.async_set_control.assert_awaited_once_with(night_light=NightLightState.ON)
+    assert entity.is_on is True
+
+
+async def test_light_turn_off() -> None:
+    coordinator = _push_coordinator(_camera_state(night_light=NightLightState.ON))
+    camera = MagicMock(uid="cam_1")
+    camera.async_set_control = AsyncMock()
+    camera.async_set_settings = AsyncMock()
+    entity = NanitNightLight(coordinator, camera)
+    _disable_state_writes(entity)
+
+    with patch("custom_components.nanit.light.time.monotonic", return_value=100.0):
+        await entity.async_turn_off()
+
+    camera.async_set_control.assert_awaited_once_with(night_light=NightLightState.OFF)
+    assert entity.is_on is False
+
+
+async def test_light_turn_on_with_brightness() -> None:
+    coordinator = _push_coordinator(_camera_state(night_light=NightLightState.OFF))
+    camera = MagicMock(uid="cam_1")
+    camera.async_set_control = AsyncMock()
+    camera.async_set_settings = AsyncMock()
+    entity = NanitNightLight(coordinator, camera)
+    _disable_state_writes(entity)
+
+    with patch("custom_components.nanit.light.time.monotonic", return_value=100.0):
+        await entity.async_turn_on(brightness=128)
+
+    camera.async_set_settings.assert_awaited_once_with(night_light_brightness=50)
+    camera.async_set_control.assert_awaited_once_with(night_light=NightLightState.ON)
+    assert entity.brightness == 128
+    assert entity.is_on is True
+
+
+async def test_light_grace_period_suppresses_stale_push_echo() -> None:
+    coordinator = _push_coordinator(_camera_state(night_light=NightLightState.OFF))
+    camera = MagicMock(uid="cam_1")
+    camera.async_set_control = AsyncMock()
+    camera.async_set_settings = AsyncMock()
+    entity = NanitNightLight(coordinator, camera)
+    _disable_state_writes(entity)
+
+    with patch("custom_components.nanit.light.time.monotonic", return_value=100.0):
         await entity.async_turn_on()
 
     coordinator.data = _camera_state(night_light=NightLightState.OFF)
-    with patch("custom_components.nanit.switch.time.monotonic", return_value=101.0):
+    with patch("custom_components.nanit.light.time.monotonic", return_value=101.0):
         entity._handle_coordinator_update()
     assert entity.is_on is True
-    assert entity._command_state is True
+    assert entity._command_is_on is True
 
     coordinator.data = _camera_state(night_light=NightLightState.ON)
-    with patch("custom_components.nanit.switch.time.monotonic", return_value=102.0):
+    with patch("custom_components.nanit.light.time.monotonic", return_value=102.0):
         entity._handle_coordinator_update()
     assert entity.is_on is True
-    assert entity._command_state is None
+    assert entity._command_is_on is None
 
 
-async def test_switch_grace_period_expires_and_accepts_camera_state() -> None:
+async def test_light_grace_period_expires_and_accepts_camera_state() -> None:
     coordinator = _push_coordinator(_camera_state(night_light=NightLightState.OFF))
     camera = MagicMock(uid="cam_1")
     camera.async_set_control = AsyncMock()
     camera.async_set_settings = AsyncMock()
-    entity = NanitSwitch(coordinator, camera, _switch_description("night_light"))
+    entity = NanitNightLight(coordinator, camera)
     _disable_state_writes(entity)
 
-    with patch("custom_components.nanit.switch.time.monotonic", return_value=100.0):
+    with patch("custom_components.nanit.light.time.monotonic", return_value=100.0):
         await entity.async_turn_on()
 
     coordinator.data = _camera_state(night_light=NightLightState.OFF)
-    with patch("custom_components.nanit.switch.time.monotonic", return_value=116.0):
+    with patch("custom_components.nanit.light.time.monotonic", return_value=116.0):
         entity._handle_coordinator_update()
 
     assert entity.is_on is False
-    assert entity._command_state is None
+    assert entity._command_is_on is None
 
 
-async def test_switch_turn_on_reverts_state_when_command_fails() -> None:
+async def test_light_turn_on_reverts_state_when_command_fails() -> None:
     coordinator = _push_coordinator(_camera_state(night_light=NightLightState.OFF))
     camera = MagicMock(uid="cam_1")
     camera.async_set_control = AsyncMock(side_effect=RuntimeError("boom"))
     camera.async_set_settings = AsyncMock()
-    entity = NanitSwitch(coordinator, camera, _switch_description("night_light"))
+    entity = NanitNightLight(coordinator, camera)
     _disable_state_writes(entity)
 
-    with patch("custom_components.nanit.switch.time.monotonic", return_value=100.0):
+    with patch("custom_components.nanit.light.time.monotonic", return_value=100.0):
         with pytest.raises(RuntimeError):
             await entity.async_turn_on()
 
     assert entity.is_on is False
-    assert entity._command_state is None
+    assert entity._command_is_on is None
 
 
-async def test_switch_turn_off_reverts_state_when_command_fails() -> None:
+async def test_light_turn_off_reverts_state_when_command_fails() -> None:
     coordinator = _push_coordinator(_camera_state(night_light=NightLightState.ON))
     camera = MagicMock(uid="cam_1")
     camera.async_set_control = AsyncMock(side_effect=RuntimeError("boom"))
     camera.async_set_settings = AsyncMock()
-    entity = NanitSwitch(coordinator, camera, _switch_description("night_light"))
+    entity = NanitNightLight(coordinator, camera)
     _disable_state_writes(entity)
 
-    with patch("custom_components.nanit.switch.time.monotonic", return_value=100.0):
+    with patch("custom_components.nanit.light.time.monotonic", return_value=100.0):
         with pytest.raises(RuntimeError):
             await entity.async_turn_off()
 
     assert entity.is_on is True
-    assert entity._command_state is None
+    assert entity._command_is_on is None
 
 
 def test_number_native_value_returns_volume() -> None:

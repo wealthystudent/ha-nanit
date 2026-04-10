@@ -12,6 +12,7 @@ PLATFORMS = [
     Platform.BINARY_SENSOR,
     Platform.SWITCH,
     Platform.NUMBER,
+    Platform.LIGHT,
     Platform.CAMERA,
 ]
 

@@ -94,11 +94,13 @@
       "connectivity": { "name": "Connectivity" }
     },
     "switch": {
-      "night_light": { "name": "Night Light" },
       "camera_power": { "name": "Camera Power" }
     },
     "number": {
       "volume": { "name": "Volume" }
+    },
+    "light": {
+      "night_light": { "name": "Night Light" }
     },
     "camera": {
       "camera": { "name": "Camera" }

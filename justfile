@@ -123,7 +123,7 @@ release-beta bump:
 promote:
     #!/usr/bin/env bash
     set -euo pipefail
-    beta_tag=$(gh release list --limit 20 --json tagName,isPreRelease,isDraft --jq '[.[] | select(.isPreRelease and (.isDraft | not))] | first | .tagName')
+    beta_tag=$(gh release list --limit 20 --json tagName,isPrerelease,isDraft --jq '[.[] | select(.isPrerelease and (.isDraft | not))] | first | .tagName')
     if [ -z "${beta_tag}" ] || [ "${beta_tag}" = "null" ]; then
         echo "Error: No pre-release found to promote."
         exit 1

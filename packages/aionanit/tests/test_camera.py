@@ -402,6 +402,16 @@ class TestParseSettings:
         result = _parse_settings_from_proto(proto_settings)
         assert result.night_light_brightness is None
 
+    def test_night_light_brightness_clamped_above_100(self) -> None:
+        proto_settings = Settings(night_light_brightness=200)
+        result = _parse_settings_from_proto(proto_settings)
+        assert result.night_light_brightness == 100
+
+    def test_night_light_brightness_clamped_below_0(self) -> None:
+        proto_settings = Settings(night_light_brightness=-5)
+        result = _parse_settings_from_proto(proto_settings)
+        assert result.night_light_brightness == 0
+
 
 class TestParseControl:
     def test_empty_response(self) -> None:

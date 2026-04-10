@@ -24,6 +24,9 @@ aionanit = importlib.import_module("aionanit")
 NanitAuthError = aionanit.NanitAuthError
 NanitConnectionError = aionanit.NanitConnectionError
 
+_DEVICE_REGISTRY = "homeassistant.helpers.device_registry"
+_ENTITY_REGISTRY = "homeassistant.helpers.entity_registry"
+
 
 async def test_async_setup_entry_success(
     hass: HomeAssistant,
@@ -188,6 +191,65 @@ async def test_active_device_not_removed(
         assert await async_setup_entry(hass, entry)
 
     mock_device_registry.async_remove_device.assert_not_called()
+
+
+async def test_deprecated_switch_entity_removed_on_setup(
+    hass: HomeAssistant,
+    mock_nanit_client,
+) -> None:
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=mock_entry_data_v2(),
+        version=2,
+        unique_id=MOCK_EMAIL,
+    )
+    entry.add_to_hass(hass)
+
+    mock_ent_reg = MagicMock()
+    mock_ent_reg.async_get_entity_id.return_value = "switch.nursery_night_light"
+
+    with (
+        patch.object(
+            hass.config_entries,
+            "async_forward_entry_setups",
+            AsyncMock(return_value=True),
+        ),
+        patch(f"{_ENTITY_REGISTRY}.async_get", return_value=mock_ent_reg),
+    ):
+        assert await async_setup_entry(hass, entry)
+
+    mock_ent_reg.async_get_entity_id.assert_called_once_with(
+        "switch", DOMAIN, f"{MOCK_BABY_1.camera_uid}_night_light"
+    )
+    mock_ent_reg.async_remove.assert_called_once_with("switch.nursery_night_light")
+
+
+async def test_deprecated_entity_removal_skipped_when_not_present(
+    hass: HomeAssistant,
+    mock_nanit_client,
+) -> None:
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=mock_entry_data_v2(),
+        version=2,
+        unique_id=MOCK_EMAIL,
+    )
+    entry.add_to_hass(hass)
+
+    mock_ent_reg = MagicMock()
+    mock_ent_reg.async_get_entity_id.return_value = None
+
+    with (
+        patch.object(
+            hass.config_entries,
+            "async_forward_entry_setups",
+            AsyncMock(return_value=True),
+        ),
+        patch(f"{_ENTITY_REGISTRY}.async_get", return_value=mock_ent_reg),
+    ):
+        assert await async_setup_entry(hass, entry)
+
+    mock_ent_reg.async_remove.assert_not_called()
 
 
 # --- Migration tests ---

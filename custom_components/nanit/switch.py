@@ -15,7 +15,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from aionanit import NanitCamera
-from aionanit.models import CameraState, NightLightState
+from aionanit.models import CameraState
 
 from . import NanitConfigEntry
 from .coordinator import NanitPushCoordinator
@@ -40,26 +40,7 @@ class NanitSwitchEntityDescription(SwitchEntityDescription):
     turn_off_fn: Callable[[NanitCamera], Coroutine[Any, Any, Any]]
 
 
-def _night_light_value(state: CameraState) -> bool | None:
-    """Return night light on/off state, or None only when truly unknown."""
-    nl = state.control.night_light
-    if nl is None:
-        return None
-    is_on: bool = nl == NightLightState.ON
-    return is_on
-
-
 SWITCHES: tuple[NanitSwitchEntityDescription, ...] = (
-    NanitSwitchEntityDescription(
-        key="night_light",
-        translation_key="night_light",
-        icon="mdi:lightbulb-night",
-        entity_registry_enabled_default=True,
-        device_class=SwitchDeviceClass.SWITCH,
-        value_fn=_night_light_value,
-        turn_on_fn=lambda cam: cam.async_set_control(night_light=NightLightState.ON),
-        turn_off_fn=lambda cam: cam.async_set_control(night_light=NightLightState.OFF),
-    ),
     NanitSwitchEntityDescription(
         key="camera_power",
         translation_key="camera_power",

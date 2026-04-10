@@ -349,6 +349,7 @@ class TestParseSettings:
             mic_mute_on=False,
             wifi_band=SettingsWifiBand.FR5_0GHZ,
             mounting_mode=MountingMode.TRAVEL,
+            night_light_brightness=60,
         )
         result = _parse_settings_from_proto(proto_settings)
         assert result.night_vision is True
@@ -358,6 +359,7 @@ class TestParseSettings:
         assert result.mic_mute_on is False
         assert result.wifi_band == "5ghz"
         assert result.mounting_mode == "travel"
+        assert result.night_light_brightness == 60
 
     def test_non_settings_type_returns_default(self) -> None:
         result = _parse_settings_from_proto("not_settings")
@@ -374,6 +376,7 @@ class TestParseSettings:
         assert result.mic_mute_on is None
         assert result.wifi_band is None
         assert result.mounting_mode is None
+        assert result.night_light_brightness is None
 
     def test_sleep_mode_false_when_explicitly_set(self) -> None:
         """sleep_mode=False should be False, not None (it was explicitly set)."""
@@ -386,6 +389,28 @@ class TestParseSettings:
         proto_settings = Settings(volume=10)
         result = _parse_settings_from_proto(proto_settings)
         assert result.sleep_mode is None
+
+    def test_parses_night_light_brightness(self) -> None:
+        """night_light_brightness is parsed when explicitly set."""
+        proto_settings = Settings(night_light_brightness=75)
+        result = _parse_settings_from_proto(proto_settings)
+        assert result.night_light_brightness == 75
+
+    def test_night_light_brightness_not_set_is_none(self) -> None:
+        """Settings with no night_light_brightness yields None."""
+        proto_settings = Settings(volume=42)
+        result = _parse_settings_from_proto(proto_settings)
+        assert result.night_light_brightness is None
+
+    def test_night_light_brightness_clamped_above_100(self) -> None:
+        proto_settings = Settings(night_light_brightness=200)
+        result = _parse_settings_from_proto(proto_settings)
+        assert result.night_light_brightness == 100
+
+    def test_night_light_brightness_clamped_below_0(self) -> None:
+        proto_settings = Settings(night_light_brightness=-5)
+        result = _parse_settings_from_proto(proto_settings)
+        assert result.night_light_brightness == 0
 
 
 class TestParseControl:
@@ -531,6 +556,20 @@ class TestHandlePushEvent:
         request = Request(type=RequestType.GET_STATUS)
         cam._handle_push_event(request)
         assert len(events) == 0  # GET types are not push events
+
+    def test_put_settings_with_brightness(self) -> None:
+        cam, *_ = _make_camera()
+        events: list[object] = []
+        cam.subscribe(lambda e: events.append(e))
+
+        request = Request(
+            type=RequestType.PUT_SETTINGS,
+            settings=Settings(night_light_brightness=80),
+        )
+        cam._handle_push_event(request)
+
+        assert cam.state.settings.night_light_brightness == 80
+        assert events[0].kind == CameraEventKind.SETTINGS_UPDATE
 
 
 # ---------------------------------------------------------------------------
@@ -731,6 +770,30 @@ class TestSetSettings:
         await cam.async_set_settings(volume=70)
         assert len(events) == 1
         assert events[0].kind == CameraEventKind.SETTINGS_UPDATE
+
+    async def test_optimistic_merge_night_light_brightness(self) -> None:
+        """Optimistic merge correctly updates night_light_brightness."""
+        cam, *_ = _make_camera()
+        cam._transport = MagicMock()
+        cam._transport.connected = True
+        cam._transport.idle_seconds = 0.0
+
+        cam._update_state(
+            settings=SettingsState(volume=50, night_light_brightness=30),
+            kind=CameraEventKind.SETTINGS_UPDATE,
+        )
+
+        resp = Response(status_code=200)
+
+        async def _fake_send(data: bytes) -> None:
+            cam._pending.resolve(1, resp)
+
+        cam._transport.async_send = AsyncMock(side_effect=_fake_send)
+
+        result = await cam.async_set_settings(night_light_brightness=75)
+        assert result.night_light_brightness == 75
+        assert result.volume == 50  # preserved
+        assert cam.state.settings.night_light_brightness == 75
 
 
 class TestSetControl:

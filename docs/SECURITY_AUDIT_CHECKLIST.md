@@ -32,7 +32,9 @@ Run through the full checklist against all changes since the last release tag.
 | `hub.py`, `__init__.py` | [2. Credentials](#2-credential-storage--leakage), [8. Privilege Escalation](#8-privilege-escalation-within-ha-runtime), [16. Async Safety](#16-async--concurrency-safety) |
 | `coordinator.py` | [5. Network](#5-network-security), [8. Privilege Escalation](#8-privilege-escalation-within-ha-runtime), [16. Async Safety](#16-async--concurrency-safety), [20. aiohttp Traps](#20-aiohttp-api-migration-traps) |
 | `camera.py` (HA entity) | [5. Network](#5-network-security), [7. XSS](#7-cross-site-scripting-xss), [13. Media/Streaming](#13-media--streaming-security), [21. Subprocess Injection](#21-subprocess-argument-injection-media-pipelines) |
-| `sensor.py`, `binary_sensor.py`, `switch.py`, `number.py` | [7. XSS](#7-cross-site-scripting-xss), [8. Privilege Escalation](#8-privilege-escalation-within-ha-runtime) |
+| `sensor.py`, `binary_sensor.py`, `switch.py`, `number.py`, `light.py`, `select.py` | [7. XSS](#7-cross-site-scripting-xss), [8. Privilege Escalation](#8-privilege-escalation-within-ha-runtime) |
+| `sanitize.py` | [3. Input Validation](#3-input-validation--injection), [7. XSS](#7-cross-site-scripting-xss) |
+| `entity.py` | [7. XSS](#7-cross-site-scripting-xss), [8. Privilege Escalation](#8-privilege-escalation-within-ha-runtime) |
 | `diagnostics.py` | [2. Credentials](#2-credential-storage--leakage) |
 | `manifest.json` | [10. Supply Chain](#10-supply-chain--dependency-risks), [11. Manifest Security](#11-manifest-security) |
 | `aionanit/auth.py` | [1. Auth](#1-authentication--authorization), [2. Credentials](#2-credential-storage--leakage), [5. Network](#5-network-security), [22. Token Integrity](#22-token-integrity--cryptographic-weaknesses) |
@@ -212,6 +214,8 @@ Run through the full checklist against all changes since the last release tag.
 - [ ] Entity `friendly_name`, device name, and all user-visible attributes sanitized before storage
 - [ ] Data from external APIs (Nanit cloud: baby names, camera names) does not contain HTML/script tags
 - [ ] If API data is used as entity names: strip or escape HTML entities
+- [ ] All API-provided names pass through `sanitize_name()` (from `sanitize.py`) before use in `DeviceInfo`, `description_placeholders`, or `translation_placeholders`
+- [ ] New entity platforms that display API-sourced names import and use `sanitize_name()` at the boundary
 
 **HA CVE reference**: CVE-2025-62172 (Energy Dashboard XSS), CVE-2026-33044 (Map card XSS), CVE-2026-33045 (History-graph XSS)
 
@@ -223,7 +227,7 @@ Run through the full checklist against all changes since the last release tag.
 - [ ] If integration registers custom frontend panels or cards: all dynamic content uses `textContent`, never `innerHTML`
 - [ ] No user/API-controlled data interpolated into HTML template strings
 
-**ha-nanit specific**: Baby/camera names from the Nanit API become entity names and device names. A compromised Nanit account or MITM could inject XSS payloads via these names.
+**ha-nanit specific**: Baby/camera names from the Nanit API become entity names and device names. A compromised Nanit account or MITM could inject XSS payloads via these names. All such names MUST be sanitized via `sanitize.py:sanitize_name()` before passing to HA. Currently enforced in `entity.py` (device info), `config_flow.py` (description placeholders), and `hub.py` (translation placeholders).
 
 ---
 
@@ -364,9 +368,10 @@ Run through the full checklist against all changes since the last release tag.
 ### 14.3 — Protobuf-to-Model Parsing
 - [ ] Parser functions (`parsers.py`) handle missing/null fields without crashing
 - [ ] Numeric fields validated for expected ranges (no negative durations, no overflow)
+- [ ] Brightness, volume, and percentage fields clamped to their documented range (e.g. 0-100) at parse time and before sending
 - [ ] String fields from protobuf not used directly in file paths, commands, or templates
 
-**ha-nanit specific**: `aionanit/proto/nanit_pb2.py` (generated), `aionanit/ws/protocol.py` (encode/decode), `aionanit/parsers.py` (protobuf → model). Camera sends protobuf over WebSocket — this is the primary untrusted deserialization surface.
+**ha-nanit specific**: `aionanit/proto/nanit_pb2.py` (generated), `aionanit/ws/protocol.py` (encode/decode), `aionanit/parsers.py` (protobuf → model). Camera sends protobuf over WebSocket — this is the primary untrusted deserialization surface. Numeric fields (`night_light_brightness`, `volume`) are clamped in both `parsers.py` and `camera.py`.
 
 ---
 

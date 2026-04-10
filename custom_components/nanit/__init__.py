@@ -9,6 +9,7 @@ from homeassistant.const import CONF_EMAIL
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from aionanit import NanitAuthError, NanitConnectionError
@@ -61,6 +62,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: NanitConfigEntry) -> boo
     entry.runtime_data = NanitData(hub=hub, cameras=hub.camera_data)
 
     _async_remove_stale_devices(hass, entry, hub)
+    _async_remove_deprecated_entities(hass, hub)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
@@ -141,6 +143,34 @@ def _async_remove_stale_devices(
                 device.name,
             )
             device_reg.async_remove_device(device.id)
+
+
+_DEPRECATED_ENTITIES: list[tuple[str, str]] = [
+    ("switch", "night_light"),
+]
+
+
+def _async_remove_deprecated_entities(hass: HomeAssistant, hub: NanitHub) -> None:
+    """Remove entities that migrated to a different platform.
+
+    When an entity moves from one platform to another (e.g. switch → light),
+    the old entity becomes orphaned in the registry. This removes them so
+    users don't see stale "unavailable" entities.
+    """
+    ent_reg = er.async_get(hass)
+    camera_uids = {baby.camera_uid for baby in hub.babies}
+
+    for old_domain, key in _DEPRECATED_ENTITIES:
+        for camera_uid in camera_uids:
+            unique_id = f"{camera_uid}_{key}"
+            entity_id = ent_reg.async_get_entity_id(old_domain, DOMAIN, unique_id)
+            if entity_id is not None:
+                LOGGER.info(
+                    "Removing deprecated %s entity %s (migrated to new platform)",
+                    old_domain,
+                    entity_id,
+                )
+                ent_reg.async_remove(entity_id)
 
 
 async def _async_options_update_listener(hass: HomeAssistant, entry: NanitConfigEntry) -> None:

@@ -28,6 +28,7 @@ from .const import (
     DOMAIN,
     LOGGER,
 )
+from .sanitize import sanitize_name
 
 
 class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -333,7 +334,7 @@ class NanitOptionsFlow(OptionsFlow):
             self._selected_camera_uid = user_input["camera"]
             return await self.async_step_camera_ip()
 
-        camera_options = {baby.camera_uid: baby.name for baby in babies}
+        camera_options = {baby.camera_uid: sanitize_name(baby.name) for baby in babies}
 
         return self.async_show_form(
             step_id="init",
@@ -379,7 +380,7 @@ class NanitOptionsFlow(OptionsFlow):
         camera_name = self._selected_camera_uid
         for baby in self.config_entry.runtime_data.hub.babies:
             if baby.camera_uid == self._selected_camera_uid:
-                camera_name = baby.name
+                camera_name = sanitize_name(baby.name)
                 break
 
         return self.async_show_form(

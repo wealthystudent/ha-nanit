@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+import unicodedata
 from typing import Any
 
 import aiohttp
@@ -14,6 +16,15 @@ from .exceptions import (
 from .models import Baby, CloudEvent
 
 DEFAULT_BASE_URL = "https://api.nanit.com"
+_DEFAULT_TIMEOUT = aiohttp.ClientTimeout(total=15)
+
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _sanitize_name(raw: str) -> str:
+    stripped = _HTML_TAG_RE.sub("", raw)
+    return "".join(ch for ch in stripped if unicodedata.category(ch)[0] != "C").strip()
+
 
 # Headers required by the Nanit API. The API rejects requests without
 # nanit-api-version (especially when MFA is enabled) and may reject
@@ -68,6 +79,7 @@ class NanitRestClient:
                 f"{self._base_url}/login",
                 json=data,
                 headers=NANIT_API_HEADERS,
+                timeout=_DEFAULT_TIMEOUT,
             )
         except aiohttp.ClientError as err:
             raise NanitConnectionError(str(err)) from err
@@ -99,8 +111,8 @@ class NanitRestClient:
             resp = await self._session.post(
                 f"{self._base_url}/tokens/refresh",
                 json={"refresh_token": refresh_token},
-                # Nanit uses bare token, not "Bearer" prefix
                 headers={**NANIT_API_HEADERS, "Authorization": access_token},
+                timeout=_DEFAULT_TIMEOUT,
             )
         except aiohttp.ClientError as err:
             raise NanitConnectionError(str(err)) from err
@@ -126,8 +138,8 @@ class NanitRestClient:
         try:
             resp = await self._session.get(
                 f"{self._base_url}/babies",
-                # Nanit uses bare token, not "Bearer" prefix
                 headers={**NANIT_API_HEADERS, "Authorization": access_token},
+                timeout=_DEFAULT_TIMEOUT,
             )
         except aiohttp.ClientError as err:
             raise NanitConnectionError(str(err)) from err
@@ -141,9 +153,8 @@ class NanitRestClient:
         return [
             Baby(
                 uid=baby["uid"],
-                name=baby["name"],
+                name=_sanitize_name(baby["name"]),
                 camera_uid=baby["camera_uid"],
-
             )
             for baby in body.get("babies", [])
         ]
@@ -158,8 +169,8 @@ class NanitRestClient:
             resp = await self._session.get(
                 f"{self._base_url}/babies/{baby_uid}/messages",
                 params={"limit": limit},
-                # Nanit uses bare token, not "Bearer" prefix
                 headers={**NANIT_API_HEADERS, "Authorization": access_token},
+                timeout=_DEFAULT_TIMEOUT,
             )
         except aiohttp.ClientError as err:
             raise NanitConnectionError(str(err)) from err

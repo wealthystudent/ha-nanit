@@ -838,6 +838,7 @@ class TestSnapshot:
         session.get.assert_called_once_with(
             "https://api.nanit.com/babies/baby_uid_1/snapshot",
             headers={"Authorization": "snap_token"},
+            timeout=aiohttp.ClientTimeout(total=15),
         )
 
     async def test_snapshot_returns_none_on_404(self) -> None:

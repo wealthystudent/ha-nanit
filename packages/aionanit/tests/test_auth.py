@@ -106,8 +106,8 @@ class TestForceRefresh:
 
 
 class TestUpdateTokens:
-    def test_update_tokens_sets_new_values(self, token_manager: TokenManager) -> None:
-        token_manager.update_tokens("manual_access", "manual_refresh", 1800.0)
+    async def test_update_tokens_sets_new_values(self, token_manager: TokenManager) -> None:
+        await token_manager.update_tokens("manual_access", "manual_refresh", 1800.0)
         assert token_manager.access_token == "manual_access"
         assert token_manager.refresh_token == "manual_refresh"
 

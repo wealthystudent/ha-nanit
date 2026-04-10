@@ -107,7 +107,7 @@ class NanitNightLight(NanitEntity, RestoreEntity, LightEntity):
         if nl is not None:
             self._attr_is_on = nl == NightLightState.ON
 
-        device_brightness = state.settings.night_light_brightness
+        device_brightness: int | None = getattr(state.settings, "night_light_brightness", None)
         if device_brightness is not None and device_brightness > 0:
             self._attr_brightness = value_to_brightness(_BRIGHTNESS_SCALE, device_brightness)
 
@@ -125,7 +125,9 @@ class NanitNightLight(NanitEntity, RestoreEntity, LightEntity):
                 if state.control.night_light is not None
                 else None
             )
-            new_device_brightness = state.settings.night_light_brightness
+            new_device_brightness: int | None = getattr(
+                state.settings, "night_light_brightness", None
+            )
 
             if self._command_is_on is not None or self._command_brightness is not None:
                 elapsed = time.monotonic() - self._command_ts

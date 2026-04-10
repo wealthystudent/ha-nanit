@@ -1,91 +1,85 @@
 set quiet
 
+python := "venv/bin/python3"
+
 default:
     @just --list --unsorted
 
-# ─── Setup ────────────────────────────────────────────────────────────
+# ─── Setup & Quality ──────────────────────────────────────────────────
 
-# Install all dependencies (dev, test, aionanit, tooling)
+# Create venv and install all dependencies (everything stays in ./venv)
 setup:
-    pip install -r dev/requirements.txt
-    pre-commit install
-    @echo "Ready. Run 'just check' to verify."
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ ! -d venv ]; then
+        echo "Creating venv with python3.13 ..."
+        python3.13 -m venv venv
+    fi
+    echo "Upgrading pip + setuptools ..."
+    venv/bin/python3 -m pip install --upgrade pip setuptools wheel
+    echo "Installing dependencies ..."
+    venv/bin/python3 -m pip install -r dev/requirements.txt
+    venv/bin/pre-commit install
+    echo "Ready. Run 'just check' to verify."
 
-# ─── Quality ──────────────────────────────────────────────────────────
-
-# Run ruff linter
-lint *args:
-    ruff check {{ args }} .
-
-# Auto-format with ruff
-format *args:
-    ruff format {{ args }} .
-
-# Run mypy type checker
-typecheck:
-    mypy custom_components/nanit packages/aionanit/aionanit --config-file pyproject.toml
-
-# Run all checks (lint + format + typecheck + tests with coverage) — local CI
+# Run all checks (lint + format-check + typecheck + all tests) — local CI
 check:
-    ruff check .
-    ruff format --check .
-    mypy custom_components/nanit packages/aionanit/aionanit --config-file pyproject.toml
-    python3 -m pytest tests/unit/ -v --cov=custom_components/nanit --cov-fail-under=80
-    python3 -m pytest packages/aionanit/tests/ -v
+    venv/bin/ruff check .
+    venv/bin/ruff format --check .
+    venv/bin/mypy custom_components/nanit packages/aionanit/aionanit --config-file pyproject.toml
+    {{ python }} -m pytest tests/unit/ -v --cov=custom_components/nanit --cov-fail-under=80
+    {{ python }} -m pytest packages/aionanit/tests/ -v
+
+# Auto-fix lint issues and reformat
+fix:
+    venv/bin/ruff check --fix .
+    venv/bin/ruff format .
 
 # ─── Testing ──────────────────────────────────────────────────────────
 
-# Run integration tests (config flow, migration, hub)
-test *args:
-    python3 -m pytest tests/unit/ -v --cov=custom_components/nanit --cov-report=term-missing {{ args }}
-
-# Run aionanit library tests
-test-lib *args:
-    python3 -m pytest packages/aionanit/tests/ -v {{ args }}
-
-# Run all tests
-test-all:
-    python3 -m pytest tests/unit/ -v
-    python3 -m pytest packages/aionanit/tests/ -v
+# Run tests: just test [lib|all] (default: integration with coverage)
+test target="integration" *args="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{ target }}" in
+        integration) {{ python }} -m pytest tests/unit/ -v --cov=custom_components/nanit --cov-report=term-missing {{ args }} ;;
+        lib)         {{ python }} -m pytest packages/aionanit/tests/ -v {{ args }} ;;
+        all)         {{ python }} -m pytest tests/unit/ -v && {{ python }} -m pytest packages/aionanit/tests/ -v ;;
+        *)           echo "Unknown target '{{ target }}'. Use: integration, lib, all"; exit 1 ;;
+    esac
 
 # ─── Dev HA Instance ──────────────────────────────────────────────────
 
-# Start dev HA instance (http://localhost:8123)
-dev:
-    docker compose -f dev/docker-compose.yml up -d
-    @echo "HA running at http://localhost:8123"
-
-# Stop dev HA instance
-dev-stop:
-    docker compose -f dev/docker-compose.yml down
-
-# Restart dev HA (after code changes)
-dev-restart:
-    docker compose -f dev/docker-compose.yml restart homeassistant
-
-# Tail dev HA logs (Ctrl+C to stop)
-dev-logs:
-    docker compose -f dev/docker-compose.yml logs -f homeassistant
-
-# Wipe dev HA state for a fresh start
-dev-reset:
-    docker compose -f dev/docker-compose.yml down
-    rm -rf dev/ha-config/.storage dev/ha-config/home-assistant_v2.db*
-    @echo "Dev state wiped. Run 'just dev' to start fresh."
+# Dev HA: just dev [stop|restart|logs|reset] (default: start)
+dev action="start":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{ action }}" in
+        start)   docker compose -f dev/docker-compose.yml up -d && echo "HA running at http://localhost:8123" ;;
+        stop)    docker compose -f dev/docker-compose.yml down ;;
+        restart) docker compose -f dev/docker-compose.yml restart homeassistant ;;
+        logs)    docker compose -f dev/docker-compose.yml logs -f homeassistant ;;
+        reset)   docker compose -f dev/docker-compose.yml down && rm -rf dev/ha-config/.storage dev/ha-config/home-assistant_v2.db* && echo "Dev state wiped. Run 'just dev' to start fresh." ;;
+        *)       echo "Unknown action '{{ action }}'. Use: start, stop, restart, logs, reset"; exit 1 ;;
+    esac
 
 # ─── Tools ────────────────────────────────────────────────────────────
 
 # Login to Nanit cloud (saves session for other tools)
 login *args:
-    python3 tools/nanit-login.py {{ args }}
+    {{ python }} tools/nanit-login.py {{ args }}
 
 # Fetch activity events from Nanit cloud API
 events *args:
-    python3 tools/nanit-events.py {{ args }}
+    {{ python }} tools/nanit-events.py {{ args }}
 
-# ─── Release ──────────────────────────────────────────────────────────
+# Interactive hardware probing tool (night light brightness discovery)
+probe *args:
+    {{ python }} tools/nanit-probe.py {{ args }}
 
-# Create a GitHub release: just release <patch|minor|major>
+# ─── Owner Only ───────────────────────────────────────────────────────
+
+# [owner] Create a GitHub release: just release <patch|minor|major>
 release bump:
     #!/usr/bin/env bash
     set -euo pipefail

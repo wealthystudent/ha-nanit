@@ -8,6 +8,6 @@
   "config_flow": true,
   "iot_class": "cloud_push",
   "integration_type": "hub",
-  "requirements": ["aionanit>=1.3.0"],
+  "requirements": ["aionanit>=1.3.2"],
   "loggers": ["custom_components.nanit", "aionanit"]
 }

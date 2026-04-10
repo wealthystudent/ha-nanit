@@ -1,0 +1,99 @@
+name: Release Stable
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  ci-gate:
+    name: CI Gate
+    if: github.event.release.prerelease == false && startsWith(github.event.release.tag_name, 'v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          pip install ruff
+          pip install -r dev/requirements.txt
+
+      - name: Ruff check
+        run: ruff check .
+
+      - name: Ruff format check
+        run: ruff format --check .
+
+      - name: Run integration tests with coverage
+        run: python -m pytest tests/unit/ -v --tb=short --cov=custom_components/nanit --cov-fail-under=80
+
+      - name: Run mypy on aionanit (strict)
+        run: mypy packages/aionanit/aionanit --strict --ignore-missing-imports
+
+      - name: Run mypy on integration
+        run: mypy custom_components/nanit --config-file pyproject.toml --python-version 3.13
+
+      - name: Install aionanit test dependencies
+        run: pip install -e "packages/aionanit[dev]"
+
+      - name: Run aionanit tests
+        run: python -m pytest packages/aionanit/tests/ -v --tb=short
+
+  publish-stable:
+    name: Publish Stable to PyPI
+    if: github.event.release.prerelease == false && startsWith(github.event.release.tag_name, 'v')
+    needs: ci-gate
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/aionanit/
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+
+      - name: Install build
+        run: pip install build
+
+      - name: Build package
+        working-directory: packages/aionanit
+        run: python -m build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b
+        with:
+          packages-dir: packages/aionanit/dist/
+
+  attach-artifact:
+    name: Attach Release Artifact
+    if: github.event.release.prerelease == false && startsWith(github.event.release.tag_name, 'v')
+    needs: ci-gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Create integration zip
+        run: zip -r nanit.zip custom_components/nanit/
+
+      - name: Upload release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" nanit.zip --clobber

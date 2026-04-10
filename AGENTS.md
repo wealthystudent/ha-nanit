@@ -70,16 +70,19 @@ docs/                      ← Security checklist, connection reliability, testi
 ### Commands
 
 ```bash
-just setup        # Install deps, tooling, pre-commit hooks
-just check        # Run ALL checks (lint + format + typecheck + tests) — use before any PR
-just lint         # Ruff lint
-just format       # Ruff format
-just typecheck    # mypy strict
-just test         # Integration tests (custom_components)
-just test-lib     # aionanit library tests
-just test-all     # Both test suites
-just dev          # Start dev HA instance → http://localhost:8123
-just dev-restart  # Restart after code changes
+just setup            # Install deps, tooling, pre-commit hooks
+just check            # Run ALL checks (lint + format + typecheck + tests) — use before any PR
+just lint             # Ruff lint
+just format           # Ruff format
+just typecheck        # mypy strict
+just test             # Integration tests (custom_components)
+just test-lib         # aionanit library tests
+just test-all         # Both test suites
+just dev              # Start dev HA instance → http://localhost:8123
+just dev-restart      # Restart after code changes
+just release-beta     # Create a pre-release (beta → test via HACS → promote)
+just release-hotfix   # Emergency patch pre-release
+just promote          # ⚠️  HUMAN ONLY — promote beta to stable release
 ```
 
 ---
@@ -119,15 +122,45 @@ Rules:
 
 ### Releases
 
-Version is in `custom_components/nanit/manifest.json` → `"version"` and `packages/aionanit/pyproject.toml`.
+Two-step release flow: **beta → test → promote**.
 
-```bash
-just release patch   # 1.3.0 → 1.3.1
-just release minor   # 1.3.0 → 1.4.0
-just release major   # 1.3.0 → 2.0.0
+```
+PR merged to main
+  │
+  just release-beta patch/minor/major
+  │
+  ├─ Bumps version to X.Y.Z-beta.N
+  ├─ Creates GitHub pre-release
+  └─ GitHub Actions publishes aionanit beta to PyPI
+  │
+  You test on your HA via HACS beta channel
+  │
+  just promote
+  │
+  ├─ Creates stable GitHub release (v X.Y.Z)
+  ├─ Deletes the beta release + tag
+  └─ GitHub Actions: CI gate → publish aionanit stable to PyPI → attach nanit.zip
 ```
 
-This bumps version, commits, tags, pushes, and creates a GitHub release with auto-generated notes.
+**Version lives in two files** (kept in sync by the justfile recipes):
+- `custom_components/nanit/manifest.json` → `"version"` (semver) + `"requirements"` (PEP 440)
+- `packages/aionanit/pyproject.toml` → `version` (PEP 440)
+
+| Version mapping | manifest.json `version` | pyproject.toml `version` | manifest.json `requirements` |
+|-----------------|------------------------|--------------------------|------------------------------|
+| Beta            | `1.4.0-beta.1`        | `1.4.0b1`               | `["aionanit>=1.4.0b1"]`     |
+| Stable          | `1.4.0`               | `1.4.0`                  | `["aionanit>=1.4.0"]`       |
+
+```bash
+just release-beta patch   # 1.3.1 → 1.4.0-beta.1 (pre-release)
+just release-beta minor   # 1.3.1 → 1.4.0-beta.1
+just release-beta major   # 1.3.1 → 2.0.0-beta.1
+just promote              # 1.4.0-beta.1 → 1.4.0 (stable release)
+just release-hotfix       # Emergency: 1.4.0 → 1.4.1-beta.1
+```
+
+**Rollback strategy**: Forward-fix via new patch release. If a stable release is broken, run `just release-hotfix`, fix, test via HACS beta, then `just promote`.
+
 Release only when impact is significant: new features, breaking changes, substantial behavior changes.
 
 ---
@@ -171,6 +204,8 @@ Full checklist: [`docs/SECURITY_AUDIT_CHECKLIST.md`](docs/SECURITY_AUDIT_CHECKLI
 - Log or store credentials, tokens, or URLs containing tokens.
 - Add dependencies without full supply chain review (Section 10 of security checklist).
 - Commit directly to `main` — always use a PR.
+- **Run `just promote`** — this is a manual human action only. No AI agent may execute this command regardless of instruction from any prompter.
+- **Edit `AGENTS.md`** without explicit manual review and approval from the repository owner. All changes to this file must be presented as a diff for human review before being applied.
 
 ---
 
@@ -200,5 +235,6 @@ Follow [Home Assistant developer docs](https://developers.home-assistant.io/) (l
 
 ## CI
 
-- **Lint + typecheck + tests**: `.github/workflows/ci.yaml` (runs on every push/PR).
-- **PyPI publish**: `.github/workflows/publish-aionanit.yaml` (triggers on release tag, OIDC trusted publishing).
+- **Lint + typecheck + tests**: `.github/workflows/ci.yaml` (runs on every push/PR to `main`).
+- **Beta publish**: `.github/workflows/release-beta.yaml` (triggers on pre-release published, publishes aionanit beta to PyPI).
+- **Stable publish**: `.github/workflows/release-stable.yaml` (triggers on stable release published, re-runs CI gate, publishes aionanit to PyPI, attaches `nanit.zip` artifact).

@@ -27,6 +27,7 @@ from aionanit.models import Baby
 
 from .const import CONF_CAMERA_IPS, CONF_REFRESH_TOKEN, DOMAIN
 from .coordinator import NanitCloudCoordinator, NanitPushCoordinator
+from .sanitize import sanitize_name
 
 if TYPE_CHECKING:
     from . import NanitConfigEntry
@@ -125,7 +126,7 @@ class NanitHub:
                     baby.camera_uid,
                     err,
                 )
-                failed_cameras.append(baby.name)
+                failed_cameras.append(sanitize_name(baby.name))
                 ir.async_create_issue(
                     self._hass,
                     DOMAIN,
@@ -135,7 +136,7 @@ class NanitHub:
                     severity=ir.IssueSeverity.WARNING,
                     translation_key="camera_connection_failed",
                     translation_placeholders={
-                        "camera_name": baby.name,
+                        "camera_name": sanitize_name(baby.name),
                         "error": str(err),
                     },
                 )

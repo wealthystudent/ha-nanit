@@ -294,6 +294,7 @@ class NanitCamera:
         sleep_mode: bool | None = None,
         status_light_on: bool | None = None,
         mic_mute_on: bool | None = None,
+        night_light_brightness: int | None = None,
     ) -> SettingsState:
         """PUT_SETTINGS request. Only provided fields are sent."""
         proto_settings = Settings()
@@ -307,6 +308,8 @@ class NanitCamera:
             proto_settings.status_light_on = status_light_on
         if mic_mute_on is not None:
             proto_settings.mic_mute_on = mic_mute_on
+        if night_light_brightness is not None:
+            proto_settings.night_light_brightness = night_light_brightness
 
         resp = cast(
             Any,
@@ -330,6 +333,8 @@ class NanitCamera:
                 requested["status_light_on"] = status_light_on
             if mic_mute_on is not None:
                 requested["mic_mute_on"] = mic_mute_on
+            if night_light_brightness is not None:
+                requested["night_light_brightness"] = night_light_brightness
             new_settings = dataclasses.replace(self._state.settings, **requested)
         self._update_state(settings=new_settings, kind=CameraEventKind.SETTINGS_UPDATE)
         return new_settings

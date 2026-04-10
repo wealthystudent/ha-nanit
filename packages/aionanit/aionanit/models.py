@@ -62,6 +62,7 @@ class SettingsState:
     mic_mute_on: bool | None = None
     wifi_band: str | None = None  # "any", "2.4ghz", "5ghz"
     mounting_mode: str | None = None  # "stand", "travel", "switch"
+    night_light_brightness: int | None = None  # 0-100
 
 
 @dataclass(frozen=True)

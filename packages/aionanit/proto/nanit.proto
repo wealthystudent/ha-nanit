@@ -160,6 +160,7 @@ message Settings {
 
   optional WifiBand wifi_band = 18;
   optional bool mic_mute_on = 20;
+  optional int32 night_light_brightness = 24;
 }
 
 message Status {

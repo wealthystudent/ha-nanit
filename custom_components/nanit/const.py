@@ -13,6 +13,7 @@ PLATFORMS = [
     Platform.SWITCH,
     Platform.NUMBER,
     Platform.LIGHT,
+    Platform.SELECT,
     Platform.CAMERA,
 ]
 

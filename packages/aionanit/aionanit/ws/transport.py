@@ -25,6 +25,7 @@ _INITIAL_BACKOFF: float = 1.85
 _BACKOFF_FACTOR: float = 1.618  # golden ratio
 _MAX_BACKOFF: float = 60.0
 _JITTER_MAX: float = 1.0
+_MAX_MSG_SIZE: int = 1_048_576  # 1 MiB
 
 
 class WsTransport:
@@ -53,6 +54,7 @@ class WsTransport:
         self._ws: aiohttp.ClientWebSocketResponse | None = None
         self._recv_task: asyncio.Task[None] | None = None
         self._keepalive_task: asyncio.Task[None] | None = None
+        self._reconnect_task: asyncio.Task[None] | None = None
         self._transport_kind: TransportKind = TransportKind.NONE
         self._url: str | None = None
         self._headers: dict[str, str] = {}
@@ -179,6 +181,7 @@ class WsTransport:
                     heartbeat=_HEARTBEAT_INTERVAL,
                     timeout=aiohttp.ClientWSTimeout(ws_close=_HANDSHAKE_TIMEOUT),
                     ssl=ssl_param,  # type: ignore[arg-type]
+                    max_msg_size=_MAX_MSG_SIZE,
                 )
             except Exception as err:
                 self._on_connection_change(ConnectionState.DISCONNECTED, kind, str(err))
@@ -192,7 +195,7 @@ class WsTransport:
 
     async def _async_close_ws(self) -> None:
         """Close WebSocket and cancel background tasks."""
-        for task in (self._recv_task, self._keepalive_task):
+        for task in (self._recv_task, self._keepalive_task, self._reconnect_task):
             if task is not None and not task.done():
                 task.cancel()
                 try:
@@ -201,6 +204,7 @@ class WsTransport:
                     pass
         self._recv_task = None
         self._keepalive_task = None
+        self._reconnect_task = None
 
         if self._ws is not None and not self._ws.closed:
             await self._ws.close()
@@ -235,7 +239,7 @@ class WsTransport:
 
         # If we weren't explicitly closed, attempt to reconnect.
         if not self._closed:
-            asyncio.get_running_loop().create_task(self._reconnect_loop())
+            self._reconnect_task = asyncio.get_running_loop().create_task(self._reconnect_loop())
 
     async def _keepalive_loop(self) -> None:
         """Send protobuf KEEPALIVE message every ``_KEEPALIVE_INTERVAL`` seconds."""
@@ -258,14 +262,12 @@ class WsTransport:
             return
 
         backoff = _INITIAL_BACKOFF
-        jitter = random.random() * _JITTER_MAX  # jitter on first retry only
 
         while not self._closed:
             await self._async_close_ws()
             self._on_connection_change(ConnectionState.RECONNECTING, self._transport_kind, None)
 
-            wait_time = backoff + jitter
-            jitter = 0.0  # only first retry gets jitter
+            wait_time = backoff + random.random() * _JITTER_MAX
             _LOGGER.info("Reconnecting in %.1fs", wait_time)
             await asyncio.sleep(wait_time)
 
@@ -286,6 +288,7 @@ class WsTransport:
                     heartbeat=_HEARTBEAT_INTERVAL,
                     timeout=aiohttp.ClientWSTimeout(ws_close=_HANDSHAKE_TIMEOUT),
                     ssl=self._ssl_context,  # type: ignore[arg-type]
+                    max_msg_size=_MAX_MSG_SIZE,
                 )
                 loop = asyncio.get_running_loop()
                 self._recv_task = loop.create_task(self._recv_loop())

@@ -124,6 +124,7 @@ class NanitCamera:
         self._health_check_task: asyncio.Task[None] | None = None
         self._sensor_poll_task: asyncio.Task[None] | None = None
         self._token_refresh_task: asyncio.Task[None] | None = None
+        self._reconnected_task: asyncio.Task[None] | None = None
         self._reconnect_lock: asyncio.Lock = asyncio.Lock()
         self._stopped: bool = False
         self._connected_event: asyncio.Event = asyncio.Event()
@@ -217,6 +218,7 @@ class NanitCamera:
         self._cancel_local_probe()
         self._cancel_health_check()
         self._cancel_sensor_poll()
+        self._cancel_reconnected_task()
         self._pending.cancel_all()
         await self._transport.async_close()
 
@@ -420,6 +422,7 @@ class NanitCamera:
             resp = await self._session.get(
                 f"https://api.nanit.com/babies/{self._baby_uid}/snapshot",
                 headers={"Authorization": token},
+                timeout=aiohttp.ClientTimeout(total=15),
             )
             if resp.status == 200:
                 return await resp.read()
@@ -546,7 +549,10 @@ class NanitCamera:
 
         # After a successful reconnect, re-initialize the session.
         if state == ConnectionState.CONNECTED and old_conn.reconnect_attempts > 0:
-            asyncio.get_running_loop().create_task(self._async_on_reconnected())
+            self._cancel_reconnected_task()
+            self._reconnected_task = asyncio.get_running_loop().create_task(
+                self._async_on_reconnected()
+            )
 
     async def _async_on_reconnected(self) -> None:
         """Re-initialize session after a successful reconnect.
@@ -805,6 +811,11 @@ class NanitCamera:
         if self._token_refresh_task is not None and not self._token_refresh_task.done():
             self._token_refresh_task.cancel()
         self._token_refresh_task = None
+
+    def _cancel_reconnected_task(self) -> None:
+        if self._reconnected_task is not None and not self._reconnected_task.done():
+            self._reconnected_task.cancel()
+        self._reconnected_task = None
 
     async def _token_refresh_loop(self) -> None:
         try:

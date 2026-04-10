@@ -7,6 +7,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import NanitCloudCoordinator, NanitPushCoordinator
+from .sanitize import sanitize_name
 
 
 class NanitEntity(CoordinatorEntity[NanitPushCoordinator]):
@@ -19,7 +20,7 @@ class NanitEntity(CoordinatorEntity[NanitPushCoordinator]):
         """Return device info."""
         return DeviceInfo(
             identifiers={(DOMAIN, self.coordinator.camera.uid)},
-            name=self.coordinator.baby.name,
+            name=sanitize_name(self.coordinator.baby.name),
             manufacturer="Nanit",
         )
 
@@ -47,6 +48,6 @@ class NanitCloudEntity(CoordinatorEntity[NanitCloudCoordinator]):
         """Return device info."""
         return DeviceInfo(
             identifiers={(DOMAIN, self.coordinator.baby.camera_uid)},
-            name=self.coordinator.baby.name,
+            name=sanitize_name(self.coordinator.baby.name),
             manufacturer="Nanit",
         )

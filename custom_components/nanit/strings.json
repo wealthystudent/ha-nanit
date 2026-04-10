@@ -37,11 +37,13 @@
       "cannot_connect": "Failed to connect to Nanit cloud API",
       "invalid_auth": "Invalid email or password",
       "invalid_mfa_code": "Invalid verification code",
+      "invalid_ip": "Invalid IP address",
       "unknown": "Unexpected error occurred"
     },
     "abort": {
       "already_configured": "This Nanit account is already configured",
       "reauth_successful": "Re-authentication successful",
+      "reauth_email_mismatch": "The email address does not match the original account. Please use the same email.",
       "no_cameras": "No cameras found on this Nanit account"
     }
   },

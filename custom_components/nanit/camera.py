@@ -82,17 +82,34 @@ class NanitCameraEntity(NanitEntity, Camera):
         """Return the RTMPS stream URL.
 
         The RTMPS URL embeds a fresh access token and can be consumed directly
-        by the HA Stream integration.
+        by the HA Stream integration.  PUT_STREAMING is fired in the background
+        so the URL is returned immediately without waiting for the camera ACK.
         """
         if not self.is_on:
             return None
         try:
             url: str = await self._camera.async_get_stream_rtmps_url()
-            await self._camera.async_start_streaming()
-            return url
         except Exception:  # noqa: BLE001
-            _LOGGER.debug("Failed to get RTMPS stream URL", exc_info=True)
+            _LOGGER.warning("Failed to build RTMPS stream URL", exc_info=True)
             return None
+
+        self.hass.async_create_background_task(
+            self._async_start_streaming_safe(),
+            name=f"nanit_start_streaming_{self._camera.uid}",
+        )
+        return url
+
+    async def _async_start_streaming_safe(self) -> None:
+        """Send PUT_STREAMING, logging failures without raising."""
+        try:
+            await self._camera.async_start_streaming()
+        except Exception:  # noqa: BLE001
+            _LOGGER.warning(
+                "PUT_STREAMING failed for camera %s — the stream may not load. "
+                "Check debug logs for details",
+                self._camera.uid,
+                exc_info=True,
+            )
 
     async def async_camera_image(
         self, width: int | None = None, height: int | None = None

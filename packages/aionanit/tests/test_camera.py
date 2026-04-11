@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
@@ -74,6 +75,7 @@ def _make_camera(
     rest = MagicMock(spec=NanitRestClient)
     tm = MagicMock(spec=TokenManager)
     tm.async_get_access_token = AsyncMock(return_value="test_token")
+    tm._expires_at = time.monotonic() + 3600.0
 
     cam = NanitCamera(
         uid="cam_uid_1",

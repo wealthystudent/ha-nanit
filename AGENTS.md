@@ -82,6 +82,7 @@ just dev              # Start dev HA instance → http://localhost:8123
 just dev-restart      # Restart after code changes
 just release-beta     # Create a pre-release (beta → test via HACS → promote)
 just release-hotfix   # Emergency patch pre-release
+just release-retry    # Re-trigger release workflow after fixing CI (uses same tag)
 just promote          # ⚠️  HUMAN ONLY — promote beta to stable release
 ```
 
@@ -160,6 +161,8 @@ just release-hotfix       # Emergency: 1.4.0 → 1.4.1-beta.1
 ```
 
 **Rollback strategy**: Forward-fix via new patch release. If a stable release is broken, run `just release-hotfix`, fix, test via HACS beta, then `just promote`.
+
+**Pipeline fix**: If the release workflow fails (e.g. action version issues, PyPI errors), fix the pipeline code, push to `main`, then run `just release-retry [tag]`. This re-triggers the workflow using the updated YAML from `main` while building from the original tag. PyPI publish is idempotent (skips already-uploaded versions).
 
 Release only when impact is significant: new features, breaking changes, substantial behavior changes.
 

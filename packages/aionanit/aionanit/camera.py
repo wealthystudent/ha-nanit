@@ -386,6 +386,12 @@ class NanitCamera:
         Returns: rtmps://media-secured.nanit.com/nanit/{baby_uid}.{access_token}
         """
         token = await self._token_manager.async_get_access_token()
+        token_ttl = self._token_manager._expires_at - time.monotonic()
+        _LOGGER.debug(
+            "Built RTMPS stream URL for baby %s (token TTL: %.0fs)",
+            self._baby_uid,
+            token_ttl,
+        )
         return f"rtmps://media-secured.nanit.com/nanit/{self._baby_uid}.{token}"
 
     async def async_start_streaming(self) -> None:
@@ -396,10 +402,25 @@ class NanitCamera:
             status=StreamingStatus.STARTED,
             rtmp_url=rtmps_url,
         )
-        await self._send_request(
-            RequestType.PUT_STREAMING,
-            streaming=streaming,
+        _LOGGER.debug(
+            "Sending PUT_STREAMING (STARTED) for camera %s via %s",
+            self._uid,
+            self._transport.transport_kind.name if self._transport.connected else "disconnected",
         )
+        try:
+            await self._send_request(
+                RequestType.PUT_STREAMING,
+                streaming=streaming,
+            )
+        except (NanitRequestTimeout, NanitTransportError, NanitCameraUnavailable) as err:
+            _LOGGER.warning(
+                "PUT_STREAMING failed for camera %s: %s",
+                self._uid,
+                err,
+            )
+            raise
+        else:
+            _LOGGER.debug("PUT_STREAMING succeeded for camera %s", self._uid)
 
     async def async_stop_streaming(self) -> None:
         """Send PUT_STREAMING with status=STOPPED to camera."""

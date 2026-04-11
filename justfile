@@ -84,6 +84,7 @@ probe *args:
 # 2) validate in HACS beta channel
 # 3) just promote
 # Hotfix flow: just release-hotfix, test, then just promote.
+# Pipeline fix: just release-retry [tag] — re-triggers release workflow after fixing CI.
 
 release-beta bump:
     #!/usr/bin/env bash
@@ -178,3 +179,18 @@ release-hotfix:
     git push && git push --tags
     gh release create "${tag}" --title "${tag}" --generate-notes --prerelease --latest=false
     echo "Hotfix pre-release ${tag} created. Test, then run: just promote"
+
+release-retry tag="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    retry_tag="{{ tag }}"
+    if [ -z "${retry_tag}" ]; then
+        retry_tag=$(gh release list --limit 1 --json tagName --jq '.[0].tagName')
+        if [ -z "${retry_tag}" ] || [ "${retry_tag}" = "null" ]; then
+            echo "Error: No release found. Provide a tag: just release-retry v1.2.3-beta.1"
+            exit 1
+        fi
+    fi
+    echo "Re-triggering release workflow for ${retry_tag} ..."
+    gh workflow run release.yaml -f tag_name="${retry_tag}"
+    echo "Dispatched. Watch: gh run list --workflow release.yaml --limit 1"

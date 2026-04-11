@@ -3,12 +3,50 @@ name: Release
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Release tag to (re)publish, e.g. v1.4.0-beta.1"
+        required: true
+        type: string
+
+concurrency:
+  group: release-${{ inputs.tag_name || github.event.release.tag_name }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ inputs.tag_name || github.event.release.tag_name }}
 
 jobs:
-  # ── Beta: publish aionanit pre-release to PyPI ──────────────────────
+  resolve:
+    name: Resolve Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      is_prerelease: ${{ steps.meta.outputs.is_prerelease }}
+      is_stable: ${{ steps.meta.outputs.is_stable }}
+    steps:
+      - name: Resolve release metadata
+        id: meta
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ env.TAG }}"
+          is_pre=$(gh release view "${tag}" --json isPrerelease -q .isPrerelease)
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=${is_pre}" >> "$GITHUB_OUTPUT"
+          if [ "${is_pre}" = "false" ] && [[ "${tag}" == v* ]]; then
+            echo "is_stable=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_stable=false" >> "$GITHUB_OUTPUT"
+          fi
+
   publish-beta:
     name: Publish Beta to PyPI
-    if: github.event.release.prerelease == true
+    needs: resolve
+    if: needs.resolve.outputs.is_prerelease == 'true'
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -19,7 +57,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ needs.resolve.outputs.tag }}
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
@@ -36,18 +74,19 @@ jobs:
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
         with:
           packages-dir: packages/aionanit/dist/
+          skip-existing: true
 
-  # ── Stable: CI gate → publish to PyPI + attach nanit.zip ────────────
   ci-gate:
     name: CI Gate
-    if: github.event.release.prerelease == false && startsWith(github.event.release.tag_name, 'v')
+    needs: resolve
+    if: needs.resolve.outputs.is_stable == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ needs.resolve.outputs.tag }}
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
@@ -81,8 +120,8 @@ jobs:
 
   publish-stable:
     name: Publish Stable to PyPI
-    if: github.event.release.prerelease == false && startsWith(github.event.release.tag_name, 'v')
-    needs: ci-gate
+    needs: [resolve, ci-gate]
+    if: needs.resolve.outputs.is_stable == 'true'
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -93,7 +132,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ needs.resolve.outputs.tag }}
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
@@ -110,18 +149,19 @@ jobs:
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
         with:
           packages-dir: packages/aionanit/dist/
+          skip-existing: true
 
   attach-artifact:
     name: Attach Release Artifact
-    if: github.event.release.prerelease == false && startsWith(github.event.release.tag_name, 'v')
-    needs: ci-gate
+    needs: [resolve, ci-gate]
+    if: needs.resolve.outputs.is_stable == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ needs.resolve.outputs.tag }}
 
       - name: Create integration zip
         run: zip -r nanit.zip custom_components/nanit/
@@ -129,4 +169,4 @@ jobs:
       - name: Upload release asset
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ github.event.release.tag_name }}" nanit.zip --clobber
+        run: gh release upload "${{ needs.resolve.outputs.tag }}" nanit.zip --clobber

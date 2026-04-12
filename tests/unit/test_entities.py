@@ -471,7 +471,9 @@ async def test_camera_stream_source_returns_url_when_on() -> None:
     camera.async_start_streaming = AsyncMock()
     entity = NanitCameraEntity(coordinator, camera)
     entity.hass = MagicMock()
-    entity.hass.async_create_background_task = MagicMock()
+    entity.hass.async_create_background_task = MagicMock(
+        side_effect=lambda coro, **kw: coro.close(),
+    )
 
     source = await entity.stream_source()
 

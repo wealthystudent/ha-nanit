@@ -219,6 +219,10 @@ No leftover files or services remain after removal.
 - A Nanit account with email/password
 - HACS (recommended) or manual file access
 
+## Contributing
+
+Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions, code style, and the PR workflow. In short: branch from `main`, run `just check`, open a PR, and add a `release:patch`/`minor`/`major` label if it should trigger a beta release.
+
 ## License
 
 [MIT](LICENSE)

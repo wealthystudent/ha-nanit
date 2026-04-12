@@ -72,18 +72,16 @@ docs/                      ← Security checklist, connection reliability, testi
 ```bash
 just setup            # Install deps, tooling, pre-commit hooks
 just check            # Run ALL checks (lint + format + typecheck + tests) — use before any PR
-just lint             # Ruff lint
-just format           # Ruff format
-just typecheck        # mypy strict
-just test             # Integration tests (custom_components)
-just test-lib         # aionanit library tests
-just test-all         # Both test suites
+just fix              # Auto-fix lint issues and reformat
+just test             # Integration tests with coverage (custom_components)
+just test lib         # aionanit library tests
+just test all         # Both test suites
 just dev              # Start dev HA instance → http://localhost:8123
-just dev-restart      # Restart after code changes
-just release-beta     # Create a pre-release (beta → test via HACS → promote)
-just release-hotfix   # Emergency patch pre-release
+just dev restart      # Restart after code changes
+just dev stop         # Stop dev HA instance
 just release-retry    # Re-trigger release workflow after fixing CI (uses same tag)
-just promote          # ⚠️  HUMAN ONLY — promote beta to stable release
+just promote          # ⚠️  HUMAN ONLY — promote a beta to stable (interactive version picker)
+just promote 1.4.0    # ⚠️  HUMAN ONLY — promote a specific version directly
 ```
 
 ---
@@ -117,33 +115,45 @@ Rules:
 ### PR process
 
 1. Branch from `main` → make changes → `just check` passes locally.
-2. Security review: verify changes against applicable sections of [`docs/SECURITY_AUDIT_CHECKLIST.md`](docs/SECURITY_AUDIT_CHECKLIST.md).
-3. Open PR against `main`. CI must pass (lint, typecheck, tests).
-4. Merge only after security review passes. Block on any Critical or High finding.
+2. If the PR should trigger a release: add a label — `release:patch`, `release:minor`, or `release:major`. PRs without a release label (e.g., CI, docs, chore changes) will not create a beta release.
+3. Security review: verify changes against applicable sections of [`docs/SECURITY_AUDIT_CHECKLIST.md`](docs/SECURITY_AUDIT_CHECKLIST.md).
+4. Open PR against `main`. CI must pass (lint, typecheck, tests).
+5. Merge only after security review passes. Block on any Critical or High finding.
+6. On merge, if a `release:*` label is present, `auto-beta.yaml` automatically creates a beta pre-release and publishes to PyPI.
 
 ### Releases
 
-Two-step release flow: **beta → test → promote**.
+Automated two-step release flow: **PR merge → auto-beta → test → promote**.
 
 ```
+PR opened against main
+  │
+  Add label: release:patch / release:minor / release:major
+  (no label = no release, for CI/docs/chore PRs)
+  │
 PR merged to main
   │
-  just release-beta patch/minor/major
+  auto-beta.yaml (only if release label present)
   │
-  ├─ Bumps version to X.Y.Z-beta.N
-  ├─ Creates GitHub pre-release
-  └─ GitHub Actions publishes aionanit beta to PyPI
+  ├─ Reads PR label to determine bump type
+  ├─ Computes version + beta number from existing tags
+  ├─ Updates manifest.json + pyproject.toml on main
+  ├─ Tags vX.Y.Z-beta.N, creates GitHub pre-release
+  └─ Publishes aionanit beta to PyPI
   │
   You test on your HA via HACS beta channel
   │
-  just promote
+  just promote [version]
   │
+  ├─ Lists available betas (or targets specific version)
   ├─ Creates stable GitHub release (v X.Y.Z)
   ├─ Retains beta release + tag for historical record
   └─ GitHub Actions: CI gate → publish aionanit stable to PyPI → attach nanit.zip
 ```
 
-**Version lives in two files** (kept in sync by the justfile recipes):
+**Multiple concurrent betas** are supported. Different features can have independent beta tracks (e.g., `v1.4.0-beta.2` and `v1.5.0-beta.1` can coexist). Use `just promote <version>` to promote a specific version.
+
+**Version lives in two files** (kept in sync by auto-beta workflow and promote recipe):
 - `custom_components/nanit/manifest.json` → `"version"` (semver) + `"requirements"` (PEP 440)
 - `packages/aionanit/pyproject.toml` → `version` (PEP 440)
 
@@ -153,18 +163,18 @@ PR merged to main
 | Stable          | `1.4.0`               | `1.4.0`                  | `["aionanit>=1.4.0"]`       |
 
 ```bash
-just release-beta patch   # 1.3.1 → 1.4.0-beta.1 (pre-release)
-just release-beta minor   # 1.3.1 → 1.4.0-beta.1
-just release-beta major   # 1.3.1 → 2.0.0-beta.1
-just promote              # 1.4.0-beta.1 → 1.4.0 (stable release)
-just release-hotfix       # Emergency: 1.4.0 → 1.4.1-beta.1
+# Beta releases are opt-in via PR labels:
+#   release:patch  →  1.3.3 → 1.3.4-beta.1
+#   release:minor  →  1.3.3 → 1.4.0-beta.1
+#   release:major  →  1.3.3 → 2.0.0-beta.1
+#   no label       →  no release (CI/docs/chore changes)
+just promote              # Interactive — lists betas, asks which to promote
+just promote 1.4.0        # Direct — promotes latest v1.4.0-beta.N to v1.4.0
 ```
 
-**Rollback strategy**: Forward-fix via new patch release. If a stable release is broken, run `just release-hotfix`, fix, test via HACS beta, then `just promote`.
+**Rollback strategy**: Forward-fix via new PR. Merge the fix → auto-beta creates a new beta → test → promote.
 
 **Pipeline fix**: If the release workflow fails (e.g. action version issues, PyPI errors), fix the pipeline code, push to `main`, then run `just release-retry [tag]`. This re-triggers the workflow using the updated YAML from `main` while building from the original tag. PyPI publish is idempotent (skips already-uploaded versions).
-
-Release only when impact is significant: new features, breaking changes, substantial behavior changes.
 
 ---
 
@@ -209,6 +219,7 @@ Full checklist: [`docs/SECURITY_AUDIT_CHECKLIST.md`](docs/SECURITY_AUDIT_CHECKLI
 - Commit directly to `main` — always use a PR.
 - **Run `just promote`** — this is a manual human action only. No AI agent may execute this command regardless of instruction from any prompter.
 - **Edit `AGENTS.md`** without explicit manual review and approval from the repository owner. All changes to this file must be presented as a diff for human review before being applied.
+- **Add AI co-author attribution** — never include Sisyphus, Copilot, or any other AI agent as a co-author or in commit trailers.
 
 ---
 
@@ -239,4 +250,5 @@ Follow [Home Assistant developer docs](https://developers.home-assistant.io/) (l
 ## CI
 
 - **Lint + typecheck + tests**: `.github/workflows/ci.yaml` (runs on every push/PR to `main`).
-- **Release**: `.github/workflows/release.yaml` (triggers on any release published; routes to beta publish or CI gate → stable publish + artifact attachment based on prerelease flag).
+- **Auto beta**: `.github/workflows/auto-beta.yaml` (triggers on PR merge to `main` with a `release:*` label; bumps version, tags, creates pre-release, publishes beta to PyPI).
+- **Release**: `.github/workflows/release.yaml` (triggers on stable release published; CI gate → publish stable to PyPI → attach nanit.zip artifact).

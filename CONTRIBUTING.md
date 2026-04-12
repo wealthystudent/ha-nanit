@@ -31,8 +31,8 @@ just test-all      # Both
 
 ```bash
 just dev           # Start → http://localhost:8123
-just dev-restart   # Restart after code changes
-just dev-stop      # Stop
+just dev restart   # Restart after code changes
+just dev stop      # Stop
 ```
 
 See [tests/README.md](tests/README.md) for more details.
@@ -46,7 +46,8 @@ See [tests/README.md](tests/README.md) for more details.
 3. Run `just check` (lint + format + typecheck + tests).
 4. **Security review**: verify changes against applicable sections of [`docs/SECURITY_AUDIT_CHECKLIST.md`](docs/SECURITY_AUDIT_CHECKLIST.md).
 5. Open a **pull request** against `main`. CI must pass.
-6. Merge only after security review passes.
+6. If the PR should trigger a release, add a label: `release:patch`, `release:minor`, or `release:major`. PRs without a release label (e.g., CI, docs, chore changes) will not create a beta release.
+7. Merge only after security review passes. On merge, if a `release:*` label is present, a beta pre-release is created automatically.
 
 ### Commit messages
 

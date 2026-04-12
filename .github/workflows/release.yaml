@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: "Release tag to (re)publish, e.g. v1.4.0-beta.1"
+        description: "Stable release tag to (re)publish, e.g. v1.4.0"
         required: true
         type: string
 
@@ -25,7 +25,6 @@ jobs:
       contents: read
     outputs:
       tag: ${{ steps.meta.outputs.tag }}
-      is_prerelease: ${{ steps.meta.outputs.is_prerelease }}
       is_stable: ${{ steps.meta.outputs.is_stable }}
     steps:
       - name: Resolve release metadata
@@ -36,45 +35,11 @@ jobs:
           tag="${{ env.TAG }}"
           is_pre=$(gh release view "${tag}" --json isPrerelease -q .isPrerelease)
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
-          echo "is_prerelease=${is_pre}" >> "$GITHUB_OUTPUT"
           if [ "${is_pre}" = "false" ] && [[ "${tag}" == v* ]]; then
             echo "is_stable=true" >> "$GITHUB_OUTPUT"
           else
             echo "is_stable=false" >> "$GITHUB_OUTPUT"
           fi
-
-  publish-beta:
-    name: Publish Beta to PyPI
-    needs: resolve
-    if: needs.resolve.outputs.is_prerelease == 'true'
-    runs-on: ubuntu-latest
-    environment:
-      name: pypi
-      url: https://pypi.org/project/aionanit/
-    permissions:
-      id-token: write
-      contents: read
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          ref: ${{ needs.resolve.outputs.tag }}
-
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
-        with:
-          python-version: "3.13"
-
-      - name: Install build
-        run: pip install build
-
-      - name: Build package
-        working-directory: packages/aionanit
-        run: python -m build
-
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
-        with:
-          packages-dir: packages/aionanit/dist/
-          skip-existing: true
 
   ci-gate:
     name: CI Gate

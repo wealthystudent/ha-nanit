@@ -1,0 +1,157 @@
+name: Auto Beta Release
+
+on:
+  pull_request:
+    branches: [main]
+    types: [closed]
+
+concurrency:
+  group: auto-beta
+  cancel-in-progress: false
+
+jobs:
+  beta-release:
+    name: Create Beta Release
+    if: >-
+      github.event.pull_request.merged == true && (
+        contains(github.event.pull_request.labels.*.name, 'release:patch') ||
+        contains(github.event.pull_request.labels.*.name, 'release:minor') ||
+        contains(github.event.pull_request.labels.*.name, 'release:major')
+      )
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    environment:
+      name: pypi
+      url: https://pypi.org/project/aionanit/
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Determine bump type from PR labels
+        id: bump
+        env:
+          LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
+        run: |
+          if echo "$LABELS" | grep -q '"release:major"'; then
+            echo "type=major" >> "$GITHUB_OUTPUT"
+          elif echo "$LABELS" | grep -q '"release:minor"'; then
+            echo "type=minor" >> "$GITHUB_OUTPUT"
+          else
+            echo "type=patch" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compute next beta version
+        id: version
+        run: |
+          latest_stable=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' \
+            | { grep -v '-' || true; } \
+            | sort -V \
+            | tail -1)
+          latest_stable="${latest_stable:-v0.0.0}"
+          latest_stable="${latest_stable#v}"
+          IFS='.' read -r major minor patch <<< "${latest_stable}"
+
+          case "${{ steps.bump.outputs.type }}" in
+            patch) patch=$((patch + 1)) ;;
+            minor) minor=$((minor + 1)); patch=0 ;;
+            major) major=$((major + 1)); minor=0; patch=0 ;;
+          esac
+          new="${major}.${minor}.${patch}"
+
+          # If a higher version beta already exists, use that version instead
+          highest_beta_version=""
+          for t in $(git tag -l 'v*-beta.*'); do
+            base="${t#v}"
+            base="${base%-beta.*}"
+            if [ -n "$highest_beta_version" ]; then
+              higher=$(printf '%s\n%s\n' "$base" "$highest_beta_version" | sort -V | tail -1)
+              highest_beta_version="$higher"
+            else
+              highest_beta_version="$base"
+            fi
+          done
+
+          if [ -n "$highest_beta_version" ]; then
+            final=$(printf '%s\n%s\n' "$new" "$highest_beta_version" | sort -V | tail -1)
+            new="$final"
+            IFS='.' read -r major minor patch <<< "$new"
+          fi
+
+          beta_num=1
+          for t in $(git tag -l "v${new}-beta.*"); do
+            n="${t##*-beta.}"
+            if [ "$n" -ge "$beta_num" ]; then
+              beta_num=$((n + 1))
+            fi
+          done
+
+          semver="${new}-beta.${beta_num}"
+          pep440="${major}.${minor}.${patch}b${beta_num}"
+          tag="v${semver}"
+
+          echo "semver=${semver}" >> "$GITHUB_OUTPUT"
+          echo "pep440=${pep440}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "Computed: ${tag} (PEP 440: ${pep440})"
+
+      - name: Update version files
+        env:
+          SEMVER: ${{ steps.version.outputs.semver }}
+          PEP440: ${{ steps.version.outputs.pep440 }}
+        run: |
+          jq --arg v "$SEMVER" --arg r "aionanit>=$PEP440" \
+            '.version = $v | .requirements = [$r]' \
+            custom_components/nanit/manifest.json > /tmp/manifest.json
+          mv /tmp/manifest.json custom_components/nanit/manifest.json
+
+          sed -i "s/^version = \".*\"/version = \"$PEP440\"/" packages/aionanit/pyproject.toml
+
+      - name: Validate modified files
+        run: |
+          python3 -c "import json; json.load(open('custom_components/nanit/manifest.json'))"
+          python3 -c "
+          import tomllib
+          tomllib.load(open('packages/aionanit/pyproject.toml', 'rb'))
+          "
+          echo "Version files are valid."
+
+      - name: Commit, tag, and push
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          SEMVER: ${{ steps.version.outputs.semver }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add custom_components/nanit/manifest.json packages/aionanit/pyproject.toml
+          git commit -m "chore: bump version to ${SEMVER} [skip ci]"
+          git tag "${TAG}"
+          git push && git push --tags
+
+      - name: Create GitHub pre-release
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${TAG}" \
+            --title "${TAG}" \
+            --generate-notes \
+            --prerelease \
+            --latest=false
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+
+      - name: Build aionanit package
+        run: |
+          pip install build
+          python -m build packages/aionanit
+
+      - name: Publish beta to PyPI
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
+        with:
+          packages-dir: packages/aionanit/dist/
+          skip-existing: true

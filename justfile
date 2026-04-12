@@ -80,105 +80,98 @@ probe *args:
 # ─── Releases (Owner Only) ────────────────────────────────────────────
 
 # Release flow:
-# 1) just release-beta <patch|minor|major>
+# 1) PRs auto-create beta releases on merge (via auto-beta.yaml workflow)
 # 2) validate in HACS beta channel
-# 3) just promote
-# Hotfix flow: just release-hotfix, test, then just promote.
+# 3) just promote [version] — promote a specific beta to stable
 # Pipeline fix: just release-retry [tag] — re-triggers release workflow after fixing CI.
 
-release-beta bump:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    latest=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
-    latest="${latest#v}"
-    latest="${latest%%-*}"
-    IFS='.' read -r major minor patch <<< "${latest}"
-    case "{{ bump }}" in
-        patch) patch=$((patch + 1)) ;;
-        minor) minor=$((minor + 1)); patch=0 ;;
-        major) major=$((major + 1)); minor=0; patch=0 ;;
-        *) echo "Error: Invalid bump type '{{ bump }}'. Use patch, minor, or major."; exit 1 ;;
-    esac
-    new="${major}.${minor}.${patch}"
-    beta_num=1
-    for t in $(git tag -l "v${new}-beta.*"); do
-        n="${t##*-beta.}"
-        if [ "${n}" -ge "${beta_num}" ]; then
-            beta_num=$((n + 1))
-        fi
-    done
-    semver_beta="${new}-beta.${beta_num}"
-    pep440_beta="${major}.${minor}.${patch}b${beta_num}"
-    tag="v${semver_beta}"
-    sed -E -i '' 's/"version": "[^"]+"/"version": "'"${semver_beta}"'"/' custom_components/nanit/manifest.json
-    sed -E -i '' 's/^version = "[^"]+"/version = "'"${pep440_beta}"'"/' packages/aionanit/pyproject.toml
-    sed -E -i '' 's/"aionanit>=[^"]*"/"aionanit>='"${pep440_beta}"'"/' custom_components/nanit/manifest.json
-    git add custom_components/nanit/manifest.json packages/aionanit/pyproject.toml
-    git commit --no-gpg-sign -m "chore: bump version to ${semver_beta}"
-    git tag "${tag}"
-    git push && git push --tags
-    gh release create "${tag}" --title "${tag}" --generate-notes --prerelease --latest=false
-    echo "Pre-release ${tag} created. Test via HACS beta channel, then run: just promote"
-
 # ⚠️  AI agents: DO NOT run this command. Manual human action only.
-promote:
+promote version="":
     #!/usr/bin/env bash
     set -euo pipefail
-    beta_tag=$(gh release list --limit 20 --json tagName,isPrerelease,isDraft --jq '[.[] | select(.isPrerelease and (.isDraft | not))] | first | .tagName')
-    if [ -z "${beta_tag}" ] || [ "${beta_tag}" = "null" ]; then
-        echo "Error: No pre-release found to promote."
+
+    target="{{ version }}"
+
+    if [ -z "${target}" ]; then
+        # List all pre-releases grouped by base version, let user pick
+        echo "Fetching pre-releases..."
+        releases=$(gh release list --limit 50 --json tagName,isPrerelease,isDraft,publishedAt \
+            --jq '[.[] | select(.isPrerelease and (.isDraft | not))]')
+
+        if [ "$(echo "$releases" | jq 'length')" -eq 0 ]; then
+            echo "Error: No pre-releases found to promote."
+            exit 1
+        fi
+
+        # Extract unique base versions, sorted by version descending
+        versions=$(echo "$releases" | jq -r '
+            [.[] | .tagName | ltrimstr("v") | split("-beta.")[0]]
+            | unique
+            | sort_by(split(".") | map(tonumber))
+            | reverse
+            | .[]')
+
+        echo ""
+        echo "Available versions to promote:"
+        echo "─────────────────────────────"
+        i=1
+        version_list=()
+        while IFS= read -r v; do
+            latest_beta=$(echo "$releases" | jq -r --arg v "$v" '
+                [.[] | select(.tagName | startswith("v" + $v + "-beta."))]
+                | sort_by(.tagName | split("-beta.")[1] | tonumber)
+                | last | .tagName')
+            beta_count=$(echo "$releases" | jq --arg v "$v" '
+                [.[] | select(.tagName | startswith("v" + $v + "-beta."))] | length')
+            echo "  ${i}) v${v}  (latest: ${latest_beta}, ${beta_count} beta(s))"
+            version_list+=("$v")
+            i=$((i + 1))
+        done <<< "$versions"
+
+        echo ""
+        printf "Select version to promote [1-%d]: " "${#version_list[@]}"
+        read -r choice
+
+        if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#version_list[@]}" ]; then
+            echo "Error: Invalid selection."
+            exit 1
+        fi
+        target="${version_list[$((choice - 1))]}"
+    fi
+
+    # Find the latest beta tag for this version
+    beta_tag=$(git tag -l "v${target}-beta.*" | sort -V | tail -1)
+
+    if [ -z "${beta_tag}" ]; then
+        echo "Error: No beta tags found for version ${target}."
+        echo "Available beta tags:"
+        git tag -l 'v*-beta.*' | sort -V
         exit 1
     fi
-    stable="${beta_tag#v}"
-    stable="${stable%-beta.*}"
-    beta_sha=$(git rev-list -n1 "${beta_tag}")
+
+    echo ""
+    echo "Promoting ${beta_tag} → v${target}"
+    echo ""
+
+    # Verify the beta tag exists and is reachable
+    beta_sha=$(git rev-list -n1 "${beta_tag}" 2>/dev/null || true)
     if [ -z "${beta_sha}" ]; then
         echo "Error: Could not resolve commit for tag ${beta_tag}."
         exit 1
     fi
-    sed -E -i '' 's/"version": "[^"]+"/"version": "'"${stable}"'"/' custom_components/nanit/manifest.json
-    sed -E -i '' 's/^version = "[^"]+"/version = "'"${stable}"'"/' packages/aionanit/pyproject.toml
-    sed -E -i '' 's/"aionanit>=[^"]*"/"aionanit>='"${stable}"'"/' custom_components/nanit/manifest.json
-    git add custom_components/nanit/manifest.json packages/aionanit/pyproject.toml
-    git commit --no-gpg-sign -m "chore: bump version to ${stable}"
-    git tag "v${stable}"
-    git push && git push --tags
-    gh release create "v${stable}" --title "v${stable}" --generate-notes --latest
-    echo "✅ v${stable} released. GitHub Actions will publish to PyPI and attach artifacts."
 
-release-hotfix:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    latest="v0.0.0"
-    for t in $(git tag --sort=-v:refname); do
-        case "${t}" in
-            v*-beta.*) ;;
-            v[0-9]*.[0-9]*.[0-9]*) latest="${t}"; break ;;
-        esac
-    done
-    latest="${latest#v}"
-    IFS='.' read -r major minor patch <<< "${latest}"
-    patch=$((patch + 1))
-    new="${major}.${minor}.${patch}"
-    beta_num=1
-    for t in $(git tag -l "v${new}-beta.*"); do
-        n="${t##*-beta.}"
-        if [ "${n}" -ge "${beta_num}" ]; then
-            beta_num=$((n + 1))
-        fi
-    done
-    semver_beta="${new}-beta.${beta_num}"
-    pep440_beta="${major}.${minor}.${patch}b${beta_num}"
-    tag="v${semver_beta}"
-    sed -E -i '' 's/"version": "[^"]+"/"version": "'"${semver_beta}"'"/' custom_components/nanit/manifest.json
-    sed -E -i '' 's/^version = "[^"]+"/version = "'"${pep440_beta}"'"/' packages/aionanit/pyproject.toml
-    sed -E -i '' 's/"aionanit>=[^"]*"/"aionanit>='"${pep440_beta}"'"/' custom_components/nanit/manifest.json
+    # Update version files to stable
+    sed -E -i '' 's/"version": "[^"]+"/"version": "'"${target}"'"/' custom_components/nanit/manifest.json
+    sed -E -i '' 's/^version = "[^"]+"/version = "'"${target}"'"/' packages/aionanit/pyproject.toml
+    sed -E -i '' 's/"aionanit>=[^"]*"/"aionanit>='"${target}"'"/' custom_components/nanit/manifest.json
+
     git add custom_components/nanit/manifest.json packages/aionanit/pyproject.toml
-    git commit --no-gpg-sign -m "chore: bump version to ${semver_beta}"
-    git tag "${tag}"
+    git commit --no-gpg-sign -m "chore: bump version to ${target}"
+    git tag "v${target}"
     git push && git push --tags
-    gh release create "${tag}" --title "${tag}" --generate-notes --prerelease --latest=false
-    echo "Hotfix pre-release ${tag} created. Test, then run: just promote"
+    gh release create "v${target}" --title "v${target}" --generate-notes --latest
+    echo ""
+    echo "✅ v${target} released. GitHub Actions will publish to PyPI and attach artifacts."
 
 release-retry tag="":
     #!/usr/bin/env bash

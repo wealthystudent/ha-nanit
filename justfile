@@ -160,18 +160,12 @@ promote version="":
         exit 1
     fi
 
-    # Update version files to stable
-    sed -E -i '' 's/"version": "[^"]+"/"version": "'"${target}"'"/' custom_components/nanit/manifest.json
-    sed -E -i '' 's/^version = "[^"]+"/version = "'"${target}"'"/' packages/aionanit/pyproject.toml
-    sed -E -i '' 's/"aionanit>=[^"]*"/"aionanit>='"${target}"'"/' custom_components/nanit/manifest.json
-
-    git add custom_components/nanit/manifest.json packages/aionanit/pyproject.toml
-    git commit -m "chore: bump version to ${target}"
-    git tag -m "v${target}" "v${target}"
-    git push && git push --tags
+    # Create stable tag at the same commit as the beta
+    git tag -m "v${target}" "v${target}" "${beta_sha}"
+    git push origin "v${target}"
     gh release create "v${target}" --title "v${target}" --generate-notes --latest
     echo ""
-    echo "✅ v${target} released. GitHub Actions will publish to PyPI and attach artifacts."
+    echo "✅ v${target} released. GitHub Actions will run CI, publish to PyPI, and attach artifacts."
 
 release-retry tag="":
     #!/usr/bin/env bash

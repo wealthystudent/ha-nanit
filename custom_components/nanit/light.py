@@ -8,9 +8,9 @@ from typing import Any
 from homeassistant.components.light import (
     ATTR_BRIGHTNESS,
     ATTR_HS_COLOR,
-    ColorMode,
     LightEntity,
 )
+from homeassistant.components.light.const import ColorMode
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -61,9 +61,10 @@ class NanitSoundLightLight(NanitSoundLightEntity, LightEntity):
             return None
         state = self.coordinator.data
         if state.light_enabled is not None:
-            return state.light_enabled
+            result: bool = state.light_enabled
+            return result
         if state.brightness is not None:
-            return state.brightness > 0.001
+            return bool(state.brightness > 0.001)
         return None
 
     @property

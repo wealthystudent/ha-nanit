@@ -203,4 +203,5 @@ class NanitSLConnectivitySensor(NanitSoundLightEntity, BinarySensorEntity):
     @property
     def is_on(self) -> bool:
         """Return True when the S&L WebSocket is connected."""
-        return self.coordinator.connected
+        result: bool = self.coordinator.connected
+        return result

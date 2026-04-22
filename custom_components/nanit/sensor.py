@@ -105,8 +105,8 @@ async def async_setup_entry(
         # Sound & Light Machine sensors (optional)
         sl_coordinator = cam_data.sound_light_coordinator
         if sl_coordinator is not None:
-            for description in SL_SENSORS:
-                entities.append(NanitSLSensor(sl_coordinator, description))
+            for sl_description in SL_SENSORS:
+                entities.append(NanitSLSensor(sl_coordinator, sl_description))
             entities.append(NanitSLConnectionModeSensor(sl_coordinator))
 
     async_add_entities(entities)
@@ -187,4 +187,5 @@ class NanitSLConnectionModeSensor(NanitSoundLightEntity, SensorEntity):
     @property
     def native_value(self) -> str:
         """Return the current connection mode."""
-        return self.coordinator.sound_light.connection_mode
+        result: str = self.coordinator.sound_light.connection_mode
+        return result

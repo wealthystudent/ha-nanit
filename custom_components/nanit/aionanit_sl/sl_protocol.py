@@ -74,22 +74,22 @@ def decode_fields(data: bytes) -> list[ProtoField]:
         elif wire_type == FIXED64:
             if pos + 8 > len(data):
                 break
-            value = data[pos : pos + 8]
+            raw = data[pos : pos + 8]
             pos += 8
-            fields.append(ProtoField(field_number, wire_type, value))
+            fields.append(ProtoField(field_number, wire_type, raw))
         elif wire_type == LENGTH_DELIMITED:
             length, pos = decode_varint(data, pos)
             if pos + length > len(data):
                 break
-            value = data[pos : pos + length]
+            raw = data[pos : pos + length]
             pos += length
-            fields.append(ProtoField(field_number, wire_type, value))
+            fields.append(ProtoField(field_number, wire_type, raw))
         elif wire_type == FIXED32:
             if pos + 4 > len(data):
                 break
-            value = data[pos : pos + 4]
+            raw = data[pos : pos + 4]
             pos += 4
-            fields.append(ProtoField(field_number, wire_type, value))
+            fields.append(ProtoField(field_number, wire_type, raw))
         else:
             # Unknown wire type, bail
             break
@@ -98,7 +98,7 @@ def decode_fields(data: bytes) -> list[ProtoField]:
 
 def fixed32_to_float(data: bytes) -> float:
     """Convert 4 bytes (FIXED32) to IEEE 754 single-precision float."""
-    return struct.unpack("<f", data)[0]
+    return float(struct.unpack("<f", data)[0])
 
 
 def float_to_fixed32(value: float) -> bytes:
@@ -533,7 +533,7 @@ def classify_message(data: bytes) -> int | None:
         if f1_inner is not None and f1_inner.wire_type == VARINT:
             val = f1_inner.value
             if val in (2, 3):
-                return val
+                return int(val)
             # Large varint values (e.g. timestamps) indicate network info
             # or other device metadata messages — safe to ignore.
             if val > 3:

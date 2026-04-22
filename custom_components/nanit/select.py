@@ -63,7 +63,8 @@ class NanitSoundSelect(NanitSoundLightEntity, SelectEntity):
         """Return the currently selected sound track."""
         if self.coordinator.data is None:
             return None
-        return self.coordinator.data.current_track
+        result: str | None = self.coordinator.data.current_track
+        return result
 
     async def async_select_option(self, option: str) -> None:
         """Change the selected sound track via local WebSocket."""

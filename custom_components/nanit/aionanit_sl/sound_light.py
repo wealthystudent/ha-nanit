@@ -23,6 +23,7 @@ from .models import (
 )
 from .sl_protocol import (
     SLDecodedRoutine,
+    SLDecodedState,
     build_brightness_cmd,
     build_color_cmd,
     build_light_enabled_cmd,
@@ -329,9 +330,9 @@ class NanitSoundLight:
                     from aionanit import NanitAuthError
                     raise NanitAuthError("Access token invalid for udtokens")
                 if resp.status != 200:
-                    body = await resp.text()
+                    err_body = await resp.text()
                     raise NanitConnectionError(
-                        f"HTTP {resp.status} fetching udtokens for {self._speaker_uid}: {body[:200]}"
+                        f"HTTP {resp.status} fetching udtokens for {self._speaker_uid}: {err_body[:200]}"
                     )
                 body = await resp.json(content_type=None)
                 token = body.get("user_device_token", {}).get("token")
@@ -344,7 +345,7 @@ class NanitSoundLight:
         _LOGGER.debug(
             "Fetched device token for speaker %s (len=%d)",
             self._speaker_uid,
-            len(self._device_token),
+            len(self._device_token or ""),
         )
 
     async def _token_refresh_loop(self) -> None:
@@ -420,7 +421,7 @@ class NanitSoundLight:
                             url,
                             headers=headers,
                             heartbeat=_HEARTBEAT_INTERVAL,
-                            timeout=_HANDSHAKE_TIMEOUT,
+                            timeout=aiohttp.ClientWSTimeout(ws_close=_HANDSHAKE_TIMEOUT),
                             ssl=self._local_ssl_ctx,
                         )
                     except Exception as err:
@@ -447,7 +448,7 @@ class NanitSoundLight:
                         url,
                         headers=headers,
                         heartbeat=_HEARTBEAT_INTERVAL,
-                        timeout=_HANDSHAKE_TIMEOUT,
+                        timeout=aiohttp.ClientWSTimeout(ws_close=_HANDSHAKE_TIMEOUT),
                         # Cloud relay uses default TLS verification (no ssl= override)
                     )
                     # Track that we ended up on cloud relay (affects poll strategy)

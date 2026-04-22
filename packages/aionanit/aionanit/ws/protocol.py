@@ -11,7 +11,6 @@ from aionanit.proto import (
     Message,
     MessageType,
     Request,
-    RequestType,
     Response,
     Settings,
     Streaming,
@@ -42,7 +41,7 @@ def build_keepalive() -> bytes:
 
 def build_request(
     request_id: int,
-    request_type: RequestType,
+    request_type: int,
     *,
     streaming: Streaming | None = None,
     settings: Settings | None = None,

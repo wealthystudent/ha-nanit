@@ -231,7 +231,8 @@ class NanitSLPowerSwitch(NanitSoundLightEntity, SwitchEntity):
         """Return True if the device is powered on."""
         if self.coordinator.data is None:
             return None
-        return self.coordinator.data.power_on
+        result: bool | None = self.coordinator.data.power_on
+        return result
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the device on."""
@@ -269,7 +270,8 @@ class NanitSLSoundSwitch(NanitSoundLightEntity, SwitchEntity):
         """Return True if sound is on."""
         if self.coordinator.data is None:
             return None
-        return self.coordinator.data.sound_on
+        result: bool | None = self.coordinator.data.sound_on
+        return result
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn sound on."""

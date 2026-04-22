@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from datetime import timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import dataclasses
 
@@ -247,7 +247,7 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator[SoundLightFullState]):
         self.sound_light = sound_light
         self.baby: Baby = None  # type: ignore[assignment]  # Set by hub._setup_camera before use
         self._unsubscribe: Callable[[], None] | None = None
-        self._store: Store = Store(
+        self._store: Store[dict[str, Any]] = Store(
             hass,
             _SL_STORE_VERSION,
             f"{DOMAIN}_sl_state_{sound_light.speaker_uid}",

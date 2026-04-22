@@ -102,7 +102,7 @@ class NanitSoundMachineVolume(NanitSoundLightEntity, NumberEntity):
         vol = self.coordinator.data.volume
         if vol is None:
             return None
-        return round(vol * 100, 0)
+        return round(float(vol) * 100, 0)
 
     async def async_set_native_value(self, value: float) -> None:
         """Set the sound machine volume via local WebSocket."""

@@ -167,9 +167,7 @@ class TestGetBabies:
         assert babies[0] == Baby(
             uid="baby123", name="Luna", camera_uid="cam456", speaker_uid="spk001"
         )
-        assert babies[1] == Baby(
-            uid="baby789", name="Max", camera_uid="cam012", speaker_uid=None
-        )
+        assert babies[1] == Baby(uid="baby789", name="Max", camera_uid="cam012", speaker_uid=None)
 
     async def test_get_babies_empty(self, client: NanitRestClient) -> None:
         with aioresponses() as m:
@@ -233,23 +231,31 @@ class TestGetEvents:
 class TestGetDeviceToken:
     async def test_get_device_token_success(self, client: NanitRestClient) -> None:
         with aioresponses() as m:
-            m.post(DEVICE_TOKEN_URL, payload={"token": "dev_tok_abc"})
+            m.get(
+                DEVICE_TOKEN_URL,
+                payload={"user_device_token": {"token": "dev_tok_abc"}},
+            )
             token = await client.async_get_device_token("acc123", "spk001")
 
         assert token == "dev_tok_abc"
 
     async def test_get_device_token_unauthorized(self, client: NanitRestClient) -> None:
         with aioresponses() as m:
-            m.post(DEVICE_TOKEN_URL, status=401)
+            m.get(DEVICE_TOKEN_URL, status=401)
 
             with pytest.raises(NanitAuthError, match="Access token invalid"):
                 await client.async_get_device_token("bad_token", "spk001")
 
-    async def test_get_device_token_connection_error(
-        self, client: NanitRestClient
-    ) -> None:
+    async def test_get_device_token_connection_error(self, client: NanitRestClient) -> None:
         with aioresponses() as m:
-            m.post(DEVICE_TOKEN_URL, exception=ClientConnectionError("timeout"))
+            m.get(DEVICE_TOKEN_URL, exception=ClientConnectionError("timeout"))
 
             with pytest.raises(NanitConnectionError):
+                await client.async_get_device_token("acc123", "spk001")
+
+    async def test_get_device_token_empty_response(self, client: NanitRestClient) -> None:
+        with aioresponses() as m:
+            m.get(DEVICE_TOKEN_URL, payload={"user_device_token": {}})
+
+            with pytest.raises(NanitConnectionError, match="No token"):
                 await client.async_get_device_token("acc123", "spk001")

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 
 from homeassistant.components.camera import Camera, CameraEntityFeature
 from homeassistant.core import HomeAssistant
@@ -17,6 +19,11 @@ from .entity import NanitEntity
 PARALLEL_UPDATES = 0
 
 _LOGGER = logging.getLogger(__name__)
+
+_STREAM_START_ATTEMPTS = 3
+_STREAM_RETRY_DELAY = 2.0
+_SNAPSHOT_CACHE_TTL = 60.0
+_SNAPSHOT_PREFETCH_AGE = 30.0
 
 
 async def async_setup_entry(
@@ -49,6 +56,8 @@ class NanitCameraEntity(NanitEntity, Camera):
         self._camera = camera
         self._prev_is_on: bool | None = None
         self._attr_unique_id = f"{camera.uid}_camera"
+        self._cached_snapshot: bytes | None = None
+        self._cached_snapshot_at: float = 0.0
 
     @property
     def is_on(self) -> bool:
@@ -78,51 +87,111 @@ class NanitCameraEntity(NanitEntity, Camera):
             _LOGGER.debug("Invalidating cached stream after power state change")
             self.stream = None
 
+    # ------------------------------------------------------------------
+    # Streaming
+    # ------------------------------------------------------------------
+
     async def stream_source(self) -> str | None:
         """Return the RTMPS stream URL.
 
-        The RTMPS URL embeds a fresh access token and can be consumed directly
-        by the HA Stream integration.  PUT_STREAMING is fired in the background
-        so the URL is returned immediately without waiting for the camera ACK.
+        Sends PUT_STREAMING *before* returning the URL so the camera is
+        already pushing to the RTMPS ingest when HA opens the connection.
+        This eliminates the race condition where HA tries to connect before
+        the camera has started streaming.
         """
         if not self.is_on:
             return None
+
+        if not await self._async_start_streaming_safe():
+            return None
+
         try:
-            url: str = await self._camera.async_get_stream_rtmps_url()
+            return await self._camera.async_get_stream_rtmps_url()
         except Exception:  # noqa: BLE001
             _LOGGER.warning("Failed to build RTMPS stream URL", exc_info=True)
             return None
 
-        self.hass.async_create_background_task(
-            self._async_start_streaming_safe(),
-            name=f"nanit_start_streaming_{self._camera.uid}",
-        )
-        return url
+    async def _async_start_streaming_safe(self) -> bool:
+        """Send PUT_STREAMING with retry.  Returns True on success."""
+        for attempt in range(1, _STREAM_START_ATTEMPTS + 1):
+            try:
+                await self._camera.async_start_streaming()
+                return True
+            except Exception:  # noqa: BLE001
+                if attempt < _STREAM_START_ATTEMPTS:
+                    _LOGGER.debug(
+                        "PUT_STREAMING attempt %d/%d failed for camera %s, retrying in %.0fs",
+                        attempt,
+                        _STREAM_START_ATTEMPTS,
+                        self._camera.uid,
+                        _STREAM_RETRY_DELAY,
+                    )
+                    await asyncio.sleep(_STREAM_RETRY_DELAY)
+                else:
+                    _LOGGER.warning(
+                        "PUT_STREAMING failed after %d attempts for camera %s",
+                        _STREAM_START_ATTEMPTS,
+                        self._camera.uid,
+                        exc_info=True,
+                    )
+        return False
 
-    async def _async_start_streaming_safe(self) -> None:
-        """Send PUT_STREAMING, logging failures without raising."""
-        try:
-            await self._camera.async_start_streaming()
-        except Exception:  # noqa: BLE001
-            _LOGGER.warning(
-                "PUT_STREAMING failed for camera %s — the stream may not load. "
-                "Check debug logs for details",
-                self._camera.uid,
-                exc_info=True,
-            )
+    # ------------------------------------------------------------------
+    # Snapshot (with caching)
+    # ------------------------------------------------------------------
 
     async def async_camera_image(
         self, width: int | None = None, height: int | None = None
     ) -> bytes | None:
-        """Return a still image from the camera."""
+        """Return a still image, using a cached snapshot when possible.
+
+        Cache strategy:
+        - Fresh cache (< TTL): return immediately.
+        - Stale cache (> TTL): attempt a fresh fetch; return stale on failure.
+        - No cache: fetch synchronously.
+
+        A background prefetch is scheduled when the cache reaches
+        ``_SNAPSHOT_PREFETCH_AGE`` so subsequent requests hit a warm cache.
+        """
         if not self.is_on:
             return None
+
+        now = time.monotonic()
+        cache_age = now - self._cached_snapshot_at
+
+        if self._cached_snapshot is not None and cache_age < _SNAPSHOT_CACHE_TTL:
+            if cache_age >= _SNAPSHOT_PREFETCH_AGE:
+                self.hass.async_create_background_task(
+                    self._async_refresh_snapshot(),
+                    name=f"nanit_snapshot_refresh_{self._camera.uid}",
+                )
+            return self._cached_snapshot
+
+        fresh = await self._async_fetch_snapshot()
+        if fresh is not None:
+            return fresh
+
+        return self._cached_snapshot
+
+    async def _async_refresh_snapshot(self) -> None:
+        """Background task: update the snapshot cache without blocking callers."""
+        await self._async_fetch_snapshot()
+
+    async def _async_fetch_snapshot(self) -> bytes | None:
+        """Fetch a snapshot from the cloud and update the cache."""
         try:
-            image: bytes | None = await self._camera.async_get_snapshot()
-            return image
+            image = await self._camera.async_get_snapshot()
         except Exception:  # noqa: BLE001
-            _LOGGER.debug("Failed to get camera snapshot", exc_info=True)
+            _LOGGER.debug("Failed to fetch snapshot for %s", self._camera.uid)
             return None
+        if image is not None:
+            self._cached_snapshot = image
+            self._cached_snapshot_at = time.monotonic()
+        return image
+
+    # ------------------------------------------------------------------
+    # On/off
+    # ------------------------------------------------------------------
 
     async def async_turn_on(self) -> None:
         """Turn the camera on (disable sleep/standby mode)."""

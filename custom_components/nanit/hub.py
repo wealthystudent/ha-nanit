@@ -6,6 +6,7 @@ babies/cameras on the account and creates a camera + coordinators for each.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -140,23 +141,26 @@ class NanitHub:
 
         # Create camera + coordinators for each baby
         failed_cameras: list[str] = []
-        for baby in babies:
-            try:
-                await self._setup_camera(
-                    baby,
-                    camera_ips.get(baby.camera_uid),
-                    speaker_ips.get(baby.camera_uid),
-                    speaker_uid_map.get(baby.camera_uid),
-                )
-            except NanitAuthError:
-                # Auth errors are account-level — propagate immediately
-                raise
-            except (NanitConnectionError, NanitCameraUnavailable) as err:
+        tasks = [
+            self._setup_camera(
+                baby,
+                camera_ips.get(baby.camera_uid),
+                speaker_ips.get(baby.camera_uid),
+                speaker_uid_map.get(baby.camera_uid),
+            )
+            for baby in babies
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for baby, result in zip(babies, results, strict=True):
+            if isinstance(result, NanitAuthError):
+                raise result
+            if isinstance(result, NanitConnectionError | NanitCameraUnavailable):
                 _LOGGER.warning(
                     "Camera %s (%s) failed to connect: %s",
                     baby.name,
                     baby.camera_uid,
-                    err,
+                    result,
                 )
                 failed_cameras.append(sanitize_name(baby.name))
                 ir.async_create_issue(
@@ -169,9 +173,11 @@ class NanitHub:
                     translation_key="camera_connection_failed",
                     translation_placeholders={
                         "camera_name": sanitize_name(baby.name),
-                        "error": str(err),
+                        "error": str(result),
                     },
                 )
+            elif isinstance(result, BaseException):
+                raise result
 
         if not self._camera_data and failed_cameras:
             raise NanitConnectionError(

@@ -302,15 +302,11 @@ async def test_camera_stream_source_returns_url_when_on() -> None:
     camera.async_get_stream_rtmps_url = AsyncMock(return_value="rtmps://stream-url")
     camera.async_start_streaming = AsyncMock()
     entity = NanitCameraEntity(coordinator, camera)
-    entity.hass = MagicMock()
-    entity.hass.async_create_background_task = MagicMock(
-        side_effect=lambda coro, **kw: coro.close(),
-    )
 
     source = await entity.stream_source()
 
     assert source == "rtmps://stream-url"
-    entity.hass.async_create_background_task.assert_called_once()
+    camera.async_start_streaming.assert_awaited_once()
 
 
 async def test_camera_stream_source_returns_none_when_camera_off() -> None:
@@ -332,13 +328,10 @@ async def test_camera_stream_source_returns_none_when_camera_api_fails() -> None
     camera.async_get_stream_rtmps_url = AsyncMock(side_effect=RuntimeError("offline"))
     camera.async_start_streaming = AsyncMock()
     entity = NanitCameraEntity(coordinator, camera)
-    entity.hass = MagicMock()
-    entity.hass.async_create_background_task = MagicMock()
 
     source = await entity.stream_source()
 
     assert source is None
-    entity.hass.async_create_background_task.assert_not_called()
 
 
 async def test_camera_start_streaming_safe_logs_failure_without_raising() -> None:
@@ -347,9 +340,11 @@ async def test_camera_start_streaming_safe_logs_failure_without_raising() -> Non
     camera.async_start_streaming = AsyncMock(side_effect=RuntimeError("ws closed"))
     entity = NanitCameraEntity(coordinator, camera)
 
-    await entity._async_start_streaming_safe()
+    with patch("custom_components.nanit.camera._STREAM_RETRY_DELAY", 0):
+        result = await entity._async_start_streaming_safe()
 
-    camera.async_start_streaming.assert_awaited_once()
+    assert result is False
+    assert camera.async_start_streaming.await_count == 3
 
 
 @pytest.mark.asyncio

@@ -19,6 +19,15 @@
         }
       }
     },
+    "light": {
+      "night_light": {
+        "default": "mdi:lightbulb-night",
+        "state": {
+          "on": "mdi:lightbulb-on",
+          "off": "mdi:lightbulb-night"
+        }
+      }
+    },
     "number": {
       "volume": { "default": "mdi:volume-medium" }
     },

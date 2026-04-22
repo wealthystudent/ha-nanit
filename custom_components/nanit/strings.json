@@ -118,9 +118,21 @@
       "sound_machine_volume": { "name": "Volume" }
     },
     "light": {
+      "night_light": { "name": "Night Light" },
       "sound_light_light": { "name": "Light" }
     },
     "select": {
+      "night_light_timer": {
+        "name": "Night Light Timer",
+        "state": {
+          "off": "Off",
+          "15_minutes": "15 minutes",
+          "30_minutes": "30 minutes",
+          "1_hour": "1 hour",
+          "2_hours": "2 hours",
+          "4_hours": "4 hours"
+        }
+      },
       "sound_machine_sound": { "name": "Sound Track" }
     },
     "camera": {

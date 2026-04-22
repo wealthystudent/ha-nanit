@@ -195,10 +195,7 @@ class NanitSLConnectivitySensor(NanitSoundLightEntity, BinarySensorEntity):
     @property
     def available(self) -> bool:
         """Always available so it can report disconnected state."""
-        return (
-            self.coordinator.last_update_success
-            and self.coordinator.data is not None
-        )
+        return self.coordinator.last_update_success and self.coordinator.data is not None
 
     @property
     def is_on(self) -> bool:

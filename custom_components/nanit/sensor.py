@@ -11,7 +11,7 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import EntityCategory, LIGHT_LUX, PERCENTAGE, UnitOfTemperature
+from homeassistant.const import LIGHT_LUX, PERCENTAGE, EntityCategory, UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -76,7 +76,9 @@ SL_SENSORS: tuple[NanitSLSensorEntityDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         entity_registry_enabled_default=True,
         suggested_display_precision=1,
-        value_fn=lambda state: round(state.temperature_c, 2) if state.temperature_c is not None else None,
+        value_fn=lambda state: (
+            round(state.temperature_c, 2) if state.temperature_c is not None else None
+        ),
     ),
     NanitSLSensorEntityDescription(
         key="sl_humidity",
@@ -86,7 +88,9 @@ SL_SENSORS: tuple[NanitSLSensorEntityDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         entity_registry_enabled_default=True,
         suggested_display_precision=1,
-        value_fn=lambda state: round(state.humidity_pct, 2) if state.humidity_pct is not None else None,
+        value_fn=lambda state: (
+            round(state.humidity_pct, 2) if state.humidity_pct is not None else None
+        ),
     ),
 )
 
@@ -165,7 +169,7 @@ class NanitSLConnectionModeSensor(NanitSoundLightEntity, SensorEntity):
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_translation_key = "sl_connection_mode"
     _attr_device_class = SensorDeviceClass.ENUM
-    _attr_options = ["local", "cloud", "unavailable"]
+    _attr_options = ["local", "cloud", "unavailable"]  # noqa: RUF012
 
     def __init__(
         self,
@@ -179,10 +183,7 @@ class NanitSLConnectionModeSensor(NanitSoundLightEntity, SensorEntity):
     @property
     def available(self) -> bool:
         """Always available so it can report the unavailable connection state."""
-        return (
-            self.coordinator.last_update_success
-            and self.coordinator.data is not None
-        )
+        return self.coordinator.last_update_success and self.coordinator.data is not None
 
     @property
     def native_value(self) -> str:

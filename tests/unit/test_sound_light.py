@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import ssl
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -144,6 +145,7 @@ class TestReconnectTaskTracking:
     @pytest.mark.asyncio
     async def test_async_stop_cancels_reconnect_task(self) -> None:
         sl = _make_sound_light()
+
         # Create a dummy task
         async def dummy() -> None:
             await asyncio.sleep(100)
@@ -181,10 +183,8 @@ class TestCloudRelayPrefersDefaultTls:
 
         sl._session.ws_connect = AsyncMock(return_value=mock_ws)
 
-        try:
-            await sl._async_connect()
-        except Exception:
-            pass  # May fail on recv_task setup, that's fine
+        with contextlib.suppress(Exception):
+            await sl._async_connect()  # May fail on recv_task setup, that's fine
 
         # Check the ws_connect call — ssl should NOT be the CERT_NONE context
         if sl._session.ws_connect.call_count > 0:
@@ -192,8 +192,7 @@ class TestCloudRelayPrefersDefaultTls:
             # Cloud relay call should not have ssl=<SSLContext> with CERT_NONE
             ssl_arg = call_kwargs.kwargs.get("ssl") if call_kwargs.kwargs else None
             if ssl_arg is not None:
-                assert ssl_arg.verify_mode != ssl.CERT_NONE, \
-                    "Cloud relay must not use CERT_NONE"
+                assert ssl_arg.verify_mode != ssl.CERT_NONE, "Cloud relay must not use CERT_NONE"
 
 
 class TestUseCloudRelayFlag:

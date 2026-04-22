@@ -10,8 +10,8 @@ from collections.abc import Callable
 
 import aiohttp
 
-from aionanit.auth import TokenManager
 from aionanit import NanitConnectionError
+from aionanit.auth import TokenManager
 from aionanit.rest import NanitRestClient
 
 from .exceptions import NanitTransportError
@@ -22,7 +22,6 @@ from .models import (
     SoundLightRoutine,
 )
 from .sl_protocol import (
-    SLDecodedRoutine,
     SLDecodedState,
     build_brightness_cmd,
     build_color_cmd,
@@ -141,9 +140,7 @@ class NanitSoundLight:
     # Subscription
     # ------------------------------------------------------------------
 
-    def subscribe(
-        self, callback: Callable[[SoundLightEvent], None]
-    ) -> Callable[[], None]:
+    def subscribe(self, callback: Callable[[SoundLightEvent], None]) -> Callable[[], None]:
         """Subscribe to S&L events. Returns an unsubscribe callable."""
         self._subscribers.append(callback)
 
@@ -159,7 +156,7 @@ class NanitSoundLight:
         for cb in self._subscribers:
             try:
                 cb(event)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 _LOGGER.exception("Error in S&L event subscriber")
 
     # ------------------------------------------------------------------
@@ -190,9 +187,7 @@ class NanitSoundLight:
                 "S&L %s initial connection failed; will retry in background",
                 self._speaker_uid,
             )
-            self._reconnect_task = asyncio.get_running_loop().create_task(
-                self._reconnect_loop()
-            )
+            self._reconnect_task = asyncio.get_running_loop().create_task(self._reconnect_loop())
 
     async def async_stop(self) -> None:
         """Stop the S&L connection gracefully."""
@@ -286,9 +281,7 @@ class NanitSoundLight:
         """
         cmd = build_color_cmd(color_a, color_b, light_enabled=self._state.light_enabled)
         await self._async_send(cmd)
-        self._state = dataclasses.replace(
-            self._state, color_r=color_a, color_g=color_b
-        )
+        self._state = dataclasses.replace(self._state, color_r=color_a, color_g=color_b)
         self._fire_event(SoundLightEventKind.STATE_UPDATE)
 
     # ------------------------------------------------------------------
@@ -311,7 +304,7 @@ class NanitSoundLight:
             self._device_token = await self._rest.async_get_device_token(
                 access_token, self._speaker_uid
             )
-        except AttributeError:
+        except AttributeError as err:
             # Inline implementation matching the NanitLite app's exact request
             headers = {
                 "accept": "application/json",
@@ -328,18 +321,19 @@ class NanitSoundLight:
             ) as resp:
                 if resp.status == 401:
                     from aionanit import NanitAuthError
-                    raise NanitAuthError("Access token invalid for udtokens")
+
+                    raise NanitAuthError("Access token invalid for udtokens") from err
                 if resp.status != 200:
                     err_body = await resp.text()
                     raise NanitConnectionError(
                         f"HTTP {resp.status} fetching udtokens for {self._speaker_uid}: {err_body[:200]}"
-                    )
+                    ) from err
                 body = await resp.json(content_type=None)
                 token = body.get("user_device_token", {}).get("token")
                 if not token:
                     raise NanitConnectionError(
                         f"No token in udtokens response for speaker {self._speaker_uid}"
-                    )
+                    ) from err
                 self._device_token = token
 
         _LOGGER.debug(
@@ -358,7 +352,7 @@ class NanitSoundLight:
                 try:
                     await self._async_fetch_device_token()
                     _LOGGER.debug("S&L device token refreshed")
-                except Exception as err:  # noqa: BLE001
+                except Exception as err:
                     _LOGGER.warning("S&L device token refresh failed: %s", err)
         except asyncio.CancelledError:
             return
@@ -378,6 +372,7 @@ class NanitSoundLight:
             silent: If True, suppress CONNECTION_CHANGE events during the
                     disconnect/reconnect cycle.  Used by the poll loop to
                     avoid briefly marking entities as unavailable.
+
         """
         async with self._connect_lock:
             await self._async_close_ws()
@@ -441,9 +436,7 @@ class NanitSoundLight:
                         "Authorization": f"Bearer {access_token}",
                         "User-Agent": "NanitLite/1.8.0",
                     }
-                    _LOGGER.debug(
-                        "Connecting S&L %s via cloud relay", self._speaker_uid
-                    )
+                    _LOGGER.debug("Connecting S&L %s via cloud relay", self._speaker_uid)
                     self._ws = await self._session.ws_connect(
                         url,
                         headers=headers,
@@ -472,9 +465,7 @@ class NanitSoundLight:
 
             # Start token refresh task if not already running
             if self._token_refresh_task is None or self._token_refresh_task.done():
-                self._token_refresh_task = loop.create_task(
-                    self._token_refresh_loop()
-                )
+                self._token_refresh_task = loop.create_task(self._token_refresh_loop())
 
             # (Re)start poll task — cancel stale one first
             if self._poll_task is not None and not self._poll_task.done():
@@ -541,33 +532,45 @@ class NanitSoundLight:
                     break
         except asyncio.CancelledError:
             return
-        except Exception as err:  # noqa: BLE001
+        except Exception as err:
             _LOGGER.error("S&L recv loop error: %s", err)
 
         # Auto-reconnect if not explicitly stopped
         self._connected = False
         self._fire_event(SoundLightEventKind.CONNECTION_CHANGE)
         if not self._stopped:
-            self._reconnect_task = asyncio.get_running_loop().create_task(
-                self._reconnect_loop()
-            )
+            self._reconnect_task = asyncio.get_running_loop().create_task(self._reconnect_loop())
 
     def _apply_state(self, decoded: SLDecodedState) -> None:
         """Merge a decoded state into the current state and fire event."""
         self._state = dataclasses.replace(
             self._state,
-            brightness=decoded.brightness if decoded.brightness is not None else self._state.brightness,
-            light_enabled=decoded.light_enabled if decoded.light_enabled is not None else self._state.light_enabled,
+            brightness=decoded.brightness
+            if decoded.brightness is not None
+            else self._state.brightness,
+            light_enabled=decoded.light_enabled
+            if decoded.light_enabled is not None
+            else self._state.light_enabled,
             color_r=decoded.color_r if decoded.color_r is not None else self._state.color_r,
             color_g=decoded.color_g if decoded.color_g is not None else self._state.color_g,
             volume=decoded.volume if decoded.volume is not None else self._state.volume,
-            current_track=decoded.current_track if decoded.current_track is not None else self._state.current_track,
+            current_track=decoded.current_track
+            if decoded.current_track is not None
+            else self._state.current_track,
             sound_on=decoded.sound_on if decoded.sound_on is not None else self._state.sound_on,
             power_on=decoded.power_on if decoded.power_on is not None else self._state.power_on,
-            available_tracks=tuple(decoded.available_tracks) if decoded.available_tracks else self._state.available_tracks,
-            temperature_c=decoded.temperature_c if decoded.temperature_c is not None else self._state.temperature_c,
-            humidity_pct=decoded.humidity_pct if decoded.humidity_pct is not None else self._state.humidity_pct,
-            timezone_rule=decoded.timezone_rule if decoded.timezone_rule is not None else self._state.timezone_rule,
+            available_tracks=tuple(decoded.available_tracks)
+            if decoded.available_tracks
+            else self._state.available_tracks,
+            temperature_c=decoded.temperature_c
+            if decoded.temperature_c is not None
+            else self._state.temperature_c,
+            humidity_pct=decoded.humidity_pct
+            if decoded.humidity_pct is not None
+            else self._state.humidity_pct,
+            timezone_rule=decoded.timezone_rule
+            if decoded.timezone_rule is not None
+            else self._state.timezone_rule,
         )
         self._fire_event(SoundLightEventKind.STATE_UPDATE)
         _LOGGER.debug(
@@ -619,8 +622,12 @@ class NanitSoundLight:
             if decoded_sensors is not None:
                 self._state = dataclasses.replace(
                     self._state,
-                    temperature_c=decoded_sensors.temperature_c if decoded_sensors.temperature_c is not None else self._state.temperature_c,
-                    humidity_pct=decoded_sensors.humidity_pct if decoded_sensors.humidity_pct is not None else self._state.humidity_pct,
+                    temperature_c=decoded_sensors.temperature_c
+                    if decoded_sensors.temperature_c is not None
+                    else self._state.temperature_c,
+                    humidity_pct=decoded_sensors.humidity_pct
+                    if decoded_sensors.humidity_pct is not None
+                    else self._state.humidity_pct,
                 )
                 self._fire_event(SoundLightEventKind.SENSOR_UPDATE)
 
@@ -675,7 +682,7 @@ class NanitSoundLight:
                 _LOGGER.debug("S&L poll: reconnecting to refresh state")
                 try:
                     await self._async_connect(silent=True)
-                except Exception as err:  # noqa: BLE001
+                except Exception as err:
                     _LOGGER.debug("S&L poll reconnect failed: %s", err)
         except asyncio.CancelledError:
             return
@@ -705,13 +712,13 @@ class NanitSoundLight:
                 # Refresh device token before reconnecting
                 try:
                     await self._async_fetch_device_token()
-                except Exception:  # noqa: BLE001
+                except Exception:
                     _LOGGER.debug("Token refresh failed during reconnect, using cached")
 
                 await self._async_connect()
                 _LOGGER.info("S&L reconnected successfully")
                 return
-            except Exception as err:  # noqa: BLE001
+            except Exception as err:
                 _LOGGER.warning("S&L reconnect failed: %s", err)
                 self._connected = False
                 self._fire_event(SoundLightEventKind.CONNECTION_CHANGE)

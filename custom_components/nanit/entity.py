@@ -78,7 +78,4 @@ class NanitSoundLightEntity(CoordinatorEntity[NanitSoundLightCoordinator]):
         known values when the WebSocket drops. Connection state is reported
         separately by the S&L connectivity binary sensor.
         """
-        return (
-            self.coordinator.last_update_success
-            and self.coordinator.data is not None
-        )
+        return self.coordinator.last_update_success and self.coordinator.data is not None

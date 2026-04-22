@@ -25,9 +25,9 @@ from aionanit import (
 from aionanit.exceptions import NanitCameraUnavailable
 from aionanit.models import Baby
 
+from .aionanit_sl.sound_light import NanitSoundLight
 from .const import CONF_CAMERA_IPS, CONF_REFRESH_TOKEN, CONF_SPEAKER_IPS, DOMAIN
 from .coordinator import NanitCloudCoordinator, NanitPushCoordinator, NanitSoundLightCoordinator
-from .aionanit_sl.sound_light import NanitSoundLight
 from .sanitize import sanitize_name
 
 if TYPE_CHECKING:
@@ -113,9 +113,7 @@ class NanitHub:
 
         # Discover speaker UIDs — try persisted data first, then aionanit,
         # then raw /babies API as final fallback.
-        speaker_uid_map: dict[str, str] = dict(
-            self._entry.data.get("speaker_uid_map", {})
-        )
+        speaker_uid_map: dict[str, str] = dict(self._entry.data.get("speaker_uid_map", {}))
         if not speaker_uid_map:
             for baby in babies:
                 uid = getattr(baby, "speaker_uid", None)
@@ -124,7 +122,7 @@ class NanitHub:
         if not speaker_uid_map:
             try:
                 speaker_uid_map = await self._discover_speaker_uids()
-            except Exception:
+            except Exception:  # noqa: BLE001
                 _LOGGER.debug("Speaker UID discovery from raw API failed", exc_info=True)
 
         # Persist discovered speaker UIDs so they survive restarts
@@ -134,9 +132,7 @@ class NanitHub:
                 self._entry,
                 data={**self._entry.data, "speaker_uid_map": speaker_uid_map},
             )
-            _LOGGER.info(
-                "Persisted speaker UID map: %s", speaker_uid_map
-            )
+            _LOGGER.info("Persisted speaker UID map: %s", speaker_uid_map)
 
         # Per-camera IP configuration from options
         camera_ips: dict[str, str] = self._entry.options.get(CONF_CAMERA_IPS, {})
@@ -235,7 +231,7 @@ class NanitHub:
                 await sound_light_coordinator.async_setup()
             except NanitAuthError:
                 raise
-            except Exception:
+            except Exception:  # noqa: BLE001
                 _LOGGER.warning(
                     "Sound & Light Machine coordinator for %s failed to start; "
                     "sound/light entities disabled",
@@ -304,7 +300,7 @@ class NanitHub:
         for sl in list(self._sound_lights.values()):
             try:
                 await sl.async_stop()
-            except Exception:
+            except Exception:  # noqa: BLE001
                 _LOGGER.debug("Error stopping S&L during close")
         self._sound_lights.clear()
 
@@ -334,7 +330,5 @@ class NanitHub:
             speaker_uid = speaker_obj.get("uid")
             if camera_uid and speaker_uid:
                 result[camera_uid] = speaker_uid
-                _LOGGER.debug(
-                    "Discovered speaker UID %s for camera %s", speaker_uid, camera_uid
-                )
+                _LOGGER.debug("Discovered speaker UID %s for camera %s", speaker_uid, camera_uid)
         return result

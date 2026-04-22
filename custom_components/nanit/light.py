@@ -14,9 +14,8 @@ from homeassistant.components.light.const import ColorMode
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .aionanit_sl.exceptions import NanitTransportError
-
 from . import NanitConfigEntry
+from .aionanit_sl.exceptions import NanitTransportError
 from .coordinator import NanitSoundLightCoordinator
 from .entity import NanitSoundLightEntity
 
@@ -41,7 +40,7 @@ async def async_setup_entry(
 class NanitSoundLightLight(NanitSoundLightEntity, LightEntity):
     """Light entity for the Nanit Sound & Light Machine."""
 
-    _attr_supported_color_modes = {ColorMode.HS}
+    _attr_supported_color_modes = {ColorMode.HS}  # noqa: RUF012
     _attr_color_mode = ColorMode.HS
     _attr_translation_key = "sound_light_light"
 

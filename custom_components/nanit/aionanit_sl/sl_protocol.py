@@ -18,7 +18,6 @@ from __future__ import annotations
 #   Wire value 1 = OFF/disabled
 # All decode and encode functions in this module handle the inversion.
 # Search for "INVERTED" to find all relevant locations.
-
 import logging
 import struct
 from dataclasses import dataclass
@@ -137,13 +136,13 @@ class SLDecodedState:
     """Decoded S&L full state from message type 0."""
 
     brightness: float | None = None
-    light_enabled: bool | None = None    # field 2 sub-1
-    color_r: float | None = None         # field 2 sub-2 (color param A)
-    color_g: float | None = None         # field 2 sub-3 (color param B)
-    volume: float | None = None          # field 3
-    current_track: str | None = None     # field 4 sub-2
-    sound_on: bool | None = None         # field 4 sub-1
-    power_on: bool | None = None         # field 5
+    light_enabled: bool | None = None  # field 2 sub-1
+    color_r: float | None = None  # field 2 sub-2 (color param A)
+    color_g: float | None = None  # field 2 sub-3 (color param B)
+    volume: float | None = None  # field 3
+    current_track: str | None = None  # field 4 sub-2
+    sound_on: bool | None = None  # field 4 sub-1
+    power_on: bool | None = None  # field 5
     available_tracks: list[str] | None = None
     temperature_c: float | None = None
     humidity_pct: float | None = None
@@ -519,6 +518,7 @@ def classify_message(data: bytes) -> int | None:
         3 = routine set B (type field = 3)
         -1 = network info / ignorable (field 1 with large varint type indicator)
         None = unknown
+
     """
     try:
         outer = decode_fields(data)

@@ -13,8 +13,8 @@ from custom_components.nanit.aionanit_sl.models import (
     SoundLightEventKind,
     SoundLightFullState,
 )
-from custom_components.nanit.coordinator import NanitSoundLightCoordinator
 from custom_components.nanit.const import DOMAIN
+from custom_components.nanit.coordinator import NanitSoundLightCoordinator
 
 from .conftest import MOCK_EMAIL, mock_entry_data_v2
 
@@ -129,10 +129,12 @@ class TestDebouncedSave:
         state3 = SoundLightFullState(brightness=0.9)
 
         for state in (state1, state2, state3):
-            coord._on_sl_event(SoundLightEvent(
-                kind=SoundLightEventKind.STATE_UPDATE,
-                state=state,
-            ))
+            coord._on_sl_event(
+                SoundLightEvent(
+                    kind=SoundLightEventKind.STATE_UPDATE,
+                    state=state,
+                )
+            )
 
         # Only the latest state should be pending
         assert coord._pending_save_state is state3
@@ -162,10 +164,12 @@ class TestDebouncedSave:
 
         # Schedule a save
         state = SoundLightFullState(power_on=True)
-        coord._on_sl_event(SoundLightEvent(
-            kind=SoundLightEventKind.STATE_UPDATE,
-            state=state,
-        ))
+        coord._on_sl_event(
+            SoundLightEvent(
+                kind=SoundLightEventKind.STATE_UPDATE,
+                state=state,
+            )
+        )
         assert coord._save_timer is not None
 
         # Shutdown should cancel timer and clear pending state
@@ -188,16 +192,16 @@ class TestRestoreState:
         coord = NanitSoundLightCoordinator(hass, entry, sl)
 
         restored = SoundLightFullState(power_on=True, brightness=0.7)
-        with patch.object(coord, "_async_restore_state", new_callable=AsyncMock, return_value=restored):
+        with patch.object(
+            coord, "_async_restore_state", new_callable=AsyncMock, return_value=restored
+        ):
             await coord.async_setup()
 
         # Should call restore_state (public method) not _state directly
         sl.restore_state.assert_called_once_with(restored)
 
     @pytest.mark.asyncio
-    async def test_setup_skips_restore_when_state_exists(
-        self, hass: HomeAssistant
-    ) -> None:
+    async def test_setup_skips_restore_when_state_exists(self, hass: HomeAssistant) -> None:
         entry = _make_entry(hass)
         sl = _make_mock_sound_light()
         sl.state = SoundLightFullState(power_on=True)  # already has state

@@ -2,15 +2,9 @@
 
 from __future__ import annotations
 
-import struct
-
-import pytest
-
 from custom_components.nanit.aionanit_sl.sl_protocol import (
-    SLDecodedState,
     _encode_fixed32_field,
     _encode_length_delimited,
-    _encode_varint,
     _encode_varint_field,
     build_brightness_cmd,
     build_color_cmd,
@@ -21,19 +15,13 @@ from custom_components.nanit.aionanit_sl.sl_protocol import (
     build_volume_cmd,
     classify_message,
     decode_cloud_relay,
-    decode_fields,
     decode_full_state,
     decode_sensors,
-    fixed32_to_float,
     float_to_fixed32,
     is_cloud_relay_ack,
     is_cloud_relay_error,
     is_cloud_relay_forbidden,
-    FIXED32,
-    LENGTH_DELIMITED,
-    VARINT,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers — build raw protobuf bytes for test fixtures
@@ -264,9 +252,8 @@ class TestDecodeCloudRelay:
 class TestDecodeSensors:
     def test_decodes_temp_and_humidity(self) -> None:
         # Build: field 1 { field 1: varint(1), field 10 { 2: temp, 3: hum } }
-        sensor_sub = (
-            _encode_fixed32_field(2, float_to_fixed32(23.5))
-            + _encode_fixed32_field(3, float_to_fixed32(55.0))
+        sensor_sub = _encode_fixed32_field(2, float_to_fixed32(23.5)) + _encode_fixed32_field(
+            3, float_to_fixed32(55.0)
         )
         inner = _encode_varint_field(1, 1) + _encode_length_delimited(10, sensor_sub)
         msg = _encode_length_delimited(1, inner)

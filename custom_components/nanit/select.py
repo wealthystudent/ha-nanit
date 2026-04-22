@@ -8,9 +8,8 @@ from homeassistant.components.select import SelectEntity
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .aionanit_sl.exceptions import NanitTransportError
-
 from . import NanitConfigEntry
+from .aionanit_sl.exceptions import NanitTransportError
 from .const import DEFAULT_SOUND_MACHINE_SOUNDS
 from .coordinator import NanitSoundLightCoordinator
 from .entity import NanitSoundLightEntity
@@ -51,10 +50,7 @@ class NanitSoundSelect(NanitSoundLightEntity, SelectEntity):
     @property
     def options(self) -> list[str]:
         """Return available sound options from device state."""
-        if (
-            self.coordinator.data is not None
-            and self.coordinator.data.available_tracks
-        ):
+        if self.coordinator.data is not None and self.coordinator.data.available_tracks:
             return list(self.coordinator.data.available_tracks)
         return [s.replace("_", " ").title() for s in DEFAULT_SOUND_MACHINE_SOUNDS]
 

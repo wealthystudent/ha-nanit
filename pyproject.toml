@@ -39,6 +39,8 @@ ignore = [
 "**/proto/*_pb2.pyi" = ["ALL"]
 "packages/aionanit/**" = ["D", "N818", "BLE001", "SIM105", "SIM117", "E402", "RUF059", "C408"]
 "custom_components/nanit/config_flow.py" = ["BLE001"]
+"custom_components/nanit/aionanit_sl/**" = ["BLE001", "D", "SIM105"]
+"tests/unit/test_sl_*" = ["BLE001", "SIM105"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["aionanit", "custom_components.nanit"]

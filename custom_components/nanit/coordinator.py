@@ -22,8 +22,6 @@ from collections.abc import Callable
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
-import dataclasses
-
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.event import async_call_later
@@ -35,7 +33,6 @@ from aionanit.models import Baby, CameraEvent, CameraState, CloudEvent
 
 from .aionanit_sl.models import SoundLightEvent, SoundLightEventKind, SoundLightFullState
 from .aionanit_sl.sound_light import NanitSoundLight
-
 from .const import CLOUD_POLL_INTERVAL, DOMAIN
 
 if TYPE_CHECKING:
@@ -207,9 +204,16 @@ class NanitCloudCoordinator(DataUpdateCoordinator[list[CloudEvent]]):
 _SL_STORE_VERSION = 1
 # Fields from SoundLightFullState that we persist across restarts.
 _SL_PERSIST_FIELDS = (
-    "brightness", "light_enabled", "color_r", "color_g",
-    "sound_on", "current_track", "volume",
-    "power_on", "temperature_c", "humidity_pct",
+    "brightness",
+    "light_enabled",
+    "color_r",
+    "color_g",
+    "sound_on",
+    "current_track",
+    "volume",
+    "power_on",
+    "temperature_c",
+    "humidity_pct",
 )
 
 
@@ -301,10 +305,10 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator[SoundLightFullState]):
             if not kwargs:
                 return None
             # Convert available_tracks if present
-            if "available_tracks" in data and data["available_tracks"]:
+            if data.get("available_tracks"):
                 kwargs["available_tracks"] = tuple(data["available_tracks"])
             return SoundLightFullState(**kwargs)
-        except Exception:
+        except Exception:  # noqa: BLE001
             _LOGGER.debug("Failed to restore S&L state", exc_info=True)
             return None
 
@@ -321,7 +325,7 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator[SoundLightFullState]):
                 data["available_tracks"] = list(state.available_tracks)
             if data:
                 await self._store.async_save(data)
-        except Exception:
+        except Exception:  # noqa: BLE001
             _LOGGER.debug("Failed to save S&L state", exc_info=True)
 
     @callback
@@ -368,9 +372,7 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator[SoundLightFullState]):
         if self._save_timer is not None:
             # Timer already running — it will pick up the latest state
             return
-        self._save_timer = async_call_later(
-            self.hass, 5, self._do_save
-        )
+        self._save_timer = async_call_later(self.hass, 5, self._do_save)
 
     @callback
     def _do_save(self, _now: object) -> None:

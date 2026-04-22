@@ -11,13 +11,6 @@
       "connectivity": { "default": "mdi:wifi" }
     },
     "switch": {
-      "night_light": {
-        "default": "mdi:lightbulb-night",
-        "state": {
-          "on": "mdi:lightbulb-on",
-          "off": "mdi:lightbulb-night"
-        }
-      },
       "camera_power": {
         "default": "mdi:power",
         "state": {

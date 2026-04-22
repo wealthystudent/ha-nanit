@@ -10,23 +10,30 @@ NanitPushCoordinator: Push-based coordinator that wraps NanitCamera.subscribe().
 
 NanitCloudCoordinator: Polls the Nanit cloud API for motion/sound events every
     CLOUD_POLL_INTERVAL seconds.
+
+NanitSoundLightCoordinator: Push-based coordinator wrapping NanitSoundLight.subscribe().
+    Receives state updates from the S&L device's local WebSocket.
 """
 
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Callable
 from datetime import timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.event import async_call_later
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from aionanit import NanitAuthError, NanitCamera, NanitConnectionError
 from aionanit.models import Baby, CameraEvent, CameraState, CloudEvent
 
+from .aionanit_sl.models import SoundLightEvent, SoundLightEventKind, SoundLightFullState
+from .aionanit_sl.sound_light import NanitSoundLight
 from .const import CLOUD_POLL_INTERVAL, DOMAIN
 
 if TYPE_CHECKING:
@@ -193,3 +200,265 @@ class NanitCloudCoordinator(DataUpdateCoordinator[list[CloudEvent]]):
                 translation_key="cloud_fetch_failed",
                 translation_placeholders={"error": str(err)},
             ) from err
+
+
+_SL_STORE_VERSION = 1
+# Fields from SoundLightFullState that we persist across restarts.
+_SL_PERSIST_FIELDS = (
+    "brightness",
+    "light_enabled",
+    "color_r",
+    "color_g",
+    "sound_on",
+    "current_track",
+    "volume",
+    "power_on",
+    "temperature_c",
+    "humidity_pct",
+)
+
+# Fields that must be float in [0.0, 1.0].
+_UNIT_FLOAT_FIELDS = frozenset({"brightness", "color_r", "color_g", "volume"})
+# Fields that must be bool.
+_BOOL_FIELDS = frozenset({"light_enabled", "sound_on", "power_on"})
+# Fields that must be finite float (no range constraint).
+_FINITE_FLOAT_FIELDS = frozenset({"temperature_c", "humidity_pct"})
+
+
+def _clamp_restored_value(field: str, value: Any) -> Any:
+    """Validate/clamp a restored value, returning ``None`` if invalid."""
+    if field in _UNIT_FLOAT_FIELDS:
+        if not isinstance(value, int | float):
+            return None
+        fval = float(value)
+        if not math.isfinite(fval):
+            return None
+        return max(0.0, min(1.0, fval))
+
+    if field in _BOOL_FIELDS:
+        return value if isinstance(value, bool) else None
+
+    if field == "current_track":
+        return value if isinstance(value, str) else None
+
+    if field in _FINITE_FLOAT_FIELDS:
+        if not isinstance(value, int | float):
+            return None
+        fval = float(value)
+        return fval if math.isfinite(fval) else None
+
+    return None
+
+
+class NanitSoundLightCoordinator(DataUpdateCoordinator[SoundLightFullState]):
+    """Push-based coordinator for the Nanit Sound & Light Machine.
+
+    Wraps NanitSoundLight.subscribe() — receives state updates from
+    the S&L device via WebSocket (cloud relay or local).
+    No polling — all state is pushed by the device.
+
+    Persists the last known state to HA storage so that entities show
+    their previous values on restart (instead of "unknown") until the
+    first live update arrives from the device.
+
+    Uses a grace period for disconnections so brief reconnections
+    (e.g. during hourly access-token refresh) do not flash entities
+    as "Unavailable" in HA.
+    """
+
+    config_entry: NanitConfigEntry
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: NanitConfigEntry,
+        sound_light: NanitSoundLight,
+        baby: Baby,
+    ) -> None:
+        """Initialize the Sound & Light coordinator."""
+        super().__init__(
+            hass,
+            _LOGGER,
+            config_entry=entry,
+            name=f"{DOMAIN}_{sound_light.speaker_uid}_sound_light",
+        )
+        self.sound_light = sound_light
+        self.baby = baby
+        self._unsubscribe: Callable[[], None] | None = None
+        self._store: Store[dict[str, Any]] = Store(
+            hass,
+            _SL_STORE_VERSION,
+            f"{DOMAIN}_sl_state_{sound_light.speaker_uid}",
+        )
+        self._sl_connected: bool = False
+        self._availability_timer: CALLBACK_TYPE | None = None
+        self._save_timer: CALLBACK_TYPE | None = None
+        self._pending_save_state: SoundLightFullState | None = None
+
+    @property
+    def connected(self) -> bool:
+        """Return debounced connection state (survives brief reconnections)."""
+        return self._sl_connected
+
+    async def async_setup(self) -> None:
+        """Start the S&L device and subscribe to push events."""
+        self._unsubscribe = self.sound_light.subscribe(self._on_sl_event)
+        await self.sound_light.async_start()
+        self._sl_connected = self.sound_light.connected
+
+        # If the device hasn't sent initial state yet (cloud relay),
+        # restore the last known state from disk so entities aren't "unknown".
+        state = self.sound_light.state
+        if state.power_on is None:
+            restored = await self._async_restore_state()
+            if restored is not None:
+                # Feed restored state into the sound_light instance so
+                # entities and coordinator data are consistent.
+                self.sound_light.restore_state(restored)
+                state = restored
+                _LOGGER.debug(
+                    "S&L %s: restored saved state (power=%s, track=%s, vol=%s)",
+                    self.sound_light.speaker_uid,
+                    restored.power_on,
+                    restored.current_track,
+                    restored.volume,
+                )
+
+        self.async_set_updated_data(state)
+
+    async def _async_restore_state(self) -> SoundLightFullState | None:
+        """Load persisted S&L state from HA storage."""
+        try:
+            data = await self._store.async_load()
+            if not data or not isinstance(data, dict):
+                return None
+            kwargs = {}
+            for field in _SL_PERSIST_FIELDS:
+                if field in data and data[field] is not None:
+                    value = data[field]
+                    clamped = _clamp_restored_value(field, value)
+                    if clamped is not None:
+                        kwargs[field] = clamped
+            if not kwargs:
+                return None
+            if data.get("available_tracks"):
+                tracks = data["available_tracks"]
+                if isinstance(tracks, list) and all(isinstance(t, str) for t in tracks):
+                    kwargs["available_tracks"] = tuple(tracks)
+            return SoundLightFullState(**kwargs)
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug("Failed to restore S&L state", exc_info=True)
+            return None
+
+    async def _async_save_state(self, state: SoundLightFullState) -> None:
+        """Persist current S&L state to HA storage."""
+        try:
+            data = {}
+            for field in _SL_PERSIST_FIELDS:
+                val = getattr(state, field, None)
+                if val is not None:
+                    data[field] = val
+            # Also save available_tracks
+            if state.available_tracks:
+                data["available_tracks"] = list(state.available_tracks)
+            if data:
+                await self._store.async_save(data)
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug("Failed to save S&L state", exc_info=True)
+
+    @callback
+    def _on_sl_event(self, event: SoundLightEvent) -> None:
+        """Handle a push event from NanitSoundLight.subscribe()."""
+        if event.kind == SoundLightEventKind.CONNECTION_CHANGE:
+            transport_connected = self.sound_light.connected
+            if transport_connected:
+                # Connection is up — cancel any pending unavailability timer
+                # and mark connected immediately.
+                self._cancel_availability_timer()
+                if not self._sl_connected:
+                    _LOGGER.info(
+                        "S&L %s reconnected",
+                        self.sound_light.speaker_uid,
+                    )
+                self._sl_connected = True
+            elif self._sl_connected:
+                # Connection just dropped — start the grace period.
+                # Don't mark unavailable yet; give the transport time to reconnect.
+                _LOGGER.debug(
+                    "S&L %s disconnected (grace period %.0fs)",
+                    self.sound_light.speaker_uid,
+                    _AVAILABILITY_GRACE_SECONDS,
+                )
+                self._start_availability_timer()
+            # If already disconnected and transport still disconnected,
+            # do nothing — timer is already running or fired.
+
+        self.async_set_updated_data(event.state)
+
+        # Debounce state saves — at most every 5 seconds to avoid
+        # overlapping writes from rapid state/sensor updates.
+        if event.kind in (
+            SoundLightEventKind.STATE_UPDATE,
+            SoundLightEventKind.SENSOR_UPDATE,
+        ):
+            self._schedule_save(event.state)
+
+    @callback
+    def _schedule_save(self, state: SoundLightFullState) -> None:
+        """Schedule a debounced state save (at most every 5 seconds)."""
+        self._pending_save_state = state
+        if self._save_timer is not None:
+            # Timer already running — it will pick up the latest state
+            return
+        self._save_timer = async_call_later(self.hass, 5, self._do_save)
+
+    @callback
+    def _do_save(self, _now: object) -> None:
+        """Execute the debounced state save."""
+        self._save_timer = None
+        if self._pending_save_state is not None:
+            state = self._pending_save_state
+            self._pending_save_state = None
+            self.hass.async_create_task(self._async_save_state(state))
+
+    @callback
+    def _on_availability_timeout(self, _now: object) -> None:
+        """Grace period expired — mark S&L entities unavailable."""
+        self._availability_timer = None
+        if not self.sound_light.connected:
+            _LOGGER.warning(
+                "S&L %s still disconnected after %.0fs grace period",
+                self.sound_light.speaker_uid,
+                _AVAILABILITY_GRACE_SECONDS,
+            )
+            self._sl_connected = False
+            self.async_update_listeners()
+
+    def _start_availability_timer(self) -> None:
+        """Start (or restart) the grace period timer."""
+        self._cancel_availability_timer()
+        self._availability_timer = async_call_later(
+            self.hass, _AVAILABILITY_GRACE_SECONDS, self._on_availability_timeout
+        )
+
+    def _cancel_availability_timer(self) -> None:
+        """Cancel the grace period timer if running."""
+        if self._availability_timer is not None:
+            self._availability_timer()
+            self._availability_timer = None
+
+    async def async_shutdown(self) -> None:
+        """Stop the S&L device and unsubscribe."""
+        self._cancel_availability_timer()
+        # Cancel debounced save timer and flush final state
+        if self._save_timer is not None:
+            self._save_timer()
+            self._save_timer = None
+        self._pending_save_state = None
+        if self._unsubscribe is not None:
+            self._unsubscribe()
+            self._unsubscribe = None
+        # Save final state before stopping
+        await self._async_save_state(self.sound_light.state)
+        await self.sound_light.async_stop()
+        await super().async_shutdown()

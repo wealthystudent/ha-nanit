@@ -18,8 +18,9 @@ from aionanit import NanitCamera
 from aionanit.models import CameraState
 
 from . import NanitConfigEntry
-from .coordinator import NanitPushCoordinator
-from .entity import NanitEntity
+from .aionanit_sl.exceptions import NanitTransportError
+from .coordinator import NanitPushCoordinator, NanitSoundLightCoordinator
+from .entity import NanitEntity, NanitSoundLightEntity
 
 PARALLEL_UPDATES = 0
 
@@ -62,10 +63,17 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Nanit switches for all cameras on the account."""
-    entities: list[NanitSwitch] = []
+    entities: list[SwitchEntity] = []
     for cam_data in entry.runtime_data.cameras.values():
         for description in SWITCHES:
             entities.append(NanitSwitch(cam_data.push_coordinator, cam_data.camera, description))
+
+        # Sound & Light Machine switches (optional)
+        sl_coordinator = cam_data.sound_light_coordinator
+        if sl_coordinator is not None:
+            entities.append(NanitSLPowerSwitch(sl_coordinator))
+            entities.append(NanitSLSoundSwitch(sl_coordinator))
+
     async_add_entities(entities)
 
 
@@ -178,3 +186,84 @@ class NanitSwitch(NanitEntity, RestoreEntity, SwitchEntity):
             self._command_state = None
             self.async_write_ha_state()
             raise
+
+
+# --- Sound & Light Machine switches ---
+
+
+class NanitSLPowerSwitch(NanitSoundLightEntity, SwitchEntity):
+    """Power switch for the Nanit Sound & Light Machine."""
+
+    _attr_translation_key = "sound_machine_switch"
+    _attr_icon = "mdi:power"
+    _attr_device_class = SwitchDeviceClass.SWITCH
+
+    def __init__(
+        self,
+        coordinator: NanitSoundLightCoordinator,
+    ) -> None:
+        """Initialize."""
+        super().__init__(coordinator)
+        baby = coordinator.baby
+        self._attr_unique_id = f"{baby.camera_uid}_sound_machine_switch"
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True if the device is powered on."""
+        if self.coordinator.data is None:
+            return None
+        result: bool | None = self.coordinator.data.power_on
+        return result
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Turn the device on."""
+        try:
+            await self.coordinator.sound_light.async_set_power(True)
+        except NanitTransportError as err:
+            _LOGGER.error("Failed to turn on S&L device: %s", err)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Turn the device off."""
+        try:
+            await self.coordinator.sound_light.async_set_power(False)
+        except NanitTransportError as err:
+            _LOGGER.error("Failed to turn off S&L device: %s", err)
+
+
+class NanitSLSoundSwitch(NanitSoundLightEntity, SwitchEntity):
+    """Sound on/off switch for the Nanit Sound & Light Machine."""
+
+    _attr_translation_key = "sl_sound_switch"
+    _attr_icon = "mdi:music-note"
+    _attr_device_class = SwitchDeviceClass.SWITCH
+
+    def __init__(
+        self,
+        coordinator: NanitSoundLightCoordinator,
+    ) -> None:
+        """Initialize."""
+        super().__init__(coordinator)
+        baby = coordinator.baby
+        self._attr_unique_id = f"{baby.camera_uid}_sl_sound_switch"
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True if sound is on."""
+        if self.coordinator.data is None:
+            return None
+        result: bool | None = self.coordinator.data.sound_on
+        return result
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Turn sound on."""
+        try:
+            await self.coordinator.sound_light.async_set_sound_on(True)
+        except NanitTransportError as err:
+            _LOGGER.error("Failed to turn on S&L sound: %s", err)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Turn sound off."""
+        try:
+            await self.coordinator.sound_light.async_set_sound_on(False)
+        except NanitTransportError as err:
+            _LOGGER.error("Failed to turn off S&L sound: %s", err)

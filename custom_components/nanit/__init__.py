@@ -133,11 +133,17 @@ def _async_remove_stale_devices(
     device_reg = dr.async_get(hass)
     known_camera_uids = {baby.camera_uid for baby in hub.babies}
 
+    # Build the set of valid device identifiers: raw camera UIDs and
+    # derived S&L identifiers ("{camera_uid}_sound_light").
+    valid_uids = set(known_camera_uids)
+    for uid in known_camera_uids:
+        valid_uids.add(f"{uid}_sound_light")
+
     for device in dr.async_entries_for_config_entry(device_reg, entry.entry_id):
         device_uids = {
             identifier[1] for identifier in device.identifiers if identifier[0] == DOMAIN
         }
-        if device_uids and not device_uids & known_camera_uids:
+        if device_uids and not device_uids & valid_uids:
             LOGGER.info(
                 "Removing stale device %s (camera no longer on account)",
                 device.name,

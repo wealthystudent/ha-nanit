@@ -45,6 +45,11 @@ class NanitClient:
         """Return the underlying REST client."""
         return self._rest
 
+    @property
+    def session(self) -> aiohttp.ClientSession:
+        """Return the underlying aiohttp session."""
+        return self._session
+
     # ------------------------------------------------------------------
     # Auth
     # ------------------------------------------------------------------

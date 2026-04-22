@@ -33,3 +33,20 @@ CONF_CAMERA_UID = "camera_uid"
 CONF_BABY_NAME = "baby_name"
 CONF_CAMERA_IP = "camera_ip"
 CONF_CAMERA_IPS = "camera_ips"
+CONF_SPEAKER_UID = "speaker_uid"
+CONF_SPEAKER_IP = "speaker_ip"
+CONF_SPEAKER_IPS = "speaker_ips"
+
+# Default sound list (used when API doesn't return available_sounds)
+DEFAULT_SOUND_MACHINE_SOUNDS = (
+    "white_noise",
+    "birds",
+    "waves",
+    "wind",
+    "rain",
+    "water_stream",
+    "fan",
+    "heartbeat",
+    "dryer",
+    "vacuum",
+)

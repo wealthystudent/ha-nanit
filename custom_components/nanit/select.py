@@ -11,7 +11,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .aionanit_sl.exceptions import NanitTransportError
 
 from . import NanitConfigEntry
-from .const import CONF_CAMERA_UID, DEFAULT_SOUND_MACHINE_SOUNDS
+from .const import DEFAULT_SOUND_MACHINE_SOUNDS
 from .coordinator import NanitSoundLightCoordinator
 from .entity import NanitSoundLightEntity
 
@@ -24,11 +24,13 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the Nanit Sound & Light Machine sound selector."""
-    coordinator = entry.runtime_data.sound_light_coordinator
-    if coordinator is None:
-        return
+    entities: list[SelectEntity] = []
+    for cam_data in entry.runtime_data.cameras.values():
+        sl_coordinator = cam_data.sound_light_coordinator
+        if sl_coordinator is not None:
+            entities.append(NanitSoundSelect(sl_coordinator))
 
-    async_add_entities([NanitSoundSelect(coordinator, entry)])
+    async_add_entities(entities)
 
 
 class NanitSoundSelect(NanitSoundLightEntity, SelectEntity):
@@ -40,15 +42,11 @@ class NanitSoundSelect(NanitSoundLightEntity, SelectEntity):
     def __init__(
         self,
         coordinator: NanitSoundLightCoordinator,
-        entry: NanitConfigEntry,
     ) -> None:
         """Initialize."""
         super().__init__(coordinator)
-        self._entry = entry
-        self._attr_unique_id = (
-            f"{entry.data.get(CONF_CAMERA_UID, entry.entry_id)}"
-            "_sound_machine_sound"
-        )
+        baby = coordinator.baby
+        self._attr_unique_id = f"{baby.camera_uid}_sound_machine_sound"
 
     @property
     def options(self) -> list[str]:

@@ -71,9 +71,13 @@ class NanitSoundLightEntity(CoordinatorEntity[NanitSoundLightCoordinator]):
 
     @property
     def available(self) -> bool:
-        """Return True when the coordinator has data and S&L device is connected."""
+        """Return True when the coordinator has received data.
+
+        Does NOT require an active connection — entities retain their last
+        known values when the WebSocket drops. Connection state is reported
+        separately by the S&L connectivity binary sensor.
+        """
         return (
             self.coordinator.last_update_success
             and self.coordinator.data is not None
-            and self.coordinator.connected
         )

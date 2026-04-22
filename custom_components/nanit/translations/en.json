@@ -87,7 +87,15 @@
       "humidity": { "name": "Humidity" },
       "light": { "name": "Light Level" },
       "sl_temperature": { "name": "Temperature" },
-      "sl_humidity": { "name": "Humidity" }
+      "sl_humidity": { "name": "Humidity" },
+      "sl_connection_mode": {
+        "name": "Connection Mode",
+        "state": {
+          "local": "Local",
+          "cloud": "Cloud",
+          "unavailable": "Unavailable"
+        }
+      }
     },
     "binary_sensor": {
       "motion": { "name": "Motion" },

@@ -7,7 +7,6 @@ import dataclasses
 import logging
 import ssl
 from collections.abc import Callable
-from typing import Any
 
 import aiohttp
 
@@ -28,19 +27,21 @@ from .sl_protocol import (
     build_color_cmd,
     build_light_enabled_cmd,
     build_power_cmd,
-    build_sl_keepalive,
     build_sound_on_cmd,
     build_track_cmd,
     build_volume_cmd,
     classify_message,
+    decode_cloud_relay,
     decode_full_state,
     decode_routines,
     decode_sensors,
+    is_cloud_relay_ack,
+    is_cloud_relay_error,
+    is_cloud_relay_forbidden,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
-_KEEPALIVE_INTERVAL: float = 25.0
 _HEARTBEAT_INTERVAL: float = 60.0
 _HANDSHAKE_TIMEOUT: float = 15.0
 _INITIAL_BACKOFF: float = 1.85
@@ -65,19 +66,22 @@ class NanitSoundLight:
     Receives push state updates (protobuf) and provides command methods.
     """
 
-    # TODO: com6056's reference implementation uses a cloud relay at
-    # wss://remote.nanit.com/speakers/{uid}/user_connect/ with Bearer token
-    # instead of a direct local WebSocket. This would eliminate the need for
-    # a speaker IP and significantly improve UX. Not implemented yet — it's
-    # a different connection model that needs its own design.
+    # Connection strategy:
+    # - When a speaker IP is configured: prefer local WebSocket (wss://{ip}:442)
+    #   which provides full state on connect + temperature/humidity data.
+    #   Falls back to cloud relay if local connection fails.
+    # - When no IP is configured: use cloud relay
+    #   (wss://remote.nanit.com/speakers/{uid}/user_connect/) with Bearer token.
+    #   Cloud relay doesn't send initial state on connect, so we restore
+    #   the last known state from HA Store on startup.
 
     def __init__(
         self,
         speaker_uid: str,
-        device_ip: str,
         token_manager: TokenManager,
         rest_client: NanitRestClient,
         session: aiohttp.ClientSession,
+        device_ip: str | None = None,
     ) -> None:
         self._speaker_uid = speaker_uid
         self._device_ip = device_ip
@@ -90,14 +94,17 @@ class NanitSoundLight:
         self._connected: bool = False
         self._stopped: bool = False
         self._device_token: str | None = None
+        # Prefer local WebSocket when IP is configured (sends full state on
+        # connect, includes temp/humidity).  Fall back to cloud relay otherwise.
+        self._use_cloud_relay: bool = device_ip is None
 
         # WebSocket state
         self._ws: aiohttp.ClientWebSocketResponse | None = None
         self._recv_task: asyncio.Task[None] | None = None
-        self._keepalive_task: asyncio.Task[None] | None = None
+        self._reconnect_task: asyncio.Task[None] | None = None
         self._poll_task: asyncio.Task[None] | None = None
         self._token_refresh_task: asyncio.Task[None] | None = None
-        self._ssl_ctx: ssl.SSLContext | None = None
+        self._local_ssl_ctx: ssl.SSLContext | None = None
         self._connect_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
@@ -115,6 +122,19 @@ class NanitSoundLight:
     @property
     def connected(self) -> bool:
         return self._connected
+
+    def restore_state(self, state: SoundLightFullState) -> None:
+        """Restore persisted state (used by coordinator on startup)."""
+        self._state = state
+
+    @property
+    def connection_mode(self) -> str:
+        """Return the current connection mode: 'local', 'cloud', or 'unavailable'."""
+        if not self._connected:
+            return "unavailable"
+        if self._use_cloud_relay:
+            return "cloud"
+        return "local"
 
     # ------------------------------------------------------------------
     # Subscription
@@ -148,20 +168,37 @@ class NanitSoundLight:
     async def async_start(self) -> None:
         """Start the S&L connection.
 
-        1. Fetch device token from cloud API
-        2. Connect WebSocket to local device
-        3. Start recv loop, keepalive, and token refresh tasks
+        When a local IP is configured, connects via local WebSocket first
+        (wss://{ip}:442) — this provides full state on connect and includes
+        temperature/humidity data.  Falls back to cloud relay if local fails.
+
+        When no IP is configured, connects via cloud relay
+        (wss://remote.nanit.com) directly.
+
+        If the initial connection fails, a background reconnect loop is
+        started so the coordinator can still set up entities (they will
+        show as unavailable until the connection succeeds).
         """
         self._stopped = False
-        await self._async_fetch_device_token()
-        await self._async_connect()
+        # Reset preference based on whether IP is available
+        self._use_cloud_relay = self._device_ip is None
+        try:
+            await self._async_connect()
+        except (NanitTransportError, NanitConnectionError):
+            _LOGGER.warning(
+                "S&L %s initial connection failed; will retry in background",
+                self._speaker_uid,
+            )
+            self._reconnect_task = asyncio.get_running_loop().create_task(
+                self._reconnect_loop()
+            )
 
     async def async_stop(self) -> None:
         """Stop the S&L connection gracefully."""
         self._stopped = True
         await self._async_close_ws()
 
-        for task_attr in ("_poll_task", "_token_refresh_task"):
+        for task_attr in ("_reconnect_task", "_poll_task", "_token_refresh_task"):
             task = getattr(self, task_attr, None)
             if task is not None and not task.done():
                 task.cancel()
@@ -258,11 +295,52 @@ class NanitSoundLight:
     # ------------------------------------------------------------------
 
     async def _async_fetch_device_token(self) -> None:
-        """Fetch the RS256 device token from /speakers/{uid}/udtokens."""
+        """Fetch the RS256 device token via GET /speakers/{uid}/udtokens.
+
+        The NanitLite app uses specific headers for this endpoint.
+        Returns a short-lived RS256 JWT used to authenticate the local
+        WebSocket connection (wss://{ip}:442/).
+
+        Uses the rest client's method if available, otherwise makes the
+        API call directly (the installed aionanit package may not have it).
+        """
         access_token = await self._token_manager.async_get_access_token()
-        self._device_token = await self._rest.async_get_device_token(
-            access_token, self._speaker_uid
-        )
+
+        try:
+            self._device_token = await self._rest.async_get_device_token(
+                access_token, self._speaker_uid
+            )
+        except AttributeError:
+            # Inline implementation matching the NanitLite app's exact request
+            headers = {
+                "accept": "application/json",
+                "authorization": f"token {access_token}",
+                "accept-charset": "UTF-8",
+                "x-nanit-platform": "homeassistant",
+                "user-agent": "NanitLite/1.8.0 (com.udisense.nanitlite; build:168; homeassistant)",
+                "x-nanit-service": "1.8.0 (168)",
+            }
+            async with self._session.get(
+                f"{self._rest.base_url}/speakers/{self._speaker_uid}/udtokens",
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                if resp.status == 401:
+                    from aionanit import NanitAuthError
+                    raise NanitAuthError("Access token invalid for udtokens")
+                if resp.status != 200:
+                    body = await resp.text()
+                    raise NanitConnectionError(
+                        f"HTTP {resp.status} fetching udtokens for {self._speaker_uid}: {body[:200]}"
+                    )
+                body = await resp.json(content_type=None)
+                token = body.get("user_device_token", {}).get("token")
+                if not token:
+                    raise NanitConnectionError(
+                        f"No token in udtokens response for speaker {self._speaker_uid}"
+                    )
+                self._device_token = token
+
         _LOGGER.debug(
             "Fetched device token for speaker %s (len=%d)",
             self._speaker_uid,
@@ -289,7 +367,11 @@ class NanitSoundLight:
     # ------------------------------------------------------------------
 
     async def _async_connect(self, *, silent: bool = False) -> None:
-        """Connect WebSocket to the local S&L device.
+        """Connect WebSocket to the S&L device.
+
+        Connection order depends on ``_use_cloud_relay``:
+        - False (IP configured): try local first, fall back to cloud relay.
+        - True  (no IP):         try cloud relay first, fall back to local.
 
         Args:
             silent: If True, suppress CONNECTION_CHANGE events during the
@@ -299,41 +381,93 @@ class NanitSoundLight:
         async with self._connect_lock:
             await self._async_close_ws()
 
-            if not self._device_token:
-                raise NanitConnectionError("No device token available")
-
-            if self._ssl_ctx is None:
-                self._ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-                self._ssl_ctx.check_hostname = False
-                self._ssl_ctx.verify_mode = ssl.CERT_NONE
-
-            url = f"wss://{self._device_ip}:442/"
-            headers = {
-                "Authorization": f"token {self._device_token}",
-                "User-Agent": "NanitLite/1.8.0",
-            }
+            # Local connections use self-signed certs → CERT_NONE.
+            # Cloud relay (remote.nanit.com) uses default TLS verification (ssl=None).
+            if self._local_ssl_ctx is None:
+                self._local_ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                self._local_ssl_ctx.check_hostname = False
+                self._local_ssl_ctx.verify_mode = ssl.CERT_NONE
 
             if not silent:
                 self._connected = False
                 self._fire_event(SoundLightEventKind.CONNECTION_CHANGE)
 
-            try:
-                self._ws = await self._session.ws_connect(
-                    url,
-                    headers=headers,
-                    heartbeat=_HEARTBEAT_INTERVAL,
-                    timeout=_HANDSHAKE_TIMEOUT,
-                    ssl=self._ssl_ctx,
-                )
-            except Exception as err:
+            # ----- attempt local WebSocket first when preferred -----
+            if not self._use_cloud_relay and self._device_ip:
+                if not self._device_token:
+                    try:
+                        await self._async_fetch_device_token()
+                    except Exception as err:
+                        _LOGGER.debug(
+                            "Device token fetch failed for S&L %s: %s",
+                            self._speaker_uid,
+                            err,
+                        )
+
+                if self._device_token:
+                    url = f"wss://{self._device_ip}:442/"
+                    headers = {
+                        "Authorization": f"token {self._device_token}",
+                        "User-Agent": "NanitLite/1.8.0",
+                    }
+                    _LOGGER.debug(
+                        "Connecting S&L %s via local WebSocket at %s",
+                        self._speaker_uid,
+                        self._device_ip,
+                    )
+                    try:
+                        self._ws = await self._session.ws_connect(
+                            url,
+                            headers=headers,
+                            heartbeat=_HEARTBEAT_INTERVAL,
+                            timeout=_HANDSHAKE_TIMEOUT,
+                            ssl=self._local_ssl_ctx,
+                        )
+                    except Exception as err:
+                        _LOGGER.debug(
+                            "Local WebSocket failed for S&L %s: %s; trying cloud relay",
+                            self._speaker_uid,
+                            err,
+                        )
+                        self._ws = None
+
+            # ----- cloud relay (primary when no IP, fallback when local failed) -----
+            if self._ws is None:
+                try:
+                    access_token = await self._token_manager.async_get_access_token()
+                    url = f"wss://remote.nanit.com/speakers/{self._speaker_uid}/user_connect/"
+                    headers = {
+                        "Authorization": f"Bearer {access_token}",
+                        "User-Agent": "NanitLite/1.8.0",
+                    }
+                    _LOGGER.debug(
+                        "Connecting S&L %s via cloud relay", self._speaker_uid
+                    )
+                    self._ws = await self._session.ws_connect(
+                        url,
+                        headers=headers,
+                        heartbeat=_HEARTBEAT_INTERVAL,
+                        timeout=_HANDSHAKE_TIMEOUT,
+                        # Cloud relay uses default TLS verification (no ssl= override)
+                    )
+                    # Track that we ended up on cloud relay (affects poll strategy)
+                    self._use_cloud_relay = True
+                except Exception as err:
+                    _LOGGER.warning(
+                        "Cloud relay failed for S&L %s: %s",
+                        self._speaker_uid,
+                        err,
+                    )
+                    self._ws = None
+
+            if self._ws is None:
                 raise NanitConnectionError(
-                    f"S&L WebSocket connect failed: {err}"
-                ) from err
+                    f"S&L {self._speaker_uid}: all connection methods failed"
+                )
 
             self._connected = True
             loop = asyncio.get_running_loop()
             self._recv_task = loop.create_task(self._recv_loop())
-            self._keepalive_task = loop.create_task(self._keepalive_loop())
 
             # Start token refresh task if not already running
             if self._token_refresh_task is None or self._token_refresh_task.done():
@@ -351,23 +485,24 @@ class NanitSoundLight:
             self._poll_task = loop.create_task(self._poll_loop())
 
             self._fire_event(SoundLightEventKind.CONNECTION_CHANGE)
+
             _LOGGER.info(
-                "S&L device %s connected at %s:442",
+                "S&L device %s connected via %s",
                 self._speaker_uid,
-                self._device_ip,
+                "cloud relay" if self._use_cloud_relay else f"local ({self._device_ip}:442)",
             )
 
     async def _async_close_ws(self) -> None:
-        """Close WebSocket and cancel recv/keepalive tasks."""
-        for task in (self._recv_task, self._keepalive_task):
+        """Close WebSocket and cancel recv/reconnect tasks."""
+        for task_attr in ("_recv_task", "_reconnect_task"):
+            task = getattr(self, task_attr, None)
             if task is not None and not task.done():
                 task.cancel()
                 try:
                     await task
                 except asyncio.CancelledError:
                     pass
-        self._recv_task = None
-        self._keepalive_task = None
+            setattr(self, task_attr, None)
 
         if self._ws is not None and not self._ws.closed:
             await self._ws.close()
@@ -412,46 +547,73 @@ class NanitSoundLight:
         self._connected = False
         self._fire_event(SoundLightEventKind.CONNECTION_CHANGE)
         if not self._stopped:
-            asyncio.get_running_loop().create_task(self._reconnect_loop())
+            self._reconnect_task = asyncio.get_running_loop().create_task(
+                self._reconnect_loop()
+            )
+
+    def _apply_state(self, decoded: SLDecodedState) -> None:
+        """Merge a decoded state into the current state and fire event."""
+        self._state = dataclasses.replace(
+            self._state,
+            brightness=decoded.brightness if decoded.brightness is not None else self._state.brightness,
+            light_enabled=decoded.light_enabled if decoded.light_enabled is not None else self._state.light_enabled,
+            color_r=decoded.color_r if decoded.color_r is not None else self._state.color_r,
+            color_g=decoded.color_g if decoded.color_g is not None else self._state.color_g,
+            volume=decoded.volume if decoded.volume is not None else self._state.volume,
+            current_track=decoded.current_track if decoded.current_track is not None else self._state.current_track,
+            sound_on=decoded.sound_on if decoded.sound_on is not None else self._state.sound_on,
+            power_on=decoded.power_on if decoded.power_on is not None else self._state.power_on,
+            available_tracks=tuple(decoded.available_tracks) if decoded.available_tracks else self._state.available_tracks,
+            temperature_c=decoded.temperature_c if decoded.temperature_c is not None else self._state.temperature_c,
+            humidity_pct=decoded.humidity_pct if decoded.humidity_pct is not None else self._state.humidity_pct,
+            timezone_rule=decoded.timezone_rule if decoded.timezone_rule is not None else self._state.timezone_rule,
+        )
+        self._fire_event(SoundLightEventKind.STATE_UPDATE)
+        _LOGGER.debug(
+            "S&L state: brightness=%.2f volume=%.2f track=%s power=%s light=%s sound=%s temp=%.1f hum=%.1f",
+            self._state.brightness or 0,
+            self._state.volume or 0,
+            self._state.current_track,
+            self._state.power_on,
+            self._state.light_enabled,
+            self._state.sound_on,
+            self._state.temperature_c or 0,
+            self._state.humidity_pct or 0,
+        )
 
     def _on_message(self, data: bytes) -> None:
-        """Handle a raw binary protobuf message from the S&L device."""
+        """Handle a raw binary protobuf message from the S&L device.
+
+        Supports both local WebSocket framing (field 1 envelope) and
+        cloud relay framing (field 2 envelope with HTTP status).
+        """
+        # Try cloud relay decoding first (field 2 envelope with status 200)
+        cloud_state = decode_cloud_relay(data)
+        if cloud_state is not None:
+            self._apply_state(cloud_state)
+            return
+
+        # Silently ignore cloud relay 403 Forbidden (periodic noise)
+        if is_cloud_relay_forbidden(data):
+            return
+
+        # Silently ignore other error responses (e.g. 400 "Failed to parse request")
+        if is_cloud_relay_error(data):
+            return
+
+        # Silently ignore cloud relay command acknowledgments (field 3 envelope)
+        if is_cloud_relay_ack(data):
+            return
+
+        # Try local protocol decoding
         msg_type = classify_message(data)
 
         if msg_type == 0:
-            # Full state update
             decoded = decode_full_state(data)
             if decoded is not None:
-                self._state = dataclasses.replace(
-                    self._state,
-                    brightness=decoded.brightness if decoded.brightness is not None else self._state.brightness,
-                    light_enabled=decoded.light_enabled if decoded.light_enabled is not None else self._state.light_enabled,
-                    color_r=decoded.color_r if decoded.color_r is not None else self._state.color_r,
-                    color_g=decoded.color_g if decoded.color_g is not None else self._state.color_g,
-                    volume=decoded.volume if decoded.volume is not None else self._state.volume,
-                    current_track=decoded.current_track if decoded.current_track is not None else self._state.current_track,
-                    sound_on=decoded.sound_on if decoded.sound_on is not None else self._state.sound_on,
-                    power_on=decoded.power_on if decoded.power_on is not None else self._state.power_on,
-                    available_tracks=tuple(decoded.available_tracks) if decoded.available_tracks else self._state.available_tracks,
-                    temperature_c=decoded.temperature_c if decoded.temperature_c is not None else self._state.temperature_c,
-                    humidity_pct=decoded.humidity_pct if decoded.humidity_pct is not None else self._state.humidity_pct,
-                    timezone_rule=decoded.timezone_rule if decoded.timezone_rule is not None else self._state.timezone_rule,
-                )
-                self._fire_event(SoundLightEventKind.STATE_UPDATE)
-                _LOGGER.debug(
-                    "S&L state: brightness=%.2f volume=%.2f track=%s power=%s light=%s sound=%s temp=%.1f hum=%.1f",
-                    self._state.brightness or 0,
-                    self._state.volume or 0,
-                    self._state.current_track,
-                    self._state.power_on,
-                    self._state.light_enabled,
-                    self._state.sound_on,
-                    self._state.temperature_c or 0,
-                    self._state.humidity_pct or 0,
-                )
+                self._apply_state(decoded)
 
         elif msg_type == 1:
-            # Sensor update
             decoded_sensors = decode_sensors(data)
             if decoded_sensors is not None:
                 self._state = dataclasses.replace(
@@ -462,7 +624,6 @@ class NanitSoundLight:
                 self._fire_event(SoundLightEventKind.SENSOR_UPDATE)
 
         elif msg_type in (2, 3):
-            # Routines update
             decoded_routines = decode_routines(data)
             if decoded_routines:
                 new_routines = tuple(
@@ -474,7 +635,6 @@ class NanitSoundLight:
                     )
                     for r in decoded_routines
                 )
-                # Merge with existing routines (type 2 and 3 are different sets)
                 existing = {r.name: r for r in self._state.routines}
                 for r in new_routines:
                     existing[r.name] = r
@@ -484,6 +644,10 @@ class NanitSoundLight:
                 )
                 self._fire_event(SoundLightEventKind.ROUTINES_UPDATE)
 
+        elif msg_type == -1:
+            # Network info / device metadata — safe to ignore
+            pass
+
         else:
             _LOGGER.debug(
                 "S&L unknown message type (len=%d): %s",
@@ -492,31 +656,15 @@ class NanitSoundLight:
             )
 
     # ------------------------------------------------------------------
-    # Internal — keepalive and reconnect
+    # Internal — poll and reconnect
     # ------------------------------------------------------------------
-
-    async def _keepalive_loop(self) -> None:
-        """Send keepalive messages periodically."""
-        try:
-            while True:
-                await asyncio.sleep(_KEEPALIVE_INTERVAL)
-                if self._ws is None or self._ws.closed:
-                    break
-                try:
-                    await self._async_send(build_sl_keepalive())
-                except NanitTransportError:
-                    _LOGGER.warning("S&L keepalive failed, triggering reconnect")
-                    break
-        except asyncio.CancelledError:
-            return
 
     async def _poll_loop(self) -> None:
         """Periodically reconnect to refresh state from the device.
 
-        The S&L device sends a full state dump on each WebSocket connect.
-        By reconnecting every _POLL_INTERVAL seconds we pick up any changes
-        made via the Nanit app (which communicates through the cloud, not
-        the local WebSocket).
+        The local WebSocket sends a full state dump on each connect.
+        For cloud relay, state is pushed on changes and restored from
+        disk on startup — reconnecting keeps the connection healthy.
         """
         try:
             while not self._stopped:

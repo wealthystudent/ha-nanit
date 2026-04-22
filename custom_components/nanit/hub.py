@@ -111,6 +111,33 @@ class NanitHub:
             _LOGGER.warning("No babies/cameras found on Nanit account")
             return
 
+        # Discover speaker UIDs — try persisted data first, then aionanit,
+        # then raw /babies API as final fallback.
+        speaker_uid_map: dict[str, str] = dict(
+            self._entry.data.get("speaker_uid_map", {})
+        )
+        if not speaker_uid_map:
+            for baby in babies:
+                uid = getattr(baby, "speaker_uid", None)
+                if uid:
+                    speaker_uid_map[baby.camera_uid] = uid
+        if not speaker_uid_map:
+            try:
+                speaker_uid_map = await self._discover_speaker_uids()
+            except Exception:
+                _LOGGER.debug("Speaker UID discovery from raw API failed", exc_info=True)
+
+        # Persist discovered speaker UIDs so they survive restarts
+        stored_map = self._entry.data.get("speaker_uid_map", {})
+        if speaker_uid_map and speaker_uid_map != stored_map:
+            self._hass.config_entries.async_update_entry(
+                self._entry,
+                data={**self._entry.data, "speaker_uid_map": speaker_uid_map},
+            )
+            _LOGGER.info(
+                "Persisted speaker UID map: %s", speaker_uid_map
+            )
+
         # Per-camera IP configuration from options
         camera_ips: dict[str, str] = self._entry.options.get(CONF_CAMERA_IPS, {})
         speaker_ips: dict[str, str] = self._entry.options.get(CONF_SPEAKER_IPS, {})
@@ -119,7 +146,12 @@ class NanitHub:
         failed_cameras: list[str] = []
         for baby in babies:
             try:
-                await self._setup_camera(baby, camera_ips.get(baby.camera_uid), speaker_ips.get(baby.camera_uid))
+                await self._setup_camera(
+                    baby,
+                    camera_ips.get(baby.camera_uid),
+                    speaker_ips.get(baby.camera_uid),
+                    speaker_uid_map.get(baby.camera_uid),
+                )
             except NanitAuthError:
                 # Auth errors are account-level — propagate immediately
                 raise
@@ -161,6 +193,7 @@ class NanitHub:
         baby: Baby,
         camera_ip: str | None,
         speaker_ip: str | None,
+        speaker_uid: str | None = None,
     ) -> None:
         """Create a camera instance and its coordinators for a single baby."""
         camera = self._client.camera(
@@ -188,9 +221,11 @@ class NanitHub:
 
         # Sound & Light Machine coordinator (optional — local WebSocket push)
         sound_light_coordinator: NanitSoundLightCoordinator | None = None
-        speaker_uid = baby.speaker_uid
+        # Use speaker_uid passed from the discovery map; fall back to Baby attr
+        if not speaker_uid:
+            speaker_uid = getattr(baby, "speaker_uid", None)
 
-        if speaker_uid and speaker_ip:
+        if speaker_uid:
             try:
                 sound_light = self.get_sound_light(speaker_uid, speaker_ip)
                 sound_light_coordinator = NanitSoundLightCoordinator(
@@ -201,19 +236,17 @@ class NanitHub:
             except NanitAuthError:
                 raise
             except Exception:
-                _LOGGER.info(
+                _LOGGER.warning(
                     "Sound & Light Machine coordinator for %s failed to start; "
                     "sound/light entities disabled",
                     baby.name,
+                    exc_info=True,
                 )
                 sound_light_coordinator = None
         else:
             _LOGGER.debug(
-                "No speaker UID/IP for %s; Sound & Light Machine entities skipped "
-                "(speaker_uid=%s, speaker_ip=%s)",
+                "No speaker UID for %s; Sound & Light Machine entities skipped",
                 baby.name,
-                speaker_uid,
-                speaker_ip,
             )
 
         ir.async_delete_issue(self._hass, DOMAIN, f"camera_connection_failed_{baby.camera_uid}")
@@ -241,7 +274,7 @@ class NanitHub:
     def get_sound_light(
         self,
         speaker_uid: str,
-        device_ip: str,
+        device_ip: str | None = None,
     ) -> NanitSoundLight:
         """Get or create a NanitSoundLight instance."""
         if speaker_uid in self._sound_lights:
@@ -252,10 +285,10 @@ class NanitHub:
 
         sl = NanitSoundLight(
             speaker_uid=speaker_uid,
-            device_ip=device_ip,
             token_manager=self._client.token_manager,
             rest_client=self._client.rest_client,
             session=self._client.session,
+            device_ip=device_ip,
         )
         self._sound_lights[speaker_uid] = sl
         return sl
@@ -274,3 +307,34 @@ class NanitHub:
             except Exception:
                 _LOGGER.debug("Error stopping S&L during close")
         self._sound_lights.clear()
+
+    async def _discover_speaker_uids(self) -> dict[str, str]:
+        """Fetch speaker UIDs from the raw /babies API response.
+
+        Fallback for when the installed aionanit package's Baby dataclass
+        does not yet include the speaker_uid field.
+        """
+        tm = self._client.token_manager
+        if tm is None:
+            return {}
+        access_token = await tm.async_get_access_token()
+        rest = self._client.rest_client
+        resp = await rest.session.get(
+            f"{rest.base_url}/babies",
+            headers={"Authorization": access_token},
+        )
+        resp.raise_for_status()
+        body = await resp.json()
+
+        result: dict[str, str] = {}
+        for baby in body.get("babies", []):
+            camera_uid = baby.get("camera_uid")
+            speaker_data = baby.get("speaker", {})
+            speaker_obj = speaker_data.get("speaker", {})
+            speaker_uid = speaker_obj.get("uid")
+            if camera_uid and speaker_uid:
+                result[camera_uid] = speaker_uid
+                _LOGGER.debug(
+                    "Discovered speaker UID %s for camera %s", speaker_uid, camera_uid
+                )
+        return result

@@ -39,6 +39,16 @@ class NanitRestClient:
         self._session: aiohttp.ClientSession = session
         self._base_url: str = base_url.rstrip("/")
 
+    @property
+    def base_url(self) -> str:
+        """Return the base URL for the Nanit API."""
+        return self._base_url
+
+    @property
+    def session(self) -> aiohttp.ClientSession:
+        """Return the underlying aiohttp session."""
+        return self._session
+
     async def async_login(
         self,
         email: str,

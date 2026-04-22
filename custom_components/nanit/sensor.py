@@ -11,7 +11,7 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import LIGHT_LUX, PERCENTAGE, UnitOfTemperature
+from homeassistant.const import EntityCategory, LIGHT_LUX, PERCENTAGE, UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -107,6 +107,7 @@ async def async_setup_entry(
         if sl_coordinator is not None:
             for description in SL_SENSORS:
                 entities.append(NanitSLSensor(sl_coordinator, description))
+            entities.append(NanitSLConnectionModeSensor(sl_coordinator))
 
     async_add_entities(entities)
 
@@ -156,3 +157,34 @@ class NanitSLSensor(NanitSoundLightEntity, SensorEntity):
         if self.coordinator.data is None:
             return None
         return self.entity_description.value_fn(self.coordinator.data)
+
+
+class NanitSLConnectionModeSensor(NanitSoundLightEntity, SensorEntity):
+    """Diagnostic sensor showing S&L connection type: local, cloud, or unavailable."""
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_translation_key = "sl_connection_mode"
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = ["local", "cloud", "unavailable"]
+
+    def __init__(
+        self,
+        coordinator: NanitSoundLightCoordinator,
+    ) -> None:
+        """Initialize."""
+        super().__init__(coordinator)
+        baby = coordinator.baby
+        self._attr_unique_id = f"{baby.camera_uid}_sl_connection_mode"
+
+    @property
+    def available(self) -> bool:
+        """Always available so it can report the unavailable connection state."""
+        return (
+            self.coordinator.last_update_success
+            and self.coordinator.data is not None
+        )
+
+    @property
+    def native_value(self) -> str:
+        """Return the current connection mode."""
+        return self.coordinator.sound_light.connection_mode

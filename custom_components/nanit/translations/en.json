@@ -109,7 +109,6 @@
       "sl_connectivity": { "name": "Connectivity" }
     },
     "switch": {
-      "night_light": { "name": "Night Light" },
       "camera_power": { "name": "Camera Power" },
       "sound_machine_switch": { "name": "Power" },
       "sl_sound_switch": { "name": "Sound" }

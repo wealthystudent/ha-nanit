@@ -658,9 +658,8 @@ class NanitSoundLight:
 
         else:
             _LOGGER.debug(
-                "S&L unknown message type (len=%d): %s",
+                "S&L unknown message type (len=%d)",
                 len(data),
-                data.hex()[:100],
             )
 
     # ------------------------------------------------------------------

@@ -225,9 +225,8 @@ class NanitHub:
             try:
                 sound_light = self.get_sound_light(speaker_uid, speaker_ip)
                 sound_light_coordinator = NanitSoundLightCoordinator(
-                    self._hass, self._entry, sound_light
+                    self._hass, self._entry, sound_light, baby
                 )
-                sound_light_coordinator.baby = baby
                 await sound_light_coordinator.async_setup()
             except NanitAuthError:
                 raise

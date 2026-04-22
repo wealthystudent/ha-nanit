@@ -14,9 +14,9 @@ from custom_components.nanit.aionanit_sl.models import (
     SoundLightFullState,
 )
 from custom_components.nanit.const import DOMAIN
-from custom_components.nanit.coordinator import NanitSoundLightCoordinator
+from custom_components.nanit.coordinator import NanitSoundLightCoordinator, _clamp_restored_value
 
-from .conftest import MOCK_EMAIL, mock_entry_data_v2
+from .conftest import MOCK_BABY_1, MOCK_EMAIL, mock_entry_data_v2
 
 
 def _make_entry(hass: HomeAssistant) -> MockConfigEntry:
@@ -52,7 +52,7 @@ class TestGracePeriod:
     async def test_disconnect_starts_grace_timer(self, hass: HomeAssistant) -> None:
         entry = _make_entry(hass)
         sl = _make_mock_sound_light(connected=True)
-        coord = NanitSoundLightCoordinator(hass, entry, sl)
+        coord = NanitSoundLightCoordinator(hass, entry, sl, MOCK_BABY_1)
 
         # Simulate initial setup
         coord._sl_connected = True
@@ -73,7 +73,7 @@ class TestGracePeriod:
     async def test_reconnect_cancels_grace_timer(self, hass: HomeAssistant) -> None:
         entry = _make_entry(hass)
         sl = _make_mock_sound_light(connected=True)
-        coord = NanitSoundLightCoordinator(hass, entry, sl)
+        coord = NanitSoundLightCoordinator(hass, entry, sl, MOCK_BABY_1)
         coord._sl_connected = True
 
         # Simulate disconnect
@@ -105,7 +105,7 @@ class TestDebouncedSave:
     async def test_state_update_schedules_save(self, hass: HomeAssistant) -> None:
         entry = _make_entry(hass)
         sl = _make_mock_sound_light()
-        coord = NanitSoundLightCoordinator(hass, entry, sl)
+        coord = NanitSoundLightCoordinator(hass, entry, sl, MOCK_BABY_1)
 
         state = SoundLightFullState(power_on=True, brightness=0.5)
         event = SoundLightEvent(
@@ -122,7 +122,7 @@ class TestDebouncedSave:
     async def test_rapid_updates_only_schedule_one_timer(self, hass: HomeAssistant) -> None:
         entry = _make_entry(hass)
         sl = _make_mock_sound_light()
-        coord = NanitSoundLightCoordinator(hass, entry, sl)
+        coord = NanitSoundLightCoordinator(hass, entry, sl, MOCK_BABY_1)
 
         state1 = SoundLightFullState(brightness=0.3)
         state2 = SoundLightFullState(brightness=0.6)
@@ -145,7 +145,7 @@ class TestDebouncedSave:
     async def test_connection_change_does_not_schedule_save(self, hass: HomeAssistant) -> None:
         entry = _make_entry(hass)
         sl = _make_mock_sound_light()
-        coord = NanitSoundLightCoordinator(hass, entry, sl)
+        coord = NanitSoundLightCoordinator(hass, entry, sl, MOCK_BABY_1)
 
         event = SoundLightEvent(
             kind=SoundLightEventKind.CONNECTION_CHANGE,
@@ -160,7 +160,7 @@ class TestDebouncedSave:
     async def test_shutdown_cancels_save_timer(self, hass: HomeAssistant) -> None:
         entry = _make_entry(hass)
         sl = _make_mock_sound_light()
-        coord = NanitSoundLightCoordinator(hass, entry, sl)
+        coord = NanitSoundLightCoordinator(hass, entry, sl, MOCK_BABY_1)
 
         # Schedule a save
         state = SoundLightFullState(power_on=True)
@@ -189,7 +189,7 @@ class TestRestoreState:
         sl = _make_mock_sound_light()
         # power_on=None means no initial state received yet
         sl.state = SoundLightFullState(power_on=None)
-        coord = NanitSoundLightCoordinator(hass, entry, sl)
+        coord = NanitSoundLightCoordinator(hass, entry, sl, MOCK_BABY_1)
 
         restored = SoundLightFullState(power_on=True, brightness=0.7)
         with patch.object(
@@ -205,7 +205,7 @@ class TestRestoreState:
         entry = _make_entry(hass)
         sl = _make_mock_sound_light()
         sl.state = SoundLightFullState(power_on=True)  # already has state
-        coord = NanitSoundLightCoordinator(hass, entry, sl)
+        coord = NanitSoundLightCoordinator(hass, entry, sl, MOCK_BABY_1)
 
         with patch.object(coord, "_async_restore_state", new_callable=AsyncMock) as mock_restore:
             await coord.async_setup()
@@ -213,3 +213,62 @@ class TestRestoreState:
         # Should NOT attempt to restore
         mock_restore.assert_not_called()
         sl.restore_state.assert_not_called()
+
+
+class TestClampRestoredValue:
+    """Tests for _clamp_restored_value validation/clamping."""
+
+    @pytest.mark.parametrize("field", ["brightness", "color_r", "color_g", "volume"])
+    def test_unit_float_clamps_to_0_1(self, field: str) -> None:
+        assert _clamp_restored_value(field, 1.5) == 1.0
+        assert _clamp_restored_value(field, -0.3) == 0.0
+
+    @pytest.mark.parametrize("field", ["brightness", "color_r", "color_g", "volume"])
+    def test_unit_float_passes_valid(self, field: str) -> None:
+        assert _clamp_restored_value(field, 0.5) == 0.5
+        assert _clamp_restored_value(field, 0) == 0.0
+        assert _clamp_restored_value(field, 1) == 1.0
+
+    @pytest.mark.parametrize("field", ["brightness", "color_r", "color_g", "volume"])
+    def test_unit_float_rejects_non_numeric(self, field: str) -> None:
+        assert _clamp_restored_value(field, "high") is None
+        assert _clamp_restored_value(field, None) is None
+
+    @pytest.mark.parametrize("field", ["brightness", "color_r", "color_g", "volume"])
+    def test_unit_float_rejects_nan_inf(self, field: str) -> None:
+        assert _clamp_restored_value(field, float("nan")) is None
+        assert _clamp_restored_value(field, float("inf")) is None
+        assert _clamp_restored_value(field, float("-inf")) is None
+
+    @pytest.mark.parametrize("field", ["light_enabled", "sound_on", "power_on"])
+    def test_bool_passes_valid(self, field: str) -> None:
+        assert _clamp_restored_value(field, True) is True
+        assert _clamp_restored_value(field, False) is False
+
+    @pytest.mark.parametrize("field", ["light_enabled", "sound_on", "power_on"])
+    def test_bool_rejects_non_bool(self, field: str) -> None:
+        assert _clamp_restored_value(field, 1) is None
+        assert _clamp_restored_value(field, "true") is None
+
+    def test_current_track_passes_string(self) -> None:
+        assert _clamp_restored_value("current_track", "rain") == "rain"
+
+    def test_current_track_rejects_non_string(self) -> None:
+        assert _clamp_restored_value("current_track", 42) is None
+
+    @pytest.mark.parametrize("field", ["temperature_c", "humidity_pct"])
+    def test_finite_float_passes_valid(self, field: str) -> None:
+        assert _clamp_restored_value(field, 22.5) == 22.5
+        assert _clamp_restored_value(field, -10) == -10.0
+
+    @pytest.mark.parametrize("field", ["temperature_c", "humidity_pct"])
+    def test_finite_float_rejects_nan_inf(self, field: str) -> None:
+        assert _clamp_restored_value(field, float("nan")) is None
+        assert _clamp_restored_value(field, float("inf")) is None
+
+    @pytest.mark.parametrize("field", ["temperature_c", "humidity_pct"])
+    def test_finite_float_rejects_non_numeric(self, field: str) -> None:
+        assert _clamp_restored_value(field, "warm") is None
+
+    def test_unknown_field_returns_none(self) -> None:
+        assert _clamp_restored_value("unknown_field", 42) is None

@@ -18,6 +18,7 @@ NanitSoundLightCoordinator: Push-based coordinator wrapping NanitSoundLight.subs
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Callable
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
@@ -216,6 +217,38 @@ _SL_PERSIST_FIELDS = (
     "humidity_pct",
 )
 
+# Fields that must be float in [0.0, 1.0].
+_UNIT_FLOAT_FIELDS = frozenset({"brightness", "color_r", "color_g", "volume"})
+# Fields that must be bool.
+_BOOL_FIELDS = frozenset({"light_enabled", "sound_on", "power_on"})
+# Fields that must be finite float (no range constraint).
+_FINITE_FLOAT_FIELDS = frozenset({"temperature_c", "humidity_pct"})
+
+
+def _clamp_restored_value(field: str, value: Any) -> Any:
+    """Validate/clamp a restored value, returning ``None`` if invalid."""
+    if field in _UNIT_FLOAT_FIELDS:
+        if not isinstance(value, int | float):
+            return None
+        fval = float(value)
+        if not math.isfinite(fval):
+            return None
+        return max(0.0, min(1.0, fval))
+
+    if field in _BOOL_FIELDS:
+        return value if isinstance(value, bool) else None
+
+    if field == "current_track":
+        return value if isinstance(value, str) else None
+
+    if field in _FINITE_FLOAT_FIELDS:
+        if not isinstance(value, int | float):
+            return None
+        fval = float(value)
+        return fval if math.isfinite(fval) else None
+
+    return None
+
 
 class NanitSoundLightCoordinator(DataUpdateCoordinator[SoundLightFullState]):
     """Push-based coordinator for the Nanit Sound & Light Machine.
@@ -240,6 +273,7 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator[SoundLightFullState]):
         hass: HomeAssistant,
         entry: NanitConfigEntry,
         sound_light: NanitSoundLight,
+        baby: Baby,
     ) -> None:
         """Initialize the Sound & Light coordinator."""
         super().__init__(
@@ -249,7 +283,7 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator[SoundLightFullState]):
             name=f"{DOMAIN}_{sound_light.speaker_uid}_sound_light",
         )
         self.sound_light = sound_light
-        self.baby: Baby = None  # type: ignore[assignment]  # Set by hub._setup_camera before use
+        self.baby = baby
         self._unsubscribe: Callable[[], None] | None = None
         self._store: Store[dict[str, Any]] = Store(
             hass,
@@ -301,12 +335,16 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator[SoundLightFullState]):
             kwargs = {}
             for field in _SL_PERSIST_FIELDS:
                 if field in data and data[field] is not None:
-                    kwargs[field] = data[field]
+                    value = data[field]
+                    clamped = _clamp_restored_value(field, value)
+                    if clamped is not None:
+                        kwargs[field] = clamped
             if not kwargs:
                 return None
-            # Convert available_tracks if present
             if data.get("available_tracks"):
-                kwargs["available_tracks"] = tuple(data["available_tracks"])
+                tracks = data["available_tracks"]
+                if isinstance(tracks, list) and all(isinstance(t, str) for t in tracks):
+                    kwargs["available_tracks"] = tuple(tracks)
             return SoundLightFullState(**kwargs)
         except Exception:  # noqa: BLE001
             _LOGGER.debug("Failed to restore S&L state", exc_info=True)

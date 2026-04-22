@@ -15,8 +15,6 @@ PLATFORMS = [
     Platform.LIGHT,
     Platform.SELECT,
     Platform.CAMERA,
-    Platform.LIGHT,
-    Platform.SELECT,
 ]
 
 # Cloud event detection window (seconds)

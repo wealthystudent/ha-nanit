@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from homeassistant.components.diagnostics import REDACTED
 from homeassistant.components.light import ATTR_BRIGHTNESS, ATTR_HS_COLOR
+from homeassistant.util.color import brightness_to_value, value_to_brightness
 
 _ = sys.modules.setdefault("turbojpeg", MagicMock(TurboJPEG=MagicMock()))
 
@@ -17,8 +18,15 @@ from custom_components.nanit.aionanit_sl.exceptions import NanitTransportError
 from custom_components.nanit.aionanit_sl.models import SoundLightFullState
 from custom_components.nanit.const import DEFAULT_SOUND_MACHINE_SOUNDS
 from custom_components.nanit.diagnostics import async_get_config_entry_diagnostics
-from custom_components.nanit.light import NanitSoundLightLight
-from custom_components.nanit.select import NanitSoundSelect
+from custom_components.nanit.light import (
+    _BRIGHTNESS_SCALE,
+    NanitNightLight,
+    NanitSoundLightLight,
+)
+from custom_components.nanit.light import (
+    _COMMAND_GRACE_PERIOD as _NL_GRACE,
+)
+from custom_components.nanit.select import NanitNightLightTimer, NanitSoundSelect
 from custom_components.nanit.switch import NanitSLPowerSwitch, NanitSLSoundSwitch
 
 _MODELS = importlib.import_module("aionanit.models")
@@ -28,6 +36,7 @@ CloudEvent = _MODELS.CloudEvent
 ConnectionInfo = _MODELS.ConnectionInfo
 ConnectionState = _MODELS.ConnectionState
 ControlState = _MODELS.ControlState
+NightLightState = _MODELS.NightLightState
 SensorState = _MODELS.SensorState
 SettingsState = _MODELS.SettingsState
 
@@ -358,8 +367,16 @@ async def test_sl_sound_switch_handles_transport_error_gracefully(
 
 async def test_light_async_setup_entry_adds_entities_for_sound_light_coordinators() -> None:
     sl_coordinator = _sl_coordinator(SoundLightFullState())
-    cam_with_sl = MagicMock(sound_light_coordinator=sl_coordinator)
-    cam_without_sl = MagicMock(sound_light_coordinator=None)
+    cam_with_sl = MagicMock(
+        push_coordinator=MagicMock(data=None),
+        camera=MagicMock(uid="cam_1"),
+        sound_light_coordinator=sl_coordinator,
+    )
+    cam_without_sl = MagicMock(
+        push_coordinator=MagicMock(data=None),
+        camera=MagicMock(uid="cam_2"),
+        sound_light_coordinator=None,
+    )
     entry = MagicMock(
         runtime_data=MagicMock(cameras={"cam_1": cam_with_sl, "cam_2": cam_without_sl})
     )
@@ -368,14 +385,24 @@ async def test_light_async_setup_entry_adds_entities_for_sound_light_coordinator
     await light_platform.async_setup_entry(MagicMock(), entry, async_add_entities)
 
     entities = async_add_entities.call_args.args[0]
-    assert len(entities) == 1
-    assert isinstance(entities[0], NanitSoundLightLight)
+    # 2 camera night lights + 1 S&L light = 3
+    assert len(entities) == 3
+    assert sum(isinstance(e, NanitNightLight) for e in entities) == 2
+    assert sum(isinstance(e, NanitSoundLightLight) for e in entities) == 1
 
 
 async def test_select_async_setup_entry_adds_entities_for_sound_light_coordinators() -> None:
     sl_coordinator = _sl_coordinator(SoundLightFullState())
-    cam_with_sl = MagicMock(sound_light_coordinator=sl_coordinator)
-    cam_without_sl = MagicMock(sound_light_coordinator=None)
+    cam_with_sl = MagicMock(
+        push_coordinator=MagicMock(data=None),
+        camera=MagicMock(uid="cam_1"),
+        sound_light_coordinator=sl_coordinator,
+    )
+    cam_without_sl = MagicMock(
+        push_coordinator=MagicMock(data=None),
+        camera=MagicMock(uid="cam_2"),
+        sound_light_coordinator=None,
+    )
     entry = MagicMock(
         runtime_data=MagicMock(cameras={"cam_1": cam_with_sl, "cam_2": cam_without_sl})
     )
@@ -384,8 +411,10 @@ async def test_select_async_setup_entry_adds_entities_for_sound_light_coordinato
     await select_platform.async_setup_entry(MagicMock(), entry, async_add_entities)
 
     entities = async_add_entities.call_args.args[0]
-    assert len(entities) == 1
-    assert isinstance(entities[0], NanitSoundSelect)
+    # 2 camera night light timers + 1 S&L sound select = 3
+    assert len(entities) == 3
+    assert sum(isinstance(e, NanitNightLightTimer) for e in entities) == 2
+    assert sum(isinstance(e, NanitSoundSelect) for e in entities) == 1
 
 
 async def test_switch_async_setup_entry_adds_camera_and_sound_light_switches() -> None:
@@ -529,7 +558,6 @@ _switch_desc = next(d for d in SWITCHES if d.key == "camera_power")
 
 
 def test_nanit_switch_turn_on_sets_optimistic_state() -> None:
-
     coordinator = _push_coordinator(_camera_state(sleep_mode=True))
     camera = MagicMock(uid="cam_1")
     camera.async_set_settings = AsyncMock()
@@ -1158,3 +1186,378 @@ def test_camera_invalidate_stream_clears_stream() -> None:
     entity._invalidate_stream()
 
     assert entity.stream is None
+
+
+# ---------------------------------------------------------------------------
+# NanitNightLight — camera night light entity
+# ---------------------------------------------------------------------------
+
+
+def _night_light_entity(
+    *,
+    night_light: NightLightState | None = None,
+    night_light_timeout: int | None = None,
+    night_light_brightness: int | None = None,
+    data_is_none: bool = False,
+) -> tuple[NanitNightLight, MagicMock]:
+    control = ControlState(night_light=night_light, night_light_timeout=night_light_timeout)
+    settings = SettingsState(
+        volume=50,
+        sleep_mode=False,
+        night_vision=True,
+        night_light_brightness=night_light_brightness,
+    )
+    state: CameraState | None = None
+    if not data_is_none:
+        state = CameraState(
+            sensors=SensorState(temperature=22.5, humidity=50.0, light=100),
+            settings=settings,
+            control=control,
+            connection=ConnectionInfo(state=ConnectionState.CONNECTED),
+        )
+    coordinator = _push_coordinator(state)
+    camera = MagicMock(uid="cam_1")
+    camera.async_set_control = AsyncMock()
+    camera.async_set_settings = AsyncMock()
+    entity = NanitNightLight(coordinator, camera)
+    _disable_state_writes(entity)
+    return entity, camera
+
+
+def test_night_light_is_on_when_state_on() -> None:
+    entity, _ = _night_light_entity(night_light=NightLightState.ON)
+    assert entity.is_on is True
+
+
+def test_night_light_is_on_false_when_state_off() -> None:
+    entity, _ = _night_light_entity(night_light=NightLightState.OFF)
+    assert entity.is_on is False
+
+
+def test_night_light_is_on_none_when_no_data() -> None:
+    entity, _ = _night_light_entity(data_is_none=True)
+    assert entity.is_on is None
+
+
+def test_night_light_is_on_none_when_control_night_light_is_none() -> None:
+    entity, _ = _night_light_entity(night_light=None)
+    assert entity.is_on is None
+
+
+def test_night_light_brightness_from_state() -> None:
+    entity, _ = _night_light_entity(night_light=NightLightState.ON, night_light_brightness=50)
+    assert entity.brightness is not None
+    assert entity.brightness == value_to_brightness(_BRIGHTNESS_SCALE, 50)
+
+
+def test_night_light_brightness_none_when_no_data() -> None:
+    entity, _ = _night_light_entity(data_is_none=True)
+    assert entity.brightness is None
+
+
+def test_night_light_brightness_none_when_zero() -> None:
+    entity, _ = _night_light_entity(night_light=NightLightState.OFF, night_light_brightness=0)
+    assert entity.brightness is None
+
+
+def test_night_light_unique_id() -> None:
+    entity, _ = _night_light_entity()
+    assert entity.unique_id == "cam_1_night_light"
+
+
+async def test_night_light_turn_on_calls_camera() -> None:
+    entity, camera = _night_light_entity(night_light=NightLightState.OFF)
+
+    await entity.async_turn_on()
+
+    camera.async_set_control.assert_awaited_once_with(night_light=NightLightState.ON)
+    assert entity.is_on is True
+
+
+async def test_night_light_turn_on_with_brightness_calls_settings_and_control() -> None:
+    entity, camera = _night_light_entity(night_light=NightLightState.OFF)
+
+    await entity.async_turn_on(**{ATTR_BRIGHTNESS: 128})
+
+    expected_device_val = int(brightness_to_value(_BRIGHTNESS_SCALE, 128))
+    camera.async_set_settings.assert_awaited_once_with(
+        night_light_brightness=expected_device_val,
+    )
+    camera.async_set_control.assert_awaited_once_with(night_light=NightLightState.ON)
+    assert entity.is_on is True
+    assert entity.brightness == 128
+
+
+async def test_night_light_turn_on_reverts_on_error() -> None:
+    entity, camera = _night_light_entity(night_light=NightLightState.OFF)
+    camera.async_set_control.side_effect = RuntimeError("fail")
+
+    with pytest.raises(RuntimeError, match="fail"):
+        await entity.async_turn_on()
+
+    assert entity.is_on is False
+
+
+async def test_night_light_turn_off_calls_camera() -> None:
+    entity, camera = _night_light_entity(night_light=NightLightState.ON)
+
+    await entity.async_turn_off()
+
+    camera.async_set_control.assert_awaited_once_with(night_light=NightLightState.OFF)
+    assert entity.is_on is False
+
+
+async def test_night_light_turn_off_reverts_on_error() -> None:
+    entity, camera = _night_light_entity(night_light=NightLightState.ON)
+    camera.async_set_control.side_effect = RuntimeError("fail")
+
+    with pytest.raises(RuntimeError, match="fail"):
+        await entity.async_turn_off()
+
+    assert entity.is_on is True
+
+
+def test_night_light_handle_coordinator_update_syncs_on_state() -> None:
+    entity, _ = _night_light_entity(night_light=NightLightState.OFF)
+
+    new_state = CameraState(
+        sensors=SensorState(temperature=22.5, humidity=50.0, light=100),
+        settings=SettingsState(
+            volume=50, sleep_mode=False, night_vision=True, night_light_brightness=60
+        ),
+        control=ControlState(night_light=NightLightState.ON),
+        connection=ConnectionInfo(state=ConnectionState.CONNECTED),
+    )
+    entity.coordinator.data = new_state
+    entity._handle_coordinator_update()
+
+    assert entity.is_on is True
+    assert entity.brightness == value_to_brightness(_BRIGHTNESS_SCALE, 60)
+
+
+def test_night_light_handle_coordinator_update_no_data() -> None:
+    entity, _ = _night_light_entity(night_light=NightLightState.ON)
+
+    entity.coordinator.data = None
+    entity._handle_coordinator_update()
+
+    assert entity.is_on is True
+
+
+def test_night_light_handle_coordinator_update_grace_period_confirms() -> None:
+    import time
+
+    entity, _ = _night_light_entity(night_light=NightLightState.OFF)
+
+    entity._command_is_on = True
+    entity._command_ts = time.monotonic()
+    entity._attr_is_on = True
+
+    new_state = CameraState(
+        sensors=SensorState(temperature=22.5, humidity=50.0, light=100),
+        settings=SettingsState(volume=50, sleep_mode=False, night_vision=True),
+        control=ControlState(night_light=NightLightState.ON),
+        connection=ConnectionInfo(state=ConnectionState.CONNECTED),
+    )
+    entity.coordinator.data = new_state
+    entity._handle_coordinator_update()
+
+    assert entity.is_on is True
+    assert entity._command_is_on is None
+
+
+def test_night_light_handle_coordinator_update_grace_period_stale() -> None:
+    import time
+
+    entity, _ = _night_light_entity(night_light=NightLightState.ON)
+
+    entity._command_is_on = False
+    entity._command_ts = time.monotonic()
+    entity._attr_is_on = False
+
+    new_state = CameraState(
+        sensors=SensorState(temperature=22.5, humidity=50.0, light=100),
+        settings=SettingsState(volume=50, sleep_mode=False, night_vision=True),
+        control=ControlState(night_light=NightLightState.ON),
+        connection=ConnectionInfo(state=ConnectionState.CONNECTED),
+    )
+    entity.coordinator.data = new_state
+    entity._handle_coordinator_update()
+
+    assert entity.is_on is False
+    assert entity._command_is_on is False
+
+
+def test_night_light_handle_coordinator_update_grace_period_expired() -> None:
+    import time
+
+    entity, _ = _night_light_entity(night_light=NightLightState.OFF)
+
+    entity._command_is_on = True
+    entity._command_ts = time.monotonic() - _NL_GRACE - 1
+
+    new_state = CameraState(
+        sensors=SensorState(temperature=22.5, humidity=50.0, light=100),
+        settings=SettingsState(
+            volume=50, sleep_mode=False, night_vision=True, night_light_brightness=80
+        ),
+        control=ControlState(night_light=NightLightState.ON),
+        connection=ConnectionInfo(state=ConnectionState.CONNECTED),
+    )
+    entity.coordinator.data = new_state
+    entity._handle_coordinator_update()
+
+    assert entity.is_on is True
+    assert entity._command_is_on is None
+
+
+def test_night_light_handle_coordinator_update_brightness_grace_confirms() -> None:
+    import time
+
+    entity, _ = _night_light_entity(
+        night_light=NightLightState.ON,
+        night_light_brightness=30,
+    )
+
+    target_ha = 128
+    entity._command_brightness = target_ha
+    entity._command_ts = time.monotonic()
+    entity._attr_brightness = target_ha
+
+    expected_device = int(brightness_to_value(_BRIGHTNESS_SCALE, target_ha))
+    new_state = CameraState(
+        sensors=SensorState(temperature=22.5, humidity=50.0, light=100),
+        settings=SettingsState(
+            volume=50,
+            sleep_mode=False,
+            night_vision=True,
+            night_light_brightness=expected_device,
+        ),
+        control=ControlState(night_light=NightLightState.ON),
+        connection=ConnectionInfo(state=ConnectionState.CONNECTED),
+    )
+    entity.coordinator.data = new_state
+    entity._handle_coordinator_update()
+
+    assert entity._command_brightness is None
+    assert entity.brightness == value_to_brightness(_BRIGHTNESS_SCALE, expected_device)
+
+
+async def test_night_light_async_added_to_hass_restores_state() -> None:
+    entity, _ = _night_light_entity(data_is_none=True)
+
+    assert entity.is_on is None
+
+    last_state = MagicMock()
+    last_state.state = "on"
+    last_state.attributes = {ATTR_BRIGHTNESS: 180}
+    entity.async_get_last_state = AsyncMock(return_value=last_state)
+    entity.async_on_remove = MagicMock()
+
+    with patch("homeassistant.helpers.restore_state.RestoreEntity.async_added_to_hass"):
+        await entity.async_added_to_hass()
+
+    assert entity.is_on is True
+    assert entity.brightness == 180
+
+
+async def test_night_light_async_added_to_hass_skips_restore_when_data_present() -> None:
+    entity, _ = _night_light_entity(night_light=NightLightState.ON, night_light_brightness=50)
+
+    entity.async_get_last_state = AsyncMock(return_value=MagicMock(state="off"))
+    entity.async_on_remove = MagicMock()
+
+    with patch("homeassistant.helpers.restore_state.RestoreEntity.async_added_to_hass"):
+        await entity.async_added_to_hass()
+
+    assert entity.is_on is True
+
+
+# ---------------------------------------------------------------------------
+# NanitNightLightTimer — camera night light timer entity
+# ---------------------------------------------------------------------------
+
+
+def _night_light_timer_entity(
+    *, night_light_timeout: int | None = None, data_is_none: bool = False
+) -> tuple[NanitNightLightTimer, MagicMock]:
+    control = ControlState(night_light_timeout=night_light_timeout)
+    state: CameraState | None = None
+    if not data_is_none:
+        state = CameraState(
+            sensors=SensorState(temperature=22.5, humidity=50.0, light=100),
+            settings=SettingsState(volume=50, sleep_mode=False, night_vision=True),
+            control=control,
+            connection=ConnectionInfo(state=ConnectionState.CONNECTED),
+        )
+    coordinator = _push_coordinator(state)
+    camera = MagicMock(uid="cam_1")
+    camera.async_set_control = AsyncMock()
+    entity = NanitNightLightTimer(coordinator, camera)
+    _disable_state_writes(entity)
+    return entity, camera
+
+
+def test_night_light_timer_unique_id() -> None:
+    entity, _ = _night_light_timer_entity()
+    assert entity.unique_id == "cam_1_night_light_timer"
+
+
+def test_night_light_timer_current_option_none_when_no_data() -> None:
+    entity, _ = _night_light_timer_entity(data_is_none=True)
+    assert entity.current_option is None
+
+
+def test_night_light_timer_current_option_off_when_timeout_none() -> None:
+    entity, _ = _night_light_timer_entity(night_light_timeout=None)
+    assert entity.current_option == "off"
+
+
+def test_night_light_timer_current_option_off_when_zero() -> None:
+    entity, _ = _night_light_timer_entity(night_light_timeout=0)
+    assert entity.current_option == "off"
+
+
+def test_night_light_timer_current_option_15_minutes() -> None:
+    entity, _ = _night_light_timer_entity(night_light_timeout=900)
+    assert entity.current_option == "15_minutes"
+
+
+def test_night_light_timer_current_option_1_hour() -> None:
+    entity, _ = _night_light_timer_entity(night_light_timeout=3600)
+    assert entity.current_option == "1_hour"
+
+
+def test_night_light_timer_current_option_unknown_defaults_off() -> None:
+    entity, _ = _night_light_timer_entity(night_light_timeout=9999)
+    assert entity.current_option == "off"
+
+
+async def test_night_light_timer_select_option_calls_camera() -> None:
+    entity, camera = _night_light_timer_entity()
+
+    await entity.async_select_option("30_minutes")
+
+    camera.async_set_control.assert_awaited_once_with(night_light_timeout=1800)
+
+
+async def test_night_light_timer_select_option_off() -> None:
+    entity, camera = _night_light_timer_entity(night_light_timeout=900)
+
+    await entity.async_select_option("off")
+
+    camera.async_set_control.assert_awaited_once_with(night_light_timeout=0)
+
+
+async def test_night_light_timer_select_invalid_option_raises() -> None:
+    from homeassistant.exceptions import ServiceValidationError
+
+    entity, _ = _night_light_timer_entity()
+
+    with pytest.raises(ServiceValidationError):
+        await entity.async_select_option("invalid_option")
+
+
+def test_night_light_timer_options_list() -> None:
+    entity, _ = _night_light_timer_entity()
+    assert entity.options == ["off", "15_minutes", "30_minutes", "1_hour", "2_hours", "4_hours"]

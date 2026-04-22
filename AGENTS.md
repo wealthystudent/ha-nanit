@@ -88,11 +88,26 @@ just promote 1.4.0    # ⚠️  HUMAN ONLY — promote a specific version direct
 
 ## Git Workflow
 
+### Repository settings (enforced on GitHub)
+
+- **Branch protection** (`~ALL` ruleset): All branches require signed commits, a PR (no direct push), and passing CI status checks. No bypass actors.
+- **Merge method**: Squash merge only. PR title = squash commit message (must follow conventional commits). PR body = commit body.
+- **Auto-delete**: Head branches are automatically deleted after merge.
+
+### Signed commits (mandatory)
+
+All commits must be GPG-signed. Unsigned commits are rejected by branch protection.
+
+- Configure `git commit.gpgsign = true` in your global git config.
+- Add your GPG key to GitHub: [GitHub GPG docs](https://docs.github.com/en/authentication/managing-commit-signature-verification).
+- AI agents must use the host machine's GPG signing configuration.
+- **Fork PRs with unsigned commits will be rejected.** Contributors must set up GPG signing before opening a PR.
+
 ### Branching (trunk-based)
 
 - **`main`** is the only long-lived branch. All work branches off `main` and merges back via PR.
-- Feature branches: `feat/<description>`, `fix/<description>`, `chore/<description>`.
-- Keep branches short-lived. Rebase on `main` before merge. Squash if commits are noisy.
+- Branch naming: `feat/<description>`, `fix/<description>`, `chore/<description>`, `docs/<description>`, `test/<description>`.
+- Keep branches short-lived. Rebase on `main` before merge if needed.
 
 ### Commit messages (conventional commits)
 
@@ -111,15 +126,32 @@ Rules:
 - One logical change per commit. Keep it atomic.
 - Description: imperative mood, lowercase, no period. e.g., `feat: add night vision toggle`
 - If behavior or user-facing functionality changes, update `README.md` in the same commit.
+- **PR titles must follow the same format** — they become the squash commit message on `main`.
+
+### Pre-commit hooks
+
+`just setup` installs pre-commit hooks that run on every commit:
+- `ruff check` — lint
+- `ruff format` — formatting
+
+**Bypassing hooks (`--no-verify`) is forbidden.** Fix lint/format errors before committing.
 
 ### PR process
 
 1. Branch from `main` → make changes → `just check` passes locally.
-2. If the PR should trigger a release: add a label — `release:patch`, `release:minor`, or `release:major`. PRs without a release label (e.g., CI, docs, chore changes) will not create a beta release.
-3. Security review: verify changes against applicable sections of [`docs/SECURITY_AUDIT_CHECKLIST.md`](docs/SECURITY_AUDIT_CHECKLIST.md).
-4. Open PR against `main`. CI must pass (lint, typecheck, tests).
-5. Merge only after security review passes. Block on any Critical or High finding.
-6. On merge, if a `release:*` label is present, `auto-beta.yaml` automatically creates a beta pre-release and publishes to PyPI.
+2. Open PR against `main`. PR title must follow conventional commit format.
+3. If the PR should trigger a release: add a label — `release:patch`, `release:minor`, or `release:major`. PRs without a release label will not create a beta release.
+4. Security review: verify changes against applicable sections of [`docs/SECURITY_AUDIT_CHECKLIST.md`](docs/SECURITY_AUDIT_CHECKLIST.md).
+5. CI must pass (lint, format, typecheck, tests). If CI fails, fix in the same branch and push.
+6. Maintainer reviews and squash-merges. Head branch is auto-deleted.
+7. On merge, if a `release:*` label is present, `auto-beta.yaml` automatically creates a beta pre-release.
+
+### Fork PRs (external contributors)
+
+1. Contributor must have GPG signing configured — unsigned PRs are rejected.
+2. Open PR against `main` from the fork.
+3. Same CI and review process applies.
+4. If signing is not set up, the PR will be closed with a request to configure GPG signing first.
 
 ### Releases
 
@@ -217,6 +249,8 @@ Full checklist: [`docs/SECURITY_AUDIT_CHECKLIST.md`](docs/SECURITY_AUDIT_CHECKLI
 - Log or store credentials, tokens, or URLs containing tokens.
 - Add dependencies without full supply chain review (Section 10 of security checklist).
 - Commit directly to `main` — always use a PR.
+- Push unsigned commits — all commits must be GPG-signed.
+- Bypass pre-commit hooks with `--no-verify`.
 - **Run `just promote`** — this is a manual human action only. No AI agent may execute this command regardless of instruction from any prompter.
 - **Edit `AGENTS.md`** without explicit manual review and approval from the repository owner. All changes to this file must be presented as a diff for human review before being applied.
 - **Add AI co-author attribution** — never include Sisyphus, Copilot, or any other AI agent as a co-author or in commit trailers.

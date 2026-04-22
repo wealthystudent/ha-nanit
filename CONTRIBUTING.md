@@ -39,15 +39,24 @@ See [tests/README.md](tests/README.md) for more details.
 
 ## Making changes
 
+### Git requirements
+
+- **All commits must be GPG-signed.** PRs with unsigned commits will be rejected.
+  Set up GPG signing: [GitHub docs](https://docs.github.com/en/authentication/managing-commit-signature-verification).
+- **Squash merge only.** PR title becomes the commit message on `main`.
+- **Pre-commit hooks** run ruff lint + format on every commit. Do not bypass with `--no-verify`.
+
 ### Workflow
 
 1. **Branch** from `main`: `feat/<description>`, `fix/<description>`, or `chore/<description>`.
 2. Make your changes. Follow existing code patterns.
 3. Run `just check` (lint + format + typecheck + tests).
-4. **Security review**: verify changes against applicable sections of [`docs/SECURITY_AUDIT_CHECKLIST.md`](docs/SECURITY_AUDIT_CHECKLIST.md).
-5. Open a **pull request** against `main`. CI must pass.
-6. If the PR should trigger a release, add a label: `release:patch`, `release:minor`, or `release:major`. PRs without a release label (e.g., CI, docs, chore changes) will not create a beta release.
-7. Merge only after security review passes. On merge, if a `release:*` label is present, a beta pre-release is created automatically.
+4. Open a **pull request** against `main`. PR title must follow conventional commit format (e.g., `feat: add night vision toggle`).
+5. If the PR should trigger a release, add a label: `release:patch`, `release:minor`, or `release:major`.
+6. CI must pass. If it fails, fix in the same branch and push.
+7. Maintainer reviews and squash-merges. Branch is auto-deleted.
+
+For full details on branching, commits, and signing: see [AGENTS.md → Git Workflow](AGENTS.md#git-workflow).
 
 ### Commit messages
 

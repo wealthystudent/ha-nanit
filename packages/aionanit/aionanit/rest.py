@@ -50,6 +50,16 @@ class NanitRestClient:
         self._session: aiohttp.ClientSession = session
         self._base_url: str = base_url.rstrip("/")
 
+    @property
+    def base_url(self) -> str:
+        """Return the base URL for the Nanit API."""
+        return self._base_url
+
+    @property
+    def session(self) -> aiohttp.ClientSession:
+        """Return the underlying aiohttp session."""
+        return self._session
+
     async def async_login(
         self,
         email: str,
@@ -155,9 +165,49 @@ class NanitRestClient:
                 uid=baby["uid"],
                 name=_sanitize_name(baby["name"]),
                 camera_uid=baby["camera_uid"],
+                speaker_uid=baby.get("speaker", {}).get("speaker", {}).get("uid"),
             )
             for baby in body.get("babies", [])
         ]
+
+    async def async_get_device_token(
+        self,
+        access_token: str,
+        speaker_uid: str,
+    ) -> str:
+        """Get a local device token for a Sound & Light speaker.
+
+        Uses GET with NanitLite-style headers — the endpoint rejects POST
+        with HTTP 404.  Returns the RS256 JWT from the
+        ``user_device_token.token`` path in the response body.
+        """
+        # The udtokens endpoint requires NanitLite headers (token prefix,
+        # NanitLite User-Agent) rather than the standard NANIT_API_HEADERS.
+        headers = {
+            "accept": "application/json",
+            "authorization": f"token {access_token}",
+            "accept-charset": "UTF-8",
+            "x-nanit-platform": "homeassistant",
+            "user-agent": ("NanitLite/1.8.0 (com.udisense.nanitlite; build:168; homeassistant)"),
+            "x-nanit-service": "1.8.0 (168)",
+        }
+        try:
+            resp = await self._session.get(
+                f"{self._base_url}/speakers/{speaker_uid}/udtokens",
+                headers=headers,
+            )
+        except aiohttp.ClientError as err:
+            raise NanitConnectionError(str(err)) from err
+
+        if resp.status == 401:
+            raise NanitAuthError("Access token invalid")
+
+        resp.raise_for_status()
+        body = await resp.json(content_type=None)
+        token: str | None = body.get("user_device_token", {}).get("token")
+        if not token:
+            raise NanitConnectionError(f"No token in udtokens response for speaker {speaker_uid}")
+        return token
 
     async def async_get_events(
         self,

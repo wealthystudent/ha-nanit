@@ -44,7 +44,7 @@ class NanitCameraEntity(NanitEntity, Camera):
         camera: NanitCamera,
     ) -> None:
         """Initialize."""
-        NanitEntity.__init__(self, coordinator)
+        super().__init__(coordinator)
         Camera.__init__(self)
         self._camera = camera
         self._prev_is_on: bool | None = None

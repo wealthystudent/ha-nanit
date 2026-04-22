@@ -24,6 +24,8 @@ from .const import (
     CONF_CAMERA_IPS,
     CONF_MFA_CODE,
     CONF_REFRESH_TOKEN,
+    CONF_SPEAKER_IP,
+    CONF_SPEAKER_IPS,
     CONF_STORE_CREDENTIALS,
     DOMAIN,
     LOGGER,
@@ -353,6 +355,7 @@ class NanitOptionsFlow(OptionsFlow):
 
         if user_input is not None:
             camera_ip = user_input.get(CONF_CAMERA_IP, "").strip()
+            speaker_ip = user_input.get(CONF_SPEAKER_IP, "").strip()
 
             if camera_ip:
                 try:
@@ -360,19 +363,39 @@ class NanitOptionsFlow(OptionsFlow):
                 except ValueError:
                     errors[CONF_CAMERA_IP] = "invalid_ip"
 
+            if speaker_ip:
+                try:
+                    ipaddress.ip_address(speaker_ip)
+                except ValueError:
+                    errors[CONF_SPEAKER_IP] = "invalid_ip"
+
             if not errors:
+                # Merge with existing camera IPs
                 current_ips = dict(self.config_entry.options.get(CONF_CAMERA_IPS, {}))
                 if camera_ip:
                     current_ips[self._selected_camera_uid] = camera_ip
                 else:
                     current_ips.pop(self._selected_camera_uid, None)
 
+                # Merge with existing speaker IPs
+                current_speaker_ips = dict(self.config_entry.options.get(CONF_SPEAKER_IPS, {}))
+                if speaker_ip:
+                    current_speaker_ips[self._selected_camera_uid] = speaker_ip
+                else:
+                    current_speaker_ips.pop(self._selected_camera_uid, None)
+
                 return self.async_create_entry(
                     title="",
-                    data={CONF_CAMERA_IPS: current_ips},
+                    data={
+                        CONF_CAMERA_IPS: current_ips,
+                        CONF_SPEAKER_IPS: current_speaker_ips,
+                    },
                 )
 
         current_ip = self.config_entry.options.get(CONF_CAMERA_IPS, {}).get(
+            self._selected_camera_uid, ""
+        )
+        current_speaker_ip = self.config_entry.options.get(CONF_SPEAKER_IPS, {}).get(
             self._selected_camera_uid, ""
         )
 
@@ -389,7 +412,11 @@ class NanitOptionsFlow(OptionsFlow):
                 {
                     vol.Optional(
                         CONF_CAMERA_IP,
-                        default=current_ip,
+                        description={"suggested_value": current_ip},
+                    ): cv.string,
+                    vol.Optional(
+                        CONF_SPEAKER_IP,
+                        description={"suggested_value": current_speaker_ip},
                     ): cv.string,
                 }
             ),

@@ -23,6 +23,7 @@ A custom [Home Assistant](https://www.home-assistant.io/) integration for [Nanit
 | Nanit Pro | Fully supported |
 | Nanit Plus | Fully supported |
 | Nanit Pro Camera (standalone) | Supported (no sound machine features) |
+| Nanit Sound & Light Machine | Supported (local WebSocket or cloud relay) |
 
 > [!NOTE]
 > All Nanit cameras that work with the official Nanit app should work with this integration. If you have a model not listed above, please [open an issue](https://github.com/wealthystudent/ha-nanit/issues/new?template=bug_report.yml) to help us update this list.
@@ -41,6 +42,25 @@ A custom [Home Assistant](https://www.home-assistant.io/) integration for [Nanit
 | Switch | Night Light | Toggle the camera's built-in night light. | Yes |
 | Switch | Camera Power | Toggle camera on/off (sleep mode). | Yes |
 | Number | Volume | Camera speaker volume (0–100%). | No |
+
+### Sound & Light Machine entities
+
+If a Nanit Sound & Light Machine is linked to a camera, these additional entities appear on a separate device:
+
+| Platform | Entity | Description | Enabled |
+|----------|--------|-------------|---------|
+| Switch | Power | Device power on/off. | Yes |
+| Switch | Sound | Toggle sound playback. | Yes |
+| Switch | Light | Toggle night light. | Yes |
+| Select | Sound Track | Choose from available sound tracks. | Yes |
+| Number | Volume | Sound volume (0–100%). | Yes |
+| Number | Brightness | Light brightness (0–100%). | Yes |
+| Sensor | Temperature | Device temperature in °C. | Yes |
+| Sensor | Humidity | Relative humidity (%). | Yes |
+| Sensor | Connection Mode | Diagnostic — shows Local, Cloud, or Unavailable. | No |
+| Binary Sensor | S&L Connectivity | WebSocket connection status. | No |
+
+S&L entities retain their last-known values when the WebSocket disconnects, rather than going "unavailable." This is an intentional design choice — it prevents entities from flashing "unavailable" during brief reconnection windows (e.g., the ~3-second hourly token refresh). The dedicated S&L Connectivity binary sensor and Connection Mode sensor report the actual connection state separately, so you can monitor connectivity without losing entity values.
 
 Entities marked "No" under Enabled are created but disabled by default. Enable them in **Settings → Devices & Services → Nanit → Entities**.
 
@@ -93,6 +113,7 @@ For faster LAN-first connectivity, configure a local IP per camera:
 |-------|----------|-------------|
 | Camera | Yes (multi-camera only) | Which camera to configure. Skipped if you only have one. |
 | Camera IP Address | No | Local IP (port 442). Leave blank for cloud-only mode. |
+| Speaker IP Address | No | Local IP of a linked Sound & Light Machine (port 442). Leave blank to use cloud relay. |
 
 When a camera IP is set, the integration connects directly over your LAN for sensor data and controls, using the cloud only for authentication and event detection. Clear the IP to return to cloud-only mode.
 
@@ -107,6 +128,8 @@ The integration uses two update mechanisms — no unnecessary polling for real-t
 | Camera connection status | **WebSocket push** | Instant (on change) | Camera (local or cloud) |
 | Motion and sound events | **Cloud polling** | Every 30 seconds | Nanit cloud API |
 | Live video stream | **On demand** | When viewed | RTMPS via Nanit media server |
+| S&L state (light, sound, power) | **WebSocket push** | Instant (on change) | S&L device (local or cloud relay) |
+| S&L temperature, humidity | **WebSocket push** | Instant (on change) | S&L device (local or cloud relay) |
 
 Push data arrives via a persistent WebSocket connection to the camera. If the connection drops, it reconnects automatically and logs the event.
 
@@ -188,7 +211,8 @@ automation:
 | **Self-signed TLS (local)** | Local camera connections use self-signed certificates. The integration accepts these automatically. |
 | **RTMPS streaming** | Live video uses `rtmps://media-secured.nanit.com`. Your HA instance must be able to reach this address. |
 | **Motion/sound is cloud-polled** | Motion and sound detection comes from the Nanit cloud API (polled every 30s), not from the camera directly. There may be up to ~30s delay. |
-| **No sound machine control** | Sound machine / white noise features are not yet supported. |
+| **S&L stale values when offline** | Sound & Light entities show their last-known values when the device is disconnected, rather than going "unavailable." Check the S&L Connectivity binary sensor to confirm the device is actually reachable. This is intentional — it avoids disruptive flickers during brief reconnection windows. |
+| **Cloud relay cannot detect S&L power-off** | When the Sound & Light Machine is connected via cloud relay (no local IP), powering off the device does not drop the WebSocket. The connectivity sensor continues showing "connected / cloud" until the connection times out. Local connections detect power-off immediately. |
 | **Session expiry** | Nanit access tokens expire. The integration refreshes them automatically, but if refresh fails, a re-authentication notification will appear. |
 
 ## Troubleshooting

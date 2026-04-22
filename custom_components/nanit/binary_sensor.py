@@ -19,8 +19,8 @@ from aionanit.models import CameraState, CloudEvent, ConnectionState
 
 from . import NanitConfigEntry
 from .const import CLOUD_EVENT_WINDOW
-from .coordinator import NanitCloudCoordinator, NanitPushCoordinator
-from .entity import NanitCloudEntity, NanitEntity
+from .coordinator import NanitCloudCoordinator, NanitPushCoordinator, NanitSoundLightCoordinator
+from .entity import NanitCloudEntity, NanitEntity, NanitSoundLightEntity
 
 PARALLEL_UPDATES = 0
 
@@ -89,6 +89,11 @@ async def async_setup_entry(
         if cam_data.cloud_coordinator is not None:
             for cloud_desc in CLOUD_BINARY_SENSORS:
                 entities.append(NanitCloudBinarySensor(cam_data.cloud_coordinator, cloud_desc))
+
+        # Sound & Light connectivity sensor (optional)
+        sl_coordinator = cam_data.sound_light_coordinator
+        if sl_coordinator is not None:
+            entities.append(NanitSLConnectivitySensor(sl_coordinator))
 
     async_add_entities(entities)
 
@@ -169,3 +174,34 @@ class NanitCloudBinarySensor(NanitCloudEntity, BinarySensorEntity):
                 return True
 
         return False
+
+
+class NanitSLConnectivitySensor(NanitSoundLightEntity, BinarySensorEntity):
+    """Connectivity binary sensor for the Sound & Light Machine."""
+
+    _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_translation_key = "sl_connectivity"
+
+    def __init__(
+        self,
+        coordinator: NanitSoundLightCoordinator,
+    ) -> None:
+        """Initialize."""
+        super().__init__(coordinator)
+        baby = coordinator.baby
+        self._attr_unique_id = f"{baby.camera_uid}_sl_connectivity"
+
+    @property
+    def available(self) -> bool:
+        """Always available so it can report disconnected state."""
+        return (
+            self.coordinator.last_update_success
+            and self.coordinator.data is not None
+        )
+
+    @property
+    def is_on(self) -> bool:
+        """Return True when the S&L WebSocket is connected."""
+        result: bool = self.coordinator.connected
+        return result

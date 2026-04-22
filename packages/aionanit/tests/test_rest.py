@@ -18,6 +18,7 @@ LOGIN_URL = f"{DEFAULT_BASE_URL}/login"
 REFRESH_URL = f"{DEFAULT_BASE_URL}/tokens/refresh"
 BABIES_URL = f"{DEFAULT_BASE_URL}/babies"
 EVENTS_URL = f"{DEFAULT_BASE_URL}/babies/baby123/messages?limit=20"
+DEVICE_TOKEN_URL = f"{DEFAULT_BASE_URL}/speakers/spk001/udtokens"
 
 
 @pytest.fixture
@@ -150,6 +151,7 @@ class TestGetBabies:
                             "uid": "baby123",
                             "name": "Luna",
                             "camera_uid": "cam456",
+                            "speaker": {"speaker": {"uid": "spk001"}},
                         },
                         {
                             "uid": "baby789",
@@ -162,8 +164,10 @@ class TestGetBabies:
             babies = await client.async_get_babies("token123")
 
         assert len(babies) == 2
-        assert babies[0] == Baby(uid="baby123", name="Luna", camera_uid="cam456")
-        assert babies[1] == Baby(uid="baby789", name="Max", camera_uid="cam012")
+        assert babies[0] == Baby(
+            uid="baby123", name="Luna", camera_uid="cam456", speaker_uid="spk001"
+        )
+        assert babies[1] == Baby(uid="baby789", name="Max", camera_uid="cam012", speaker_uid=None)
 
     async def test_get_babies_empty(self, client: NanitRestClient) -> None:
         with aioresponses() as m:
@@ -222,3 +226,36 @@ class TestGetEvents:
 
             with pytest.raises(NanitConnectionError):
                 await client.async_get_events("token123", "baby123")
+
+
+class TestGetDeviceToken:
+    async def test_get_device_token_success(self, client: NanitRestClient) -> None:
+        with aioresponses() as m:
+            m.get(
+                DEVICE_TOKEN_URL,
+                payload={"user_device_token": {"token": "dev_tok_abc"}},
+            )
+            token = await client.async_get_device_token("acc123", "spk001")
+
+        assert token == "dev_tok_abc"
+
+    async def test_get_device_token_unauthorized(self, client: NanitRestClient) -> None:
+        with aioresponses() as m:
+            m.get(DEVICE_TOKEN_URL, status=401)
+
+            with pytest.raises(NanitAuthError, match="Access token invalid"):
+                await client.async_get_device_token("bad_token", "spk001")
+
+    async def test_get_device_token_connection_error(self, client: NanitRestClient) -> None:
+        with aioresponses() as m:
+            m.get(DEVICE_TOKEN_URL, exception=ClientConnectionError("timeout"))
+
+            with pytest.raises(NanitConnectionError):
+                await client.async_get_device_token("acc123", "spk001")
+
+    async def test_get_device_token_empty_response(self, client: NanitRestClient) -> None:
+        with aioresponses() as m:
+            m.get(DEVICE_TOKEN_URL, payload={"user_device_token": {}})
+
+            with pytest.raises(NanitConnectionError, match="No token"):
+                await client.async_get_device_token("acc123", "spk001")

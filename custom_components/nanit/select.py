@@ -1,32 +1,21 @@
-"""Select platform for Nanit — night light timer."""
+"""Select platform for the Nanit Sound & Light Machine — sound track selection."""
 
 from __future__ import annotations
 
+import logging
+
 from homeassistant.components.select import SelectEntity
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from aionanit import NanitCamera
+from .aionanit_sl.exceptions import NanitTransportError
 
 from . import NanitConfigEntry
-from .const import DOMAIN
-from .coordinator import NanitPushCoordinator
-from .entity import NanitEntity
+from .const import DEFAULT_SOUND_MACHINE_SOUNDS
+from .coordinator import NanitSoundLightCoordinator
+from .entity import NanitSoundLightEntity
 
-PARALLEL_UPDATES = 0
-
-_OPTION_TO_SECONDS: dict[str, int] = {
-    "off": 0,
-    "15_minutes": 900,
-    "30_minutes": 1800,
-    "1_hour": 3600,
-    "2_hours": 7200,
-    "4_hours": 14400,
-}
-_SECONDS_TO_OPTION: dict[int, str] = {v: k for k, v in _OPTION_TO_SECONDS.items()}
-
-_OPTIONS: list[str] = list(_OPTION_TO_SECONDS)
+_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(
@@ -34,53 +23,52 @@ async def async_setup_entry(
     entry: NanitConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up Nanit select entities for all cameras on the account."""
-    async_add_entities(
-        NanitNightLightTimer(cam_data.push_coordinator, cam_data.camera)
-        for cam_data in entry.runtime_data.cameras.values()
-    )
+    """Set up the Nanit Sound & Light Machine sound selector."""
+    entities: list[SelectEntity] = []
+    for cam_data in entry.runtime_data.cameras.values():
+        sl_coordinator = cam_data.sound_light_coordinator
+        if sl_coordinator is not None:
+            entities.append(NanitSoundSelect(sl_coordinator))
+
+    async_add_entities(entities)
 
 
-class NanitNightLightTimer(NanitEntity, SelectEntity):
-    """Night light auto-off timer.
+class NanitSoundSelect(NanitSoundLightEntity, SelectEntity):
+    """Select entity to choose which sound the Sound & Light Machine plays."""
 
-    Sends ``night_light_timeout`` (seconds) via PUT_CONTROL.
-    The camera turns the night light off automatically after the chosen duration.
-    A value of 0 means "no auto-off" (the light stays on until manually turned off).
-    """
-
-    _attr_translation_key = "night_light_timer"
-    _attr_options = _OPTIONS
+    _attr_translation_key = "sound_machine_sound"
+    _attr_icon = "mdi:playlist-music"
 
     def __init__(
         self,
-        coordinator: NanitPushCoordinator,
-        camera: NanitCamera,
+        coordinator: NanitSoundLightCoordinator,
     ) -> None:
         """Initialize."""
         super().__init__(coordinator)
-        self._camera = camera
-        self._attr_unique_id = f"{camera.uid}_night_light_timer"
+        baby = coordinator.baby
+        self._attr_unique_id = f"{baby.camera_uid}_sound_machine_sound"
+
+    @property
+    def options(self) -> list[str]:
+        """Return available sound options from device state."""
+        if (
+            self.coordinator.data is not None
+            and self.coordinator.data.available_tracks
+        ):
+            return list(self.coordinator.data.available_tracks)
+        return [s.replace("_", " ").title() for s in DEFAULT_SOUND_MACHINE_SOUNDS]
 
     @property
     def current_option(self) -> str | None:
-        """Return the currently selected timer option."""
+        """Return the currently selected sound track."""
         if self.coordinator.data is None:
             return None
-        timeout = self.coordinator.data.control.night_light_timeout
-        if timeout is None:
-            return "off"
-        return _SECONDS_TO_OPTION.get(timeout, "off")
+        result: str | None = self.coordinator.data.current_track
+        return result
 
     async def async_select_option(self, option: str) -> None:
-        """Set the night light timer."""
-        if option not in _OPTION_TO_SECONDS:
-            raise ServiceValidationError(
-                f"Invalid option '{option}'",
-                translation_domain=DOMAIN,
-                translation_key="invalid_option",
-                translation_placeholders={"option": option},
-            )
-        seconds = _OPTION_TO_SECONDS[option]
-        await self._camera.async_set_control(night_light_timeout=seconds)
-        self.async_write_ha_state()
+        """Change the selected sound track via local WebSocket."""
+        try:
+            await self.coordinator.sound_light.async_set_track(option)
+        except NanitTransportError as err:
+            _LOGGER.error("Failed to set sound to %s: %s", option, err)

@@ -169,6 +169,32 @@ class TestGetBabies:
         )
         assert babies[1] == Baby(uid="baby789", name="Max", camera_uid="cam012", speaker_uid=None)
 
+    async def test_get_babies_speaker_with_null_nested(self, client: NanitRestClient) -> None:
+        with aioresponses() as m:
+            m.get(
+                BABIES_URL,
+                payload={
+                    "babies": [
+                        {
+                            "uid": "baby1",
+                            "name": "Nora",
+                            "camera_uid": "cam1",
+                            "speaker": {"speaker": None},
+                        },
+                        {
+                            "uid": "baby2",
+                            "name": "Eli",
+                            "camera_uid": "cam2",
+                            "speaker": None,
+                        },
+                    ]
+                },
+            )
+            babies = await client.async_get_babies("token123")
+
+        assert babies[0].speaker_uid is None
+        assert babies[1].speaker_uid is None
+
     async def test_get_babies_empty(self, client: NanitRestClient) -> None:
         with aioresponses() as m:
             m.get(BABIES_URL, payload={"babies": []})

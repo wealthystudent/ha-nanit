@@ -165,7 +165,7 @@ class NanitRestClient:
                 uid=baby["uid"],
                 name=_sanitize_name(baby["name"]),
                 camera_uid=baby["camera_uid"],
-                speaker_uid=baby.get("speaker", {}).get("speaker", {}).get("uid"),
+                speaker_uid=((baby.get("speaker") or {}).get("speaker") or {}).get("uid"),
             )
             for baby in body.get("babies", [])
         ]

@@ -166,8 +166,8 @@ promote version="":
     sed -E -i '' 's/"aionanit>=[^"]*"/"aionanit>='"${target}"'"/' custom_components/nanit/manifest.json
 
     git add custom_components/nanit/manifest.json packages/aionanit/pyproject.toml
-    git commit --no-gpg-sign -m "chore: bump version to ${target}"
-    git tag "v${target}"
+    git commit -m "chore: bump version to ${target}"
+    git tag -m "v${target}" "v${target}"
     git push && git push --tags
     gh release create "v${target}" --title "v${target}" --generate-notes --latest
     echo ""

@@ -914,6 +914,7 @@ async def test_sensor_async_setup_entry_creates_sl_sensors() -> None:
     cam_data = MagicMock(
         push_coordinator=_push_coordinator(_camera_state()),
         sound_light_coordinator=sl_coordinator,
+        network_coordinator=None,
     )
     entry = MagicMock(runtime_data=MagicMock(cameras={"cam_1": cam_data}))
     async_add_entities = MagicMock()

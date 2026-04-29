@@ -100,7 +100,10 @@
           "cloud": "Cloud",
           "unavailable": "Unavailable"
         }
-      }
+      },
+      "wifi_ssid": { "name": "WiFi SSID" },
+      "wifi_signal": { "name": "WiFi Signal Strength" },
+      "wifi_frequency": { "name": "WiFi Frequency" }
     },
     "binary_sensor": {
       "motion": { "name": "Motion" },

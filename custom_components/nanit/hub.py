@@ -28,7 +28,12 @@ from aionanit.models import Baby
 
 from .aionanit_sl.sound_light import NanitSoundLight
 from .const import CONF_CAMERA_IPS, CONF_REFRESH_TOKEN, CONF_SPEAKER_IPS, DOMAIN
-from .coordinator import NanitCloudCoordinator, NanitPushCoordinator, NanitSoundLightCoordinator
+from .coordinator import (
+    NanitCloudCoordinator,
+    NanitNetworkCoordinator,
+    NanitPushCoordinator,
+    NanitSoundLightCoordinator,
+)
 from .sanitize import sanitize_name
 
 if TYPE_CHECKING:
@@ -46,6 +51,7 @@ class CameraData:
     push_coordinator: NanitPushCoordinator
     cloud_coordinator: NanitCloudCoordinator | None
     sound_light_coordinator: NanitSoundLightCoordinator | None = None
+    network_coordinator: NanitNetworkCoordinator | None = None
 
 
 class NanitHub:
@@ -252,12 +258,27 @@ class NanitHub:
 
         ir.async_delete_issue(self._hass, DOMAIN, f"camera_connection_failed_{baby.camera_uid}")
 
+        # Network diagnostics coordinator (optional — polls GET /babies for WiFi info)
+        network_coordinator: NanitNetworkCoordinator | None = None
+        try:
+            network_coordinator = NanitNetworkCoordinator(self._hass, self._entry, self, baby)
+            await network_coordinator.async_config_entry_first_refresh()
+        except NanitAuthError:
+            raise
+        except NanitConnectionError:
+            _LOGGER.debug(
+                "Network coordinator for %s failed to start; network sensors disabled",
+                baby.name,
+            )
+            network_coordinator = None
+
         self._camera_data[baby.camera_uid] = CameraData(
             camera=camera,
             baby=baby,
             push_coordinator=push_coordinator,
             cloud_coordinator=cloud_coordinator,
             sound_light_coordinator=sound_light_coordinator,
+            network_coordinator=network_coordinator,
         )
 
     @callback

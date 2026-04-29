@@ -6,7 +6,12 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
-from .coordinator import NanitCloudCoordinator, NanitPushCoordinator, NanitSoundLightCoordinator
+from .coordinator import (
+    NanitCloudCoordinator,
+    NanitNetworkCoordinator,
+    NanitPushCoordinator,
+    NanitSoundLightCoordinator,
+)
 from .sanitize import sanitize_name
 
 
@@ -79,3 +84,18 @@ class NanitSoundLightEntity(CoordinatorEntity[NanitSoundLightCoordinator]):
         separately by the S&L connectivity binary sensor.
         """
         return self.coordinator.last_update_success and self.coordinator.data is not None
+
+
+class NanitNetworkEntity(CoordinatorEntity[NanitNetworkCoordinator]):
+    """Base entity for network diagnostic sensors — backed by the network coordinator."""
+
+    _attr_has_entity_name = True
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Return device info."""
+        return DeviceInfo(
+            identifiers={(DOMAIN, self.coordinator.baby.camera_uid)},
+            name=sanitize_name(self.coordinator.baby.name),
+            manufacturer="Nanit",
+        )

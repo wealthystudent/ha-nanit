@@ -68,6 +68,7 @@ def mock_nanit_client():
     with (
         patch("custom_components.nanit.hub.NanitClient", autospec=True) as mock_cls,
         patch("custom_components.nanit.hub.NanitCloudCoordinator") as mock_cloud_cls,
+        patch("custom_components.nanit.hub.NanitNetworkCoordinator") as mock_net_cls,
     ):
         client = mock_cls.return_value
 
@@ -94,6 +95,7 @@ def mock_nanit_client():
         client.rest_client.async_get_events = AsyncMock(return_value=[])
 
         mock_cloud_cls.return_value = MagicMock(async_config_entry_first_refresh=AsyncMock())
+        mock_net_cls.return_value = MagicMock(async_config_entry_first_refresh=AsyncMock())
 
         yield client
 

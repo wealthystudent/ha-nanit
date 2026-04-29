@@ -23,6 +23,9 @@ CLOUD_EVENT_WINDOW = 300
 # Cloud event poll interval (seconds)
 CLOUD_POLL_INTERVAL = 30
 
+# Network info poll interval (seconds)
+NETWORK_POLL_INTERVAL = 300
+
 # Config Keys
 CONF_MFA_CODE = "mfa_code"
 CONF_MFA_TOKEN = "mfa_token"

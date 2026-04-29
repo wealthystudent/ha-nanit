@@ -22,6 +22,7 @@ from .models import (
     ConnectionInfo,
     ConnectionState,
     ControlState,
+    NetworkInfo,
     NightLightState,
     SensorReading,
     SensorState,
@@ -57,6 +58,7 @@ __all__ = [
     # rest
     "NanitRestClient",
     "NanitTransportError",
+    "NetworkInfo",
     "NightLightState",
     "SensorReading",
     "SensorState",

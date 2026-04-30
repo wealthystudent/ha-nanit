@@ -7,3 +7,4 @@ aionanit @ file:packages/aionanit
 ruff
 mypy
 pre-commit
+syrupy

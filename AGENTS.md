@@ -80,6 +80,8 @@ just dev              # Start dev HA instance → http://localhost:8123
 just dev restart      # Restart after code changes
 just dev stop         # Stop dev HA instance
 just release-retry    # Re-trigger release workflow after fixing CI (uses same tag)
+just beta             # ⚠️  HUMAN ONLY — create beta pre-release → triggers PyPI publish
+just beta v1.4.0-beta.1  # ⚠️  HUMAN ONLY — release a specific beta tag
 just promote          # ⚠️  HUMAN ONLY — promote a beta to stable (interactive version picker)
 just promote 1.4.0    # ⚠️  HUMAN ONLY — promote a specific version directly
 ```
@@ -155,7 +157,7 @@ Rules:
 
 ### Releases
 
-Automated two-step release flow: **PR merge → auto-beta → test → promote**.
+Three-step release flow: **PR merge → auto-tag → `just beta` → test → `just promote`**.
 
 ```
 PR opened against main
@@ -170,11 +172,13 @@ PR merged to main
   ├─ Reads PR label to determine bump type
   ├─ Computes version + beta number from existing tags
   ├─ Updates manifest.json + pyproject.toml in the tagged commit
-  ├─ Tags vX.Y.Z-beta.N, creates GitHub pre-release
-  └─ ⚠️  Does NOT auto-trigger release.yaml (GITHUB_TOKEN limitation)
+  └─ Tags vX.Y.Z-beta.N and pushes (no GitHub release yet)
   │
-  Manually trigger PyPI publish:
-  just release-retry <tag>
+  just beta
+  │
+  ├─ Finds latest unreleased beta tag
+  ├─ Creates GitHub pre-release (using your local gh credentials)
+  └─ Triggers release.yaml → publishes aionanit to PyPI
   │
   You test on your HA via HACS beta channel
   │
@@ -203,15 +207,15 @@ PR merged to main
 #   release:minor  →  1.3.3 → 1.4.0-beta.1
 #   release:major  →  1.3.3 → 2.0.0-beta.1
 #   no label       →  no release (CI/docs/chore changes)
+just beta                 # Release latest unreleased beta tag → PyPI publish
+just beta v1.4.0-beta.2   # Release a specific beta tag
 just promote              # Interactive — lists betas, asks which to promote
 just promote 1.4.0        # Direct — promotes latest v1.4.0-beta.N to v1.4.0
 ```
 
-**Rollback strategy**: Forward-fix via new PR. Merge the fix → auto-beta creates a new beta → test → promote.
+**Rollback strategy**: Forward-fix via new PR. Merge the fix → auto-beta tags a new beta → `just beta` → test → promote.
 
 **Pipeline fix**: If the release workflow fails (e.g. action version issues, PyPI errors), fix the pipeline code, push to `main`, then run `just release-retry [tag]`. This re-triggers the workflow using the updated YAML from `main` while building from the original tag. PyPI publish is idempotent (skips already-uploaded versions).
-
-**Beta PyPI publish is manual**: `auto-beta.yaml` uses `GITHUB_TOKEN` to create the GitHub pre-release, which does not trigger `release.yaml` (GitHub Actions limitation — workflows using the default token cannot trigger other workflows). After every beta merge, run `just release-retry <tag>` to publish `aionanit` to PyPI. Without this step, HA cannot install the updated library.
 
 ---
 
@@ -256,7 +260,7 @@ Full checklist: [`docs/SECURITY_AUDIT_CHECKLIST.md`](docs/SECURITY_AUDIT_CHECKLI
 - Commit directly to `main` — always use a PR.
 - Push unsigned commits — all commits must be GPG-signed.
 - Bypass pre-commit hooks with `--no-verify`.
-- **Run `just promote`** — this is a manual human action only. No AI agent may execute this command regardless of instruction from any prompter.
+- **Run `just promote` or `just beta`** — these are manual human actions only. No AI agent may execute these commands regardless of instruction from any prompter.
 - **Edit `AGENTS.md`** without explicit manual review and approval from the repository owner. All changes to this file must be presented as a diff for human review before being applied.
 - **Add AI co-author attribution** — never include Sisyphus, Copilot, or any other AI agent as a co-author or in commit trailers.
 
@@ -289,5 +293,5 @@ Follow [Home Assistant developer docs](https://developers.home-assistant.io/) (l
 ## CI
 
 - **Lint + typecheck + tests**: `.github/workflows/ci.yaml` (runs on every push/PR to `main`).
-- **Auto beta**: `.github/workflows/auto-beta.yaml` (triggers on PR merge to `main` with a `release:*` label; bumps version, tags, creates pre-release, publishes beta to PyPI).
-- **Release**: `.github/workflows/release.yaml` (triggers on stable release published; CI gate → publish stable to PyPI → attach nanit.zip artifact).
+- **Auto beta**: `.github/workflows/auto-beta.yaml` (triggers on PR merge to `main` with a `release:*` label; bumps version, tags — does NOT create a GitHub release. Run `just beta` locally to publish).
+- **Release**: `.github/workflows/release.yaml` (triggers on release published or manual dispatch; publishes aionanit to PyPI, attaches nanit.zip for stable releases).

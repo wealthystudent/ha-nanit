@@ -116,13 +116,9 @@ jobs:
           git tag "${TAG}"
           git push origin "${TAG}"
 
-      - name: Create GitHub pre-release
+      - name: Summary
         env:
           TAG: ${{ steps.version.outputs.tag }}
-          GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${TAG}" \
-            --title "${TAG}" \
-            --generate-notes \
-            --prerelease \
-            --latest=false
+          echo "✅ Tagged ${TAG} and pushed."
+          echo "Run 'just beta' locally to create the GitHub pre-release and publish to PyPI."

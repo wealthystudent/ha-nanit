@@ -1,0 +1,487 @@
+# serializer version: 1
+# name: TestEntityRegistration.test_binary_sensor[baseline]
+  list([
+    dict({
+      'class': 'NanitBinarySensor',
+      'device_class': <BinarySensorDeviceClass.CONNECTIVITY: 'connectivity'>,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1',
+        ),
+      ]),
+      'entity_category': <EntityCategory.DIAGNOSTIC: 'diagnostic'>,
+      'translation_key': 'connectivity',
+      'unique_id': 'cam_1_connectivity',
+    }),
+  ])
+# ---
+# name: TestEntityRegistration.test_binary_sensor[full]
+  list([
+    dict({
+      'class': 'NanitCloudBinarySensor',
+      'device_class': <BinarySensorDeviceClass.MOTION: 'motion'>,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1',
+        ),
+      ]),
+      'entity_category': None,
+      'translation_key': 'motion',
+      'unique_id': 'cam_1_cloud_motion',
+    }),
+    dict({
+      'class': 'NanitCloudBinarySensor',
+      'device_class': <BinarySensorDeviceClass.SOUND: 'sound'>,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1',
+        ),
+      ]),
+      'entity_category': None,
+      'translation_key': 'sound',
+      'unique_id': 'cam_1_cloud_sound',
+    }),
+    dict({
+      'class': 'NanitBinarySensor',
+      'device_class': <BinarySensorDeviceClass.CONNECTIVITY: 'connectivity'>,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1',
+        ),
+      ]),
+      'entity_category': <EntityCategory.DIAGNOSTIC: 'diagnostic'>,
+      'translation_key': 'connectivity',
+      'unique_id': 'cam_1_connectivity',
+    }),
+    dict({
+      'class': 'NanitSLConnectivitySensor',
+      'device_class': <BinarySensorDeviceClass.CONNECTIVITY: 'connectivity'>,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1_sound_light',
+        ),
+      ]),
+      'entity_category': <EntityCategory.DIAGNOSTIC: 'diagnostic'>,
+      'translation_key': 'sl_connectivity',
+      'unique_id': 'cam_1_sl_connectivity',
+    }),
+  ])
+# ---
+# name: TestEntityRegistration.test_camera[baseline]
+  list([
+    dict({
+      'class': 'NanitCameraEntity',
+      'device_class': None,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1',
+        ),
+      ]),
+      'entity_category': None,
+      'supported_features': 3,
+      'translation_key': 'camera',
+      'unique_id': 'cam_1_camera',
+    }),
+  ])
+# ---
+# name: TestEntityRegistration.test_camera[full]
+  list([
+    dict({
+      'class': 'NanitCameraEntity',
+      'device_class': None,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1',
+        ),
+      ]),
+      'entity_category': None,
+      'supported_features': 3,
+      'translation_key': 'camera',
+      'unique_id': 'cam_1_camera',
+    }),
+  ])
+# ---
+# name: TestEntityRegistration.test_light[baseline]
+  list([
+    dict({
+      'class': 'NanitNightLight',
+      'color_modes': list([
+        'brightness',
+      ]),
+      'device_class': None,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1',
+        ),
+      ]),
+      'entity_category': None,
+      'supported_features': 0,
+      'translation_key': 'night_light',
+      'unique_id': 'cam_1_night_light',
+    }),
+  ])
+# ---
+# name: TestEntityRegistration.test_light[full]
+  list([
+    dict({
+      'class': 'NanitNightLight',
+      'color_modes': list([
+        'brightness',
+      ]),
+      'device_class': None,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1',
+        ),
+      ]),
+      'entity_category': None,
+      'supported_features': 0,
+      'translation_key': 'night_light',
+      'unique_id': 'cam_1_night_light',
+    }),
+    dict({
+      'class': 'NanitSoundLightLight',
+      'color_modes': list([
+        'hs',
+      ]),
+      'device_class': None,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1_sound_light',
+        ),
+      ]),
+      'entity_category': None,
+      'supported_features': 0,
+      'translation_key': 'sound_light_light',
+      'unique_id': 'cam_1_sound_light_light',
+    }),
+  ])
+# ---
+# name: TestEntityRegistration.test_number[baseline]
+  list([
+    dict({
+      'class': 'NanitVolume',
+      'device_class': None,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1',
+        ),
+      ]),
+      'entity_category': None,
+      'translation_key': 'volume',
+      'unique_id': 'cam_1_volume',
+    }),
+  ])
+# ---
+# name: TestEntityRegistration.test_number[full]
+  list([
+    dict({
+      'class': 'NanitSoundMachineVolume',
+      'device_class': None,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1_sound_light',
+        ),
+      ]),
+      'entity_category': None,
+      'translation_key': 'sound_machine_volume',
+      'unique_id': 'cam_1_sound_machine_volume',
+    }),
+    dict({
+      'class': 'NanitVolume',
+      'device_class': None,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1',
+        ),
+      ]),
+      'entity_category': None,
+      'translation_key': 'volume',
+      'unique_id': 'cam_1_volume',
+    }),
+  ])
+# ---
+# name: TestEntityRegistration.test_select[baseline]
+  list([
+    dict({
+      'class': 'NanitNightLightTimer',
+      'device_class': None,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1',
+        ),
+      ]),
+      'entity_category': None,
+      'translation_key': 'night_light_timer',
+      'unique_id': 'cam_1_night_light_timer',
+    }),
+  ])
+# ---
+# name: TestEntityRegistration.test_select[full]
+  list([
+    dict({
+      'class': 'NanitNightLightTimer',
+      'device_class': None,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1',
+        ),
+      ]),
+      'entity_category': None,
+      'translation_key': 'night_light_timer',
+      'unique_id': 'cam_1_night_light_timer',
+    }),
+    dict({
+      'class': 'NanitSoundSelect',
+      'device_class': None,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1_sound_light',
+        ),
+      ]),
+      'entity_category': None,
+      'translation_key': 'sound_machine_sound',
+      'unique_id': 'cam_1_sound_machine_sound',
+    }),
+  ])
+# ---
+# name: TestEntityRegistration.test_sensor[baseline]
+  list([
+    dict({
+      'class': 'NanitSensor',
+      'device_class': <SensorDeviceClass.HUMIDITY: 'humidity'>,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1',
+        ),
+      ]),
+      'entity_category': None,
+      'translation_key': None,
+      'unique_id': 'cam_1_humidity',
+    }),
+    dict({
+      'class': 'NanitSensor',
+      'device_class': <SensorDeviceClass.ILLUMINANCE: 'illuminance'>,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1',
+        ),
+      ]),
+      'entity_category': None,
+      'translation_key': None,
+      'unique_id': 'cam_1_light',
+    }),
+    dict({
+      'class': 'NanitSensor',
+      'device_class': <SensorDeviceClass.TEMPERATURE: 'temperature'>,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1',
+        ),
+      ]),
+      'entity_category': None,
+      'translation_key': None,
+      'unique_id': 'cam_1_temperature',
+    }),
+  ])
+# ---
+# name: TestEntityRegistration.test_sensor[full]
+  list([
+    dict({
+      'class': 'NanitSensor',
+      'device_class': <SensorDeviceClass.HUMIDITY: 'humidity'>,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1',
+        ),
+      ]),
+      'entity_category': None,
+      'translation_key': None,
+      'unique_id': 'cam_1_humidity',
+    }),
+    dict({
+      'class': 'NanitSensor',
+      'device_class': <SensorDeviceClass.ILLUMINANCE: 'illuminance'>,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1',
+        ),
+      ]),
+      'entity_category': None,
+      'translation_key': None,
+      'unique_id': 'cam_1_light',
+    }),
+    dict({
+      'class': 'NanitSLConnectionModeSensor',
+      'device_class': <SensorDeviceClass.ENUM: 'enum'>,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1_sound_light',
+        ),
+      ]),
+      'entity_category': <EntityCategory.DIAGNOSTIC: 'diagnostic'>,
+      'translation_key': 'sl_connection_mode',
+      'unique_id': 'cam_1_sl_connection_mode',
+    }),
+    dict({
+      'class': 'NanitSLSensor',
+      'device_class': <SensorDeviceClass.HUMIDITY: 'humidity'>,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1_sound_light',
+        ),
+      ]),
+      'entity_category': None,
+      'translation_key': 'sl_humidity',
+      'unique_id': 'cam_1_sl_humidity',
+    }),
+    dict({
+      'class': 'NanitSLSensor',
+      'device_class': <SensorDeviceClass.TEMPERATURE: 'temperature'>,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1_sound_light',
+        ),
+      ]),
+      'entity_category': None,
+      'translation_key': 'sl_temperature',
+      'unique_id': 'cam_1_sl_temperature',
+    }),
+    dict({
+      'class': 'NanitSensor',
+      'device_class': <SensorDeviceClass.TEMPERATURE: 'temperature'>,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1',
+        ),
+      ]),
+      'entity_category': None,
+      'translation_key': None,
+      'unique_id': 'cam_1_temperature',
+    }),
+    dict({
+      'class': 'NanitNetworkSensor',
+      'device_class': <SensorDeviceClass.FREQUENCY: 'frequency'>,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1',
+        ),
+      ]),
+      'entity_category': <EntityCategory.DIAGNOSTIC: 'diagnostic'>,
+      'translation_key': 'wifi_frequency',
+      'unique_id': 'cam_1_wifi_frequency',
+    }),
+    dict({
+      'class': 'NanitNetworkSensor',
+      'device_class': <SensorDeviceClass.SIGNAL_STRENGTH: 'signal_strength'>,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1',
+        ),
+      ]),
+      'entity_category': <EntityCategory.DIAGNOSTIC: 'diagnostic'>,
+      'translation_key': 'wifi_signal',
+      'unique_id': 'cam_1_wifi_signal',
+    }),
+    dict({
+      'class': 'NanitNetworkSensor',
+      'device_class': None,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1',
+        ),
+      ]),
+      'entity_category': <EntityCategory.DIAGNOSTIC: 'diagnostic'>,
+      'translation_key': 'wifi_ssid',
+      'unique_id': 'cam_1_wifi_ssid',
+    }),
+  ])
+# ---
+# name: TestEntityRegistration.test_switch[baseline]
+  list([
+    dict({
+      'class': 'NanitSwitch',
+      'device_class': <SwitchDeviceClass.SWITCH: 'switch'>,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1',
+        ),
+      ]),
+      'entity_category': None,
+      'translation_key': 'camera_power',
+      'unique_id': 'cam_1_camera_power',
+    }),
+  ])
+# ---
+# name: TestEntityRegistration.test_switch[full]
+  list([
+    dict({
+      'class': 'NanitSwitch',
+      'device_class': <SwitchDeviceClass.SWITCH: 'switch'>,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1',
+        ),
+      ]),
+      'entity_category': None,
+      'translation_key': 'camera_power',
+      'unique_id': 'cam_1_camera_power',
+    }),
+    dict({
+      'class': 'NanitSLSoundSwitch',
+      'device_class': <SwitchDeviceClass.SWITCH: 'switch'>,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1_sound_light',
+        ),
+      ]),
+      'entity_category': None,
+      'translation_key': 'sl_sound_switch',
+      'unique_id': 'cam_1_sl_sound_switch',
+    }),
+    dict({
+      'class': 'NanitSLPowerSwitch',
+      'device_class': <SwitchDeviceClass.SWITCH: 'switch'>,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1_sound_light',
+        ),
+      ]),
+      'entity_category': None,
+      'translation_key': 'sound_machine_switch',
+      'unique_id': 'cam_1_sound_machine_switch',
+    }),
+  ])
+# ---

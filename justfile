@@ -93,7 +93,7 @@ promote version="":
     target="{{ version }}"
 
     if [ -z "${target}" ]; then
-        # List all pre-releases grouped by base version, let user pick
+        # List all pre-releases, let user pick a specific beta tag
         echo "Fetching pre-releases..."
         releases=$(gh release list --limit 50 --json tagName,isPrerelease,isDraft,publishedAt \
             --jq '[.[] | select(.isPrerelease and (.isDraft | not))]')
@@ -103,44 +103,44 @@ promote version="":
             exit 1
         fi
 
-        # Extract unique base versions, sorted by version descending
-        versions=$(echo "$releases" | jq -r '
-            [.[] | .tagName | ltrimstr("v") | split("-beta.")[0]]
-            | unique
-            | sort_by(split(".") | map(tonumber))
+        # List individual beta tags sorted by version descending
+        tags=$(echo "$releases" | jq -r '
+            [.[] | {tag: .tagName, date: .publishedAt}]
+            | sort_by(.tag | ltrimstr("v") | split("-beta.") | [
+                (.[0] | split(".") | map(tonumber)),
+                (.[1] | tonumber)
+              ])
             | reverse
-            | .[]')
+            | .[]
+            | "\(.tag)\t\(.date)"')
 
         echo ""
-        echo "Available versions to promote:"
+        echo "Available betas to promote:"
         echo "─────────────────────────────"
         i=1
-        version_list=()
-        while IFS= read -r v; do
-            latest_beta=$(echo "$releases" | jq -r --arg v "$v" '
-                [.[] | select(.tagName | startswith("v" + $v + "-beta."))]
-                | sort_by(.tagName | split("-beta.")[1] | tonumber)
-                | last | .tagName')
-            beta_count=$(echo "$releases" | jq --arg v "$v" '
-                [.[] | select(.tagName | startswith("v" + $v + "-beta."))] | length')
-            echo "  ${i}) v${v}  (latest: ${latest_beta}, ${beta_count} beta(s))"
-            version_list+=("$v")
+        tag_list=()
+        while IFS=$'\t' read -r tag date; do
+            base=$(echo "$tag" | sed 's/^v//; s/-beta\..*//')
+            echo "  ${i}) ${tag}  →  v${base}   (published ${date%T*})"
+            tag_list+=("$tag")
             i=$((i + 1))
-        done <<< "$versions"
+        done <<< "$tags"
 
         echo ""
-        printf "Select version to promote [1-%d]: " "${#version_list[@]}"
+        printf "Select beta to promote [1-%d]: " "${#tag_list[@]}"
         read -r choice
 
-        if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#version_list[@]}" ]; then
+        if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#tag_list[@]}" ]; then
             echo "Error: Invalid selection."
             exit 1
         fi
-        target="${version_list[$((choice - 1))]}"
+        selected_tag="${tag_list[$((choice - 1))]}"
+        target=$(echo "$selected_tag" | sed 's/^v//; s/-beta\..*//')
+        beta_tag="$selected_tag"
+    else
+        # Direct version: find the latest beta tag for this version
+        beta_tag=$(git tag -l "v${target}-beta.*" | sort -V | tail -1)
     fi
-
-    # Find the latest beta tag for this version
-    beta_tag=$(git tag -l "v${target}-beta.*" | sort -V | tail -1)
 
     if [ -z "${beta_tag}" ]; then
         echo "Error: No beta tags found for version ${target}."

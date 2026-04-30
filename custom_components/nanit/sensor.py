@@ -11,16 +11,23 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import LIGHT_LUX, PERCENTAGE, EntityCategory, UnitOfTemperature
+from homeassistant.const import (
+    LIGHT_LUX,
+    PERCENTAGE,
+    SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
+    EntityCategory,
+    UnitOfFrequency,
+    UnitOfTemperature,
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from aionanit.models import CameraState
+from aionanit.models import CameraState, NetworkInfo
 
 from . import NanitConfigEntry
 from .aionanit_sl.models import SoundLightFullState
-from .coordinator import NanitPushCoordinator, NanitSoundLightCoordinator
-from .entity import NanitEntity, NanitSoundLightEntity
+from .coordinator import NanitNetworkCoordinator, NanitPushCoordinator, NanitSoundLightCoordinator
+from .entity import NanitEntity, NanitNetworkEntity, NanitSoundLightEntity
 
 PARALLEL_UPDATES = 0
 
@@ -95,6 +102,44 @@ SL_SENSORS: tuple[NanitSLSensorEntityDescription, ...] = (
 )
 
 
+@dataclass(frozen=True, kw_only=True)
+class NanitNetworkSensorDescription(SensorEntityDescription):
+    """Description for network diagnostic sensors."""
+
+    value_fn: Callable[[NetworkInfo], str | int | None]
+
+
+NETWORK_SENSORS: tuple[NanitNetworkSensorDescription, ...] = (
+    NanitNetworkSensorDescription(
+        key="wifi_ssid",
+        translation_key="wifi_ssid",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda net: net.ssid,
+    ),
+    NanitNetworkSensorDescription(
+        key="wifi_signal",
+        translation_key="wifi_signal",
+        device_class=SensorDeviceClass.SIGNAL_STRENGTH,
+        native_unit_of_measurement=SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda net: net.signal_dbm,
+    ),
+    NanitNetworkSensorDescription(
+        key="wifi_frequency",
+        translation_key="wifi_frequency",
+        device_class=SensorDeviceClass.FREQUENCY,
+        native_unit_of_measurement=UnitOfFrequency.MEGAHERTZ,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda net: net.frequency_mhz,
+    ),
+)
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: NanitConfigEntry,
@@ -112,6 +157,12 @@ async def async_setup_entry(
             for sl_description in SL_SENSORS:
                 entities.append(NanitSLSensor(sl_coordinator, sl_description))
             entities.append(NanitSLConnectionModeSensor(sl_coordinator))
+
+        # Network diagnostic sensors (optional)
+        net_coordinator = cam_data.network_coordinator
+        if net_coordinator is not None:
+            for net_description in NETWORK_SENSORS:
+                entities.append(NanitNetworkSensor(net_coordinator, net_description))
 
     async_add_entities(entities)
 
@@ -190,3 +241,26 @@ class NanitSLConnectionModeSensor(NanitSoundLightEntity, SensorEntity):
         """Return the current connection mode."""
         result: str = self.coordinator.sound_light.connection_mode
         return result
+
+
+class NanitNetworkSensor(NanitNetworkEntity, SensorEntity):
+    """Diagnostic sensor for camera WiFi network information."""
+
+    entity_description: NanitNetworkSensorDescription
+
+    def __init__(
+        self,
+        coordinator: NanitNetworkCoordinator,
+        description: NanitNetworkSensorDescription,
+    ) -> None:
+        """Initialize."""
+        super().__init__(coordinator)
+        self.entity_description = description
+        self._attr_unique_id = f"{coordinator.baby.camera_uid}_{description.key}"
+
+    @property
+    def native_value(self) -> str | int | None:
+        """Return the sensor value."""
+        if self.coordinator.data is None:
+            return None
+        return self.entity_description.value_fn(self.coordinator.data)

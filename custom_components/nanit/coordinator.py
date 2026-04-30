@@ -30,11 +30,11 @@ from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from aionanit import NanitAuthError, NanitCamera, NanitConnectionError
-from aionanit.models import Baby, CameraEvent, CameraState, CloudEvent
+from aionanit.models import Baby, CameraEvent, CameraState, CloudEvent, NetworkInfo
 
 from .aionanit_sl.models import SoundLightEvent, SoundLightEventKind, SoundLightFullState
 from .aionanit_sl.sound_light import NanitSoundLight
-from .const import CLOUD_POLL_INTERVAL, DOMAIN
+from .const import CLOUD_POLL_INTERVAL, DOMAIN, NETWORK_POLL_INTERVAL
 
 if TYPE_CHECKING:
     from . import NanitConfigEntry
@@ -200,6 +200,59 @@ class NanitCloudCoordinator(DataUpdateCoordinator[list[CloudEvent]]):
                 translation_key="cloud_fetch_failed",
                 translation_placeholders={"error": str(err)},
             ) from err
+
+
+class NanitNetworkCoordinator(DataUpdateCoordinator[NetworkInfo | None]):
+    """Polling coordinator for camera WiFi network diagnostics.
+
+    Polls GET /babies every NETWORK_POLL_INTERVAL seconds and extracts
+    the network info for a single camera.
+    """
+
+    config_entry: NanitConfigEntry
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: NanitConfigEntry,
+        hub: NanitHub,
+        baby: Baby,
+    ) -> None:
+        """Initialize the network coordinator."""
+        super().__init__(
+            hass,
+            _LOGGER,
+            config_entry=entry,
+            name=f"{DOMAIN}_{baby.camera_uid}_network",
+            update_interval=timedelta(seconds=NETWORK_POLL_INTERVAL),
+        )
+        self._hub = hub
+        self.baby = baby
+
+    async def _async_update_data(self) -> NetworkInfo | None:
+        """Fetch network info from the Nanit API."""
+        try:
+            client = self._hub.client
+            assert client.token_manager is not None
+            token = await client.token_manager.async_get_access_token()
+            babies = await client.rest_client.async_get_babies(token)
+        except NanitAuthError as err:
+            raise ConfigEntryAuthFailed(
+                translation_domain=DOMAIN,
+                translation_key="auth_failed",
+                translation_placeholders={"error": str(err)},
+            ) from err
+        except NanitConnectionError as err:
+            raise UpdateFailed(
+                translation_domain=DOMAIN,
+                translation_key="cloud_fetch_failed",
+                translation_placeholders={"error": str(err)},
+            ) from err
+
+        for baby in babies:
+            if baby.camera_uid == self.baby.camera_uid:
+                return baby.network
+        return None
 
 
 _SL_STORE_VERSION = 1

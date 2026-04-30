@@ -13,7 +13,7 @@ from .exceptions import (
     NanitConnectionError,
     NanitMfaRequiredError,
 )
-from .models import Baby, CloudEvent
+from .models import Baby, CloudEvent, NetworkInfo
 
 DEFAULT_BASE_URL = "https://api.nanit.com"
 _DEFAULT_TIMEOUT = aiohttp.ClientTimeout(total=15)
@@ -24,6 +24,22 @@ _HTML_TAG_RE = re.compile(r"<[^>]+>")
 def _sanitize_name(raw: str) -> str:
     stripped = _HTML_TAG_RE.sub("", raw)
     return "".join(ch for ch in stripped if unicodedata.category(ch)[0] != "C").strip()
+
+
+def _parse_network(baby_json: dict[str, Any]) -> NetworkInfo | None:
+    net = (baby_json.get("camera") or {}).get("network")
+    if not isinstance(net, dict):
+        return None
+    ssid = net.get("ssid")
+    freq = net.get("freq")
+    level = net.get("level")
+    if ssid is None and freq is None and level is None:
+        return None
+    return NetworkInfo(
+        ssid=str(ssid) if ssid is not None else None,
+        frequency_mhz=int(freq) if isinstance(freq, int | float) else None,
+        signal_dbm=int(level) if isinstance(level, int | float) else None,
+    )
 
 
 # Headers required by the Nanit API. The API rejects requests without
@@ -166,6 +182,7 @@ class NanitRestClient:
                 name=_sanitize_name(baby["name"]),
                 camera_uid=baby["camera_uid"],
                 speaker_uid=((baby.get("speaker") or {}).get("speaker") or {}).get("uid"),
+                network=_parse_network(baby),
             )
             for baby in body.get("babies", [])
         ]

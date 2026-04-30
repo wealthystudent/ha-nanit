@@ -115,11 +115,21 @@ class CameraEvent:
 
 
 @dataclass(frozen=True)
+class NetworkInfo:
+    """WiFi network information reported by the camera."""
+
+    ssid: str | None = None
+    frequency_mhz: int | None = None  # e.g. 5240
+    signal_dbm: int | None = None  # e.g. -60
+
+
+@dataclass(frozen=True)
 class Baby:
     uid: str
     name: str
     camera_uid: str
     speaker_uid: str | None = None
+    network: NetworkInfo | None = None
 
 
 @dataclass(frozen=True)

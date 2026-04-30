@@ -55,9 +55,11 @@ async def test_setup_single_baby(hass: HomeAssistant, mock_nanit_client) -> None
     with (
         patch("custom_components.nanit.hub.NanitPushCoordinator") as push_cls,
         patch("custom_components.nanit.hub.NanitCloudCoordinator") as cloud_cls,
+        patch("custom_components.nanit.hub.NanitNetworkCoordinator") as net_cls,
     ):
         push_cls.return_value = MagicMock(async_setup=AsyncMock())
         cloud_cls.return_value = MagicMock(async_config_entry_first_refresh=AsyncMock())
+        net_cls.return_value = MagicMock(async_config_entry_first_refresh=AsyncMock())
         await hub.async_setup()
 
     assert len(hub.camera_data) == 1
@@ -74,9 +76,11 @@ async def test_setup_multiple_babies(hass: HomeAssistant, mock_nanit_client) -> 
     with (
         patch("custom_components.nanit.hub.NanitPushCoordinator") as push_cls,
         patch("custom_components.nanit.hub.NanitCloudCoordinator") as cloud_cls,
+        patch("custom_components.nanit.hub.NanitNetworkCoordinator") as net_cls,
     ):
         push_cls.return_value = MagicMock(async_setup=AsyncMock())
         cloud_cls.return_value = MagicMock(async_config_entry_first_refresh=AsyncMock())
+        net_cls.return_value = MagicMock(async_config_entry_first_refresh=AsyncMock())
         await hub.async_setup()
 
     assert len(hub.camera_data) == 3
@@ -114,6 +118,7 @@ async def test_setup_partial_failure(hass: HomeAssistant, mock_nanit_client) -> 
     with (
         patch("custom_components.nanit.hub.NanitPushCoordinator") as push_cls,
         patch("custom_components.nanit.hub.NanitCloudCoordinator") as cloud_cls,
+        patch("custom_components.nanit.hub.NanitNetworkCoordinator") as net_cls,
     ):
 
         def push_factory(_hass, _entry, camera, _baby):
@@ -126,6 +131,7 @@ async def test_setup_partial_failure(hass: HomeAssistant, mock_nanit_client) -> 
 
         push_cls.side_effect = push_factory
         cloud_cls.return_value = MagicMock(async_config_entry_first_refresh=AsyncMock())
+        net_cls.return_value = MagicMock(async_config_entry_first_refresh=AsyncMock())
         await hub.async_setup()
 
     assert len(hub.camera_data) == 1
@@ -157,9 +163,11 @@ async def test_setup_reads_camera_ips_from_options(hass: HomeAssistant, mock_nan
     with (
         patch("custom_components.nanit.hub.NanitPushCoordinator") as push_cls,
         patch("custom_components.nanit.hub.NanitCloudCoordinator") as cloud_cls,
+        patch("custom_components.nanit.hub.NanitNetworkCoordinator") as net_cls,
     ):
         push_cls.return_value = MagicMock(async_setup=AsyncMock())
         cloud_cls.return_value = MagicMock(async_config_entry_first_refresh=AsyncMock())
+        net_cls.return_value = MagicMock(async_config_entry_first_refresh=AsyncMock())
         await hub.async_setup()
 
     mock_nanit_client.camera.assert_called_once_with(
@@ -210,10 +218,12 @@ async def test_successful_camera_setup_deletes_repair_issue(
     with (
         patch("custom_components.nanit.hub.NanitPushCoordinator") as push_cls,
         patch("custom_components.nanit.hub.NanitCloudCoordinator") as cloud_cls,
+        patch("custom_components.nanit.hub.NanitNetworkCoordinator") as net_cls,
         patch("custom_components.nanit.hub.ir.async_delete_issue") as mock_delete_issue,
     ):
         push_cls.return_value = MagicMock(async_setup=AsyncMock())
         cloud_cls.return_value = MagicMock(async_config_entry_first_refresh=AsyncMock())
+        net_cls.return_value = MagicMock(async_config_entry_first_refresh=AsyncMock())
         await hub.async_setup()
 
     mock_delete_issue.assert_called_once_with(
@@ -228,9 +238,11 @@ async def test_async_close(hass: HomeAssistant, mock_nanit_client) -> None:
     with (
         patch("custom_components.nanit.hub.NanitPushCoordinator") as push_cls,
         patch("custom_components.nanit.hub.NanitCloudCoordinator") as cloud_cls,
+        patch("custom_components.nanit.hub.NanitNetworkCoordinator") as net_cls,
     ):
         push_cls.return_value = MagicMock(async_setup=AsyncMock())
         cloud_cls.return_value = MagicMock(async_config_entry_first_refresh=AsyncMock())
+        net_cls.return_value = MagicMock(async_config_entry_first_refresh=AsyncMock())
         await hub.async_setup()
 
     assert hub.camera_data
@@ -246,9 +258,11 @@ async def test_token_refresh_callback(hass: HomeAssistant, mock_nanit_client) ->
     with (
         patch("custom_components.nanit.hub.NanitPushCoordinator") as push_cls,
         patch("custom_components.nanit.hub.NanitCloudCoordinator") as cloud_cls,
+        patch("custom_components.nanit.hub.NanitNetworkCoordinator") as net_cls,
     ):
         push_cls.return_value = MagicMock(async_setup=AsyncMock())
         cloud_cls.return_value = MagicMock(async_config_entry_first_refresh=AsyncMock())
+        net_cls.return_value = MagicMock(async_config_entry_first_refresh=AsyncMock())
         await hub.async_setup()
 
     callback = mock_nanit_client.token_manager.on_tokens_refreshed.call_args.args[0]

@@ -114,7 +114,6 @@ NETWORK_SENSORS: tuple[NanitNetworkSensorDescription, ...] = (
         key="wifi_ssid",
         translation_key="wifi_ssid",
         entity_category=EntityCategory.DIAGNOSTIC,
-        entity_registry_enabled_default=False,
         value_fn=lambda net: net.ssid,
     ),
     NanitNetworkSensorDescription(
@@ -124,7 +123,6 @@ NETWORK_SENSORS: tuple[NanitNetworkSensorDescription, ...] = (
         native_unit_of_measurement=SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
         state_class=SensorStateClass.MEASUREMENT,
         entity_category=EntityCategory.DIAGNOSTIC,
-        entity_registry_enabled_default=False,
         value_fn=lambda net: net.signal_dbm,
     ),
     NanitNetworkSensorDescription(
@@ -134,7 +132,6 @@ NETWORK_SENSORS: tuple[NanitNetworkSensorDescription, ...] = (
         native_unit_of_measurement=UnitOfFrequency.MEGAHERTZ,
         state_class=SensorStateClass.MEASUREMENT,
         entity_category=EntityCategory.DIAGNOSTIC,
-        entity_registry_enabled_default=False,
         value_fn=lambda net: net.frequency_mhz,
     ),
 )

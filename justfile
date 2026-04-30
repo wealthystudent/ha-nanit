@@ -77,6 +77,10 @@ events *args:
 probe *args:
     {{ python }} tools/nanit-probe.py {{ args }}
 
+# Fetch camera network diagnostics (use --watch N to repeat)
+network *args:
+    {{ python }} tools/nanit-network.py {{ args }}
+
 # ─── Releases (Owner Only) ────────────────────────────────────────────
 
 # Release flow:

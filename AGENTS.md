@@ -169,7 +169,7 @@ PR merged to main
   │
   ├─ Reads PR label to determine bump type
   ├─ Computes version + beta number from existing tags
-  ├─ Updates manifest.json + pyproject.toml on main
+  ├─ Updates manifest.json + pyproject.toml in the tagged commit
   ├─ Tags vX.Y.Z-beta.N, creates GitHub pre-release
   └─ Publishes aionanit beta to PyPI
   │

@@ -92,6 +92,8 @@ promote version="":
 
     target="{{ version }}"
 
+    git fetch origin --tags --quiet
+
     if [ -z "${target}" ]; then
         # List all pre-releases, let user pick a specific beta tag
         echo "Fetching pre-releases..."

@@ -171,7 +171,10 @@ PR merged to main
   ├─ Computes version + beta number from existing tags
   ├─ Updates manifest.json + pyproject.toml in the tagged commit
   ├─ Tags vX.Y.Z-beta.N, creates GitHub pre-release
-  └─ Publishes aionanit beta to PyPI
+  └─ ⚠️  Does NOT auto-trigger release.yaml (GITHUB_TOKEN limitation)
+  │
+  Manually trigger PyPI publish:
+  just release-retry <tag>
   │
   You test on your HA via HACS beta channel
   │
@@ -207,6 +210,8 @@ just promote 1.4.0        # Direct — promotes latest v1.4.0-beta.N to v1.4.0
 **Rollback strategy**: Forward-fix via new PR. Merge the fix → auto-beta creates a new beta → test → promote.
 
 **Pipeline fix**: If the release workflow fails (e.g. action version issues, PyPI errors), fix the pipeline code, push to `main`, then run `just release-retry [tag]`. This re-triggers the workflow using the updated YAML from `main` while building from the original tag. PyPI publish is idempotent (skips already-uploaded versions).
+
+**Beta PyPI publish is manual**: `auto-beta.yaml` uses `GITHUB_TOKEN` to create the GitHub pre-release, which does not trigger `release.yaml` (GitHub Actions limitation — workflows using the default token cannot trigger other workflows). After every beta merge, run `just release-retry <tag>` to publish `aionanit` to PyPI. Without this step, HA cannot install the updated library.
 
 ---
 

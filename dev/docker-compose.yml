@@ -5,7 +5,10 @@ services:
     restart: unless-stopped
     network_mode: host
     volumes:
-      - ./ha-config:/config
+      - ha-config:/config
       - ../custom_components:/config/custom_components:ro
     environment:
       - TZ=Europe/Oslo
+
+volumes:
+  ha-config:

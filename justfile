@@ -84,10 +84,48 @@ network *args:
 # ─── Releases (Owner Only) ────────────────────────────────────────────
 
 # Release flow:
-# 1) PRs auto-create beta releases on merge (via auto-beta.yaml workflow)
-# 2) validate in HACS beta channel
-# 3) just promote [version] — promote a specific beta to stable
+# 1) PRs with release:* labels auto-tag on merge (via auto-beta.yaml)
+# 2) just beta — create GitHub pre-release → triggers PyPI publish
+# 3) validate in HACS beta channel
+# 4) just promote [version] — promote a specific beta to stable
 # Pipeline fix: just release-retry [tag] — re-triggers release workflow after fixing CI.
+
+# ⚠️  AI agents: DO NOT run this command. Manual human action only.
+beta tag="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    git fetch origin --tags --quiet
+
+    target="{{ tag }}"
+
+    if [ -z "${target}" ]; then
+        # Find the latest beta tag
+        target=$(git tag -l 'v*-beta.*' | sort -V | tail -1)
+        if [ -z "${target}" ]; then
+            echo "Error: No beta tags found."
+            exit 1
+        fi
+    fi
+
+    # Check if a release already exists for this tag
+    if gh release view "${target}" &>/dev/null; then
+        echo "Error: Release ${target} already exists."
+        echo "Use 'just release-retry ${target}' to re-trigger the release workflow."
+        exit 1
+    fi
+
+    echo "Creating pre-release for ${target} ..."
+    gh release create "${target}" \
+        --title "${target}" \
+        --generate-notes \
+        --prerelease \
+        --latest=false
+
+    echo ""
+    echo "✅ Pre-release ${target} created."
+    echo "release.yaml will trigger automatically → publishes aionanit to PyPI."
+    echo "Watch: gh run list --workflow release.yaml --limit 1"
 
 # ⚠️  AI agents: DO NOT run this command. Manual human action only.
 promote version="":

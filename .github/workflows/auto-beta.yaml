@@ -87,10 +87,32 @@ jobs:
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "Computed: ${tag}"
 
-      - name: Create tag
+      - name: Inject version into manifest and pyproject
         env:
           TAG: ${{ steps.version.outputs.tag }}
         run: |
+          version="${TAG#v}"
+          base="${version%-beta.*}"
+          beta_num="${version##*-beta.}"
+          pep440="${base}b${beta_num}"
+
+          # Update manifest.json version + requirements
+          jq --arg v "$version" --arg r "aionanit>=$pep440" \
+            '.version = $v | .requirements = [$r]' \
+            custom_components/nanit/manifest.json > /tmp/manifest.json
+          mv /tmp/manifest.json custom_components/nanit/manifest.json
+
+          # Update pyproject.toml version
+          sed -i "s/^version = \".*\"/version = \"$pep440\"/" packages/aionanit/pyproject.toml
+
+      - name: Create version commit and tag
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add custom_components/nanit/manifest.json packages/aionanit/pyproject.toml
+          git commit -m "chore: bump version to ${TAG} [skip ci]"
           git tag "${TAG}"
           git push origin "${TAG}"
 

@@ -167,6 +167,42 @@
     }),
   ])
 # ---
+# name: TestEntityRegistration.test_media_player[baseline]
+  list([
+    dict({
+      'class': 'NanitMediaPlayer',
+      'device_class': <MediaPlayerDeviceClass.SPEAKER: 'speaker'>,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1',
+        ),
+      ]),
+      'entity_category': None,
+      'supported_features': 22532,
+      'translation_key': 'sound_machine',
+      'unique_id': 'cam_1_sound_machine',
+    }),
+  ])
+# ---
+# name: TestEntityRegistration.test_media_player[full]
+  list([
+    dict({
+      'class': 'NanitMediaPlayer',
+      'device_class': <MediaPlayerDeviceClass.SPEAKER: 'speaker'>,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1',
+        ),
+      ]),
+      'entity_category': None,
+      'supported_features': 22532,
+      'translation_key': 'sound_machine',
+      'unique_id': 'cam_1_sound_machine',
+    }),
+  ])
+# ---
 # name: TestEntityRegistration.test_number[baseline]
   list([
     dict({

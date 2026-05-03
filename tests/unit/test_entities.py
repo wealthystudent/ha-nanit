@@ -5,10 +5,12 @@ import sys
 
 # pyright: basic, reportUnusedFunction=false
 from collections.abc import Iterator
+from dataclasses import dataclass
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from homeassistant.components.media_player import MediaPlayerState
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -25,6 +27,16 @@ NightLightState = _MODELS.NightLightState
 SensorState = _MODELS.SensorState
 SettingsState = _MODELS.SettingsState
 
+
+@dataclass(frozen=True)
+class _PlaybackStateFallback:
+    playing: bool = False
+    current_track: str | None = None
+    available_tracks: tuple[str, ...] = ()
+
+
+PlaybackState = getattr(_MODELS, "PlaybackState", _PlaybackStateFallback)
+
 from custom_components.nanit.binary_sensor import (
     BINARY_SENSORS,
     CLOUD_BINARY_SENSORS,
@@ -37,6 +49,7 @@ from custom_components.nanit.coordinator import (
     _AVAILABILITY_GRACE_SECONDS,
     NanitPushCoordinator,
 )
+from custom_components.nanit.media_player import NanitMediaPlayer
 from custom_components.nanit.number import NanitVolume
 from custom_components.nanit.sensor import SENSORS, NanitSensor
 from custom_components.nanit.switch import SWITCHES, NanitSwitch
@@ -71,23 +84,31 @@ def _camera_state(
     night_light: NightLightState | None = NightLightState.OFF,
     night_light_brightness: int | None = None,
     night_light_timeout: int | None = None,
+    playback: PlaybackState | None = None,
     connection_state: ConnectionState = ConnectionState.CONNECTED,
 ) -> CameraState:
-    return CameraState(
-        sensors=SensorState(
+    kwargs: dict[str, Any] = {
+        "sensors": SensorState(
             temperature=temperature,
             humidity=humidity,
             light=light,
         ),
-        settings=SettingsState(
+        "settings": SettingsState(
             volume=volume,
             sleep_mode=sleep_mode,
             night_vision=night_vision,
             night_light_brightness=night_light_brightness,
         ),
-        control=ControlState(night_light=night_light, night_light_timeout=night_light_timeout),
-        connection=ConnectionInfo(state=connection_state),
-    )
+        "control": ControlState(night_light=night_light, night_light_timeout=night_light_timeout),
+        "connection": ConnectionInfo(state=connection_state),
+    }
+    if "playback" in getattr(CameraState, "__dataclass_fields__", {}):
+        kwargs["playback"] = playback or PlaybackState()
+        return CameraState(**kwargs)
+
+    state = CameraState(**kwargs)
+    object.__setattr__(state, "playback", playback or PlaybackState())
+    return state
 
 
 def _push_coordinator(
@@ -275,6 +296,108 @@ async def test_number_set_native_value_calls_camera_settings() -> None:
     await entity.async_set_native_value(33.7)
 
     camera.async_set_settings.assert_awaited_once_with(volume=33)
+
+
+def test_media_player_state_playing_when_playback_playing_true() -> None:
+    coordinator = _push_coordinator(
+        _camera_state(playback=PlaybackState(playing=True, current_track="White Noise.wav"))
+    )
+    camera = MagicMock(uid="cam_1")
+    entity = NanitMediaPlayer(coordinator, camera)
+
+    assert entity.state is MediaPlayerState.PLAYING
+
+
+def test_media_player_state_idle_when_playback_playing_false() -> None:
+    coordinator = _push_coordinator(
+        _camera_state(playback=PlaybackState(playing=False, current_track=None))
+    )
+    camera = MagicMock(uid="cam_1")
+    entity = NanitMediaPlayer(coordinator, camera)
+
+    assert entity.state is MediaPlayerState.IDLE
+
+
+def test_media_player_source_returns_current_track() -> None:
+    coordinator = _push_coordinator(
+        _camera_state(playback=PlaybackState(playing=True, current_track="Waves.wav"))
+    )
+    camera = MagicMock(uid="cam_1")
+    entity = NanitMediaPlayer(coordinator, camera)
+
+    assert entity.source == "Waves.wav"
+
+
+def test_media_player_source_list_returns_available_tracks() -> None:
+    coordinator = _push_coordinator(
+        _camera_state(
+            playback=PlaybackState(
+                playing=True,
+                current_track="White Noise.wav",
+                available_tracks=("White Noise.wav", "Birds.wav", "Waves.wav"),
+            )
+        )
+    )
+    camera = MagicMock(uid="cam_1")
+    entity = NanitMediaPlayer(coordinator, camera)
+
+    assert entity.source_list == ["White Noise.wav", "Birds.wav", "Waves.wav"]
+
+
+def test_media_player_volume_level_returns_settings_volume_scaled() -> None:
+    coordinator = _push_coordinator(_camera_state(volume=75))
+    camera = MagicMock(uid="cam_1")
+    entity = NanitMediaPlayer(coordinator, camera)
+
+    assert entity.volume_level == 0.75
+
+
+async def test_media_player_play_calls_camera_start_playback() -> None:
+    coordinator = _push_coordinator(_camera_state())
+    camera = MagicMock(uid="cam_1")
+    camera.async_start_playback = AsyncMock()
+    entity = NanitMediaPlayer(coordinator, camera)
+    _disable_state_writes(entity)
+
+    await entity.async_media_play()
+
+    camera.async_start_playback.assert_awaited_once_with()
+
+
+async def test_media_player_stop_calls_camera_stop_playback() -> None:
+    coordinator = _push_coordinator(_camera_state())
+    camera = MagicMock(uid="cam_1")
+    camera.async_stop_playback = AsyncMock()
+    entity = NanitMediaPlayer(coordinator, camera)
+    _disable_state_writes(entity)
+
+    await entity.async_media_stop()
+
+    camera.async_stop_playback.assert_awaited_once_with()
+
+
+async def test_media_player_select_source_calls_start_playback_with_track() -> None:
+    coordinator = _push_coordinator(_camera_state())
+    camera = MagicMock(uid="cam_1")
+    camera.async_start_playback = AsyncMock()
+    entity = NanitMediaPlayer(coordinator, camera)
+    _disable_state_writes(entity)
+
+    await entity.async_select_source("Birds.wav")
+
+    camera.async_start_playback.assert_awaited_once_with(track="Birds.wav")
+
+
+async def test_media_player_set_volume_level_calls_set_settings_with_volume() -> None:
+    coordinator = _push_coordinator(_camera_state())
+    camera = MagicMock(uid="cam_1")
+    camera.async_set_settings = AsyncMock()
+    entity = NanitMediaPlayer(coordinator, camera)
+    _disable_state_writes(entity)
+
+    await entity.async_set_volume_level(0.42)
+
+    camera.async_set_settings.assert_awaited_once_with(volume=42)
 
 
 async def test_camera_entity_is_on_false_when_sleep_mode_enabled(

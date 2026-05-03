@@ -9,7 +9,14 @@ import google.protobuf.message
 class Control(google.protobuf.message.Message):
     LIGHT_OFF: int
     LIGHT_ON: int
-    class SensorDataTransfer(google.protobuf.message.Message): ...
+    class SensorDataTransfer(google.protobuf.message.Message):
+        sound: bool
+        motion: bool
+        temperature: bool
+        humidity: bool
+        light: bool
+        night: bool
+
     night_light: int
     sensor_data_transfer: Control.SensorDataTransfer
     force_connect_to_server: bool
@@ -44,12 +51,21 @@ class Message(google.protobuf.message.Message):
     @classmethod
     def FromString(cls, s: bytes) -> Message: ...
 
-class MountingMode(google.protobuf.message.Message): ...
+class MountingMode:
+    STAND: int
+    TRAVEL: int
+    SWITCH: int
+
+class Soundtrack(google.protobuf.message.Message):
+    type: int
+    filename: str
 
 class Playback(google.protobuf.message.Message):
     STARTED: int
     STOPPED: int
     status: int
+    track: Soundtrack
+    current: Soundtrack
 
 class Request(google.protobuf.message.Message):
     id: int
@@ -123,6 +139,8 @@ class Response(google.protobuf.message.Message):
     status: Status
     settings: Settings
     sensor_data: SensorData
+    playback: Playback
+    soundtracks: list[Soundtrack]
     control: Control
 
 class SensorData(google.protobuf.message.Message):
@@ -158,6 +176,7 @@ class Settings(google.protobuf.message.Message):
     mounting_mode: int
     wifi_band: int
     mic_mute_on: bool
+    night_light_brightness: int
 
 class Status(google.protobuf.message.Message):
     DISCONNECTED: int

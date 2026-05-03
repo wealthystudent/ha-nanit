@@ -179,6 +179,11 @@ message Status {
   optional string hardware_version = 7;
 }
 
+message Soundtrack {
+  optional int32 type = 1;
+  optional string filename = 2;
+}
+
 message Playback {
   enum Status {
     STARTED = 0;
@@ -186,6 +191,8 @@ message Playback {
   }
 
   required Status status = 1;
+  optional Soundtrack track = 3;
+  optional Soundtrack current = 4;
 }
 
 message Stream {
@@ -248,6 +255,8 @@ message Response {
   optional Status status = 5;
   optional Settings settings = 6;
   repeated SensorData sensor_data = 9;
+  optional Playback playback = 11;
+  repeated Soundtrack soundtracks = 12;
   optional Control control = 13;
 }
 

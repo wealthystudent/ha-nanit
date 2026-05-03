@@ -27,6 +27,7 @@ from .models import (
     ConnectionState,
     ControlState,
     NightLightState,
+    PlaybackState,
     SensorState,
     SettingsState,
     StatusState,
@@ -35,9 +36,12 @@ from .models import (
 from .parsers import (
     _parse_control,
     _parse_control_from_proto,
+    _parse_playback,
+    _parse_playback_from_proto,
     _parse_sensor_data,
     _parse_settings,
     _parse_settings_from_proto,
+    _parse_soundtracks,
     _parse_status,
     _parse_status_from_proto,
 )
@@ -69,6 +73,8 @@ Response = proto.Response
 Settings = proto.Settings
 StreamIdentifier = proto.StreamIdentifier
 Streaming = proto.Streaming
+Playback = proto.Playback
+Soundtrack = proto.Soundtrack
 
 _DEFAULT_REQUEST_TIMEOUT: float = 10.0
 _LOCAL_PROBE_INTERVAL: float = 300.0  # 5 minutes
@@ -77,6 +83,7 @@ _STALE_CONNECTION_THRESHOLD: float = 300.0  # 5 min — reconnect before send
 _HEALTH_CHECK_INTERVAL: float = 270.0  # 4.5 min — periodic session liveness check
 _FRESH_CONNECTION_WINDOW: float = 10.0  # skip reconnect if connected within this
 _DEFAULT_SENSOR_POLL_INTERVAL: float = 120.0  # 2 min — poll sensors camera doesn't push
+_DEFAULT_PLAYBACK_POLL_INTERVAL: float = 30.0  # 30s — poll GET_PLAYBACK for external changes
 
 
 class NanitCamera:
@@ -123,6 +130,7 @@ class NanitCamera:
         self._local_probe_task: asyncio.Task[None] | None = None
         self._health_check_task: asyncio.Task[None] | None = None
         self._sensor_poll_task: asyncio.Task[None] | None = None
+        self._playback_poll_task: asyncio.Task[None] | None = None
         self._token_refresh_task: asyncio.Task[None] | None = None
         self._reconnected_task: asyncio.Task[None] | None = None
         self._reconnect_lock: asyncio.Lock = asyncio.Lock()
@@ -208,6 +216,7 @@ class NanitCamera:
 
         # Start periodic sensor polling (light values are not pushed).
         self._start_sensor_poll()
+        self._start_playback_poll()
 
         self._start_token_refresh()
 
@@ -218,6 +227,7 @@ class NanitCamera:
         self._cancel_local_probe()
         self._cancel_health_check()
         self._cancel_sensor_poll()
+        self._cancel_playback_poll()
         self._cancel_reconnected_task()
         self._pending.cancel_all()
         await self._transport.async_close()
@@ -281,6 +291,23 @@ class NanitCamera:
         sensors = _parse_sensor_data(resp.sensor_data, self._state.sensors)
         self._update_state(sensors=sensors, kind=CameraEventKind.SENSOR_UPDATE)
         return sensors
+
+    async def async_get_playback(self) -> PlaybackState:
+        """GET_PLAYBACK request — query current sound machine state."""
+        resp = await self._send_request(RequestType.GET_PLAYBACK)
+        pb = _parse_playback(resp)
+        self._update_state(playback=pb, kind=CameraEventKind.PLAYBACK_UPDATE)
+        return pb
+
+    async def async_get_soundtracks(self) -> tuple[str, ...]:
+        """GET_SOUNDTRACKS request — list available sound machine tracks."""
+        resp = await self._send_request(RequestType.GET_SOUNDTRACKS)
+        tracks = _parse_soundtracks(resp)
+        if tracks:
+            current = self._state.playback
+            updated = dataclasses.replace(current, available_tracks=tracks)
+            self._update_state(playback=updated, kind=CameraEventKind.PLAYBACK_UPDATE)
+        return tracks
 
     # ------------------------------------------------------------------
     # Commands — SET
@@ -375,6 +402,46 @@ class NanitCamera:
             new_control = dataclasses.replace(self._state.control, **requested)
         self._update_state(control=new_control, kind=CameraEventKind.CONTROL_UPDATE)
         return new_control
+
+    async def async_start_playback(self, track: str | None = None) -> PlaybackState:
+        """PUT_PLAYBACK with status=STARTED and optional track selection.
+
+        Args:
+            track: Filename of the track to play (e.g. "Birds.wav").
+                   If None, starts/resumes the last-used track.
+        """
+        proto_playback = Playback(status=Playback.STARTED)
+        if track is not None:
+            proto_playback.track.type = 0
+            proto_playback.track.filename = track
+
+        await self._send_request(
+            RequestType.PUT_PLAYBACK,
+            playback=proto_playback,
+        )
+
+        # Optimistic state update — camera doesn't always echo playback.
+        current = self._state.playback
+        new_playback = dataclasses.replace(
+            current,
+            playing=True,
+            current_track=track if track is not None else current.current_track,
+        )
+        self._update_state(playback=new_playback, kind=CameraEventKind.PLAYBACK_UPDATE)
+        return new_playback
+
+    async def async_stop_playback(self) -> PlaybackState:
+        """PUT_PLAYBACK with status=STOPPED."""
+        proto_playback = Playback(status=Playback.STOPPED)
+        await self._send_request(
+            RequestType.PUT_PLAYBACK,
+            playback=proto_playback,
+        )
+
+        current = self._state.playback
+        new_playback = dataclasses.replace(current, playing=False)
+        self._update_state(playback=new_playback, kind=CameraEventKind.PLAYBACK_UPDATE)
+        return new_playback
 
     # ------------------------------------------------------------------
     # Streaming
@@ -530,6 +597,11 @@ class NanitCamera:
                 control = _parse_control_from_proto(proto_request.control)
                 self._update_state(control=control, kind=CameraEventKind.CONTROL_UPDATE)
 
+        elif req_type == RequestType.PUT_PLAYBACK:
+            if proto_request.HasField("playback"):
+                pb = _parse_playback_from_proto(proto_request.playback)
+                self._update_state(playback=pb, kind=CameraEventKind.PLAYBACK_UPDATE)
+
         else:
             _LOGGER.debug("Unhandled push request type: %s", req_type)
 
@@ -601,6 +673,7 @@ class NanitCamera:
         settings: SettingsState | None = None,
         control: ControlState | None = None,
         status: StatusState | None = None,
+        playback: PlaybackState | None = None,
         kind: CameraEventKind,
     ) -> None:
         """Apply a partial state update and notify subscribers."""
@@ -613,6 +686,8 @@ class NanitCamera:
             replacements["control"] = control
         if status is not None:
             replacements["status"] = status
+        if playback is not None:
+            replacements["playback"] = playback
 
         if replacements:
             self._state = dataclasses.replace(self._state, **replacements)
@@ -734,6 +809,16 @@ class NanitCamera:
         except (NanitRequestTimeout, NanitTransportError) as err:
             _LOGGER.warning("Initial GET_CONTROL failed: %s", err)
 
+        try:
+            await self.async_get_playback()
+        except (NanitRequestTimeout, NanitTransportError) as err:
+            _LOGGER.warning("Initial GET_PLAYBACK failed: %s", err)
+
+        try:
+            await self.async_get_soundtracks()
+        except (NanitRequestTimeout, NanitTransportError) as err:
+            _LOGGER.warning("Initial GET_SOUNDTRACKS failed: %s", err)
+
     async def _async_enable_sensor_push(self) -> None:
         """Send PUT_CONTROL to enable sensor data push from camera."""
         transfer = ControlSensorDataTransfer(
@@ -824,6 +909,7 @@ class NanitCamera:
 
             # Restart sensor polling after reconnect.
             self._start_sensor_poll()
+            self._start_playback_poll()
 
             self._start_token_refresh()
 
@@ -945,6 +1031,44 @@ class NanitCamera:
                     _LOGGER.debug("Sensor poll failed — will retry next cycle")
                 except Exception:
                     _LOGGER.debug("Sensor poll error", exc_info=True)
+        except asyncio.CancelledError:
+            return
+
+    def _start_playback_poll(self) -> None:
+        """Start periodic playback state polling."""
+        self._cancel_playback_poll()
+        self._playback_poll_task = asyncio.get_running_loop().create_task(
+            self._playback_poll_loop()
+        )
+
+    def _cancel_playback_poll(self) -> None:
+        """Cancel the playback poll task if running."""
+        if self._playback_poll_task is not None and not self._playback_poll_task.done():
+            self._playback_poll_task.cancel()
+        self._playback_poll_task = None
+
+    async def _playback_poll_loop(self) -> None:
+        """Periodically poll GET_PLAYBACK for external state changes.
+
+        The Nanit camera does not push playback state changes over
+        WebSocket, so we must poll to detect when the user starts or
+        stops playback from the Nanit app.
+        """
+        try:
+            while not self._stopped:
+                await asyncio.sleep(_DEFAULT_PLAYBACK_POLL_INTERVAL)
+                if self._stopped or not self._transport.connected:
+                    continue
+                try:
+                    await self.async_get_playback()
+                except (
+                    NanitRequestTimeout,
+                    NanitTransportError,
+                    NanitCameraUnavailable,
+                ):
+                    _LOGGER.debug("Playback poll failed — will retry next cycle")
+                except Exception:
+                    _LOGGER.debug("Playback poll error", exc_info=True)
         except asyncio.CancelledError:
             return
 

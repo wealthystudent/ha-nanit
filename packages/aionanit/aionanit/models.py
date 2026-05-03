@@ -81,6 +81,15 @@ class StatusState:
 
 
 @dataclass(frozen=True)
+class PlaybackState:
+    """Current sound machine playback state."""
+
+    playing: bool = False
+    current_track: str | None = None
+    available_tracks: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class ConnectionInfo:
     state: ConnectionState = ConnectionState.DISCONNECTED
     transport: TransportKind = TransportKind.NONE
@@ -98,6 +107,7 @@ class CameraState:
     settings: SettingsState = field(default_factory=SettingsState)
     control: ControlState = field(default_factory=ControlState)
     status: StatusState = field(default_factory=StatusState)
+    playback: PlaybackState = field(default_factory=PlaybackState)
 
 
 class CameraEventKind(Enum):
@@ -105,6 +115,7 @@ class CameraEventKind(Enum):
     SETTINGS_UPDATE = "settings_update"
     CONTROL_UPDATE = "control_update"
     STATUS_UPDATE = "status_update"
+    PLAYBACK_UPDATE = "playback_update"
     CONNECTION_CHANGE = "connection_change"
 
 

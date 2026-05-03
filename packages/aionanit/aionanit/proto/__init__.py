@@ -21,6 +21,7 @@ from .nanit_pb2 import (
     SensorData,
     SensorType,
     Settings,
+    Soundtrack,
     Status,
     Stream,
     StreamIdentifier,
@@ -79,6 +80,12 @@ class PlaybackStatus:
     STOPPED: int = Playback.STOPPED
 
 
+class SoundtrackType:
+    """Soundtrack.type enum-like constants."""
+
+    BUILT_IN: int = 0
+
+
 class StreamType:
     """Stream.Type enum values."""
 
@@ -128,6 +135,8 @@ __all__ = [
     "SettingsSensorSettings",
     "SettingsStreamSettings",
     "SettingsWifiBand",
+    "Soundtrack",
+    "SoundtrackType",
     "Status",
     "StatusConnectionToServer",
     "Stream",

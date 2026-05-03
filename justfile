@@ -81,6 +81,10 @@ probe *args:
 network *args:
     {{ python }} tools/nanit-network.py {{ args }}
 
+# Probe sound machine / white noise API (interactive or single command)
+sound *args:
+    {{ python }} tools/nanit-sound.py {{ args }}
+
 # ─── Releases (Owner Only) ────────────────────────────────────────────
 
 # Release flow:

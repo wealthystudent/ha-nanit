@@ -1,6 +1,13 @@
 from __future__ import annotations
 
-from .models import ControlState, NightLightState, SensorState, SettingsState, StatusState
+from .models import (
+    ControlState,
+    NightLightState,
+    PlaybackState,
+    SensorState,
+    SettingsState,
+    StatusState,
+)
 from .proto import (
     ControlNightLight,
     MountingMode,
@@ -153,3 +160,35 @@ def _parse_control_from_proto(control: object) -> ControlState:
         else None,
         sensor_data_transfer_enabled=sensor_transfer_enabled,
     )
+
+
+def _parse_playback(resp: Response) -> PlaybackState:
+    """Parse a GET_PLAYBACK response into PlaybackState."""
+    if resp.HasField("playback"):
+        return _parse_playback_from_proto(resp.playback)
+    return PlaybackState()
+
+
+def _parse_playback_from_proto(playback: object) -> PlaybackState:
+    """Parse a protobuf Playback message into PlaybackState."""
+    from .proto import Playback as ProtoPlayback
+
+    if not isinstance(playback, ProtoPlayback):
+        return PlaybackState()
+
+    playing = playback.status == ProtoPlayback.STARTED
+
+    current_track: str | None = None
+    if playback.HasField("current"):
+        current_track = playback.current.filename or None
+
+    return PlaybackState(playing=playing, current_track=current_track)
+
+
+def _parse_soundtracks(resp: Response) -> tuple[str, ...]:
+    """Parse a GET_SOUNDTRACKS response into a tuple of track filenames."""
+    tracks: list[str] = []
+    for st in resp.soundtracks:
+        if st.filename:
+            tracks.append(st.filename)
+    return tuple(tracks)

@@ -14,6 +14,7 @@ PLATFORMS = [
     Platform.NUMBER,
     Platform.LIGHT,
     Platform.SELECT,
+    Platform.MEDIA_PLAYER,
     Platform.CAMERA,
 ]
 

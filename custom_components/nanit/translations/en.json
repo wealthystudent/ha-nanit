@@ -138,6 +138,9 @@
       },
       "sound_machine_sound": { "name": "Sound Track" }
     },
+    "media_player": {
+      "sound_machine": { "name": "Sound Machine" }
+    },
     "camera": {
       "camera": { "name": "Camera" }
     }

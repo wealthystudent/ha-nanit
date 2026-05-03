@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import importlib
 import sys
+from dataclasses import dataclass
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -33,6 +34,16 @@ ControlState = _MODELS.ControlState
 SensorState = _MODELS.SensorState
 SettingsState = _MODELS.SettingsState
 
+
+@dataclass(frozen=True)
+class _PlaybackStateFallback:
+    playing: bool = False
+    current_track: str | None = None
+    available_tracks: tuple[str, ...] = ()
+
+
+PlaybackState = getattr(_MODELS, "PlaybackState", _PlaybackStateFallback)
+
 from custom_components.nanit import (
     binary_sensor as binary_sensor_platform,
 )
@@ -41,6 +52,9 @@ from custom_components.nanit import (
 )
 from custom_components.nanit import (
     light as light_platform,
+)
+from custom_components.nanit import (
+    media_player as media_player_platform,
 )
 from custom_components.nanit import (
     number as number_platform,
@@ -110,12 +124,15 @@ def _serialize_entities(entities: list[Any]) -> list[dict[str, Any]]:
 
 
 def _camera_state() -> CameraState:
-    return CameraState(
-        sensors=SensorState(temperature=22.5, humidity=50.0, light=100),
-        settings=SettingsState(volume=50, sleep_mode=False, night_vision=True),
-        control=ControlState(),
-        connection=ConnectionInfo(state=ConnectionState.CONNECTED),
-    )
+    kwargs: dict[str, Any] = {
+        "sensors": SensorState(temperature=22.5, humidity=50.0, light=100),
+        "settings": SettingsState(volume=50, sleep_mode=False, night_vision=True),
+        "control": ControlState(),
+        "connection": ConnectionInfo(state=ConnectionState.CONNECTED),
+    }
+    if "playback" in getattr(CameraState, "__dataclass_fields__", {}):
+        kwargs["playback"] = PlaybackState()
+    return CameraState(**kwargs)
 
 
 def _push_coordinator() -> MagicMock:
@@ -289,3 +306,13 @@ class TestEntityRegistration:
     ) -> None:
         entities = await _setup_and_capture(select_platform, cam_data_factory())
         assert _serialize_entities(entities) == snapshot
+
+    async def test_media_player(
+        self,
+        scenario_name: str,
+        cam_data_factory: Any,
+        snapshot: SnapshotAssertion,
+    ) -> None:
+        entities = await _setup_and_capture(media_player_platform, cam_data_factory())
+        assert _serialize_entities(entities) == snapshot
+        assert len(entities) == 1

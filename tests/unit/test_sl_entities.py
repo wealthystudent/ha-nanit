@@ -941,8 +941,8 @@ async def test_number_async_setup_entry_creates_sl_volume() -> None:
     await number_platform.async_setup_entry(MagicMock(), entry, async_add_entities)
 
     entities = async_add_entities.call_args.args[0]
-    # 1 camera volume + 1 S&L volume = 2
-    assert len(entities) == 2
+    # 1 S&L volume (camera volume entity removed)
+    assert len(entities) == 1
 
 
 async def test_binary_sensor_async_setup_entry_creates_sl_connectivity() -> None:
@@ -1091,32 +1091,6 @@ def test_cloud_binary_sensor_skips_non_matching_event_type() -> None:
 
     with patch("custom_components.nanit.binary_sensor.time_mod.time", return_value=now):
         assert entity.is_on is False
-
-
-def test_nanit_volume_returns_none_when_volume_is_none() -> None:
-    from custom_components.nanit.number import NanitVolume
-
-    state = CameraState(
-        sensors=SensorState(temperature=22.5, humidity=50.0, light=100),
-        settings=SettingsState(volume=None, sleep_mode=False, night_vision=True),
-        control=ControlState(),
-        connection=ConnectionInfo(state=ConnectionState.CONNECTED),
-    )
-    coordinator = _push_coordinator(state)
-    camera = MagicMock(uid="cam_1")
-    entity = NanitVolume(coordinator, camera)
-
-    assert entity.native_value is None
-
-
-def test_nanit_volume_returns_none_when_no_data() -> None:
-    from custom_components.nanit.number import NanitVolume
-
-    coordinator = _push_coordinator(None)
-    camera = MagicMock(uid="cam_1")
-    entity = NanitVolume(coordinator, camera)
-
-    assert entity.native_value is None
 
 
 async def test_camera_async_setup_entry_creates_entities() -> None:

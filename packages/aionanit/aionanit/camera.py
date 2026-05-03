@@ -296,6 +296,11 @@ class NanitCamera:
         """GET_PLAYBACK request — query current sound machine state."""
         resp = await self._send_request(RequestType.GET_PLAYBACK)
         pb = _parse_playback(resp)
+        # Preserve available_tracks from existing state — GET_PLAYBACK does
+        # not include the track list; only GET_SOUNDTRACKS provides it.
+        current_tracks = self._state.playback.available_tracks
+        if current_tracks and not pb.available_tracks:
+            pb = dataclasses.replace(pb, available_tracks=current_tracks)
         self._update_state(playback=pb, kind=CameraEventKind.PLAYBACK_UPDATE)
         return pb
 
@@ -600,6 +605,9 @@ class NanitCamera:
         elif req_type == RequestType.PUT_PLAYBACK:
             if proto_request.HasField("playback"):
                 pb = _parse_playback_from_proto(proto_request.playback)
+                current_tracks = self._state.playback.available_tracks
+                if current_tracks and not pb.available_tracks:
+                    pb = dataclasses.replace(pb, available_tracks=current_tracks)
                 self._update_state(playback=pb, kind=CameraEventKind.PLAYBACK_UPDATE)
 
         else:

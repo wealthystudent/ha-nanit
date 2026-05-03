@@ -9,12 +9,10 @@ from homeassistant.const import PERCENTAGE
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from aionanit import NanitCamera
-
 from . import NanitConfigEntry
 from .aionanit_sl.exceptions import NanitTransportError
-from .coordinator import NanitPushCoordinator, NanitSoundLightCoordinator
-from .entity import NanitEntity, NanitSoundLightEntity
+from .coordinator import NanitSoundLightCoordinator
+from .entity import NanitSoundLightEntity
 
 PARALLEL_UPDATES = 0
 
@@ -29,49 +27,12 @@ async def async_setup_entry(
     """Set up Nanit number entities for all cameras on the account."""
     entities: list[NumberEntity] = []
     for cam_data in entry.runtime_data.cameras.values():
-        entities.append(NanitVolume(cam_data.push_coordinator, cam_data.camera))
-
         # Sound & Light Machine volume (optional)
         sl_coordinator = cam_data.sound_light_coordinator
         if sl_coordinator is not None:
             entities.append(NanitSoundMachineVolume(sl_coordinator))
 
     async_add_entities(entities)
-
-
-class NanitVolume(NanitEntity, NumberEntity):
-    """Volume number entity."""
-
-    _attr_translation_key = "volume"
-    _attr_native_min_value = 0
-    _attr_native_max_value = 100
-    _attr_native_step = 1
-    _attr_mode = NumberMode.SLIDER
-    _attr_native_unit_of_measurement = PERCENTAGE
-    _attr_entity_registry_enabled_default = False
-
-    def __init__(
-        self,
-        coordinator: NanitPushCoordinator,
-        camera: NanitCamera,
-    ) -> None:
-        """Initialize."""
-        super().__init__(coordinator)
-        self._camera = camera
-        self._attr_unique_id = f"{camera.uid}_volume"
-
-    @property
-    def native_value(self) -> float | None:
-        """Return the current volume."""
-        if self.coordinator.data is None:
-            return None
-        val = self.coordinator.data.settings.volume
-        return float(val) if val is not None else None
-
-    async def async_set_native_value(self, value: float) -> None:
-        """Set the volume."""
-        await self._camera.async_set_settings(volume=int(value))
-        self.async_write_ha_state()
 
 
 class NanitSoundMachineVolume(NanitSoundLightEntity, NumberEntity):

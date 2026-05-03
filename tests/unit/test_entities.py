@@ -50,7 +50,6 @@ from custom_components.nanit.coordinator import (
     NanitPushCoordinator,
 )
 from custom_components.nanit.media_player import NanitMediaPlayer
-from custom_components.nanit.number import NanitVolume
 from custom_components.nanit.sensor import SENSORS, NanitSensor
 from custom_components.nanit.switch import SWITCHES, NanitSwitch
 
@@ -278,26 +277,6 @@ async def test_switch_camera_power_turn_off_calls_sleep_mode() -> None:
     assert entity.is_on is False
 
 
-def test_number_native_value_returns_volume() -> None:
-    coordinator = _push_coordinator(_camera_state(volume=50))
-    camera = MagicMock(uid="cam_1")
-    entity = NanitVolume(coordinator, camera)
-
-    assert entity.native_value == 50
-
-
-async def test_number_set_native_value_calls_camera_settings() -> None:
-    coordinator = _push_coordinator(_camera_state(volume=10))
-    camera = MagicMock(uid="cam_1")
-    camera.async_set_settings = AsyncMock()
-    entity = NanitVolume(coordinator, camera)
-    _disable_state_writes(entity)
-
-    await entity.async_set_native_value(33.7)
-
-    camera.async_set_settings.assert_awaited_once_with(volume=33)
-
-
 def test_media_player_state_playing_when_playback_playing_true() -> None:
     coordinator = _push_coordinator(
         _camera_state(playback=PlaybackState(playing=True, current_track="White Noise.wav"))
@@ -306,6 +285,14 @@ def test_media_player_state_playing_when_playback_playing_true() -> None:
     entity = NanitMediaPlayer(coordinator, camera)
 
     assert entity.state is MediaPlayerState.PLAYING
+
+
+def test_media_player_state_none_when_no_data() -> None:
+    coordinator = _push_coordinator(None)
+    camera = MagicMock(uid="cam_1")
+    entity = NanitMediaPlayer(coordinator, camera)
+
+    assert entity.state is None
 
 
 def test_media_player_state_idle_when_playback_playing_false() -> None:
@@ -328,6 +315,14 @@ def test_media_player_source_returns_current_track() -> None:
     assert entity.source == "Waves.wav"
 
 
+def test_media_player_source_none_when_no_data() -> None:
+    coordinator = _push_coordinator(None)
+    camera = MagicMock(uid="cam_1")
+    entity = NanitMediaPlayer(coordinator, camera)
+
+    assert entity.source is None
+
+
 def test_media_player_source_list_returns_available_tracks() -> None:
     coordinator = _push_coordinator(
         _camera_state(
@@ -344,12 +339,36 @@ def test_media_player_source_list_returns_available_tracks() -> None:
     assert entity.source_list == ["White Noise.wav", "Birds.wav", "Waves.wav"]
 
 
+def test_media_player_source_list_none_when_no_data() -> None:
+    coordinator = _push_coordinator(None)
+    camera = MagicMock(uid="cam_1")
+    entity = NanitMediaPlayer(coordinator, camera)
+
+    assert entity.source_list is None
+
+
 def test_media_player_volume_level_returns_settings_volume_scaled() -> None:
     coordinator = _push_coordinator(_camera_state(volume=75))
     camera = MagicMock(uid="cam_1")
     entity = NanitMediaPlayer(coordinator, camera)
 
     assert entity.volume_level == 0.75
+
+
+def test_media_player_volume_level_none_when_no_data() -> None:
+    coordinator = _push_coordinator(None)
+    camera = MagicMock(uid="cam_1")
+    entity = NanitMediaPlayer(coordinator, camera)
+
+    assert entity.volume_level is None
+
+
+def test_media_player_volume_level_none_when_volume_is_none() -> None:
+    coordinator = _push_coordinator(_camera_state(volume=None))
+    camera = MagicMock(uid="cam_1")
+    entity = NanitMediaPlayer(coordinator, camera)
+
+    assert entity.volume_level is None
 
 
 async def test_media_player_play_calls_camera_start_playback() -> None:

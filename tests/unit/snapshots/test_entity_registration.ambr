@@ -205,19 +205,6 @@
 # ---
 # name: TestEntityRegistration.test_number[baseline]
   list([
-    dict({
-      'class': 'NanitVolume',
-      'device_class': None,
-      'device_identifiers': list([
-        tuple(
-          'nanit',
-          'cam_1',
-        ),
-      ]),
-      'entity_category': None,
-      'translation_key': 'volume',
-      'unique_id': 'cam_1_volume',
-    }),
   ])
 # ---
 # name: TestEntityRegistration.test_number[full]
@@ -234,19 +221,6 @@
       'entity_category': None,
       'translation_key': 'sound_machine_volume',
       'unique_id': 'cam_1_sound_machine_volume',
-    }),
-    dict({
-      'class': 'NanitVolume',
-      'device_class': None,
-      'device_identifiers': list([
-        tuple(
-          'nanit',
-          'cam_1',
-        ),
-      ]),
-      'entity_category': None,
-      'translation_key': 'volume',
-      'unique_id': 'cam_1_volume',
     }),
   ])
 # ---

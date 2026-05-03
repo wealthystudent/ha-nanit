@@ -28,9 +28,7 @@
         }
       }
     },
-    "number": {
-      "volume": { "default": "mdi:volume-medium" }
-    },
+    "number": {},
     "camera": {
       "camera": { "default": "mdi:baby-face-outline" }
     }

@@ -218,10 +218,13 @@ async def test_deprecated_switch_entity_removed_on_setup(
     ):
         assert await async_setup_entry(hass, entry)
 
-    mock_ent_reg.async_get_entity_id.assert_called_once_with(
+    mock_ent_reg.async_get_entity_id.assert_any_call(
         "switch", DOMAIN, f"{MOCK_BABY_1.camera_uid}_night_light"
     )
-    mock_ent_reg.async_remove.assert_called_once_with("switch.nursery_night_light")
+    mock_ent_reg.async_get_entity_id.assert_any_call(
+        "number", DOMAIN, f"{MOCK_BABY_1.camera_uid}_volume"
+    )
+    assert mock_ent_reg.async_remove.call_count == 2
 
 
 async def test_deprecated_entity_removal_skipped_when_not_present(

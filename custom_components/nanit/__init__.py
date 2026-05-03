@@ -153,6 +153,7 @@ def _async_remove_stale_devices(
 
 _DEPRECATED_ENTITIES: list[tuple[str, str]] = [
     ("switch", "night_light"),
+    ("number", "volume"),
 ]
 
 

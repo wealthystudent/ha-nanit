@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
+from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_EMAIL
@@ -66,8 +68,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: NanitConfigEntry) -> boo
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    # Reload entry when options change (e.g. camera IPs updated)
-    entry.async_on_unload(entry.add_update_listener(_async_options_update_listener))
+    # update_listener fires for ANY entry mutation (data OR options).
+    # Token refresh persists tokens via async_update_entry(data=...) which
+    # must not trigger a reload — only genuine options changes should.
+    entry.async_on_unload(
+        entry.add_update_listener(_make_options_update_listener(dict(entry.options)))
+    )
 
     return True
 
@@ -180,6 +186,22 @@ def _async_remove_deprecated_entities(hass: HomeAssistant, hub: NanitHub) -> Non
                 ent_reg.async_remove(entity_id)
 
 
-async def _async_options_update_listener(hass: HomeAssistant, entry: NanitConfigEntry) -> None:
-    """Reload entry when options change (e.g. camera IPs updated)."""
-    await hass.config_entries.async_reload(entry.entry_id)
+def _make_options_update_listener(
+    previous_options: dict[str, Any],
+) -> Callable[[HomeAssistant, NanitConfigEntry], Coroutine[Any, Any, None]]:
+    """Create an update listener that only reloads when options actually change.
+
+    HA fires update_listener for any entry mutation (data or options). Token
+    refresh persists new tokens via async_update_entry(data=...) — this must
+    not cause a reload. By comparing against a snapshot of the previous options,
+    we ensure only genuine options changes (e.g. camera IP updates) reload.
+    """
+
+    async def _listener(hass: HomeAssistant, entry: NanitConfigEntry) -> None:
+        nonlocal previous_options
+        current_options = dict(entry.options)
+        if current_options != previous_options:
+            previous_options = current_options
+            await hass.config_entries.async_reload(entry.entry_id)
+
+    return _listener

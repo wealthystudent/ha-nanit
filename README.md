@@ -10,9 +10,9 @@
 
 ---
 
-A custom [Home Assistant](https://www.home-assistant.io/) integration for [Nanit](https://www.nanit.com/) baby cameras. Live streams, nursery sensors, night light control, and automations — all from your HA dashboard.
-
-Works with all Nanit cameras and the Sound & Light Machine.
+> **Monitor your baby — right from Home Assistant.**
+>
+> Live streams, nursery sensors, night light control, and automations — all from your HA dashboard. Works with all Nanit cameras and the Sound & Light Machine.
 
 ## Requirements
 

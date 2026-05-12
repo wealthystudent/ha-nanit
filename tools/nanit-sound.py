@@ -716,9 +716,9 @@ async def cmd_loop_track(session: SoundSession, arg: str | None = None) -> None:
         playback=playback,
     )
     print(f'\n  → Track "{arg}" started.')
-    print(f"  → Listen and see if it keeps playing past ~1 min.")
+    print("  → Listen and see if it keeps playing past ~1 min.")
     print()
-    print(f"  ⏳ Connection alive. Press Enter when done listening ...")
+    print("  ⏳ Connection alive. Press Enter when done listening ...")
     input()
 
 

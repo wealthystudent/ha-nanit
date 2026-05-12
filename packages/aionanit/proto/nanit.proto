@@ -191,6 +191,7 @@ message Playback {
   }
 
   required Status status = 1;
+  optional int32 duration = 2;
   optional Soundtrack track = 3;
   optional Soundtrack current = 4;
 }

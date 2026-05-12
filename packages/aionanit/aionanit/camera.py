@@ -408,14 +408,24 @@ class NanitCamera:
         self._update_state(control=new_control, kind=CameraEventKind.CONTROL_UPDATE)
         return new_control
 
-    async def async_start_playback(self, track: str | None = None) -> PlaybackState:
+    _DEFAULT_PLAYBACK_DURATION: int = 28800  # 8 hours
+
+    async def async_start_playback(
+        self,
+        track: str | None = None,
+        duration: int | None = None,
+    ) -> PlaybackState:
         """PUT_PLAYBACK with status=STARTED and optional track selection.
 
         Args:
             track: Filename of the track to play (e.g. "Birds.wav").
                    If None, starts/resumes the last-used track.
+            duration: Playback duration in seconds. Defaults to 8 hours.
         """
-        proto_playback = Playback(status=Playback.STARTED)
+        proto_playback = Playback(
+            status=Playback.STARTED,
+            duration=duration if duration is not None else self._DEFAULT_PLAYBACK_DURATION,
+        )
         if track is not None:
             proto_playback.track.type = 0
             proto_playback.track.filename = track

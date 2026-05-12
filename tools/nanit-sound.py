@@ -655,6 +655,73 @@ async def cmd_select_track(session: SoundSession, arg: str | None = None) -> Non
     print(f'\n  → Listen: is "{arg}" playing now?')
 
 
+# ── 9b. Select track with duration probe ────────────────────────────────
+
+
+@sound_command(
+    name="loop-track",
+    description="PUT_PLAYBACK with duration field probe",
+    hint=(
+        "Sends PUT_PLAYBACK { status: STARTED, duration: N, track: ... }.\n"
+        "  Field 2 is a duration (seconds), not a loop boolean.\n"
+        "  Try: 0 (infinite?), 3600 (1 hour), or omit entirely.\n"
+        "  Available tracks: White Noise.wav, Birds.wav, Waves.wav, Wind.wav"
+    ),
+    takes_arg="TRACK (filename, e.g. Birds.wav)",
+)
+async def cmd_loop_track(session: SoundSession, arg: str | None = None) -> None:
+    tracks = ["White Noise.wav", "Birds.wav", "Waves.wav", "Wind.wav"]
+
+    if arg is None:
+        print("  Available tracks:")
+        for i, t in enumerate(tracks):
+            print(f"    {i}: {t}")
+        choice = input("  Select track (number or filename): ").strip()
+        if choice.isdigit():
+            idx = int(choice)
+            if 0 <= idx < len(tracks):
+                arg = tracks[idx]
+            else:
+                print(f"  ✗ Invalid index: {choice}")
+                return
+        else:
+            arg = choice
+
+    if arg not in tracks:
+        print(f"  ⚠ Unknown track: {arg!r} (trying anyway)")
+
+    print()
+    print("  Duration options:")
+    print("    <empty> = omit field 2 entirely (original behavior, stops after ~1 min)")
+    print("    0       = maybe infinite?")
+    print("    3600    = 1 hour")
+    print("    86400   = 24 hours")
+    dur_input = input("  Duration value (or empty to omit): ").strip()
+
+    playback = Playback(status=PlaybackStatus.STARTED)
+    playback.track.type = 0
+    playback.track.filename = arg
+
+    if dur_input:
+        dur_val = int(dur_input)
+        playback.duration = dur_val
+        label = f'status: STARTED, duration: {dur_val}, track: "{arg}"'
+    else:
+        label = f'status: STARTED, track: "{arg}"'
+
+    print(f"\n  Sending: PUT_PLAYBACK {{ {label} }}")
+    await session.send_typed_and_dump(
+        RequestType.PUT_PLAYBACK,
+        f"PUT_PLAYBACK {{ {label} }}",
+        playback=playback,
+    )
+    print(f'\n  → Track "{arg}" started.')
+    print("  → Listen and see if it keeps playing past ~1 min.")
+    print()
+    print("  ⏳ Connection alive. Press Enter when done listening ...")
+    input()
+
+
 # ── 10. Custom playback probe ───────────────────────────────────────────
 
 

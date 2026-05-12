@@ -11,7 +11,7 @@ services:
     environment:
       - TZ=Europe/Oslo
     command: >
-      bash -c "cp -r /opt/aionanit /tmp/aionanit && pip install --no-deps /tmp/aionanit && exec python -m homeassistant -c /config"
+      bash -c "cp -r /opt/aionanit /tmp/aionanit && pip install --no-deps --force-reinstall /tmp/aionanit && exec python -m homeassistant -c /config"
 
 volumes:
   ha-config:

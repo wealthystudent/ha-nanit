@@ -180,8 +180,7 @@ jobs:
 
   attach-artifact:
     name: Attach Release Artifact
-    needs: [resolve, ci-gate]
-    if: needs.resolve.outputs.is_stable == 'true'
+    needs: [resolve]
     runs-on: ubuntu-latest
     permissions:
       contents: write

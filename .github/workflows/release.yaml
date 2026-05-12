@@ -102,8 +102,8 @@ jobs:
       - name: Run aionanit tests
         run: python -m pytest packages/aionanit/tests/ -v --tb=short
 
-  publish-beta:
-    name: Publish Beta to PyPI
+  publish-pypi:
+    name: Publish to PyPI
     needs: resolve
     if: needs.resolve.outputs.is_stable == 'false'
     runs-on: ubuntu-latest
@@ -133,7 +133,7 @@ jobs:
           pip install build
           python -m build packages/aionanit
 
-      - name: Publish beta to PyPI
+      - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
         with:
           packages-dir: packages/aionanit/dist/
@@ -180,8 +180,7 @@ jobs:
 
   attach-artifact:
     name: Attach Release Artifact
-    needs: [resolve, ci-gate]
-    if: needs.resolve.outputs.is_stable == 'true'
+    needs: [resolve]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -190,7 +189,7 @@ jobs:
         with:
           ref: ${{ needs.resolve.outputs.tag }}
 
-      - name: Inject version from tag
+      - name: Inject version into manifest
         env:
           SEMVER: ${{ needs.resolve.outputs.semver }}
           PEP440: ${{ needs.resolve.outputs.pep440 }}

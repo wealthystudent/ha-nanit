@@ -26,7 +26,7 @@ from custom_components.nanit.light import (
 from custom_components.nanit.light import (
     _COMMAND_GRACE_PERIOD as _NL_GRACE,
 )
-from custom_components.nanit.select import NanitNightLightTimer, NanitSoundSelect
+from custom_components.nanit.select import NanitSoundSelect
 from custom_components.nanit.switch import NanitSLPowerSwitch, NanitSLSoundSwitch
 
 _MODELS = importlib.import_module("aionanit.models")
@@ -411,9 +411,7 @@ async def test_select_async_setup_entry_adds_entities_for_sound_light_coordinato
     await select_platform.async_setup_entry(MagicMock(), entry, async_add_entities)
 
     entities = async_add_entities.call_args.args[0]
-    # 2 camera night light timers + 1 S&L sound select = 3
-    assert len(entities) == 3
-    assert sum(isinstance(e, NanitNightLightTimer) for e in entities) == 2
+    assert len(entities) == 1
     assert sum(isinstance(e, NanitSoundSelect) for e in entities) == 1
 
 
@@ -1446,93 +1444,3 @@ async def test_night_light_async_added_to_hass_skips_restore_when_data_present()
         await entity.async_added_to_hass()
 
     assert entity.is_on is True
-
-
-# ---------------------------------------------------------------------------
-# NanitNightLightTimer — camera night light timer entity
-# ---------------------------------------------------------------------------
-
-
-def _night_light_timer_entity(
-    *, night_light_timeout: int | None = None, data_is_none: bool = False
-) -> tuple[NanitNightLightTimer, MagicMock]:
-    control = ControlState(night_light_timeout=night_light_timeout)
-    state: CameraState | None = None
-    if not data_is_none:
-        state = CameraState(
-            sensors=SensorState(temperature=22.5, humidity=50.0, light=100),
-            settings=SettingsState(volume=50, sleep_mode=False, night_vision=True),
-            control=control,
-            connection=ConnectionInfo(state=ConnectionState.CONNECTED),
-        )
-    coordinator = _push_coordinator(state)
-    camera = MagicMock(uid="cam_1")
-    camera.async_set_control = AsyncMock()
-    entity = NanitNightLightTimer(coordinator, camera)
-    _disable_state_writes(entity)
-    return entity, camera
-
-
-def test_night_light_timer_unique_id() -> None:
-    entity, _ = _night_light_timer_entity()
-    assert entity.unique_id == "cam_1_night_light_timer"
-
-
-def test_night_light_timer_current_option_none_when_no_data() -> None:
-    entity, _ = _night_light_timer_entity(data_is_none=True)
-    assert entity.current_option is None
-
-
-def test_night_light_timer_current_option_off_when_timeout_none() -> None:
-    entity, _ = _night_light_timer_entity(night_light_timeout=None)
-    assert entity.current_option == "off"
-
-
-def test_night_light_timer_current_option_off_when_zero() -> None:
-    entity, _ = _night_light_timer_entity(night_light_timeout=0)
-    assert entity.current_option == "off"
-
-
-def test_night_light_timer_current_option_15_minutes() -> None:
-    entity, _ = _night_light_timer_entity(night_light_timeout=900)
-    assert entity.current_option == "15_minutes"
-
-
-def test_night_light_timer_current_option_1_hour() -> None:
-    entity, _ = _night_light_timer_entity(night_light_timeout=3600)
-    assert entity.current_option == "1_hour"
-
-
-def test_night_light_timer_current_option_unknown_defaults_off() -> None:
-    entity, _ = _night_light_timer_entity(night_light_timeout=9999)
-    assert entity.current_option == "off"
-
-
-async def test_night_light_timer_select_option_calls_camera() -> None:
-    entity, camera = _night_light_timer_entity()
-
-    await entity.async_select_option("30_minutes")
-
-    camera.async_set_control.assert_awaited_once_with(night_light_timeout=1800)
-
-
-async def test_night_light_timer_select_option_off() -> None:
-    entity, camera = _night_light_timer_entity(night_light_timeout=900)
-
-    await entity.async_select_option("off")
-
-    camera.async_set_control.assert_awaited_once_with(night_light_timeout=0)
-
-
-async def test_night_light_timer_select_invalid_option_raises() -> None:
-    from homeassistant.exceptions import ServiceValidationError
-
-    entity, _ = _night_light_timer_entity()
-
-    with pytest.raises(ServiceValidationError):
-        await entity.async_select_option("invalid_option")
-
-
-def test_night_light_timer_options_list() -> None:
-    entity, _ = _night_light_timer_entity()
-    assert entity.options == ["off", "15_minutes", "30_minutes", "1_hour", "2_hours", "4_hours"]

@@ -64,6 +64,13 @@ def auto_enable_custom_integrations(enable_custom_integrations):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _mock_card_registration():
+    """Skip frontend card registration in unit tests."""
+    with patch("custom_components.nanit.async_register_card", AsyncMock()):
+        yield
+
+
 @pytest.fixture
 def snapshot(snapshot: SnapshotAssertion) -> SnapshotAssertion:
     """Return snapshot assertion fixture with the Home Assistant extension.

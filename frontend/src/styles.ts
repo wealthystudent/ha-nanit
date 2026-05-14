@@ -363,14 +363,6 @@ export const cardStyles = css`
     color: var(--nanit-teal);
   }
 
-  .pill-light {
-    color: var(--nanit-amber);
-  }
-
-  .pill-light ha-icon {
-    color: var(--nanit-amber);
-  }
-
   /* -- Motion / Sound Overlays -- */
 
   .overlay-bottom {
@@ -641,15 +633,6 @@ export const cardStyles = css`
   .control-section-sound .nanit-slider input[type="range"]::-moz-range-thumb:hover {
     box-shadow: 0 0 10px var(--nanit-teal-glow),
                 0 2px 6px rgba(0, 0, 0, 0.3);
-  }
-
-  .slider-value {
-    font-size: 12px;
-    font-weight: 500;
-    color: var(--secondary-text-color);
-    min-width: 32px;
-    text-align: right;
-    font-variant-numeric: tabular-nums;
   }
 
   /* -- Sound Machine -- */

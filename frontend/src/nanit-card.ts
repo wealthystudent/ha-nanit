@@ -298,17 +298,6 @@ export class NanitCard extends LitElement {
       `);
     }
 
-    if (isEntityAvailable(this.hass, entities.light)) {
-      const val = parseFloat(this.hass.states[entities.light!].state);
-      const display = isNaN(val) ? this.hass.states[entities.light!].state : Math.round(val).toString();
-      pills.push(html`
-        <div class="pill pill-light" @click=${() => this._fireMoreInfo(entities.light!)}>
-          <ha-icon icon="mdi:brightness-5"></ha-icon>
-          <span>${display} lx</span>
-        </div>
-      `);
-    }
-
     if (pills.length === 0) return html``;
     return html`<div class="overlay-top">${pills}</div>`;
   }
@@ -404,7 +393,6 @@ export class NanitCard extends LitElement {
                 }}
               />
             </div>
-            <span class="slider-value">${isOn ? `${brightnessPercent}%` : "Off"}</span>
           </div>
         </div>
       </div>
@@ -480,7 +468,6 @@ export class NanitCard extends LitElement {
                 }}
               />
             </div>
-            <span class="slider-value">${volumePercent}%</span>
           </div>
         </div>
       </div>

@@ -604,8 +604,13 @@ class NanitCamera:
 
         elif req_type == RequestType.PUT_SETTINGS:
             if proto_request.HasField("settings"):
-                settings = _parse_settings_from_proto(proto_request.settings)
-                self._update_state(settings=settings, kind=CameraEventKind.SETTINGS_UPDATE)
+                incoming = _parse_settings_from_proto(proto_request.settings)
+                # Merge — push may omit unchanged fields (e.g. volume).
+                merged = dataclasses.replace(
+                    self._state.settings,
+                    **{f: v for f, v in dataclasses.asdict(incoming).items() if v is not None},
+                )
+                self._update_state(settings=merged, kind=CameraEventKind.SETTINGS_UPDATE)
 
         elif req_type == RequestType.PUT_CONTROL:
             if proto_request.HasField("control"):

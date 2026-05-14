@@ -25,6 +25,7 @@ Monorepo with two packages for Nanit baby camera Home Assistant integration:
 ```
 custom_components/nanit/   ← HA integration (Python, async)
 packages/aionanit/         ← Nanit API client library (published to PyPI)
+frontend/                  ← Lovelace card source (TypeScript, Rollup → nanit-card.js)
 tests/unit/                ← Integration tests (80% coverage threshold)
 dev/                       ← Docker-based dev HA instance
 tools/                     ← CLI utilities (login, events, probe)
@@ -53,6 +54,9 @@ docs/                      ← Security checklist, connection reliability, testi
 | `aionanit/camera.py` | `NanitCamera` state machine, subscribe, commands |
 | `aionanit/auth.py` | `TokenManager` (auto-refresh, token change callback) |
 | `aionanit/ws/transport.py` | `WsTransport` (WebSocket connection, reconnect, keepalive) |
+| `frontend/src/nanit-card.ts` | Lovelace card main component (LitElement) |
+| `frontend/src/styles.ts` | All card CSS |
+| `custom_components/nanit/frontend/` | Compiled card bundle + auto-registration |
 
 ---
 
@@ -279,5 +283,9 @@ Follow [Home Assistant developer docs](https://developers.home-assistant.io/) (l
 ## CI
 
 - **Lint + typecheck + tests**: `.github/workflows/ci.yaml` (runs on every push/PR to `main`).
-- **Auto beta**: `.github/workflows/auto-beta.yaml` (triggers on PR merge to `main` with a `release:*` label; bumps version, tags — does NOT create a GitHub release. Run `just release` locally to publish).
-- **Release**: `.github/workflows/release.yaml` (triggers on release published or manual dispatch; publishes aionanit to PyPI, attaches nanit.zip for stable releases).
+- **Auto beta**: `.github/workflows/auto-beta.yaml` (triggers on PR merge to `main` with a `release:*` label; bumps version in manifest + pyproject, commits to `main`, tags, and pushes both).
+- **Release**: `.github/workflows/release.yaml` (triggers on release published or manual dispatch; publishes aionanit to PyPI, attaches nanit.zip. For stable releases: also commits the clean version to `main`).
+
+### Changelog
+
+`CHANGELOG.md` tracks notable changes. Versions 1.2.0–1.7.0 were released before the changelog was maintained — only 1.0.x and 1.1.0 entries exist. New releases from 1.8.0 onward must have a changelog entry added before merging.

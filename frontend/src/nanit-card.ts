@@ -9,6 +9,8 @@ import "./nanit-card-editor";
 export class NanitCard extends LitElement {
   @property({ attribute: false }) hass!: HomeAssistant;
   @state() private _config!: NanitCardConfig;
+  @state() private _streamLoaded = false;
+  private _streamCheckTimer?: ReturnType<typeof setTimeout>;
 
   static styles = cardStyles;
 
@@ -56,6 +58,45 @@ export class NanitCard extends LitElement {
     this.hass.callService(domain, service, { entity_id: entityId });
   }
 
+  disconnectedCallback(): void {
+    super.disconnectedCallback();
+    this._clearStreamCheck();
+  }
+
+  protected updated(changedProps: Map<string, unknown>): void {
+    super.updated(changedProps);
+    if (!this._streamLoaded && !this._streamCheckTimer) {
+      const streamEl = this.renderRoot.querySelector("ha-camera-stream");
+      if (streamEl) this._scheduleStreamCheck();
+    }
+  }
+
+  private _scheduleStreamCheck(): void {
+    this._streamCheckTimer = setTimeout(() => {
+      this._streamCheckTimer = undefined;
+      const streamEl = this.renderRoot.querySelector("ha-camera-stream");
+      if (!streamEl) return;
+      const root = streamEl.shadowRoot;
+      if (root?.querySelector("video, img, canvas")) {
+        this._streamLoaded = true;
+      } else {
+        this._scheduleStreamCheck();
+      }
+    }, 500);
+  }
+
+  private _clearStreamCheck(): void {
+    if (this._streamCheckTimer) {
+      clearTimeout(this._streamCheckTimer);
+      this._streamCheckTimer = undefined;
+    }
+  }
+
+  private _onStreamLoad(): void {
+    this._streamLoaded = true;
+    this._clearStreamCheck();
+  }
+
   protected render(): TemplateResult {
     if (!this.hass || !this._config) {
       return html`<ha-card><div class="header"><span class="device-name">Nanit</span></div></ha-card>`;
@@ -63,6 +104,10 @@ export class NanitCard extends LitElement {
 
     const entities = this._entities();
     const cameraOn = this._isCameraOn(entities);
+    if (!cameraOn && this._streamLoaded) {
+      this._streamLoaded = false;
+      this._clearStreamCheck();
+    }
     const deviceName = entities.camera
       ? getDeviceName(this.hass, entities.camera)
       : "Nanit";
@@ -123,7 +168,14 @@ export class NanitCard extends LitElement {
                   muted
                   .hass=${this.hass}
                   .stateObj=${cameraState}
+                  @load=${this._onStreamLoad}
                 ></ha-camera-stream>
+              </div>
+              <div class="stream-loader ${this._streamLoaded ? "hidden" : ""}">
+                <div class="loader-content">
+                  <ha-icon icon="mdi:camera"></ha-icon>
+                  <div class="loader-spinner"></div>
+                </div>
               </div>
             `
           : html`

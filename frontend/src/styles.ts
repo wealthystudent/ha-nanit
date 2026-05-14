@@ -111,6 +111,7 @@ export const cardStyles = css`
     background: #000;
     border-radius: var(--nanit-radius);
     margin: 0 8px;
+    min-height: 180px;
   }
 
   .stream-click {
@@ -133,6 +134,50 @@ export const cardStyles = css`
 
   .stream-placeholder ha-icon {
     --mdc-icon-size: 48px;
+  }
+
+  /* -- Stream Loading Overlay -- */
+
+  .stream-loader {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #000;
+    z-index: 3;
+    transition: opacity 0.6s ease;
+    pointer-events: none;
+  }
+
+  .stream-loader.hidden {
+    opacity: 0;
+  }
+
+  .loader-content {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .loader-content ha-icon {
+    --mdc-icon-size: 36px;
+    color: var(--nanit-amber);
+    opacity: 0.7;
+  }
+
+  .loader-spinner {
+    width: 28px;
+    height: 28px;
+    border: 3px solid rgba(201, 168, 76, 0.2);
+    border-top-color: var(--nanit-amber);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+  }
+
+  @keyframes spin {
+    to { transform: rotate(360deg); }
   }
 
   /* -- Sensor Overlays -- */

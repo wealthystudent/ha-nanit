@@ -118,11 +118,16 @@ export const cardStyles = css`
   .overlay-top {
     position: absolute;
     top: 10px;
-    left: 0;
-    right: 0;
+    left: 10px;
+    right: 10px;
     display: flex;
     justify-content: space-evenly;
     z-index: 2;
+    background: rgba(0, 0, 0, 0.35);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    border-radius: 10px;
+    padding: 6px 4px;
   }
 
   .pill {

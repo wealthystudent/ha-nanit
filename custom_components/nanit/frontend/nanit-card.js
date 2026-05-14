@@ -116,11 +116,16 @@ function t(t,e,i,s){var r,n=arguments.length,o=n<3?e:null===s?s=Object.getOwnPro
   .overlay-top {
     position: absolute;
     top: 10px;
-    left: 0;
-    right: 0;
+    left: 10px;
+    right: 10px;
     display: flex;
     justify-content: space-evenly;
     z-index: 2;
+    background: rgba(0, 0, 0, 0.35);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    border-radius: 10px;
+    padding: 6px 4px;
   }
 
   .pill {
@@ -573,8 +578,7 @@ function t(t,e,i,s){var r,n=arguments.length,o=n<3?e:null===s?s=Object.getOwnPro
               .min=${0}
               .max=${100}
               .value=${r}
-              .disabled=${!i}
-              @change=${e=>{const i=Number(e.target.value);this.hass.callService("light","turn_on",{entity_id:t,brightness:Math.round(i/100*255)})}}
+              @change=${e=>{const i=Number(e.target.value);0===i?this.hass.callService("light","turn_off",{entity_id:t}):this.hass.callService("light","turn_on",{entity_id:t,brightness:Math.round(i/100*255)})}}
             ></ha-slider>
             <span class="slider-value">${i?`${r}%`:"Off"}</span>
           </div>

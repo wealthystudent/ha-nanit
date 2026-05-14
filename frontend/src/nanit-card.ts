@@ -248,13 +248,18 @@ export class NanitCard extends LitElement {
               .min=${0}
               .max=${100}
               .value=${brightnessPercent}
-              .disabled=${!isOn}
               @change=${(ev: Event) => {
                 const val = Number((ev.target as HTMLInputElement).value);
-                this.hass.callService("light", "turn_on", {
-                  entity_id: entityId,
-                  brightness: Math.round((val / 100) * 255),
-                });
+                if (val === 0) {
+                  this.hass.callService("light", "turn_off", {
+                    entity_id: entityId,
+                  });
+                } else {
+                  this.hass.callService("light", "turn_on", {
+                    entity_id: entityId,
+                    brightness: Math.round((val / 100) * 255),
+                  });
+                }
               }}
             ></ha-slider>
             <span class="slider-value">${isOn ? `${brightnessPercent}%` : "Off"}</span>

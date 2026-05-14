@@ -336,30 +336,121 @@ export const cardStyles = css`
     min-width: 0;
   }
 
-  .slider-row ha-slider {
+  /* -- Custom Fat Slider -- */
+
+  .nanit-slider {
+    position: relative;
     flex: 1;
     min-width: 0;
+    height: 28px;
+    display: flex;
+    align-items: center;
   }
 
-  ha-slider {
-    --md-sys-color-primary: var(--nanit-amber);
-    --md-slider-active-track-color: var(--nanit-amber);
-    --md-slider-handle-color: var(--nanit-amber);
-    --md-slider-inactive-track-color: rgba(201, 168, 76, 0.2);
-    --md-slider-handle-height: 16px;
-    --md-slider-handle-width: 16px;
-    --md-slider-active-track-height: 6px;
-    --md-slider-inactive-track-height: 6px;
-    --md-slider-active-track-shape: 4px;
-    --md-slider-inactive-track-shape: 4px;
-    --md-slider-handle-shape: 50%;
+  .nanit-slider input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 14px;
+    border-radius: 7px;
+    outline: none;
+    cursor: pointer;
+    margin: 0;
+    background: linear-gradient(
+      to right,
+      var(--nanit-slider-active, var(--nanit-amber)) 0%,
+      var(--nanit-slider-active, var(--nanit-amber)) var(--slider-pct, 0%),
+      var(--nanit-slider-track, rgba(201, 168, 76, 0.15)) var(--slider-pct, 0%),
+      var(--nanit-slider-track, rgba(201, 168, 76, 0.15)) 100%
+    );
+    transition: box-shadow 0.2s ease;
   }
 
-  .control-section-sound ha-slider {
-    --md-sys-color-primary: var(--nanit-teal);
-    --md-slider-active-track-color: var(--nanit-teal);
-    --md-slider-handle-color: var(--nanit-teal);
-    --md-slider-inactive-track-color: rgba(50, 160, 200, 0.2);
+  .nanit-slider input[type="range"]:hover {
+    box-shadow: 0 0 8px var(--nanit-slider-glow, var(--nanit-amber-glow));
+  }
+
+  /* Webkit thumb */
+  .nanit-slider input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--nanit-slider-thumb, var(--nanit-amber));
+    border: 2px solid var(--ha-card-background, var(--card-background-color, #fff));
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+    cursor: pointer;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+  }
+
+  .nanit-slider input[type="range"]::-webkit-slider-thumb:hover {
+    transform: scale(1.15);
+    box-shadow: 0 0 10px var(--nanit-slider-glow, var(--nanit-amber-glow)),
+                0 2px 6px rgba(0, 0, 0, 0.3);
+  }
+
+  .nanit-slider input[type="range"]:active::-webkit-slider-thumb {
+    transform: scale(1.05);
+  }
+
+  /* Firefox thumb */
+  .nanit-slider input[type="range"]::-moz-range-thumb {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--nanit-slider-thumb, var(--nanit-amber));
+    border: 2px solid var(--ha-card-background, var(--card-background-color, #fff));
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+    cursor: pointer;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+  }
+
+  .nanit-slider input[type="range"]::-moz-range-thumb:hover {
+    transform: scale(1.15);
+    box-shadow: 0 0 10px var(--nanit-slider-glow, var(--nanit-amber-glow)),
+                0 2px 6px rgba(0, 0, 0, 0.3);
+  }
+
+  /* Firefox track (needed for FF) */
+  .nanit-slider input[type="range"]::-moz-range-track {
+    height: 14px;
+    border-radius: 7px;
+    background: transparent;
+    border: none;
+  }
+
+  /* Sound machine slider color overrides */
+  .control-section-sound .nanit-slider input[type="range"] {
+    background: linear-gradient(
+      to right,
+      var(--nanit-teal) 0%,
+      var(--nanit-teal) var(--slider-pct, 0%),
+      rgba(50, 160, 200, 0.15) var(--slider-pct, 0%),
+      rgba(50, 160, 200, 0.15) 100%
+    );
+  }
+
+  .control-section-sound .nanit-slider input[type="range"]:hover {
+    box-shadow: 0 0 8px var(--nanit-teal-glow);
+  }
+
+  .control-section-sound .nanit-slider input[type="range"]::-webkit-slider-thumb {
+    background: var(--nanit-teal);
+  }
+
+  .control-section-sound .nanit-slider input[type="range"]::-webkit-slider-thumb:hover {
+    box-shadow: 0 0 10px var(--nanit-teal-glow),
+                0 2px 6px rgba(0, 0, 0, 0.3);
+  }
+
+  .control-section-sound .nanit-slider input[type="range"]::-moz-range-thumb {
+    background: var(--nanit-teal);
+  }
+
+  .control-section-sound .nanit-slider input[type="range"]::-moz-range-thumb:hover {
+    box-shadow: 0 0 10px var(--nanit-teal-glow),
+                0 2px 6px rgba(0, 0, 0, 0.3);
   }
 
   .slider-value {

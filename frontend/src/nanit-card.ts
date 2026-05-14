@@ -244,24 +244,31 @@ export class NanitCard extends LitElement {
             <ha-icon icon="mdi:lightbulb${isOn ? "" : "-outline"}"></ha-icon>
           </button>
           <div class="slider-row">
-            <ha-slider
-              .min=${0}
-              .max=${100}
-              .value=${brightnessPercent}
-              @change=${(ev: Event) => {
-                const val = Number((ev.target as HTMLInputElement).value);
-                if (val === 0) {
-                  this.hass.callService("light", "turn_off", {
-                    entity_id: entityId,
-                  });
-                } else {
-                  this.hass.callService("light", "turn_on", {
-                    entity_id: entityId,
-                    brightness: Math.round((val / 100) * 255),
-                  });
-                }
-              }}
-            ></ha-slider>
+            <div class="nanit-slider" style="--slider-pct: ${brightnessPercent}%">
+              <input
+                type="range"
+                min="0"
+                max="100"
+                .value=${String(brightnessPercent)}
+                @input=${(ev: Event) => {
+                  const slider = (ev.target as HTMLInputElement).closest(".nanit-slider") as HTMLElement;
+                  if (slider) slider.style.setProperty("--slider-pct", `${(ev.target as HTMLInputElement).value}%`);
+                }}
+                @change=${(ev: Event) => {
+                  const val = Number((ev.target as HTMLInputElement).value);
+                  if (val === 0) {
+                    this.hass.callService("light", "turn_off", {
+                      entity_id: entityId,
+                    });
+                  } else {
+                    this.hass.callService("light", "turn_on", {
+                      entity_id: entityId,
+                      brightness: Math.round((val / 100) * 255),
+                    });
+                  }
+                }}
+              />
+            </div>
             <span class="slider-value">${isOn ? `${brightnessPercent}%` : "Off"}</span>
           </div>
         </div>
@@ -317,18 +324,25 @@ export class NanitCard extends LitElement {
           </button>
           <span class="track-name">${this._formatSourceName(currentSource) || "No track"}</span>
           <div class="slider-row">
-            <ha-slider
-              .min=${0}
-              .max=${100}
-              .value=${volumePercent}
-              @change=${(ev: Event) => {
-                const val = Number((ev.target as HTMLInputElement).value);
-                this.hass.callService("media_player", "volume_set", {
-                  entity_id: entityId,
-                  volume_level: val / 100,
-                });
-              }}
-            ></ha-slider>
+            <div class="nanit-slider" style="--slider-pct: ${volumePercent}%">
+              <input
+                type="range"
+                min="0"
+                max="100"
+                .value=${String(volumePercent)}
+                @input=${(ev: Event) => {
+                  const slider = (ev.target as HTMLInputElement).closest(".nanit-slider") as HTMLElement;
+                  if (slider) slider.style.setProperty("--slider-pct", `${(ev.target as HTMLInputElement).value}%`);
+                }}
+                @change=${(ev: Event) => {
+                  const val = Number((ev.target as HTMLInputElement).value);
+                  this.hass.callService("media_player", "volume_set", {
+                    entity_id: entityId,
+                    volume_level: val / 100,
+                  });
+                }}
+              />
+            </div>
             <span class="slider-value">${volumePercent}%</span>
           </div>
         </div>

@@ -2,6 +2,19 @@
 
 All notable changes to the Nanit Home Assistant integration are documented in this file.
 
+## [1.8.0] – Unreleased
+
+### Added
+- **Bundled Lovelace dashboard card** — zero-config companion card with live stream, nursery sensor overlays, night light & sound machine controls, and network info popup. Auto-registers as a Lovelace resource on setup.
+- Custom fat rounded sliders for night light brightness and sound machine volume
+- Icon-based sound track selection (replaces text list)
+- Camera stream loading overlay with animated indicator
+- Network info popup (WiFi name, frequency, signal strength)
+- Device name pill badge in card header
+
+### Fixed
+- Volume entity no longer resets to 0 after unrelated settings pushes from the camera (partial `PUT_SETTINGS` messages now merge into existing state instead of replacing it)
+
 ## [1.1.0] – 2026-03-23
 
 ### Added

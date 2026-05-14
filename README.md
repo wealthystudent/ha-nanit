@@ -14,6 +14,10 @@
 >
 > Live streams, nursery sensors, night light control, and automations — all from your HA dashboard. Works with all Nanit cameras and the Sound & Light Machine.
 
+<p align="center">
+  <img src="docs/images/nanit-card.png" alt="Nanit dashboard card" width="420" />
+</p>
+
 ## Requirements
 
 - Home Assistant **2025.12** or newer
@@ -57,6 +61,29 @@ Copy `custom_components/nanit/` into your HA `config/custom_components/` directo
 - Temperature & humidity sensors
 
 Some entities are disabled by default. Enable them in **Settings → Devices & Services → Nanit → Entities**.
+
+## Dashboard Card
+
+A companion Lovelace card is **bundled with the integration** — no HACS frontend dependencies or manual JS installation required. After setup, the card appears in your card picker automatically.
+
+**To add it:** Open any dashboard → **Add Card** → search for **Nanit** → select your camera.
+
+The card provides:
+- Live camera stream with loading indicator
+- Temperature & humidity overlays
+- Motion & sound activity indicators
+- Night light slider (drag to adjust brightness, 0% = off)
+- Sound machine controls with icon-based track selection
+- Volume slider
+- Network info popup (WiFi name, frequency, signal strength)
+
+> [!NOTE]
+> If your Lovelace is in **YAML mode**, add the resource manually:
+> ```yaml
+> resources:
+>   - url: /nanit-card/nanit-card.js
+>     type: module
+> ```
 
 ## Local connection (optional)
 

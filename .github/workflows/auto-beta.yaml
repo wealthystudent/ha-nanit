@@ -114,7 +114,7 @@ jobs:
           git add custom_components/nanit/manifest.json packages/aionanit/pyproject.toml
           git commit -m "chore: bump version to ${TAG} [skip ci]"
           git tag "${TAG}"
-          git push origin "${TAG}"
+          git push origin HEAD:main "${TAG}"
 
       - name: Summary
         env:

@@ -206,3 +206,37 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "${{ needs.resolve.outputs.tag }}" nanit.zip --clobber
+
+  update-main-version:
+    name: Update Main Branch Version
+    needs: resolve
+    if: needs.resolve.outputs.is_stable == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: main
+
+      - name: Inject stable version into manifest and pyproject
+        env:
+          SEMVER: ${{ needs.resolve.outputs.semver }}
+          PEP440: ${{ needs.resolve.outputs.pep440 }}
+        run: |
+          jq --arg v "$SEMVER" --arg r "aionanit>=$PEP440" \
+            '.version = $v | .requirements = [$r]' \
+            custom_components/nanit/manifest.json > /tmp/manifest.json
+          mv /tmp/manifest.json custom_components/nanit/manifest.json
+
+          sed -i "s/^version = \".*\"/version = \"$PEP440\"/" packages/aionanit/pyproject.toml
+
+      - name: Push version to main
+        env:
+          SEMVER: ${{ needs.resolve.outputs.semver }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add custom_components/nanit/manifest.json packages/aionanit/pyproject.toml
+          git commit -m "chore: bump version to v${SEMVER} [skip ci]"
+          git push origin HEAD:main

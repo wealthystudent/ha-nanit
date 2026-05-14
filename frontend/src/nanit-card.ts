@@ -85,7 +85,10 @@ export class NanitCard extends LitElement {
   ): TemplateResult {
     return html`
       <div class="header">
-        <span class="device-name">${deviceName}</span>
+        <div class="device-badge">
+          <ha-icon icon="mdi:baby-face-outline"></ha-icon>
+          <span class="device-name">${deviceName}</span>
+        </div>
         ${!cameraOn
           ? html`<span class="camera-off-label">Camera Off</span>`
           : nothing}
@@ -322,7 +325,9 @@ export class NanitCard extends LitElement {
           >
             <ha-icon icon="mdi:${isPlaying ? "stop" : "play"}"></ha-icon>
           </button>
-          <span class="track-name">${this._formatSourceName(currentSource) || "No track"}</span>
+          ${isPlaying
+            ? html`<span class="track-name">${this._formatSourceName(currentSource)}</span>`
+            : nothing}
           <div class="slider-row">
             <div class="nanit-slider" style="--slider-pct: ${volumePercent}%">
               <input

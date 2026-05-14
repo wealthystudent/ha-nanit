@@ -30,8 +30,30 @@ export const cardStyles = css`
     padding: 12px 16px;
   }
 
+  .device-badge {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(201, 168, 76, 0.2);
+    padding: 6px 14px 6px 8px;
+    border-radius: 24px;
+    box-shadow: 0 0 10px var(--nanit-amber-glow);
+    transition: background var(--nanit-transition),
+                box-shadow var(--nanit-transition);
+  }
+
+  .device-badge:hover {
+    background: rgba(201, 168, 76, 0.3);
+    box-shadow: 0 0 16px var(--nanit-amber-glow);
+  }
+
+  .device-badge ha-icon {
+    --mdc-icon-size: 22px;
+    color: var(--nanit-amber);
+  }
+
   .device-name {
-    font-size: 16px;
+    font-size: 15px;
     font-weight: 500;
     color: var(--primary-text-color);
     letter-spacing: 0.01em;

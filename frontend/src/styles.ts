@@ -117,17 +117,17 @@ export const cardStyles = css`
 
   .overlay-top {
     position: absolute;
-    top: 10px;
-    left: 10px;
-    right: 10px;
+    top: 8px;
+    left: 8px;
+    right: 8px;
     display: flex;
-    justify-content: space-evenly;
+    justify-content: space-between;
     z-index: 2;
-    background: rgba(0, 0, 0, 0.35);
-    backdrop-filter: blur(6px);
-    -webkit-backdrop-filter: blur(6px);
-    border-radius: 10px;
-    padding: 6px 4px;
+    pointer-events: none;
+  }
+
+  .overlay-top .pill {
+    pointer-events: auto;
   }
 
   .pill {
@@ -157,49 +157,27 @@ export const cardStyles = css`
     color: rgba(255, 255, 255, 0.85);
   }
 
-  .sensor-reading {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    font-size: 13px;
-    font-weight: 600;
-    color: #fff;
-    cursor: pointer;
-    user-select: none;
-    text-shadow: 0 1px 4px rgba(0, 0, 0, 0.7);
-    transition: opacity var(--nanit-transition);
-  }
-
-  .sensor-reading:hover {
-    opacity: 0.8;
-  }
-
-  .sensor-reading ha-icon {
-    --mdc-icon-size: 16px;
-    color: rgba(255, 255, 255, 0.85);
-  }
-
-  .sensor-temp {
+  .pill-temp {
     color: var(--nanit-amber);
   }
 
-  .sensor-temp ha-icon {
+  .pill-temp ha-icon {
     color: var(--nanit-amber);
   }
 
-  .sensor-humid {
+  .pill-humid {
     color: var(--nanit-teal);
   }
 
-  .sensor-humid ha-icon {
+  .pill-humid ha-icon {
     color: var(--nanit-teal);
   }
 
-  .sensor-light {
+  .pill-light {
     color: var(--nanit-amber);
   }
 
-  .sensor-light ha-icon {
+  .pill-light ha-icon {
     color: var(--nanit-amber);
   }
 

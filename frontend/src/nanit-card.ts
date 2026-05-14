@@ -9,6 +9,9 @@ import "./nanit-card-editor";
 export class NanitCard extends LitElement {
   @property({ attribute: false }) hass!: HomeAssistant;
   @state() private _config!: NanitCardConfig;
+  @state() private _streamLoaded = false;
+  @state() private _showNetwork = false;
+  private _streamCheckTimer?: ReturnType<typeof setTimeout>;
 
   static styles = cardStyles;
 
@@ -56,6 +59,45 @@ export class NanitCard extends LitElement {
     this.hass.callService(domain, service, { entity_id: entityId });
   }
 
+  disconnectedCallback(): void {
+    super.disconnectedCallback();
+    this._clearStreamCheck();
+  }
+
+  protected updated(changedProps: Map<string, unknown>): void {
+    super.updated(changedProps);
+    if (!this._streamLoaded && !this._streamCheckTimer) {
+      const streamEl = this.renderRoot.querySelector("ha-camera-stream");
+      if (streamEl) this._scheduleStreamCheck();
+    }
+  }
+
+  private _scheduleStreamCheck(): void {
+    this._streamCheckTimer = setTimeout(() => {
+      this._streamCheckTimer = undefined;
+      const streamEl = this.renderRoot.querySelector("ha-camera-stream");
+      if (!streamEl) return;
+      const root = streamEl.shadowRoot;
+      if (root?.querySelector("video, img, canvas")) {
+        this._streamLoaded = true;
+      } else {
+        this._scheduleStreamCheck();
+      }
+    }, 500);
+  }
+
+  private _clearStreamCheck(): void {
+    if (this._streamCheckTimer) {
+      clearTimeout(this._streamCheckTimer);
+      this._streamCheckTimer = undefined;
+    }
+  }
+
+  private _onStreamLoad(): void {
+    this._streamLoaded = true;
+    this._clearStreamCheck();
+  }
+
   protected render(): TemplateResult {
     if (!this.hass || !this._config) {
       return html`<ha-card><div class="header"><span class="device-name">Nanit</span></div></ha-card>`;
@@ -63,6 +105,10 @@ export class NanitCard extends LitElement {
 
     const entities = this._entities();
     const cameraOn = this._isCameraOn(entities);
+    if (!cameraOn && this._streamLoaded) {
+      this._streamLoaded = false;
+      this._clearStreamCheck();
+    }
     const deviceName = entities.camera
       ? getDeviceName(this.hass, entities.camera)
       : "Nanit";
@@ -83,6 +129,10 @@ export class NanitCard extends LitElement {
     entities: NanitEntities,
     cameraOn: boolean,
   ): TemplateResult {
+    const hasWifi = isEntityAvailable(this.hass, entities.wifi_ssid)
+      || isEntityAvailable(this.hass, entities.wifi_signal)
+      || isEntityAvailable(this.hass, entities.wifi_frequency);
+
     return html`
       <div class="header">
         <div class="device-badge">
@@ -92,14 +142,89 @@ export class NanitCard extends LitElement {
         ${!cameraOn
           ? html`<span class="camera-off-label">Camera Off</span>`
           : nothing}
-        ${entities.power
+        <div class="header-actions">
+          ${hasWifi
+            ? html`
+                <button
+                  class="wifi-btn"
+                  @click=${() => { this._showNetwork = !this._showNetwork; }}
+                >
+                  <ha-icon icon="mdi:wifi"></ha-icon>
+                </button>
+              `
+            : nothing}
+          ${entities.power
+            ? html`
+                <button
+                  class="power-btn ${cameraOn ? "" : "off"}"
+                  @click=${() => this._toggleService("switch", "toggle", entities.power!)}
+                >
+                  <ha-icon icon="mdi:power"></ha-icon>
+                </button>
+              `
+            : nothing}
+        </div>
+      </div>
+      ${this._showNetwork ? this._renderNetworkPopup(entities) : nothing}
+    `;
+  }
+
+  private _renderNetworkPopup(entities: NanitEntities): TemplateResult {
+    const ssid = entities.wifi_ssid ? this.hass.states[entities.wifi_ssid]?.state : undefined;
+    const signal = entities.wifi_signal ? this.hass.states[entities.wifi_signal]?.state : undefined;
+    const signalUnit = entities.wifi_signal
+      ? (this.hass.states[entities.wifi_signal]?.attributes.unit_of_measurement as string) ?? "dBm"
+      : "dBm";
+    const freq = entities.wifi_frequency ? this.hass.states[entities.wifi_frequency]?.state : undefined;
+    const freqUnit = entities.wifi_frequency
+      ? (this.hass.states[entities.wifi_frequency]?.attributes.unit_of_measurement as string) ?? "MHz"
+      : "MHz";
+
+    const signalNum = signal ? parseInt(signal, 10) : -100;
+    let signalLabel = "Weak";
+    let signalColor = "#e74c3c";
+    if (signalNum >= -50) { signalLabel = "Excellent"; signalColor = "#2ecc71"; }
+    else if (signalNum >= -60) { signalLabel = "Good"; signalColor = "var(--nanit-teal)"; }
+    else if (signalNum >= -70) { signalLabel = "Fair"; signalColor = "var(--nanit-amber)"; }
+
+    return html`
+      <div class="network-backdrop" @click=${() => { this._showNetwork = false; }}></div>
+      <div class="network-popup">
+        <div class="network-header">
+          <ha-icon icon="mdi:wifi"></ha-icon>
+          <span>Network</span>
+        </div>
+        ${ssid
           ? html`
-              <button
-                class="power-btn ${cameraOn ? "" : "off"}"
-                @click=${() => this._toggleService("switch", "toggle", entities.power!)}
-              >
-                <ha-icon icon="mdi:power"></ha-icon>
-              </button>
+              <div class="network-row">
+                <ha-icon icon="mdi:router-wireless"></ha-icon>
+                <div class="network-detail">
+                  <span class="network-label">WiFi Name</span>
+                  <span class="network-value">${ssid}</span>
+                </div>
+              </div>
+            `
+          : nothing}
+        ${signal
+          ? html`
+              <div class="network-row">
+                <ha-icon icon="mdi:signal" style="color: ${signalColor}"></ha-icon>
+                <div class="network-detail">
+                  <span class="network-label">Signal Strength</span>
+                  <span class="network-value">${signal} ${signalUnit} · <span style="color: ${signalColor}">${signalLabel}</span></span>
+                </div>
+              </div>
+            `
+          : nothing}
+        ${freq
+          ? html`
+              <div class="network-row">
+                <ha-icon icon="mdi:frequency"></ha-icon>
+                <div class="network-detail">
+                  <span class="network-label">Frequency</span>
+                  <span class="network-value">${freq} ${freqUnit}</span>
+                </div>
+              </div>
             `
           : nothing}
       </div>
@@ -123,7 +248,14 @@ export class NanitCard extends LitElement {
                   muted
                   .hass=${this.hass}
                   .stateObj=${cameraState}
+                  @load=${this._onStreamLoad}
                 ></ha-camera-stream>
+              </div>
+              <div class="stream-loader ${this._streamLoaded ? "hidden" : ""}">
+                <div class="loader-content">
+                  <ha-icon icon="mdi:camera"></ha-icon>
+                  <div class="loader-spinner"></div>
+                </div>
               </div>
             `
           : html`

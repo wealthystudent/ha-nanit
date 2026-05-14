@@ -39,4 +39,7 @@ export interface NanitEntities {
   sound?: string;
   night_light?: string;
   sound_machine?: string;
+  wifi_ssid?: string;
+  wifi_signal?: string;
+  wifi_frequency?: string;
 }

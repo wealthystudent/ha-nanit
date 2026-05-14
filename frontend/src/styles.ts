@@ -27,7 +27,7 @@ export const cardStyles = css`
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 12px 16px;
+    padding: 10px 16px 6px;
   }
 
   .device-badge {
@@ -94,6 +94,129 @@ export const cardStyles = css`
     --mdc-icon-size: 24px;
   }
 
+  .header-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .wifi-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(50, 160, 200, 0.2);
+    border: none;
+    padding: 8px;
+    border-radius: 50%;
+    cursor: pointer;
+    color: var(--nanit-teal);
+    transition: background var(--nanit-transition),
+                box-shadow var(--nanit-transition);
+    box-shadow: 0 0 8px var(--nanit-teal-glow);
+  }
+
+  .wifi-btn:hover {
+    background: rgba(50, 160, 200, 0.3);
+    box-shadow: 0 0 14px var(--nanit-teal-glow);
+  }
+
+  .wifi-btn ha-icon {
+    --mdc-icon-size: 24px;
+  }
+
+  /* -- Network Popup -- */
+
+  .network-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 99;
+  }
+
+  .network-popup {
+    position: absolute;
+    top: 52px;
+    right: 8px;
+    z-index: 100;
+    background: var(--ha-card-background, var(--card-background-color));
+    border: 1px solid rgba(50, 160, 200, 0.3);
+    border-radius: var(--nanit-radius);
+    padding: 14px;
+    min-width: 220px;
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.25),
+                0 0 12px var(--nanit-teal-glow);
+    animation: popupIn 0.2s ease;
+  }
+
+  @keyframes popupIn {
+    from {
+      opacity: 0;
+      transform: translateY(-8px) scale(0.96);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+  }
+
+  .network-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--divider-color, rgba(127, 127, 127, 0.15));
+    color: var(--nanit-teal);
+    font-size: 14px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .network-header ha-icon {
+    --mdc-icon-size: 20px;
+  }
+
+  .network-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 0;
+  }
+
+  .network-row + .network-row {
+    border-top: 1px solid var(--divider-color, rgba(127, 127, 127, 0.08));
+  }
+
+  .network-row > ha-icon {
+    --mdc-icon-size: 20px;
+    color: var(--nanit-teal);
+    flex-shrink: 0;
+  }
+
+  .network-detail {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .network-label {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--secondary-text-color);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+
+  .network-value {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--primary-text-color);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   /* -- Camera Off -- */
 
   .camera-off-label {
@@ -110,7 +233,8 @@ export const cardStyles = css`
     overflow: hidden;
     background: #000;
     border-radius: var(--nanit-radius);
-    margin: 0 8px;
+    margin: 0 4px;
+    min-height: 180px;
   }
 
   .stream-click {
@@ -133,6 +257,50 @@ export const cardStyles = css`
 
   .stream-placeholder ha-icon {
     --mdc-icon-size: 48px;
+  }
+
+  /* -- Stream Loading Overlay -- */
+
+  .stream-loader {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #000;
+    z-index: 3;
+    transition: opacity 0.6s ease;
+    pointer-events: none;
+  }
+
+  .stream-loader.hidden {
+    opacity: 0;
+  }
+
+  .loader-content {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .loader-content ha-icon {
+    --mdc-icon-size: 36px;
+    color: var(--nanit-amber);
+    opacity: 0.7;
+  }
+
+  .loader-spinner {
+    width: 28px;
+    height: 28px;
+    border: 3px solid rgba(201, 168, 76, 0.2);
+    border-top-color: var(--nanit-amber);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+  }
+
+  @keyframes spin {
+    to { transform: rotate(360deg); }
   }
 
   /* -- Sensor Overlays -- */
@@ -251,7 +419,7 @@ export const cardStyles = css`
     display: flex;
     flex-direction: column;
     gap: var(--nanit-gap);
-    padding: var(--nanit-gap) 8px 8px;
+    padding: var(--nanit-gap) 4px 4px;
   }
 
   /* -- Control Sections (Night Light + Sound Machine) -- */

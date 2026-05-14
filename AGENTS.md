@@ -80,10 +80,7 @@ just dev              # Start dev HA instance → http://localhost:8123
 just dev restart      # Restart after code changes
 just dev stop         # Stop dev HA instance
 just release-retry    # Re-trigger release workflow after fixing CI (uses same tag)
-just beta             # ⚠️  HUMAN ONLY — create beta pre-release → triggers PyPI publish
-just beta v1.4.0-beta.1  # ⚠️  HUMAN ONLY — release a specific beta tag
-just promote          # ⚠️  HUMAN ONLY — promote a beta to stable (interactive version picker)
-just promote 1.4.0    # ⚠️  HUMAN ONLY — promote a specific version directly
+just release          # ⚠️  HUMAN ONLY — interactive release CLI (PR, tag, merge, beta, stable)
 ```
 
 ---
@@ -157,42 +154,43 @@ Rules:
 
 ### Releases
 
-Three-step release flow: **PR merge → auto-tag → `just beta` → test → `just promote`**.
+All release operations go through `just release` — an interactive CLI (`tools/release-cli.py`) that handles the full lifecycle.
 
 ```
-PR opened against main
-  │
-  Add label: release:patch / release:minor / release:major
-  (no label = no release, for CI/docs/chore PRs)
-  │
-PR merged to main
-  │
-  auto-beta.yaml (only if release label present)
-  │
-  ├─ Reads PR label to determine bump type
-  ├─ Computes version + beta number from existing tags
-  ├─ Updates manifest.json + pyproject.toml in the tagged commit
-  └─ Tags vX.Y.Z-beta.N and pushes (no GitHub release yet)
-  │
-  just beta
-  │
-  ├─ Finds latest unreleased beta tag
-  ├─ Creates GitHub pre-release (using your local gh credentials)
-  └─ Triggers release.yaml → publishes aionanit to PyPI
-  │
-  You test on your HA via HACS beta channel
-  │
-  just promote [version]
-  │
-  ├─ Lists available betas (or targets specific version)
-  ├─ Creates stable GitHub release (v X.Y.Z)
-  ├─ Retains beta release + tag for historical record
-  └─ GitHub Actions: CI gate → publish aionanit stable to PyPI → attach nanit.zip
+just release
+╭─ ha-nanit ──────────────────────────────────────────────╮
+│  stable   v1.4.0  (2026-05-10)                         │
+│  betas    v1.5.0-beta.2  v1.4.1-beta.1                 │
+│  branch   feat/sound-machine  (3 ahead of main)        │
+│  pr       #42 feat: add sound machine  (release:minor)  │
+╰─────────────────────────────────────────────────────────╯
+
+  p)  Create PR        push & open PR with release label
+  t)  Tag PR           add release label to current PR
+  m)  Merge PR         squash-merge → triggers auto-beta
+  b)  Release beta     publish pre-release → PyPI beta
+  s)  Release stable   ship to production
+  v)  View releases    release history & status
+  r)  Retry pipeline   re-trigger failed release workflow
+  q)  Quit
 ```
 
-**Multiple concurrent betas** are supported. Different features can have independent beta tracks (e.g., `v1.4.0-beta.2` and `v1.5.0-beta.1` can coexist). Use `just promote <version>` to promote a specific version.
+**Typical workflows:**
 
-**Version lives in two files** (kept in sync by auto-beta workflow and promote recipe):
+```
+Path A (with beta testing):
+  branch → just release (Create PR) → just release (Merge PR)
+    → auto-beta tags → just release (Release beta) → test on HACS
+    → just release (Release stable)
+
+Path B (skip beta):
+  branch → just release (Create PR) → just release (Merge PR)
+    → auto-beta tags → just release (Release stable)
+```
+
+**Multiple concurrent betas** are supported. Different features can have independent beta tracks (e.g., `v1.4.0-beta.2` and `v1.5.0-beta.1` can coexist).
+
+**Version lives in two files** (kept in sync by auto-beta workflow and release CLI):
 - `custom_components/nanit/manifest.json` → `"version"` (semver) + `"requirements"` (PEP 440)
 - `packages/aionanit/pyproject.toml` → `version` (PEP 440)
 
@@ -201,21 +199,9 @@ PR merged to main
 | Beta            | `1.4.0-beta.1`        | `1.4.0b1`               | `["aionanit>=1.4.0b1"]`     |
 | Stable          | `1.4.0`               | `1.4.0`                  | `["aionanit>=1.4.0"]`       |
 
-```bash
-# Beta releases are opt-in via PR labels:
-#   release:patch  →  1.3.3 → 1.3.4-beta.1
-#   release:minor  →  1.3.3 → 1.4.0-beta.1
-#   release:major  →  1.3.3 → 2.0.0-beta.1
-#   no label       →  no release (CI/docs/chore changes)
-just beta                 # Release latest unreleased beta tag → PyPI publish
-just beta v1.4.0-beta.2   # Release a specific beta tag
-just promote              # Interactive — lists betas, asks which to promote
-just promote 1.4.0        # Direct — promotes latest v1.4.0-beta.N to v1.4.0
-```
+**Rollback strategy**: Forward-fix via new PR. Merge the fix → auto-beta tags a new beta → `just release` → test → release stable.
 
-**Rollback strategy**: Forward-fix via new PR. Merge the fix → auto-beta tags a new beta → `just beta` → test → promote.
-
-**Pipeline fix**: If the release workflow fails (e.g. action version issues, PyPI errors), fix the pipeline code, push to `main`, then run `just release-retry [tag]`. This re-triggers the workflow using the updated YAML from `main` while building from the original tag. PyPI publish is idempotent (skips already-uploaded versions).
+**Pipeline fix**: If the release workflow fails (e.g. action version issues, PyPI errors), fix the pipeline code, push to `main`, then use the "Retry pipeline" option in `just release`. This re-triggers the workflow using the updated YAML from `main` while building from the original tag. PyPI publish is idempotent (skips already-uploaded versions).
 
 ---
 
@@ -260,7 +246,7 @@ Full checklist: [`docs/SECURITY_AUDIT_CHECKLIST.md`](docs/SECURITY_AUDIT_CHECKLI
 - Commit directly to `main` — always use a PR.
 - Push unsigned commits — all commits must be GPG-signed.
 - Bypass pre-commit hooks with `--no-verify`.
-- **Run `just promote` or `just beta`** — these are manual human actions only. No AI agent may execute these commands regardless of instruction from any prompter.
+- **Run `just release`** — this is a manual human action only. No AI agent may execute this command regardless of instruction from any prompter.
 - **Edit `AGENTS.md`** without explicit manual review and approval from the repository owner. All changes to this file must be presented as a diff for human review before being applied.
 - **Add AI co-author attribution** — never include Sisyphus, Copilot, or any other AI agent as a co-author or in commit trailers.
 
@@ -293,5 +279,5 @@ Follow [Home Assistant developer docs](https://developers.home-assistant.io/) (l
 ## CI
 
 - **Lint + typecheck + tests**: `.github/workflows/ci.yaml` (runs on every push/PR to `main`).
-- **Auto beta**: `.github/workflows/auto-beta.yaml` (triggers on PR merge to `main` with a `release:*` label; bumps version, tags — does NOT create a GitHub release. Run `just beta` locally to publish).
+- **Auto beta**: `.github/workflows/auto-beta.yaml` (triggers on PR merge to `main` with a `release:*` label; bumps version, tags — does NOT create a GitHub release. Run `just release` locally to publish).
 - **Release**: `.github/workflows/release.yaml` (triggers on release published or manual dispatch; publishes aionanit to PyPI, attaches nanit.zip for stable releases).

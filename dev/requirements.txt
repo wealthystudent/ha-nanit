@@ -8,3 +8,4 @@ ruff
 mypy
 pre-commit
 syrupy
+rich

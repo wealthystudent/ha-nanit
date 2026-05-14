@@ -43,3 +43,7 @@ htmlcov/
 # Dev HA instance (dev/docker-compose.yml)
 dev/ha-config/
 !dev/ha-config/configuration.yaml
+
+# Frontend build
+node_modules/
+frontend/node_modules/

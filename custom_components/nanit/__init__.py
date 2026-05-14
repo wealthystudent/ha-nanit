@@ -26,6 +26,7 @@ from .const import (
     LOGGER,
     PLATFORMS,
 )
+from .frontend import async_register_card
 from .hub import CameraData, NanitHub
 
 
@@ -66,6 +67,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: NanitConfigEntry) -> boo
     _async_remove_stale_devices(hass, entry, hub)
     _async_remove_deprecated_entities(hass, hub)
 
+    await async_register_card(hass)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     # update_listener fires for ANY entry mutation (data OR options).

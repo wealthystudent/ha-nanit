@@ -145,7 +145,7 @@ export class NanitCard extends LitElement {
       const display = isNaN(val) ? this.hass.states[entities.temperature!].state : val.toFixed(1);
       const unit = (this.hass.states[entities.temperature!].attributes.unit_of_measurement as string) ?? "";
       pills.push(html`
-        <div class="sensor-reading" @click=${() => this._fireMoreInfo(entities.temperature!)}>
+        <div class="sensor-reading sensor-temp" @click=${() => this._fireMoreInfo(entities.temperature!)}>
           <ha-icon icon="mdi:thermometer"></ha-icon>
           <span>${display}${unit}</span>
         </div>
@@ -156,7 +156,7 @@ export class NanitCard extends LitElement {
       const val = parseFloat(this.hass.states[entities.humidity!].state);
       const display = isNaN(val) ? this.hass.states[entities.humidity!].state : val.toFixed(1);
       pills.push(html`
-        <div class="sensor-reading" @click=${() => this._fireMoreInfo(entities.humidity!)}>
+        <div class="sensor-reading sensor-humid" @click=${() => this._fireMoreInfo(entities.humidity!)}>
           <ha-icon icon="mdi:water-percent"></ha-icon>
           <span>${display}%</span>
         </div>
@@ -165,9 +165,9 @@ export class NanitCard extends LitElement {
 
     if (isEntityAvailable(this.hass, entities.light)) {
       const val = parseFloat(this.hass.states[entities.light!].state);
-      const display = isNaN(val) ? this.hass.states[entities.light!].state : val.toFixed(1);
+      const display = isNaN(val) ? this.hass.states[entities.light!].state : Math.round(val).toString();
       pills.push(html`
-        <div class="sensor-reading" @click=${() => this._fireMoreInfo(entities.light!)}>
+        <div class="sensor-reading sensor-light" @click=${() => this._fireMoreInfo(entities.light!)}>
           <ha-icon icon="mdi:brightness-5"></ha-icon>
           <span>${display} lx</span>
         </div>

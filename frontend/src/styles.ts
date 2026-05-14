@@ -174,6 +174,30 @@ export const cardStyles = css`
     color: rgba(255, 255, 255, 0.85);
   }
 
+  .sensor-temp {
+    color: var(--nanit-amber);
+  }
+
+  .sensor-temp ha-icon {
+    color: var(--nanit-amber);
+  }
+
+  .sensor-humid {
+    color: var(--nanit-teal);
+  }
+
+  .sensor-humid ha-icon {
+    color: var(--nanit-teal);
+  }
+
+  .sensor-light {
+    color: var(--nanit-amber);
+  }
+
+  .sensor-light ha-icon {
+    color: var(--nanit-amber);
+  }
+
   /* -- Motion / Sound Overlays -- */
 
   .overlay-bottom {

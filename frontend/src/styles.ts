@@ -385,7 +385,7 @@ export const cardStyles = css`
 
   .source-list {
     display: flex;
-    gap: 6px;
+    gap: 4px;
     overflow-x: auto;
     padding: 2px 0;
     scrollbar-width: none;
@@ -396,30 +396,33 @@ export const cardStyles = css`
     display: none;
   }
 
-  .source-chip {
+  .source-icon {
     display: inline-flex;
     align-items: center;
-    padding: 3px 8px;
-    border-radius: 20px;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
     border: 1.5px solid var(--divider-color, rgba(127, 127, 127, 0.2));
     background: none;
-    font-size: 10px;
-    font-weight: 500;
     color: var(--primary-text-color);
     cursor: pointer;
-    white-space: nowrap;
+    padding: 0;
     transition: background var(--nanit-transition),
                 border-color var(--nanit-transition),
                 color var(--nanit-transition),
                 box-shadow var(--nanit-transition);
-    text-transform: capitalize;
   }
 
-  .source-chip:hover {
+  .source-icon ha-icon {
+    --mdc-icon-size: 15px;
+  }
+
+  .source-icon:hover {
     background: var(--secondary-background-color, rgba(127, 127, 127, 0.1));
   }
 
-  .source-chip.active {
+  .source-icon.active {
     background: rgba(50, 160, 200, 0.15);
     border-color: var(--nanit-teal);
     color: var(--nanit-teal);

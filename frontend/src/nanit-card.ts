@@ -287,14 +287,15 @@ export class NanitCard extends LitElement {
                   ${sourceList.map(
                     (source) => html`
                       <button
-                        class="source-chip ${source === currentSource ? "active" : ""}"
+                        class="source-icon ${source === currentSource ? "active" : ""}"
+                        title=${this._formatSourceName(source)}
                         @click=${() =>
                           this.hass.callService("media_player", "select_source", {
                             entity_id: entityId,
                             source,
                           })}
                       >
-                        ${this._formatSourceName(source)}
+                        <ha-icon icon=${this._sourceIcon(source)}></ha-icon>
                       </button>
                     `,
                   )}
@@ -333,6 +334,23 @@ export class NanitCard extends LitElement {
         </div>
       </div>
     `;
+  }
+
+  private _sourceIcon(source: string): string {
+    const key = source.replace(/\.wav$/i, "").toLowerCase();
+    const icons: Record<string, string> = {
+      white_noise: "mdi:sine-wave",
+      birds: "mdi:bird",
+      waves: "mdi:waves",
+      wind: "mdi:weather-windy",
+      rain: "mdi:weather-rainy",
+      water_stream: "mdi:water",
+      fan: "mdi:fan",
+      heartbeat: "mdi:heart-pulse",
+      dryer: "mdi:tumble-dryer",
+      vacuum: "mdi:robot-vacuum",
+    };
+    return icons[key] ?? "mdi:music-note";
   }
 
   private _formatSourceName(source: string): string {

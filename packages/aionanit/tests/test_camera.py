@@ -573,6 +573,29 @@ class TestHandlePushEvent:
         assert cam.state.settings.night_light_brightness == 80
         assert events[0].kind == CameraEventKind.SETTINGS_UPDATE
 
+    def test_put_settings_preserves_fields_not_in_push(self) -> None:
+        """PUT_SETTINGS push with only some fields must not wipe existing values."""
+        cam, *_ = _make_camera()
+
+        # First push sets volume.
+        cam._handle_push_event(
+            Request(
+                type=RequestType.PUT_SETTINGS,
+                settings=Settings(volume=42),
+            )
+        )
+        assert cam.state.settings.volume == 42
+
+        # Second push only sets night_vision — volume must survive.
+        cam._handle_push_event(
+            Request(
+                type=RequestType.PUT_SETTINGS,
+                settings=Settings(night_vision=True),
+            )
+        )
+        assert cam.state.settings.night_vision is True
+        assert cam.state.settings.volume == 42
+
 
 # ---------------------------------------------------------------------------
 # WebSocket message dispatch

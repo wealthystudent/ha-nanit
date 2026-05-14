@@ -361,14 +361,6 @@ function t(t,e,i,r){var s,n=arguments.length,a=n<3?e:null===r?r=Object.getOwnPro
     color: var(--nanit-teal);
   }
 
-  .pill-light {
-    color: var(--nanit-amber);
-  }
-
-  .pill-light ha-icon {
-    color: var(--nanit-amber);
-  }
-
   /* -- Motion / Sound Overlays -- */
 
   .overlay-bottom {
@@ -641,15 +633,6 @@ function t(t,e,i,r){var s,n=arguments.length,a=n<3?e:null===r?r=Object.getOwnPro
                 0 2px 6px rgba(0, 0, 0, 0.3);
   }
 
-  .slider-value {
-    font-size: 12px;
-    font-weight: 500;
-    color: var(--secondary-text-color);
-    min-width: 32px;
-    text-align: right;
-    font-variant-numeric: tabular-nums;
-  }
-
   /* -- Sound Machine -- */
 
   .track-name {
@@ -850,11 +833,6 @@ function t(t,e,i,r){var s,n=arguments.length,a=n<3?e:null===r?r=Object.getOwnPro
           <ha-icon icon="mdi:water-percent"></ha-icon>
           <span>${r}%</span>
         </div>
-      `)}if(gt(this.hass,t.light)){const i=parseFloat(this.hass.states[t.light].state),r=isNaN(i)?this.hass.states[t.light].state:Math.round(i).toString();e.push(q`
-        <div class="pill pill-light" @click=${()=>this._fireMoreInfo(t.light)}>
-          <ha-icon icon="mdi:brightness-5"></ha-icon>
-          <span>${r} lx</span>
-        </div>
       `)}return 0===e.length?q``:q`<div class="overlay-top">${e}</div>`}_renderDetectionOverlays(t){const e=gt(this.hass,t.motion),i=gt(this.hass,t.sound);if(!e&&!i)return q``;const r=e&&"on"===this.hass.states[t.motion].state,s=i&&"on"===this.hass.states[t.sound].state;return q`
       <div class="overlay-bottom">
         ${e?q`
@@ -902,7 +880,6 @@ function t(t,e,i,r){var s,n=arguments.length,a=n<3?e:null===r?r=Object.getOwnPro
                 @change=${e=>{const i=Number(e.target.value);0===i?this.hass.callService("light","turn_off",{entity_id:t}):this.hass.callService("light","turn_on",{entity_id:t,brightness:Math.round(i/100*255)})}}
               />
             </div>
-            <span class="slider-value">${i?`${s}%`:"Off"}</span>
           </div>
         </div>
       </div>
@@ -943,7 +920,6 @@ function t(t,e,i,r){var s,n=arguments.length,a=n<3?e:null===r?r=Object.getOwnPro
                 @change=${e=>{const i=Number(e.target.value);this.hass.callService("media_player","volume_set",{entity_id:t,volume_level:i/100})}}
               />
             </div>
-            <span class="slider-value">${a}%</span>
           </div>
         </div>
       </div>

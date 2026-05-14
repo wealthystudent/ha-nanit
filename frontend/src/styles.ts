@@ -11,8 +11,6 @@ export const cardStyles = css`
     --nanit-amber-glow: rgba(201, 168, 76, 0.3);
     --nanit-teal: rgb(50, 160, 200);
     --nanit-teal-glow: rgba(50, 160, 200, 0.3);
-    --nanit-purple: rgb(120, 90, 200);
-    --nanit-purple-glow: rgba(120, 90, 200, 0.3);
   }
 
   ha-card {
@@ -119,12 +117,12 @@ export const cardStyles = css`
 
   .overlay-top {
     position: absolute;
-    top: 8px;
-    left: 8px;
+    top: 10px;
+    left: 0;
+    right: 0;
     display: flex;
-    gap: 6px;
+    justify-content: space-evenly;
     z-index: 2;
-    flex-wrap: wrap;
   }
 
   .pill {
@@ -154,22 +152,25 @@ export const cardStyles = css`
     color: rgba(255, 255, 255, 0.85);
   }
 
-  .pill-temp {
-    background: rgba(201, 168, 76, 0.75);
-    box-shadow: 0 0 10px var(--nanit-amber-glow);
+  .sensor-reading {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #fff;
+    cursor: pointer;
+    user-select: none;
+    text-shadow: 0 1px 4px rgba(0, 0, 0, 0.7);
+    transition: opacity var(--nanit-transition);
   }
 
-  .pill-humid {
-    background: rgba(50, 160, 200, 0.75);
-    box-shadow: 0 0 10px var(--nanit-teal-glow);
+  .sensor-reading:hover {
+    opacity: 0.8;
   }
 
-  .pill-light {
-    background: rgba(201, 168, 76, 0.65);
-    box-shadow: 0 0 10px var(--nanit-amber-glow);
-  }
-
-  .pill-light ha-icon {
+  .sensor-reading ha-icon {
+    --mdc-icon-size: 16px;
     color: rgba(255, 255, 255, 0.85);
   }
 
@@ -241,8 +242,8 @@ export const cardStyles = css`
   }
 
   .control-section-sound {
-    background: rgba(120, 90, 200, 0.1);
-    border: 1px solid rgba(120, 90, 200, 0.2);
+    background: rgba(50, 160, 200, 0.1);
+    border: 1px solid rgba(50, 160, 200, 0.2);
   }
 
   .control-row {
@@ -257,6 +258,19 @@ export const cardStyles = css`
     color: var(--secondary-text-color);
     text-transform: uppercase;
     letter-spacing: 0.04em;
+  }
+
+  .section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .section-header .source-list {
+    flex: 1;
+    min-width: 0;
+    justify-content: flex-end;
   }
 
   .icon-btn {
@@ -297,10 +311,10 @@ export const cardStyles = css`
   }
 
   .control-section-sound .icon-btn.active {
-    border-color: var(--nanit-purple);
-    color: var(--nanit-purple);
-    background: rgba(120, 90, 200, 0.15);
-    box-shadow: 0 0 8px var(--nanit-purple-glow);
+    border-color: var(--nanit-teal);
+    color: var(--nanit-teal);
+    background: rgba(50, 160, 200, 0.15);
+    box-shadow: 0 0 8px var(--nanit-teal-glow);
   }
 
   .icon-btn ha-icon {
@@ -318,6 +332,27 @@ export const cardStyles = css`
   .slider-row ha-slider {
     flex: 1;
     min-width: 0;
+  }
+
+  ha-slider {
+    --md-sys-color-primary: var(--nanit-amber);
+    --md-slider-active-track-color: var(--nanit-amber);
+    --md-slider-handle-color: var(--nanit-amber);
+    --md-slider-inactive-track-color: rgba(201, 168, 76, 0.2);
+    --md-slider-handle-height: 16px;
+    --md-slider-handle-width: 16px;
+    --md-slider-active-track-height: 6px;
+    --md-slider-inactive-track-height: 6px;
+    --md-slider-active-track-shape: 4px;
+    --md-slider-inactive-track-shape: 4px;
+    --md-slider-handle-shape: 50%;
+  }
+
+  .control-section-sound ha-slider {
+    --md-sys-color-primary: var(--nanit-teal);
+    --md-slider-active-track-color: var(--nanit-teal);
+    --md-slider-handle-color: var(--nanit-teal);
+    --md-slider-inactive-track-color: rgba(50, 160, 200, 0.2);
   }
 
   .slider-value {
@@ -357,11 +392,11 @@ export const cardStyles = css`
   .source-chip {
     display: inline-flex;
     align-items: center;
-    padding: 5px 12px;
+    padding: 3px 8px;
     border-radius: 20px;
     border: 1.5px solid var(--divider-color, rgba(127, 127, 127, 0.2));
     background: none;
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 500;
     color: var(--primary-text-color);
     cursor: pointer;
@@ -378,10 +413,10 @@ export const cardStyles = css`
   }
 
   .source-chip.active {
-    background: rgba(120, 90, 200, 0.15);
-    border-color: var(--nanit-purple);
-    color: var(--nanit-purple);
-    box-shadow: 0 0 6px var(--nanit-purple-glow);
+    background: rgba(50, 160, 200, 0.15);
+    border-color: var(--nanit-teal);
+    color: var(--nanit-teal);
+    box-shadow: 0 0 6px var(--nanit-teal-glow);
   }
 
   /* -- Collapse transition -- */

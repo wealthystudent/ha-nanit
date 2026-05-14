@@ -141,32 +141,35 @@ export class NanitCard extends LitElement {
     const pills: TemplateResult[] = [];
 
     if (isEntityAvailable(this.hass, entities.temperature)) {
-      const val = this.hass.states[entities.temperature!].state;
+      const val = parseFloat(this.hass.states[entities.temperature!].state);
+      const display = isNaN(val) ? this.hass.states[entities.temperature!].state : val.toFixed(1);
       const unit = (this.hass.states[entities.temperature!].attributes.unit_of_measurement as string) ?? "";
       pills.push(html`
-        <div class="pill pill-temp" @click=${() => this._fireMoreInfo(entities.temperature!)}>
+        <div class="sensor-reading" @click=${() => this._fireMoreInfo(entities.temperature!)}>
           <ha-icon icon="mdi:thermometer"></ha-icon>
-          <span>${val}${unit}</span>
+          <span>${display}${unit}</span>
         </div>
       `);
     }
 
     if (isEntityAvailable(this.hass, entities.humidity)) {
-      const val = this.hass.states[entities.humidity!].state;
+      const val = parseFloat(this.hass.states[entities.humidity!].state);
+      const display = isNaN(val) ? this.hass.states[entities.humidity!].state : val.toFixed(1);
       pills.push(html`
-        <div class="pill pill-humid" @click=${() => this._fireMoreInfo(entities.humidity!)}>
+        <div class="sensor-reading" @click=${() => this._fireMoreInfo(entities.humidity!)}>
           <ha-icon icon="mdi:water-percent"></ha-icon>
-          <span>${val}%</span>
+          <span>${display}%</span>
         </div>
       `);
     }
 
     if (isEntityAvailable(this.hass, entities.light)) {
-      const val = this.hass.states[entities.light!].state;
+      const val = parseFloat(this.hass.states[entities.light!].state);
+      const display = isNaN(val) ? this.hass.states[entities.light!].state : val.toFixed(1);
       pills.push(html`
-        <div class="pill pill-light" @click=${() => this._fireMoreInfo(entities.light!)}>
+        <div class="sensor-reading" @click=${() => this._fireMoreInfo(entities.light!)}>
           <ha-icon icon="mdi:brightness-5"></ha-icon>
-          <span>${val} lx</span>
+          <span>${display} lx</span>
         </div>
       `);
     }
@@ -271,7 +274,29 @@ export class NanitCard extends LitElement {
 
     return html`
       <div class="control-section control-section-sound">
-        <span class="control-label">Sound Machine</span>
+        <div class="section-header">
+          <span class="control-label">Sound Machine</span>
+          ${sourceList.length > 0
+            ? html`
+                <div class="source-list">
+                  ${sourceList.map(
+                    (source) => html`
+                      <button
+                        class="source-chip ${source === currentSource ? "active" : ""}"
+                        @click=${() =>
+                          this.hass.callService("media_player", "select_source", {
+                            entity_id: entityId,
+                            source,
+                          })}
+                      >
+                        ${this._formatSourceName(source)}
+                      </button>
+                    `,
+                  )}
+                </div>
+              `
+            : nothing}
+        </div>
         <div class="control-row">
           <button
             class="icon-btn ${isPlaying ? "active" : ""}"
@@ -301,26 +326,6 @@ export class NanitCard extends LitElement {
             <span class="slider-value">${volumePercent}%</span>
           </div>
         </div>
-        ${sourceList.length > 0
-          ? html`
-              <div class="source-list">
-                ${sourceList.map(
-                  (source) => html`
-                    <button
-                      class="source-chip ${source === currentSource ? "active" : ""}"
-                      @click=${() =>
-                        this.hass.callService("media_player", "select_source", {
-                          entity_id: entityId,
-                          source,
-                        })}
-                    >
-                      ${this._formatSourceName(source)}
-                    </button>
-                  `,
-                )}
-              </div>
-            `
-          : nothing}
       </div>
     `;
   }

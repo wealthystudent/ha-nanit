@@ -13,15 +13,18 @@ export function resolveEntities(
     // Primary: device_id matching via entity registry
     const deviceId = regEntry.device_id;
     const siblings: string[] = [];
+    const diagnostics: string[] = [];
     for (const eid of Object.keys(hass.entities)) {
-      if (
-        hass.entities[eid].device_id === deviceId &&
-        hass.entities[eid].entity_category !== "diagnostic"
-      ) {
-        siblings.push(eid);
+      if (hass.entities[eid].device_id === deviceId) {
+        if (hass.entities[eid].entity_category === "diagnostic") {
+          diagnostics.push(eid);
+        } else {
+          siblings.push(eid);
+        }
       }
     }
     assignEntities(result, siblings, hass);
+    assignDiagnosticEntities(result, diagnostics, hass);
   } else {
     // Fallback: suffix-based matching from camera entity_id
     const cameraKey = cameraEntityId.split(".")[1] ?? "";
@@ -59,6 +62,20 @@ function assignEntities(result: NanitEntities, eids: string[], hass: HomeAssista
       result.night_light = eid;
     } else if (domain === "media_player" && suffix.endsWith("_sound_machine")) {
       result.sound_machine = eid;
+    }
+  }
+}
+
+function assignDiagnosticEntities(result: NanitEntities, eids: string[], hass: HomeAssistant): void {
+  for (const eid of eids) {
+    const [domain] = eid.split(".", 1);
+    const suffix = eid.split(".")[1] ?? "";
+    const deviceClass = hass.states[eid]?.attributes.device_class as string | undefined;
+
+    if (domain === "sensor") {
+      if (deviceClass === "signal_strength") result.wifi_signal = eid;
+      else if (deviceClass === "frequency") result.wifi_frequency = eid;
+      else if (suffix.endsWith("_wifi_ssid")) result.wifi_ssid = eid;
     }
   }
 }

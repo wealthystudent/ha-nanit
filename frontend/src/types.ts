@@ -20,6 +20,7 @@ export interface HassEntityRegistryEntry {
   entity_id: string;
   device_id?: string;
   disabled_by?: string | null;
+  entity_category?: string | null;
   platform: string;
 }
 

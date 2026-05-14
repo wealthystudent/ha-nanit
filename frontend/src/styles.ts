@@ -2,15 +2,17 @@ import { css } from "lit";
 
 export const cardStyles = css`
   :host {
-    --nanit-radius: 12px;
+    --nanit-radius: 14px;
     --nanit-pill-bg: rgba(0, 0, 0, 0.5);
     --nanit-pill-radius: 16px;
     --nanit-transition: 0.3s ease;
-    --nanit-gap: 14px;
-    --nanit-glow-green: rgba(76, 175, 80, 0.3);
-    --nanit-glow-red: rgba(244, 67, 54, 0.2);
-    --nanit-section-border: rgba(var(--rgb-primary-color, 3, 169, 244), 0.15);
-    --nanit-section-bg: rgba(var(--rgb-primary-color, 3, 169, 244), 0.03);
+    --nanit-gap: 10px;
+    --nanit-amber: rgb(201, 168, 76);
+    --nanit-amber-glow: rgba(201, 168, 76, 0.3);
+    --nanit-teal: rgb(50, 160, 200);
+    --nanit-teal-glow: rgba(50, 160, 200, 0.3);
+    --nanit-purple: rgb(120, 90, 200);
+    --nanit-purple-glow: rgba(120, 90, 200, 0.3);
   }
 
   ha-card {
@@ -18,6 +20,7 @@ export const cardStyles = css`
     border-radius: var(--ha-card-border-radius, var(--nanit-radius));
     background: var(--ha-card-background, var(--card-background-color));
     color: var(--primary-text-color);
+    border: 1px solid rgba(201, 168, 76, 0.25);
   }
 
   /* -- Header -- */
@@ -40,31 +43,31 @@ export const cardStyles = css`
     display: flex;
     align-items: center;
     justify-content: center;
-    background: rgba(76, 175, 80, 0.15);
+    background: rgba(201, 168, 76, 0.2);
     border: none;
     padding: 8px;
     border-radius: 50%;
     cursor: pointer;
-    color: rgb(76, 175, 80);
+    color: var(--nanit-amber);
     transition: background var(--nanit-transition),
                 color var(--nanit-transition),
                 box-shadow var(--nanit-transition);
-    box-shadow: 0 0 8px var(--nanit-glow-green);
+    box-shadow: 0 0 10px var(--nanit-amber-glow);
   }
 
   .power-btn:hover {
-    background: rgba(76, 175, 80, 0.25);
-    box-shadow: 0 0 14px var(--nanit-glow-green);
+    background: rgba(201, 168, 76, 0.3);
+    box-shadow: 0 0 16px var(--nanit-amber-glow);
   }
 
   .power-btn.off {
-    background: rgba(244, 67, 54, 0.1);
-    color: rgba(244, 67, 54, 0.55);
+    background: rgba(127, 127, 127, 0.1);
+    color: var(--disabled-text-color);
     box-shadow: none;
   }
 
   .power-btn.off:hover {
-    background: rgba(244, 67, 54, 0.18);
+    background: rgba(127, 127, 127, 0.18);
   }
 
   .power-btn ha-icon {
@@ -86,6 +89,8 @@ export const cardStyles = css`
     position: relative;
     overflow: hidden;
     background: #000;
+    border-radius: var(--nanit-radius);
+    margin: 0 8px;
   }
 
   .stream-click {
@@ -150,23 +155,22 @@ export const cardStyles = css`
   }
 
   .pill-temp {
-    background: rgba(255, 87, 34, 0.7);
-    box-shadow: 0 0 10px rgba(255, 87, 34, 0.3);
+    background: rgba(201, 168, 76, 0.75);
+    box-shadow: 0 0 10px var(--nanit-amber-glow);
   }
 
   .pill-humid {
-    background: rgba(3, 169, 244, 0.7);
-    box-shadow: 0 0 10px rgba(3, 169, 244, 0.3);
+    background: rgba(50, 160, 200, 0.75);
+    box-shadow: 0 0 10px var(--nanit-teal-glow);
   }
 
   .pill-light {
-    background: rgba(255, 193, 7, 0.75);
-    color: #333;
-    box-shadow: 0 0 10px rgba(255, 193, 7, 0.3);
+    background: rgba(201, 168, 76, 0.65);
+    box-shadow: 0 0 10px var(--nanit-amber-glow);
   }
 
   .pill-light ha-icon {
-    color: #333;
+    color: rgba(255, 255, 255, 0.85);
   }
 
   /* -- Motion / Sound Overlays -- */
@@ -191,13 +195,13 @@ export const cardStyles = css`
   }
 
   .pill.motion-active {
-    background: rgba(255, 152, 0, 0.7);
-    box-shadow: 0 0 20px rgba(255, 152, 0, 0.6), 0 0 40px rgba(255, 152, 0, 0.2);
+    background: rgba(201, 168, 76, 0.75);
+    box-shadow: 0 0 16px rgba(201, 168, 76, 0.5), 0 0 32px rgba(201, 168, 76, 0.2);
   }
 
   .pill.sound-active {
-    background: rgba(33, 150, 243, 0.7);
-    box-shadow: 0 0 20px rgba(33, 150, 243, 0.6), 0 0 40px rgba(33, 150, 243, 0.2);
+    background: rgba(50, 160, 200, 0.75);
+    box-shadow: 0 0 16px rgba(50, 160, 200, 0.5), 0 0 32px rgba(50, 160, 200, 0.2);
   }
 
   @keyframes pulse {
@@ -217,7 +221,7 @@ export const cardStyles = css`
     display: flex;
     flex-direction: column;
     gap: var(--nanit-gap);
-    padding: var(--nanit-gap) 16px 16px;
+    padding: var(--nanit-gap) 8px 8px;
   }
 
   /* -- Control Sections (Night Light + Sound Machine) -- */
@@ -226,11 +230,19 @@ export const cardStyles = css`
     display: flex;
     flex-direction: column;
     gap: 8px;
-    border: 1px solid var(--nanit-section-border);
-    border-radius: 12px;
-    padding: 12px;
-    background: var(--nanit-section-bg);
-    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.05);
+    border-radius: var(--nanit-radius);
+    padding: 14px;
+    transition: background var(--nanit-transition);
+  }
+
+  .control-section-light {
+    background: rgba(201, 168, 76, 0.1);
+    border: 1px solid rgba(201, 168, 76, 0.2);
+  }
+
+  .control-section-sound {
+    background: rgba(120, 90, 200, 0.1);
+    border: 1px solid rgba(120, 90, 200, 0.2);
   }
 
   .control-row {
@@ -275,6 +287,20 @@ export const cardStyles = css`
     color: var(--primary-color);
     background: rgba(var(--rgb-primary-color, 3, 169, 244), 0.1);
     box-shadow: 0 0 8px rgba(var(--rgb-primary-color, 3, 169, 244), 0.2);
+  }
+
+  .control-section-light .icon-btn.active {
+    border-color: var(--nanit-amber);
+    color: var(--nanit-amber);
+    background: rgba(201, 168, 76, 0.15);
+    box-shadow: 0 0 8px var(--nanit-amber-glow);
+  }
+
+  .control-section-sound .icon-btn.active {
+    border-color: var(--nanit-purple);
+    color: var(--nanit-purple);
+    background: rgba(120, 90, 200, 0.15);
+    box-shadow: 0 0 8px var(--nanit-purple-glow);
   }
 
   .icon-btn ha-icon {
@@ -352,10 +378,10 @@ export const cardStyles = css`
   }
 
   .source-chip.active {
-    background: rgba(var(--rgb-primary-color, 3, 169, 244), 0.12);
-    border-color: var(--primary-color);
-    color: var(--primary-color);
-    box-shadow: 0 0 8px rgba(var(--rgb-primary-color, 3, 169, 244), 0.2);
+    background: rgba(120, 90, 200, 0.15);
+    border-color: var(--nanit-purple);
+    color: var(--nanit-purple);
+    box-shadow: 0 0 6px var(--nanit-purple-glow);
   }
 
   /* -- Collapse transition -- */

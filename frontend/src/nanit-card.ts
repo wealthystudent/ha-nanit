@@ -231,7 +231,7 @@ export class NanitCard extends LitElement {
     const brightnessPercent = Math.round((brightness / 255) * 100);
 
     return html`
-      <div class="control-section">
+      <div class="control-section control-section-light">
         <span class="control-label">Night Light</span>
         <div class="control-row">
           <button
@@ -270,7 +270,7 @@ export class NanitCard extends LitElement {
     const volumePercent = Math.round(volume * 100);
 
     return html`
-      <div class="control-section">
+      <div class="control-section control-section-sound">
         <span class="control-label">Sound Machine</span>
         <div class="control-row">
           <button

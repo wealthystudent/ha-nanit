@@ -14,11 +14,14 @@ export function resolveEntities(
     const deviceId = regEntry.device_id;
     const siblings: string[] = [];
     for (const eid of Object.keys(hass.entities)) {
-      if (hass.entities[eid].device_id === deviceId) {
+      if (
+        hass.entities[eid].device_id === deviceId &&
+        hass.entities[eid].entity_category !== "diagnostic"
+      ) {
         siblings.push(eid);
       }
     }
-    assignEntities(result, siblings);
+    assignEntities(result, siblings, hass);
   } else {
     // Fallback: suffix-based matching from camera entity_id
     const cameraKey = cameraEntityId.split(".")[1] ?? "";
@@ -27,29 +30,31 @@ export function resolveEntities(
         eid !== cameraEntityId &&
         eid.split(".")[1]?.startsWith(cameraKey.split("_camera")[0] || cameraKey),
     );
-    assignEntities(result, candidates);
+    assignEntities(result, candidates, hass);
   }
 
   return result;
 }
 
-function assignEntities(result: NanitEntities, eids: string[]): void {
+function assignEntities(result: NanitEntities, eids: string[], hass: HomeAssistant): void {
   for (const eid of eids) {
     const [domain] = eid.split(".", 1);
     const suffix = eid.split(".")[1] ?? "";
+    const deviceClass = hass.states[eid]?.attributes.device_class as string | undefined;
 
-    if (domain === "switch" && suffix.endsWith("_camera_power")) {
+    if (domain === "sensor") {
+      // Match by device_class (locale-independent)
+      if (deviceClass === "temperature") result.temperature = eid;
+      else if (deviceClass === "humidity") result.humidity = eid;
+      else if (deviceClass === "illuminance") result.light = eid;
+    } else if (domain === "binary_sensor") {
+      if (deviceClass === "motion" || suffix.endsWith("_motion") || suffix.endsWith("_cloud_motion")) {
+        result.motion = eid;
+      } else if (deviceClass === "sound" || suffix.endsWith("_sound") || suffix.endsWith("_cloud_sound")) {
+        result.sound = eid;
+      }
+    } else if (domain === "switch" && suffix.endsWith("_camera_power")) {
       result.power = eid;
-    } else if (domain === "sensor" && suffix.endsWith("_temperature") && !suffix.includes("sl_")) {
-      result.temperature = eid;
-    } else if (domain === "sensor" && suffix.endsWith("_humidity") && !suffix.includes("sl_")) {
-      result.humidity = eid;
-    } else if (domain === "sensor" && suffix.endsWith("_light") && !suffix.includes("sl_")) {
-      result.light = eid;
-    } else if (domain === "binary_sensor" && (suffix.endsWith("_cloud_motion") || suffix.endsWith("_motion"))) {
-      result.motion = eid;
-    } else if (domain === "binary_sensor" && (suffix.endsWith("_cloud_sound") || suffix.endsWith("_sound"))) {
-      result.sound = eid;
     } else if (domain === "light" && suffix.endsWith("_night_light") && !suffix.includes("sl_")) {
       result.night_light = eid;
     } else if (domain === "media_player" && suffix.endsWith("_sound_machine")) {

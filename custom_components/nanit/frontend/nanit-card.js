@@ -25,7 +25,7 @@ function t(t,e,i,r){var s,n=arguments.length,a=n<3?e:null===r?r=Object.getOwnPro
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 12px 16px;
+    padding: 10px 16px 6px;
   }
 
   .device-badge {
@@ -108,7 +108,7 @@ function t(t,e,i,r){var s,n=arguments.length,a=n<3?e:null===r?r=Object.getOwnPro
     overflow: hidden;
     background: #000;
     border-radius: var(--nanit-radius);
-    margin: 0 8px;
+    margin: 0 4px;
     min-height: 180px;
   }
 
@@ -294,7 +294,7 @@ function t(t,e,i,r){var s,n=arguments.length,a=n<3?e:null===r?r=Object.getOwnPro
     display: flex;
     flex-direction: column;
     gap: var(--nanit-gap);
-    padding: var(--nanit-gap) 8px 8px;
+    padding: var(--nanit-gap) 4px 4px;
   }
 
   /* -- Control Sections (Night Light + Sound Machine) -- */

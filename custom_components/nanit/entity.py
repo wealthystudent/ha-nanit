@@ -85,6 +85,10 @@ class NanitSoundLightEntity(CoordinatorEntity[NanitSoundLightCoordinator]):
         """
         return self.coordinator.last_update_success and self.coordinator.data is not None
 
+    async def _async_power_on_sound_light(self) -> None:
+        """Power on the Sound & Light Machine before enabling child features."""
+        await self.coordinator.sound_light.async_set_power(True)
+
 
 class NanitNetworkEntity(CoordinatorEntity[NanitNetworkCoordinator]):
     """Base entity for network diagnostic sensors — backed by the network coordinator."""

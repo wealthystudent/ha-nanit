@@ -248,15 +248,18 @@ class NanitSLSoundSwitch(NanitSoundLightEntity, SwitchEntity):
 
     @property
     def is_on(self) -> bool | None:
-        """Return True if sound is on."""
+        """Return True if sound is effectively on."""
         if self.coordinator.data is None:
             return None
+        if self.coordinator.data.power_on is False:
+            return False
         result: bool | None = self.coordinator.data.sound_on
         return result
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn sound on."""
         try:
+            await self._async_power_on_sound_light()
             await self.coordinator.sound_light.async_set_sound_on(True)
         except NanitTransportError as err:
             _LOGGER.error("Failed to turn on S&L sound: %s", err)

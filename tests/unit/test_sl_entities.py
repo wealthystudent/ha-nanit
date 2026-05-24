@@ -83,6 +83,20 @@ def test_light_is_on_returns_true_when_light_enabled_true() -> None:
     assert entity.is_on is True
 
 
+def test_light_is_on_returns_false_when_device_power_is_off_even_if_light_enabled() -> None:
+    state = SoundLightFullState(power_on=False, light_enabled=True, brightness=0.5)
+    entity = NanitSoundLightLight(_sl_coordinator(state))
+
+    assert entity.is_on is False
+
+
+def test_light_is_on_preserves_light_enabled_when_device_power_is_unknown() -> None:
+    state = SoundLightFullState(power_on=None, light_enabled=True, brightness=0.0)
+    entity = NanitSoundLightLight(_sl_coordinator(state))
+
+    assert entity.is_on is True
+
+
 def test_light_is_on_returns_false_when_light_enabled_false() -> None:
     state = SoundLightFullState(light_enabled=False, brightness=1.0)
     entity = NanitSoundLightLight(_sl_coordinator(state))
@@ -169,6 +183,44 @@ async def test_light_turn_on_calls_set_light_enabled_true() -> None:
 
     await entity.async_turn_on()
 
+    coordinator.sound_light.async_set_power.assert_awaited_once_with(True)
+    coordinator.sound_light.async_set_light_enabled.assert_awaited_once_with(True)
+
+
+async def test_light_turn_on_powers_device_before_enabling_light() -> None:
+    coordinator = _sl_coordinator(SoundLightFullState(power_on=False))
+    calls: list[str] = []
+    coordinator.sound_light.async_set_power.side_effect = lambda _on: calls.append("power")
+    coordinator.sound_light.async_set_light_enabled.side_effect = lambda _on: calls.append("light")
+    entity = NanitSoundLightLight(coordinator)
+    _disable_state_writes(entity)
+
+    await entity.async_turn_on()
+
+    assert calls[:2] == ["power", "light"]
+    coordinator.sound_light.async_set_power.assert_awaited_once_with(True)
+    coordinator.sound_light.async_set_light_enabled.assert_awaited_once_with(True)
+
+
+async def test_light_turn_on_sends_power_command_even_when_state_already_powered() -> None:
+    coordinator = _sl_coordinator(SoundLightFullState(power_on=True))
+    entity = NanitSoundLightLight(coordinator)
+    _disable_state_writes(entity)
+
+    await entity.async_turn_on()
+
+    coordinator.sound_light.async_set_power.assert_awaited_once_with(True)
+    coordinator.sound_light.async_set_light_enabled.assert_awaited_once_with(True)
+
+
+async def test_light_turn_on_sends_power_command_when_power_state_unknown() -> None:
+    coordinator = _sl_coordinator(SoundLightFullState(power_on=None))
+    entity = NanitSoundLightLight(coordinator)
+    _disable_state_writes(entity)
+
+    await entity.async_turn_on()
+
+    coordinator.sound_light.async_set_power.assert_awaited_once_with(True)
     coordinator.sound_light.async_set_light_enabled.assert_awaited_once_with(True)
 
 
@@ -179,6 +231,8 @@ async def test_light_turn_on_with_hs_color_calls_set_color() -> None:
 
     await entity.async_turn_on(**{ATTR_HS_COLOR: (180.0, 40.0)})
 
+    coordinator.sound_light.async_set_power.assert_awaited_once_with(True)
+    coordinator.sound_light.async_set_light_enabled.assert_awaited_once_with(True)
     coordinator.sound_light.async_set_color.assert_awaited_once_with(0.5, 0.4)
 
 
@@ -189,7 +243,26 @@ async def test_light_turn_on_with_brightness_calls_set_brightness() -> None:
 
     await entity.async_turn_on(**{ATTR_BRIGHTNESS: 128})
 
+    coordinator.sound_light.async_set_power.assert_awaited_once_with(True)
+    coordinator.sound_light.async_set_light_enabled.assert_awaited_once_with(True)
     coordinator.sound_light.async_set_brightness.assert_awaited_once_with(128 / 255)
+
+
+async def test_light_turn_on_applies_power_enable_color_brightness_in_order() -> None:
+    coordinator = _sl_coordinator(SoundLightFullState(power_on=False))
+    calls: list[str] = []
+    coordinator.sound_light.async_set_power.side_effect = lambda _on: calls.append("power")
+    coordinator.sound_light.async_set_light_enabled.side_effect = lambda _on: calls.append("light")
+    coordinator.sound_light.async_set_color.side_effect = lambda *_args: calls.append("color")
+    coordinator.sound_light.async_set_brightness.side_effect = lambda _value: calls.append(
+        "brightness"
+    )
+    entity = NanitSoundLightLight(coordinator)
+    _disable_state_writes(entity)
+
+    await entity.async_turn_on(**{ATTR_HS_COLOR: (180.0, 40.0), ATTR_BRIGHTNESS: 128})
+
+    assert calls == ["power", "light", "color", "brightness"]
 
 
 async def test_light_turn_off_calls_set_light_enabled_false() -> None:
@@ -200,6 +273,17 @@ async def test_light_turn_off_calls_set_light_enabled_false() -> None:
     await entity.async_turn_off()
 
     coordinator.sound_light.async_set_light_enabled.assert_awaited_once_with(False)
+
+
+async def test_light_turn_off_does_not_turn_off_device_power() -> None:
+    coordinator = _sl_coordinator(SoundLightFullState(power_on=True, light_enabled=True))
+    entity = NanitSoundLightLight(coordinator)
+    _disable_state_writes(entity)
+
+    await entity.async_turn_off()
+
+    coordinator.sound_light.async_set_light_enabled.assert_awaited_once_with(False)
+    coordinator.sound_light.async_set_power.assert_not_awaited()
 
 
 async def test_light_turn_on_handles_transport_error_gracefully(
@@ -213,6 +297,17 @@ async def test_light_turn_on_handles_transport_error_gracefully(
     await entity.async_turn_on()
 
     assert "Failed to control Sound & Light light" in caplog.text
+
+
+async def test_light_turn_on_does_not_enable_light_when_power_on_fails() -> None:
+    coordinator = _sl_coordinator(SoundLightFullState(power_on=False))
+    coordinator.sound_light.async_set_power.side_effect = NanitTransportError("power boom")
+    entity = NanitSoundLightLight(coordinator)
+    _disable_state_writes(entity)
+
+    await entity.async_turn_on()
+
+    coordinator.sound_light.async_set_light_enabled.assert_not_awaited()
 
 
 async def test_light_turn_off_handles_transport_error_gracefully(
@@ -330,6 +425,20 @@ def test_sl_sound_switch_is_on_returns_sound_on_from_state() -> None:
     assert entity.is_on is True
 
 
+def test_sl_sound_switch_is_on_returns_false_when_device_power_is_off() -> None:
+    state = SoundLightFullState(power_on=False, sound_on=True)
+    entity = NanitSLSoundSwitch(_sl_coordinator(state))
+
+    assert entity.is_on is False
+
+
+def test_sl_sound_switch_is_on_preserves_sound_on_when_device_power_is_unknown() -> None:
+    state = SoundLightFullState(power_on=None, sound_on=True)
+    entity = NanitSLSoundSwitch(_sl_coordinator(state))
+
+    assert entity.is_on is True
+
+
 async def test_sl_sound_switch_turn_on_calls_set_sound_on_true() -> None:
     coordinator = _sl_coordinator(SoundLightFullState())
     entity = NanitSLSoundSwitch(coordinator)
@@ -337,6 +446,46 @@ async def test_sl_sound_switch_turn_on_calls_set_sound_on_true() -> None:
 
     await entity.async_turn_on()
 
+    coordinator.sound_light.async_set_power.assert_awaited_once_with(True)
+    coordinator.sound_light.async_set_sound_on.assert_awaited_once_with(True)
+
+
+async def test_sl_sound_switch_turn_on_powers_device_before_enabling_sound() -> None:
+    coordinator = _sl_coordinator(SoundLightFullState(power_on=False))
+    calls: list[str] = []
+    coordinator.sound_light.async_set_power.side_effect = lambda _on: calls.append("power")
+    coordinator.sound_light.async_set_sound_on.side_effect = lambda _on: calls.append("sound")
+    entity = NanitSLSoundSwitch(coordinator)
+    _disable_state_writes(entity)
+
+    await entity.async_turn_on()
+
+    assert calls[:2] == ["power", "sound"]
+    coordinator.sound_light.async_set_power.assert_awaited_once_with(True)
+    coordinator.sound_light.async_set_sound_on.assert_awaited_once_with(True)
+
+
+async def test_sl_sound_switch_turn_on_sends_power_command_even_when_state_already_powered() -> (
+    None
+):
+    coordinator = _sl_coordinator(SoundLightFullState(power_on=True))
+    entity = NanitSLSoundSwitch(coordinator)
+    _disable_state_writes(entity)
+
+    await entity.async_turn_on()
+
+    coordinator.sound_light.async_set_power.assert_awaited_once_with(True)
+    coordinator.sound_light.async_set_sound_on.assert_awaited_once_with(True)
+
+
+async def test_sl_sound_switch_turn_on_sends_power_command_when_power_state_unknown() -> None:
+    coordinator = _sl_coordinator(SoundLightFullState(power_on=None))
+    entity = NanitSLSoundSwitch(coordinator)
+    _disable_state_writes(entity)
+
+    await entity.async_turn_on()
+
+    coordinator.sound_light.async_set_power.assert_awaited_once_with(True)
     coordinator.sound_light.async_set_sound_on.assert_awaited_once_with(True)
 
 
@@ -348,6 +497,17 @@ async def test_sl_sound_switch_turn_off_calls_set_sound_on_false() -> None:
     await entity.async_turn_off()
 
     coordinator.sound_light.async_set_sound_on.assert_awaited_once_with(False)
+
+
+async def test_sl_sound_switch_turn_off_does_not_turn_off_device_power() -> None:
+    coordinator = _sl_coordinator(SoundLightFullState(power_on=True, sound_on=True))
+    entity = NanitSLSoundSwitch(coordinator)
+    _disable_state_writes(entity)
+
+    await entity.async_turn_off()
+
+    coordinator.sound_light.async_set_sound_on.assert_awaited_once_with(False)
+    coordinator.sound_light.async_set_power.assert_not_awaited()
 
 
 async def test_sl_sound_switch_handles_transport_error_gracefully(
@@ -363,6 +523,17 @@ async def test_sl_sound_switch_handles_transport_error_gracefully(
 
     assert "Failed to turn on S&L sound" in caplog.text
     assert "Failed to turn off S&L sound" in caplog.text
+
+
+async def test_sl_sound_switch_turn_on_does_not_enable_sound_when_power_on_fails() -> None:
+    coordinator = _sl_coordinator(SoundLightFullState(power_on=False))
+    coordinator.sound_light.async_set_power.side_effect = NanitTransportError("power boom")
+    entity = NanitSLSoundSwitch(coordinator)
+    _disable_state_writes(entity)
+
+    await entity.async_turn_on()
+
+    coordinator.sound_light.async_set_sound_on.assert_not_awaited()
 
 
 async def test_light_async_setup_entry_adds_entities_for_sound_light_coordinators() -> None:

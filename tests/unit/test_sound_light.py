@@ -14,6 +14,7 @@ from custom_components.nanit.aionanit_sl.models import (
     SoundLightEventKind,
     SoundLightFullState,
 )
+from custom_components.nanit.aionanit_sl.sl_protocol import build_power_cmd
 from custom_components.nanit.aionanit_sl.sound_light import NanitSoundLight
 
 
@@ -124,7 +125,7 @@ class TestCommands:
 
         await sl.async_set_power(True)
 
-        sl._async_send.assert_awaited_once()
+        sl._async_send.assert_awaited_once_with(build_power_cmd(True))
         assert sl.state.power_on is True
         assert events[-1].kind is SoundLightEventKind.STATE_UPDATE
         assert events[-1].state.power_on is True

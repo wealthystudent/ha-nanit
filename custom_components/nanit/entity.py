@@ -86,7 +86,11 @@ class NanitSoundLightEntity(CoordinatorEntity[NanitSoundLightCoordinator]):
         return self.coordinator.last_update_success and self.coordinator.data is not None
 
     async def _async_power_on_sound_light(self) -> None:
-        """Power on the Sound & Light Machine before enabling child features."""
+        """Power on the Sound & Light Machine before enabling child features.
+
+        Always send the command before child controls because coordinator
+        state can be stale after the device is toggled outside Home Assistant.
+        """
         await self.coordinator.sound_light.async_set_power(True)
 
 

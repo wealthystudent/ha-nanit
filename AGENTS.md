@@ -194,9 +194,11 @@ Path B (skip beta):
 
 **Multiple concurrent betas** are supported. Different features can have independent beta tracks (e.g., `v1.4.0-beta.2` and `v1.5.0-beta.1` can coexist).
 
-**Version lives in two files** (kept in sync by auto-beta workflow and release CLI):
+**Version lives in two files** (kept in sync by release workflow and version-bump PRs):
 - `custom_components/nanit/manifest.json` → `"version"` (semver) + `"requirements"` (PEP 440)
 - `packages/aionanit/pyproject.toml` → `version` (PEP 440)
+
+Version files on `main` contain the **last stable release version** (not the current beta). The actual release version is always derived from the **git tag name** and injected at build time by the release workflow. After a stable release, the workflow opens a PR to bump version files on `main`.
 
 | Version mapping | manifest.json `version` | pyproject.toml `version` | manifest.json `requirements` |
 |-----------------|------------------------|--------------------------|------------------------------|
@@ -206,6 +208,8 @@ Path B (skip beta):
 **Rollback strategy**: Forward-fix via new PR. Merge the fix → auto-beta tags a new beta → `just release` → test → release stable.
 
 **Pipeline fix**: If the release workflow fails (e.g. action version issues, PyPI errors), fix the pipeline code, push to `main`, then use the "Retry pipeline" option in `just release`. This re-triggers the workflow using the updated YAML from `main` while building from the original tag. PyPI publish is idempotent (skips already-uploaded versions).
+
+**Branch protection compatibility**: The auto-beta workflow tags the merge commit directly (no version-injection commit) and pushes only the tag — no push to `main`. The release workflow opens a version-bump PR after stable releases instead of pushing directly to `main`. This ensures all commits on `main` go through the normal PR + signed-commit flow.
 
 ---
 

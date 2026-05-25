@@ -214,6 +214,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -231,12 +232,20 @@ jobs:
 
           sed -i "s/^version = \".*\"/version = \"$PEP440\"/" packages/aionanit/pyproject.toml
 
-      - name: Push version to main
+      - name: Create version bump PR
         env:
           SEMVER: ${{ needs.resolve.outputs.semver }}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          branch="chore/bump-version-v${SEMVER}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
           git add custom_components/nanit/manifest.json packages/aionanit/pyproject.toml
           git commit -m "chore: bump version to v${SEMVER} [skip ci]"
-          git push origin HEAD:main
+          git push origin "$branch"
+          gh pr create \
+            --title "chore: bump version to v${SEMVER}" \
+            --body "Automated version bump after stable release v${SEMVER}." \
+            --base main \
+            --head "$branch"

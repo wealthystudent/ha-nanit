@@ -87,38 +87,17 @@ jobs:
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "Computed: ${tag}"
 
-      - name: Inject version into manifest and pyproject
+      - name: Create and push tag
         env:
           TAG: ${{ steps.version.outputs.tag }}
         run: |
-          version="${TAG#v}"
-          base="${version%-beta.*}"
-          beta_num="${version##*-beta.}"
-          pep440="${base}b${beta_num}"
-
-          # Update manifest.json version + requirements
-          jq --arg v "$version" --arg r "aionanit>=$pep440" \
-            '.version = $v | .requirements = [$r]' \
-            custom_components/nanit/manifest.json > /tmp/manifest.json
-          mv /tmp/manifest.json custom_components/nanit/manifest.json
-
-          # Update pyproject.toml version
-          sed -i "s/^version = \".*\"/version = \"$pep440\"/" packages/aionanit/pyproject.toml
-
-      - name: Create version commit and tag
-        env:
-          TAG: ${{ steps.version.outputs.tag }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add custom_components/nanit/manifest.json packages/aionanit/pyproject.toml
-          git commit -m "chore: bump version to ${TAG} [skip ci]"
           git tag "${TAG}"
-          git push origin HEAD:main "${TAG}"
+          git push origin "${TAG}"
 
       - name: Summary
         env:
           TAG: ${{ steps.version.outputs.tag }}
         run: |
-          echo "✅ Tagged ${TAG} and pushed."
-          echo "Run 'just beta' locally to create the GitHub pre-release and publish to PyPI."
+          echo "✅ Tagged ${TAG} on merge commit $(git rev-parse --short HEAD)."
+          echo "Version injection happens at build time in the release workflow."
+          echo "Run 'just release' → Release beta to publish the pre-release."

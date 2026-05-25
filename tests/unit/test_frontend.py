@@ -125,7 +125,18 @@ async def test_register_card_yaml_mode_skips_resource(hass: HomeAssistant) -> No
 
 
 def test_manifest_version_is_loaded() -> None:
-    assert _MANIFEST_VERSION == "1.4.0"
+    import json
+    from pathlib import Path
+
+    manifest = json.loads(
+        (
+            Path(__file__).resolve().parent.parent.parent
+            / "custom_components"
+            / "nanit"
+            / "manifest.json"
+        ).read_text()
+    )
+    assert manifest["version"] == _MANIFEST_VERSION
 
 
 async def test_register_card_loads_resources_when_not_loaded(hass: HomeAssistant) -> None:

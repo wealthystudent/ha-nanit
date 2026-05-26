@@ -14,6 +14,7 @@ All notable changes to the Nanit Home Assistant integration are documented in th
 
 ### Fixed
 - Volume entity no longer resets to 0 after unrelated settings pushes from the camera (partial `PUT_SETTINGS` messages now merge into existing state instead of replacing it)
+- Camera stream now survives token refresh — the cached RTMPS stream URL is invalidated after every WebSocket reconnection so HA re-fetches a fresh access token instead of retrying with an expired one indefinitely
 
 ## [1.1.0] – 2026-03-23
 

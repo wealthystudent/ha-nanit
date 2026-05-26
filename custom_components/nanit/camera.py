@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from datetime import datetime
 
 from homeassistant.components.camera import Camera, CameraEntityFeature
 from homeassistant.core import HomeAssistant
@@ -55,6 +56,7 @@ class NanitCameraEntity(NanitEntity, Camera):
         Camera.__init__(self)
         self._camera = camera
         self._prev_is_on: bool | None = None
+        self._prev_last_seen: datetime | None = None
         self._attr_unique_id = f"{camera.uid}_camera"
         self._cached_snapshot: bytes | None = None
         self._cached_snapshot_at: float = 0.0
@@ -77,14 +79,27 @@ class NanitCameraEntity(NanitEntity, Camera):
 
         if prev_on is not None and prev_on != cur_on:
             # Camera power changed — invalidate cached stream.
-            self._invalidate_stream()
+            self._invalidate_stream("power state change")
+
+        # Invalidate stream after WebSocket reconnection so the RTMPS URL
+        # gets a fresh access token.  last_seen is updated only when the
+        # transport moves to CONNECTED, so this fires once per reconnect.
+        if self.coordinator.data is not None:
+            cur_last_seen = self.coordinator.data.connection.last_seen
+            if (
+                self._prev_last_seen is not None
+                and cur_last_seen != self._prev_last_seen
+                and self.stream is not None
+            ):
+                self._invalidate_stream("WebSocket reconnection (token refreshed)")
+            self._prev_last_seen = cur_last_seen
 
         super()._handle_coordinator_update()
 
-    def _invalidate_stream(self) -> None:
+    def _invalidate_stream(self, reason: str = "state change") -> None:
         """Discard HA's cached stream so a fresh one is created on next view."""
         if self.stream is not None:
-            _LOGGER.debug("Invalidating cached stream after power state change")
+            _LOGGER.debug("Invalidating cached stream after %s", reason)
             self.stream = None
 
     # ------------------------------------------------------------------

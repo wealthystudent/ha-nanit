@@ -85,6 +85,7 @@ def _camera_state(
     night_light_timeout: int | None = None,
     playback: PlaybackState | None = None,
     connection_state: ConnectionState = ConnectionState.CONNECTED,
+    last_seen: Any = None,
 ) -> CameraState:
     kwargs: dict[str, Any] = {
         "sensors": SensorState(
@@ -99,7 +100,7 @@ def _camera_state(
             night_light_brightness=night_light_brightness,
         ),
         "control": ControlState(night_light=night_light, night_light_timeout=night_light_timeout),
-        "connection": ConnectionInfo(state=connection_state),
+        "connection": ConnectionInfo(state=connection_state, last_seen=last_seen),
     }
     if "playback" in getattr(CameraState, "__dataclass_fields__", {}):
         kwargs["playback"] = playback or PlaybackState()
@@ -614,3 +615,82 @@ async def test_reconnect_within_grace_cancels_timer(hass: HomeAssistant) -> None
     timeout_callback(None)
     assert coordinator.connected is True
     assert coordinator.async_update_listeners.call_count == baseline_calls
+
+
+def test_camera_invalidates_stream_on_reconnection() -> None:
+    from datetime import UTC, datetime
+
+    t1 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+    t2 = datetime(2026, 1, 1, 13, 0, 0, tzinfo=UTC)
+
+    coordinator = _push_coordinator(_camera_state(last_seen=t1))
+    camera = MagicMock(uid="cam_1")
+    entity = NanitCameraEntity(coordinator, camera)
+    _disable_state_writes(entity)
+
+    entity._handle_coordinator_update()
+    assert entity._prev_last_seen == t1
+
+    entity.stream = MagicMock()
+    coordinator.data = _camera_state(last_seen=t2)
+    entity._handle_coordinator_update()
+
+    assert entity.stream is None
+    assert entity._prev_last_seen == t2
+
+
+def test_camera_does_not_invalidate_stream_when_last_seen_unchanged() -> None:
+    from datetime import UTC, datetime
+
+    t1 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+
+    coordinator = _push_coordinator(_camera_state(last_seen=t1))
+    camera = MagicMock(uid="cam_1")
+    entity = NanitCameraEntity(coordinator, camera)
+    _disable_state_writes(entity)
+
+    entity._handle_coordinator_update()
+
+    mock_stream = MagicMock()
+    entity.stream = mock_stream
+    coordinator.data = _camera_state(last_seen=t1)
+    entity._handle_coordinator_update()
+
+    assert entity.stream is mock_stream
+
+
+def test_camera_does_not_invalidate_stream_on_first_update() -> None:
+    from datetime import UTC, datetime
+
+    t1 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+
+    coordinator = _push_coordinator(_camera_state(last_seen=t1))
+    camera = MagicMock(uid="cam_1")
+    entity = NanitCameraEntity(coordinator, camera)
+    _disable_state_writes(entity)
+
+    mock_stream = MagicMock()
+    entity.stream = mock_stream
+    entity._handle_coordinator_update()
+
+    assert entity.stream is mock_stream
+    assert entity._prev_last_seen == t1
+
+
+def test_camera_does_not_invalidate_when_no_stream_cached() -> None:
+    from datetime import UTC, datetime
+
+    t1 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+    t2 = datetime(2026, 1, 1, 13, 0, 0, tzinfo=UTC)
+
+    coordinator = _push_coordinator(_camera_state(last_seen=t1))
+    camera = MagicMock(uid="cam_1")
+    entity = NanitCameraEntity(coordinator, camera)
+    _disable_state_writes(entity)
+
+    entity._handle_coordinator_update()
+    coordinator.data = _camera_state(last_seen=t2)
+    entity._handle_coordinator_update()
+
+    assert entity.stream is None
+    assert entity._prev_last_seen == t2

@@ -202,6 +202,25 @@ class TestGetBabies:
 
         assert babies == []
 
+    async def test_get_babies_null_name(self, client: NanitRestClient) -> None:
+        with aioresponses() as m:
+            m.get(
+                BABIES_URL,
+                payload={
+                    "babies": [
+                        {
+                            "uid": "baby123",
+                            "name": None,
+                            "camera_uid": "cam456",
+                        },
+                    ]
+                },
+            )
+            babies = await client.async_get_babies("token123")
+
+        assert len(babies) == 1
+        assert babies[0].name == ""
+
     async def test_get_babies_unauthorized(self, client: NanitRestClient) -> None:
         with aioresponses() as m:
             m.get(BABIES_URL, status=401)

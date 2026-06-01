@@ -1,11 +1,11 @@
-aiohttp
-aioresponses
-homeassistant
-pytest-homeassistant-custom-component
-pytest-cov
+aiohttp==3.13.5
+aioresponses==0.7.8
+homeassistant==2026.5.4
+pytest-homeassistant-custom-component==0.13.333
+pytest-cov==7.1.0
 aionanit @ file:packages/aionanit
-ruff
-mypy
-pre-commit
-syrupy
-rich
+ruff==0.15.14
+mypy==2.1.0
+pre-commit==4.6.0
+syrupy==5.1.0
+rich==15.0.0

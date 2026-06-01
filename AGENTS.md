@@ -218,9 +218,7 @@ All dev and test dependency versions are exact-pinned to prevent surprise breaka
 - `dev/requirements.txt` — integration dev/test/CI tooling (exact `==` pins)
 - `packages/aionanit/pyproject.toml` `[project.optional-dependencies] dev` — library test deps (exact `==` pins)
 
-**Exceptions** (unpinned because they must match the CI Python version):
-- `homeassistant` — requires `>=3.14.2` on newer versions; CI runs 3.13
-- `pytest-homeassistant-custom-component` — must match the `homeassistant` version
+**CI Python version**: CI runs Python 3.13. `homeassistant` and `pytest-homeassistant-custom-component` must stay pinned to versions compatible with 3.13 (HA 2026.3.0+ requires Python 3.14.2+).
 
 **Runtime dependencies** (`aiohttp`, `protobuf` in `[project] dependencies`) use range constraints (e.g., `>=3.9.0,<4`) since exact pins would conflict with Home Assistant's own dependency resolution.
 

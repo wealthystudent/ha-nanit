@@ -1,7 +1,7 @@
 {
   "domain": "nanit",
   "name": "Nanit",
-  "version": "1.4.0",
+  "version": "1.8.1",
   "documentation": "https://github.com/wealthystudent/ha-nanit",
   "issue_tracker": "https://github.com/wealthystudent/ha-nanit/issues",
   "codeowners": ["@wealthystudent"],
@@ -9,6 +9,6 @@
   "dependencies": ["http", "lovelace"],
   "iot_class": "cloud_push",
   "integration_type": "hub",
-  "requirements": ["aionanit>=1.4.0"],
+  "requirements": ["aionanit>=1.8.1"],
   "loggers": ["custom_components.nanit", "aionanit"]
 }

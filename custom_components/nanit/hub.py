@@ -34,7 +34,7 @@ from .coordinator import (
     NanitPushCoordinator,
     NanitSoundLightCoordinator,
 )
-from .sanitize import sanitize_name
+from .sanitize import display_name
 
 if TYPE_CHECKING:
     from . import NanitConfigEntry
@@ -168,7 +168,7 @@ class NanitHub:
                     baby.camera_uid,
                     result,
                 )
-                failed_cameras.append(sanitize_name(baby.name))
+                failed_cameras.append(display_name(baby.name, baby.uid))
                 ir.async_create_issue(
                     self._hass,
                     DOMAIN,
@@ -178,7 +178,7 @@ class NanitHub:
                     severity=ir.IssueSeverity.WARNING,
                     translation_key="camera_connection_failed",
                     translation_placeholders={
-                        "camera_name": sanitize_name(baby.name),
+                        "camera_name": display_name(baby.name, baby.uid),
                         "error": str(result),
                     },
                 )

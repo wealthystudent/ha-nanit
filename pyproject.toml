@@ -69,3 +69,6 @@ disallow_untyped_decorators = false
 module = "custom_components.nanit.*"
 disallow_subclassing_any = false
 disallow_untyped_decorators = false
+
+[tool.coverage.run]
+omit = ["custom_components/nanit/aionanit_sl/*"]

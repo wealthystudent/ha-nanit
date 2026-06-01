@@ -1,7 +1,7 @@
 aiohttp>=3.13,<3.14
 aioresponses>=0.7,<0.8
-homeassistant>=2026.2,<2026.3
-pytest-homeassistant-custom-component>=0.13.316,<0.14
+homeassistant>=2026.5,<2026.7
+pytest-homeassistant-custom-component>=0.13.333,<0.14
 pytest-cov>=7,<8
 aionanit @ file:packages/aionanit
 ruff>=0.15,<0.16

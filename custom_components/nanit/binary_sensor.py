@@ -127,9 +127,17 @@ class NanitBinarySensor(NanitEntity, BinarySensorEntity):
 
     @property
     def is_on(self) -> bool | None:
-        """Return true if the binary sensor is on."""
+        """Return true if the binary sensor is on.
+
+        The connectivity sensor uses the coordinator's debounced ``connected``
+        flag instead of the raw WebSocket state so that brief disconnections
+        during pre-emptive token refresh (every ~55 min) do not cause the
+        entity to flap between connected/disconnected.
+        """
         if self.coordinator.data is None:
             return None
+        if self.entity_description.key == "connectivity":
+            return bool(self.coordinator.connected)
         return self.entity_description.value_fn(self.coordinator.data)
 
 

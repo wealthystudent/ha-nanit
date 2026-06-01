@@ -172,7 +172,12 @@ class TestIdleSeconds:
         # A binary message was received — idle should be small.
         assert t.idle_seconds < 1.0
 
-        await t.async_close()
+        t._closed = True
+        await asyncio.sleep(0)
+        for task in asyncio.all_tasks():
+            if not task.done() and "reconnect_loop" in repr(task.get_coro()):
+                task.cancel()
+        await asyncio.sleep(0)
 
 
 class TestRecvLoop:
@@ -198,7 +203,12 @@ class TestRecvLoop:
         await asyncio.sleep(0.05)
 
         msg_cb.assert_called_once_with(b"\x08\x00")
-        await t.async_close()
+        t._closed = True
+        await asyncio.sleep(0)
+        for task in asyncio.all_tasks():
+            if not task.done() and "reconnect_loop" in repr(task.get_coro()):
+                task.cancel()
+        await asyncio.sleep(0)
 
 
 class TestGetHeadersCallback:

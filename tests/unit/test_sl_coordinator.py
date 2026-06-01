@@ -69,6 +69,8 @@ class TestGracePeriod:
         assert coord.connected is True
         assert coord._availability_timer is not None
 
+        coord._cancel_availability_timer()
+
     @pytest.mark.asyncio
     async def test_reconnect_cancels_grace_timer(self, hass: HomeAssistant) -> None:
         entry = _make_entry(hass)
@@ -118,6 +120,9 @@ class TestDebouncedSave:
         assert coord._save_timer is not None
         assert coord._pending_save_state is state
 
+        coord._save_timer()
+        coord._save_timer = None
+
     @pytest.mark.asyncio
     async def test_rapid_updates_only_schedule_one_timer(self, hass: HomeAssistant) -> None:
         entry = _make_entry(hass)
@@ -140,6 +145,9 @@ class TestDebouncedSave:
         assert coord._pending_save_state is state3
         # Timer should be set only once (not reset on each update)
         assert coord._save_timer is not None
+
+        coord._save_timer()
+        coord._save_timer = None
 
     @pytest.mark.asyncio
     async def test_connection_change_does_not_schedule_save(self, hass: HomeAssistant) -> None:

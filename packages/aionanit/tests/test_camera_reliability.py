@@ -52,6 +52,9 @@ async def test_token_refresh_task_started_on_start() -> None:
     assert not camera._token_refresh_task.done()
 
     camera._cancel_token_refresh()
+    camera._cancel_playback_poll()
+    camera._cancel_health_check()
+    camera._cancel_sensor_poll()
 
 
 @pytest.mark.asyncio

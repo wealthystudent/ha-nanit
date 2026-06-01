@@ -179,6 +179,7 @@ class TestCloudRelayPrefersDefaultTls:
 
         mock_ws = MagicMock()
         mock_ws.closed = False
+        mock_ws.close = AsyncMock()
         mock_ws.__aiter__ = MagicMock(return_value=iter([]))
 
         sl._session.ws_connect = AsyncMock(return_value=mock_ws)
@@ -193,6 +194,8 @@ class TestCloudRelayPrefersDefaultTls:
             ssl_arg = call_kwargs.kwargs.get("ssl") if call_kwargs.kwargs else None
             if ssl_arg is not None:
                 assert ssl_arg.verify_mode != ssl.CERT_NONE, "Cloud relay must not use CERT_NONE"
+
+        await sl.async_stop()
 
 
 class TestUseCloudRelayFlag:

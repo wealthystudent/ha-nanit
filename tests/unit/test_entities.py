@@ -185,7 +185,9 @@ def test_binary_sensor_connectivity_on_when_connected() -> None:
 
 
 def test_binary_sensor_connectivity_off_when_disconnected() -> None:
-    coordinator = _push_coordinator(_camera_state(connection_state=ConnectionState.DISCONNECTED))
+    coordinator = _push_coordinator(
+        _camera_state(connection_state=ConnectionState.DISCONNECTED), connected=False
+    )
     entity = NanitBinarySensor(coordinator, _binary_description("connectivity"))
 
     assert entity.is_on is False

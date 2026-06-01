@@ -12,7 +12,7 @@ from .coordinator import (
     NanitPushCoordinator,
     NanitSoundLightCoordinator,
 )
-from .sanitize import sanitize_name
+from .sanitize import display_name
 
 
 class NanitEntity(CoordinatorEntity[NanitPushCoordinator]):
@@ -25,7 +25,7 @@ class NanitEntity(CoordinatorEntity[NanitPushCoordinator]):
         """Return device info."""
         return DeviceInfo(
             identifiers={(DOMAIN, self.coordinator.camera.uid)},
-            name=sanitize_name(self.coordinator.baby.name),
+            name=display_name(self.coordinator.baby.name, self.coordinator.baby.uid),
             manufacturer="Nanit",
         )
 
@@ -53,7 +53,7 @@ class NanitCloudEntity(CoordinatorEntity[NanitCloudCoordinator]):
         """Return device info."""
         return DeviceInfo(
             identifiers={(DOMAIN, self.coordinator.baby.camera_uid)},
-            name=sanitize_name(self.coordinator.baby.name),
+            name=display_name(self.coordinator.baby.name, self.coordinator.baby.uid),
             manufacturer="Nanit",
         )
 
@@ -69,7 +69,7 @@ class NanitSoundLightEntity(CoordinatorEntity[NanitSoundLightCoordinator]):
         baby = self.coordinator.baby
         return DeviceInfo(
             identifiers={(DOMAIN, f"{baby.camera_uid}_sound_light")},
-            name=f"{sanitize_name(baby.name)} Sound & Light",
+            name=f"{display_name(baby.name, baby.uid)} Sound & Light",
             manufacturer="Nanit",
             model="Sound & Light Machine",
             via_device=(DOMAIN, baby.camera_uid),
@@ -96,6 +96,6 @@ class NanitNetworkEntity(CoordinatorEntity[NanitNetworkCoordinator]):
         """Return device info."""
         return DeviceInfo(
             identifiers={(DOMAIN, self.coordinator.baby.camera_uid)},
-            name=sanitize_name(self.coordinator.baby.name),
+            name=display_name(self.coordinator.baby.name, self.coordinator.baby.uid),
             manufacturer="Nanit",
         )

@@ -240,6 +240,7 @@ jobs:
           branch="chore/bump-version-v${SEMVER}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git push origin --delete "$branch" 2>/dev/null || true
           git checkout -b "$branch"
           git add custom_components/nanit/manifest.json packages/aionanit/pyproject.toml
           git commit -m "chore: bump version to v${SEMVER} [skip ci]"

@@ -21,7 +21,9 @@ _DEFAULT_TIMEOUT = aiohttp.ClientTimeout(total=15)
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 
 
-def _sanitize_name(raw: str) -> str:
+def _sanitize_name(raw: str | None) -> str:
+    if not raw:
+        return ""
     stripped = _HTML_TAG_RE.sub("", raw)
     return "".join(ch for ch in stripped if unicodedata.category(ch)[0] != "C").strip()
 

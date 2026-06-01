@@ -211,6 +211,23 @@ Version files on `main` contain the **last stable release version** (not the cur
 
 **Branch protection compatibility**: The auto-beta workflow tags the merge commit directly (no version-injection commit) and pushes only the tag — no push to `main`. The release workflow opens a version-bump PR after stable releases instead of pushing directly to `main`. This ensures all commits on `main` go through the normal PR + signed-commit flow.
 
+### Pinned dependencies
+
+All dev and test dependency versions are pinned to minor-version ranges to prevent supply-chain attacks while allowing patch updates:
+
+- `dev/requirements.txt` — integration dev/test/CI tooling (`>=x.y,<x.(y+1)` ranges)
+- `packages/aionanit/pyproject.toml` `[project.optional-dependencies] dev` — library test deps (`>=x.y,<x.(y+1)` ranges)
+
+**CI Python version**: CI runs Python 3.13. `homeassistant` must stay below `2026.3` (HA 2026.3.0+ requires Python 3.14.2+). The `aiohttp` dev pin must stay below `3.14` (aioresponses 0.7.x incompatible with aiohttp 3.14+).
+
+**Runtime dependencies** (`aiohttp`, `protobuf` in `[project] dependencies`) use broader range constraints (e.g., `>=3.9.0,<4`) since exact pins would conflict with Home Assistant's own dependency resolution.
+
+**Before every release**, review and update pinned versions:
+1. Run `pip install --upgrade` for each pinned package (or recreate venv with `just setup`).
+2. Run `just check` to verify compatibility.
+3. Update the pinned versions in both `dev/requirements.txt` and `packages/aionanit/pyproject.toml` to match.
+4. Commit version bumps as a separate `chore: update pinned dev dependencies` commit.
+
 ---
 
 ## Security

@@ -213,14 +213,14 @@ Version files on `main` contain the **last stable release version** (not the cur
 
 ### Pinned dependencies
 
-All dev and test dependency versions are exact-pinned to prevent surprise breakage from upstream releases:
+All dev and test dependency versions are pinned to minor-version ranges to prevent supply-chain attacks while allowing patch updates:
 
-- `dev/requirements.txt` — integration dev/test/CI tooling (exact `==` pins)
-- `packages/aionanit/pyproject.toml` `[project.optional-dependencies] dev` — library test deps (exact `==` pins)
+- `dev/requirements.txt` — integration dev/test/CI tooling (`>=x.y,<x.(y+1)` ranges)
+- `packages/aionanit/pyproject.toml` `[project.optional-dependencies] dev` — library test deps (`>=x.y,<x.(y+1)` ranges)
 
-**CI Python version**: CI runs Python 3.13. `homeassistant` and `pytest-homeassistant-custom-component` must stay pinned to versions compatible with 3.13 (HA 2026.3.0+ requires Python 3.14.2+).
+**CI Python version**: CI runs Python 3.13. `homeassistant` must stay below `2026.3` (HA 2026.3.0+ requires Python 3.14.2+). The `aiohttp` dev pin must stay below `3.14` (aioresponses 0.7.x incompatible with aiohttp 3.14+).
 
-**Runtime dependencies** (`aiohttp`, `protobuf` in `[project] dependencies`) use range constraints (e.g., `>=3.9.0,<4`) since exact pins would conflict with Home Assistant's own dependency resolution.
+**Runtime dependencies** (`aiohttp`, `protobuf` in `[project] dependencies`) use broader range constraints (e.g., `>=3.9.0,<4`) since exact pins would conflict with Home Assistant's own dependency resolution.
 
 **Before every release**, review and update pinned versions:
 1. Run `pip install --upgrade` for each pinned package (or recreate venv with `just setup`).

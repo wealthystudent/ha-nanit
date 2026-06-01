@@ -16,12 +16,12 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "grpcio-tools==1.80.0",
-    "pytest==9.0.3",
-    "pytest-asyncio==1.3.0",
-    "aioresponses==0.7.8",
-    "aiohttp==3.13.5",
-    "pytest-cov==7.1.0",
+    "grpcio-tools>=1.80,<2",
+    "pytest>=9,<10",
+    "pytest-asyncio>=1.3,<2",
+    "aioresponses>=0.7,<0.8",
+    "aiohttp>=3.13,<3.14",
+    "pytest-cov>=7,<8",
 ]
 
 [tool.setuptools.packages.find]

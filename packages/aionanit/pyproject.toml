@@ -20,6 +20,7 @@ dev = [
     "pytest",
     "pytest-asyncio",
     "aioresponses",
+    "aiohttp<3.14",  # aioresponses 0.7.8 incompatible with aiohttp 3.14+
     "pytest-cov",
 ]
 

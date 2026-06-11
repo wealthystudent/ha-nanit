@@ -280,7 +280,68 @@ async def test_switch_camera_power_turn_off_calls_sleep_mode() -> None:
     assert entity.is_on is False
 
 
-def test_media_player_state_playing_when_playback_playing_true() -> None:
+def test_switch_camera_power_is_none_when_sleep_mode_unknown() -> None:
+    coordinator = _push_coordinator(_camera_state(sleep_mode=None))
+    camera = MagicMock(uid="cam_1")
+    entity = NanitSwitch(coordinator, camera, _switch_description("camera_power"))
+
+    assert entity.is_on is None
+
+
+async def test_switch_camera_power_fetches_settings_when_state_unknown() -> None:
+    coordinator = _push_coordinator(_camera_state(sleep_mode=None))
+    camera = MagicMock(uid="cam_1")
+    camera.async_get_settings = AsyncMock()
+    entity = NanitSwitch(coordinator, camera, _switch_description("camera_power"))
+    _disable_state_writes(entity)
+
+    assert entity.is_on is None
+
+    await entity._async_fetch_initial_settings()
+
+    camera.async_get_settings.assert_awaited_once()
+
+
+async def test_switch_camera_power_fetch_handles_transport_error() -> None:
+    from aionanit import NanitTransportError
+
+    coordinator = _push_coordinator(_camera_state(sleep_mode=None))
+    camera = MagicMock(uid="cam_1")
+    camera.async_get_settings = AsyncMock(side_effect=NanitTransportError("ws closed"))
+    entity = NanitSwitch(coordinator, camera, _switch_description("camera_power"))
+    _disable_state_writes(entity)
+
+    await entity._async_fetch_initial_settings()
+
+    camera.async_get_settings.assert_awaited_once()
+    assert entity.is_on is None
+
+
+async def test_switch_camera_power_no_fetch_when_state_known() -> None:
+    coordinator = _push_coordinator(_camera_state(sleep_mode=False))
+    camera = MagicMock(uid="cam_1")
+    camera.async_get_settings = AsyncMock()
+    entity = NanitSwitch(coordinator, camera, _switch_description("camera_power"))
+    _disable_state_writes(entity)
+
+    assert entity.is_on is True
+
+    with patch.object(entity, "_async_fetch_initial_settings", new=AsyncMock()) as mock_fetch:
+        with (
+            patch.object(entity, "async_get_last_state", new=AsyncMock(return_value=None)),
+            patch(
+                "homeassistant.helpers.update_coordinator.CoordinatorEntity.async_added_to_hass",
+                new=AsyncMock(),
+            ),
+            patch(
+                "homeassistant.helpers.restore_state.RestoreEntity.async_added_to_hass",
+                new=AsyncMock(),
+            ),
+        ):
+            await entity.async_added_to_hass()
+
+    mock_fetch.assert_not_awaited()
+
     coordinator = _push_coordinator(
         _camera_state(playback=PlaybackState(playing=True, current_track="White Noise.wav"))
     )

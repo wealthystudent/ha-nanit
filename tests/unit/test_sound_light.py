@@ -14,6 +14,7 @@ from custom_components.nanit.aionanit_sl.models import (
     SoundLightEventKind,
     SoundLightFullState,
 )
+from custom_components.nanit.aionanit_sl.sl_protocol import build_power_cmd
 from custom_components.nanit.aionanit_sl.sound_light import NanitSoundLight
 
 
@@ -112,6 +113,22 @@ class TestSubscription:
         sl.subscribe(bad_callback)
         # Should not raise
         sl._fire_event(SoundLightEventKind.STATE_UPDATE)
+
+
+class TestCommands:
+    @pytest.mark.asyncio
+    async def test_async_set_power_updates_state_and_fires_state_update(self) -> None:
+        sl = _make_sound_light()
+        sl._async_send = AsyncMock()
+        events: list[SoundLightEvent] = []
+        sl.subscribe(events.append)
+
+        await sl.async_set_power(True)
+
+        sl._async_send.assert_awaited_once_with(build_power_cmd(True))
+        assert sl.state.power_on is True
+        assert events[-1].kind is SoundLightEventKind.STATE_UPDATE
+        assert events[-1].state.power_on is True
 
 
 class TestDualSslContext:

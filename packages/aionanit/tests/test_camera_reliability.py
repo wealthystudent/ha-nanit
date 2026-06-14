@@ -203,3 +203,10 @@ async def test_reconnect_completes_with_unresponsive_camera() -> None:
     camera._send_request = _fast_send
 
     await asyncio.wait_for(camera._async_reconnect(), timeout=5.0)
+
+    # Clean up background tasks spawned during reconnect.
+    camera._cancel_token_refresh()
+    camera._cancel_health_check()
+    camera._cancel_sensor_poll()
+    camera._cancel_playback_poll()
+    camera._cancel_local_probe()

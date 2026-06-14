@@ -231,12 +231,17 @@ message GetStatus {
   optional bool all = 1;
 }
 
+message GetSettings {
+  optional bool all = 1;
+}
+
 message Request {
   required int32 id = 1;
   required RequestType type = 2;
 
   optional Streaming streaming = 4;
   optional Settings settings = 5;
+  optional GetSettings get_settings = 6;
   optional Status status = 7;
   optional GetStatus get_status = 8;
   optional GetSensorData get_sensor_data = 12;

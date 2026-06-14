@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -270,3 +271,44 @@ async def test_token_refresh_callback(hass: HomeAssistant, mock_nanit_client) ->
 
     assert entry.data[CONF_ACCESS_TOKEN] == "new_access"
     assert entry.data[CONF_REFRESH_TOKEN] == "new_refresh"
+
+
+async def test_setup_camera_timeout_treated_as_connection_failure(
+    hass: HomeAssistant, mock_nanit_client
+) -> None:
+    """Camera that hangs during setup is treated like a connection failure.
+
+    Regression for issue #80: an unreachable camera (travel camera powered
+    off) could block the entire integration indefinitely.
+    """
+    mock_nanit_client.async_get_babies.return_value = [MOCK_BABY_1, MOCK_BABY_2]
+    mock_nanit_client.camera.side_effect = lambda **kw: _make_mock_camera(kw["uid"], kw["baby_uid"])
+
+    entry = _make_entry(hass)
+    hub = NanitHub(hass, MagicMock(), entry)
+
+    with (
+        patch("custom_components.nanit.hub.NanitPushCoordinator") as push_cls,
+        patch("custom_components.nanit.hub.NanitCloudCoordinator") as cloud_cls,
+        patch("custom_components.nanit.hub.NanitNetworkCoordinator") as net_cls,
+        patch("custom_components.nanit.hub._CAMERA_SETUP_TIMEOUT", 0.01),
+    ):
+
+        async def _hang_forever():
+            await asyncio.sleep(3600)
+
+        def push_factory(_hass, _entry, camera, _baby):
+            mock = MagicMock()
+            if camera.uid == MOCK_BABY_1.camera_uid:
+                mock.async_setup = _hang_forever
+            else:
+                mock.async_setup = AsyncMock()
+            return mock
+
+        push_cls.side_effect = push_factory
+        cloud_cls.return_value = MagicMock(async_config_entry_first_refresh=AsyncMock())
+        net_cls.return_value = MagicMock(async_config_entry_first_refresh=AsyncMock())
+        await hub.async_setup()
+
+    assert len(hub.camera_data) == 1
+    assert MOCK_BABY_2.camera_uid in hub.camera_data

@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import asyncio
 import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import aiohttp
 import pytest
 
 from aionanit.auth import TokenManager
-from aionanit.camera import GetStatus, NanitCamera, RequestType, Response
+from aionanit.camera import (
+    _FRESH_CONNECTION_WINDOW,
+    GetStatus,
+    NanitCamera,
+    RequestType,
+    Response,
+)
 from aionanit.exceptions import NanitTransportError
 from aionanit.models import TransportKind
 from aionanit.rest import NanitRestClient
@@ -152,3 +158,48 @@ async def test_send_request_timeout_when_not_reconnecting() -> None:
         )
 
     camera._async_reconnect.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_skips_when_lock_already_held() -> None:
+    """Reentrant _async_reconnect returns immediately instead of deadlocking."""
+    camera, _ = _make_camera()
+
+    await camera._reconnect_lock.acquire()
+    try:
+        await asyncio.wait_for(camera._async_reconnect(), timeout=1.0)
+    finally:
+        camera._reconnect_lock.release()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_completes_with_unresponsive_camera() -> None:
+    """_async_reconnect must not deadlock when the camera never responds.
+
+    Regression for issue #80: an offline camera whose cloud relay accepts
+    the WebSocket but never answers protobuf requests caused a reentrant
+    lock acquire via _async_enable_sensor_push → _send_request → timeout
+    → _async_reconnect.
+    """
+    camera, _ = _make_camera()
+    camera._stopped = False
+
+    transport = MagicMock()
+    transport.connected = True
+    type(transport).idle_seconds = PropertyMock(
+        return_value=_FRESH_CONNECTION_WINDOW + 1.0,
+    )
+    transport.transport_kind = TransportKind.CLOUD
+    transport.async_connect_cloud = AsyncMock()
+    transport.async_send = AsyncMock()
+    transport.async_close = AsyncMock()
+    camera._transport = transport
+
+    _orig = camera._send_request
+
+    async def _fast_send(request_type, timeout=0.05, **kw):
+        return await _orig(request_type, timeout=timeout, **kw)
+
+    camera._send_request = _fast_send
+
+    await asyncio.wait_for(camera._async_reconnect(), timeout=5.0)

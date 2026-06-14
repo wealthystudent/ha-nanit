@@ -41,6 +41,9 @@ class GetSensorData(google.protobuf.message.Message):
 class GetStatus(google.protobuf.message.Message):
     all: bool
 
+class GetSettings(google.protobuf.message.Message):
+    all: bool
+
 class Message(google.protobuf.message.Message):
     KEEPALIVE: int
     REQUEST: int
@@ -72,6 +75,7 @@ class Request(google.protobuf.message.Message):
     type: int
     streaming: Streaming
     settings: Settings
+    get_settings: GetSettings
     status: Status
     get_status: GetStatus
     get_sensor_data: GetSensorData

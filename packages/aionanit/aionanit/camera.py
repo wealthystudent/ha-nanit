@@ -66,6 +66,7 @@ _LOGGER = logging.getLogger(__name__)
 Control = proto.Control
 GetControl = proto.GetControl
 GetSensorData = proto.GetSensorData
+GetSettings = proto.GetSettings
 GetStatus = proto.GetStatus
 ProtoRequest = proto.Request
 RequestType = proto.RequestType
@@ -264,7 +265,10 @@ class NanitCamera:
 
     async def async_get_settings(self) -> SettingsState:
         """GET_SETTINGS request."""
-        resp = await self._send_request(RequestType.GET_SETTINGS)
+        resp = await self._send_request(
+            RequestType.GET_SETTINGS,
+            get_settings=GetSettings(all=True),
+        )
         settings = _parse_settings(resp)
         self._update_state(settings=settings, kind=CameraEventKind.SETTINGS_UPDATE)
         return settings
@@ -888,7 +892,20 @@ class NanitCamera:
 
         A lock prevents concurrent reconnects, and a freshness guard skips
         the reconnect if another caller just completed one.
+
+        The ``locked()`` pre-check prevents a deadlock that occurs when
+        ``_async_enable_sensor_push`` (called at the end of this method)
+        triggers ``_send_request``, which on timeout attempts to call
+        ``_async_reconnect`` again.  ``asyncio.Lock`` is non-reentrant,
+        so the nested acquire would block forever.  Skipping is safe:
+        a reconnect is already in progress, so the caller can proceed
+        with the current connection and let the retry logic handle any
+        remaining failures.
         """
+        if self._reconnect_lock.locked():
+            _LOGGER.debug("Reconnect already in progress, skipping")
+            return
+
         async with self._reconnect_lock:
             # Skip if another caller already reconnected.
             if (

@@ -41,6 +41,11 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
+# Maximum seconds to wait for a single camera to connect and initialise
+# during hub setup.  Prevents an unreachable camera (e.g. a travel camera
+# that is powered off) from blocking the entire integration indefinitely.
+_CAMERA_SETUP_TIMEOUT: float = 60.0
+
 
 @dataclass
 class CameraData:
@@ -148,11 +153,14 @@ class NanitHub:
         # Create camera + coordinators for each baby
         failed_cameras: list[str] = []
         tasks = [
-            self._setup_camera(
-                baby,
-                camera_ips.get(baby.camera_uid),
-                speaker_ips.get(baby.camera_uid),
-                speaker_uid_map.get(baby.camera_uid),
+            asyncio.wait_for(
+                self._setup_camera(
+                    baby,
+                    camera_ips.get(baby.camera_uid),
+                    speaker_ips.get(baby.camera_uid),
+                    speaker_uid_map.get(baby.camera_uid),
+                ),
+                timeout=_CAMERA_SETUP_TIMEOUT,
             )
             for baby in babies
         ]
@@ -161,7 +169,7 @@ class NanitHub:
         for baby, result in zip(babies, results, strict=True):
             if isinstance(result, NanitAuthError):
                 raise result
-            if isinstance(result, NanitConnectionError | NanitCameraUnavailable):
+            if isinstance(result, NanitConnectionError | NanitCameraUnavailable | TimeoutError):
                 _LOGGER.warning(
                     "Camera %s (%s) failed to connect: %s",
                     baby.name,

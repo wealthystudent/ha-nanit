@@ -7,6 +7,7 @@ from aionanit.proto import (
     Control,
     GetControl,
     GetSensorData,
+    GetSettings,
     GetStatus,
     Message,
     MessageType,
@@ -49,6 +50,7 @@ def build_request(
     control: Control | None = None,
     playback: Playback | None = None,
     get_status: GetStatus | None = None,
+    get_settings: GetSettings | None = None,
     get_sensor_data: GetSensorData | None = None,
     get_control: GetControl | None = None,
 ) -> bytes:
@@ -64,6 +66,7 @@ def build_request(
             control=control,
             playback=playback,
             get_status=get_status,
+            get_settings=get_settings,
             get_sensor_data=get_sensor_data,
             get_control=get_control,
         ).items()

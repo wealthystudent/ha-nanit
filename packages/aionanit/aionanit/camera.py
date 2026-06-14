@@ -66,6 +66,7 @@ _LOGGER = logging.getLogger(__name__)
 Control = proto.Control
 GetControl = proto.GetControl
 GetSensorData = proto.GetSensorData
+GetSettings = proto.GetSettings
 GetStatus = proto.GetStatus
 ProtoRequest = proto.Request
 RequestType = proto.RequestType
@@ -264,7 +265,10 @@ class NanitCamera:
 
     async def async_get_settings(self) -> SettingsState:
         """GET_SETTINGS request."""
-        resp = await self._send_request(RequestType.GET_SETTINGS)
+        resp = await self._send_request(
+            RequestType.GET_SETTINGS,
+            get_settings=GetSettings(all=True),
+        )
         settings = _parse_settings(resp)
         self._update_state(settings=settings, kind=CameraEventKind.SETTINGS_UPDATE)
         return settings

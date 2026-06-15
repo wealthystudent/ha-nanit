@@ -86,7 +86,7 @@ def snapshot(snapshot: SnapshotAssertion) -> SnapshotAssertion:
 def mock_nanit_client():
     """Patch NanitClient and NanitCloudCoordinator for the entire integration."""
     with (
-        patch("custom_components.nanit.hub.NanitClient", autospec=True) as mock_cls,
+        patch("aionanit.client.NanitClient", autospec=True) as mock_cls,
         patch("custom_components.nanit.hub.NanitCloudCoordinator") as mock_cloud_cls,
         patch("custom_components.nanit.hub.NanitNetworkCoordinator") as mock_net_cls,
     ):

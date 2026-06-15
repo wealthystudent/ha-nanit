@@ -89,6 +89,45 @@ class TestLogin:
             with pytest.raises(NanitConnectionError):
                 await client.async_login("user@test.com", "pass123")
 
+    async def test_login_oauth2_error_with_description(self, client: NanitRestClient) -> None:
+        with aioresponses() as m:
+            m.post(
+                LOGIN_URL,
+                status=400,
+                payload={
+                    "error": "unauthorized_client",
+                    "error_description": "Grant type 'implicit' not allowed for the client.",
+                },
+            )
+
+            with pytest.raises(
+                NanitAuthError,
+                match=r"unauthorized_client: Grant type 'implicit' not allowed",
+            ):
+                await client.async_login("user@test.com", "pass123")
+
+    async def test_login_oauth2_error_without_description(self, client: NanitRestClient) -> None:
+        with aioresponses() as m:
+            m.post(
+                LOGIN_URL,
+                status=400,
+                payload={"error": "invalid_grant"},
+            )
+
+            with pytest.raises(NanitAuthError, match="invalid_grant"):
+                await client.async_login("user@test.com", "pass123")
+
+    async def test_login_api_message_error(self, client: NanitRestClient) -> None:
+        with aioresponses() as m:
+            m.post(
+                LOGIN_URL,
+                status=403,
+                payload={"message": "account locked"},
+            )
+
+            with pytest.raises(NanitAuthError, match="account locked"):
+                await client.async_login("user@test.com", "pass123")
+
 
 class TestLoginMfa:
     async def test_login_mfa_success(self, client: NanitRestClient) -> None:
@@ -138,6 +177,34 @@ class TestRefreshToken:
 
             with pytest.raises(NanitAuthError, match="Access token invalid"):
                 await client.async_refresh_token("bad_acc", "ref")
+
+    async def test_refresh_oauth2_error(self, client: NanitRestClient) -> None:
+        with aioresponses() as m:
+            m.post(
+                REFRESH_URL,
+                status=400,
+                payload={
+                    "error": "unauthorized_client",
+                    "error_description": "Grant type 'implicit' not allowed for the client.",
+                },
+            )
+
+            with pytest.raises(
+                NanitAuthError,
+                match=r"unauthorized_client: Grant type 'implicit' not allowed",
+            ):
+                await client.async_refresh_token("acc", "ref")
+
+    async def test_refresh_api_message_error(self, client: NanitRestClient) -> None:
+        with aioresponses() as m:
+            m.post(
+                REFRESH_URL,
+                status=403,
+                payload={"message": "token revoked"},
+            )
+
+            with pytest.raises(NanitAuthError, match="token revoked"):
+                await client.async_refresh_token("acc", "ref")
 
 
 class TestGetBabies:

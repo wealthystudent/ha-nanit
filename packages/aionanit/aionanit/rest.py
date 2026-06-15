@@ -21,6 +21,24 @@ _DEFAULT_TIMEOUT = aiohttp.ClientTimeout(total=15)
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 
 
+def _extract_error_message(body: dict[str, Any]) -> str | None:
+    """Extract error message from an API error response.
+
+    Handles OAuth2-style errors (``error`` + ``error_description``) and
+    Nanit's simple error format (``message`` without ``access_token``).
+    Returns *None* for success responses.
+    """
+    # OAuth2-style: {"error": "...", "error_description": "..."}
+    if "error" in body:
+        error = str(body["error"])
+        desc = body.get("error_description")
+        return f"{error}: {desc}" if desc else error
+    # Nanit simple error: {"message": "..."} without tokens
+    if "message" in body and "access_token" not in body:
+        return str(body["message"])
+    return None
+
+
 def _sanitize_name(raw: str | None) -> str:
     if not raw:
         return ""
@@ -123,6 +141,10 @@ class NanitRestClient:
         if "mfa_token" in body:
             raise NanitMfaRequiredError(body["mfa_token"])
 
+        error_msg = _extract_error_message(body)
+        if error_msg:
+            raise NanitAuthError(error_msg)
+
         resp.raise_for_status()
 
         return {
@@ -151,8 +173,13 @@ class NanitRestClient:
         if resp.status == 401:
             raise NanitAuthError("Access token invalid during refresh")
 
-        resp.raise_for_status()
         body = await resp.json()
+
+        error_msg = _extract_error_message(body)
+        if error_msg:
+            raise NanitAuthError(error_msg)
+
+        resp.raise_for_status()
 
         return {
             "access_token": body["access_token"],

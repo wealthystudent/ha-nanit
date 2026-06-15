@@ -29,7 +29,7 @@ from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from aionanit import NanitAuthError, NanitCamera, NanitConnectionError
+from aionanit.exceptions import NanitAuthError, NanitConnectionError
 from aionanit.models import Baby, CameraEvent, CameraState, CloudEvent, NetworkInfo
 
 from .aionanit_sl.models import SoundLightEvent, SoundLightEventKind, SoundLightFullState
@@ -37,6 +37,8 @@ from .aionanit_sl.sound_light import NanitSoundLight
 from .const import CLOUD_POLL_INTERVAL, DOMAIN, NETWORK_POLL_INTERVAL
 
 if TYPE_CHECKING:
+    from aionanit import NanitCamera
+
     from . import NanitConfigEntry
     from .hub import NanitHub
 

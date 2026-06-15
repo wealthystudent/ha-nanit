@@ -1,6 +1,6 @@
 """S&L-specific exceptions."""
 
-from aionanit import NanitError
+from aionanit.exceptions import NanitError
 
 
 class NanitTransportError(NanitError):

@@ -118,7 +118,7 @@ class TestCurrentPlaybackWireFormat:
 
         playback = _decode_playback_from_sent(sent[0])
         assert playback.HasField("duration")
-        assert playback.duration == 28800
+        assert playback.duration == 86400
 
         raw = playback.SerializeToString()
         field_numbers = _extract_field_numbers(raw)

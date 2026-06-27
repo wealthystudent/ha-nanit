@@ -416,6 +416,64 @@ async def cmd_stop(session: SoundSession, _arg: str | None = None) -> None:
     print("\n  → Listen: did the sound stop?")
 
 
+# ── 3b. PUT_PLAYBACK STARTED with duration=0 — infinite? ────────────────
+
+
+@sound_command(
+    name="start-d0",
+    description="PUT_PLAYBACK STARTED with duration=0 — test if 0 means infinite",
+    hint=(
+        "Sends PUT_PLAYBACK { status: STARTED, duration: 0 }.\n"
+        "  If the camera plays indefinitely, duration=0 means 'no limit'.\n"
+        "  If it stops immediately or after one track, 0 is not infinite.\n"
+        "  Compare with 'start' (no duration) and 'start-duration 60' (1 min)."
+    ),
+)
+async def cmd_start_d0(session: SoundSession, _arg: str | None = None) -> None:
+    print("  Sending PUT_PLAYBACK (status=STARTED, duration=0) ...")
+    playback = Playback(status=PlaybackStatus.STARTED, duration=0)
+    await session.send_typed_and_dump(
+        RequestType.PUT_PLAYBACK,
+        "PUT_PLAYBACK { status: STARTED, duration: 0 }",
+        playback=playback,
+    )
+    print("\n  → Listen: is the camera playing? Does it keep playing past ~1 min?")
+    print("  → If it plays indefinitely, duration=0 = infinite (this is our fix).")
+
+
+# ── 3c. PUT_PLAYBACK STARTED with custom duration ───────────────────────
+
+
+@sound_command(
+    name="start-duration",
+    description="PUT_PLAYBACK STARTED with custom duration (seconds)",
+    hint=(
+        "Sends PUT_PLAYBACK { status: STARTED, duration: N }.\n"
+        "  Try 60 (1 min) to quickly confirm firmware honors the value.\n"
+        "  If it stops after exactly 60s, the duration field works as expected."
+    ),
+    takes_arg="SECONDS",
+)
+async def cmd_start_duration(session: SoundSession, arg: str | None = None) -> None:
+    if arg is None:
+        arg = input("  Duration in seconds: ").strip()
+
+    try:
+        duration = int(arg)
+    except ValueError:
+        print(f"  ✗ Invalid duration: {arg!r} (expected integer)")
+        return
+
+    print(f"  Sending PUT_PLAYBACK (status=STARTED, duration={duration}) ...")
+    playback = Playback(status=PlaybackStatus.STARTED, duration=duration)
+    await session.send_typed_and_dump(
+        RequestType.PUT_PLAYBACK,
+        f"PUT_PLAYBACK {{ status: STARTED, duration: {duration} }}",
+        playback=playback,
+    )
+    print(f"\n  → Listen: does it stop after exactly {duration}s?")
+
+
 # ── 4. GET_SOUNDTRACKS — discover available tracks ──────────────────────
 
 

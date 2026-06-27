@@ -412,7 +412,7 @@ class NanitCamera:
         self._update_state(control=new_control, kind=CameraEventKind.CONTROL_UPDATE)
         return new_control
 
-    _DEFAULT_PLAYBACK_DURATION: int = 28800  # 8 hours
+    _DEFAULT_PLAYBACK_DURATION: int = 86400  # 24 hours
 
     async def async_start_playback(
         self,

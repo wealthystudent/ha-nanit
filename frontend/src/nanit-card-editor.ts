@@ -15,7 +15,24 @@ export class NanitCardEditor extends LitElement {
     const value = (ev.detail as { value: string }).value;
     if (!this._config || value === this._config.camera_entity_id) return;
 
-    const newConfig = { ...this._config, camera_entity_id: value };
+    this._updateConfig({ camera_entity_id: value });
+  }
+
+  private _toggleChanged(
+    key:
+      | "hide_baby_name"
+      | "hide_connectivity_status"
+      | "hide_power_button"
+      | "hide_night_light"
+      | "hide_sound_machine",
+    ev: Event,
+  ): void {
+    const checked = (ev.target as HTMLInputElement).checked;
+    this._updateConfig({ [key]: checked });
+  }
+
+  private _updateConfig(patch: Partial<NanitCardConfig>): void {
+    const newConfig = { ...this._config, ...patch };
     this._config = newConfig;
 
     this.dispatchEvent(
@@ -40,6 +57,46 @@ export class NanitCardEditor extends LitElement {
           allow-custom-entity
           @value-changed=${this._entityChanged}
         ></ha-entity-picker>
+        <label class="toggle-row">
+          <span>Hide baby name</span>
+          <ha-switch
+            .checked=${this._config.hide_baby_name === true}
+            @change=${(ev: Event) =>
+              this._toggleChanged("hide_baby_name", ev)}
+          ></ha-switch>
+        </label>
+        <label class="toggle-row">
+          <span>Hide connectivity status</span>
+          <ha-switch
+            .checked=${this._config.hide_connectivity_status === true}
+            @change=${(ev: Event) =>
+              this._toggleChanged("hide_connectivity_status", ev)}
+          ></ha-switch>
+        </label>
+        <label class="toggle-row">
+          <span>Hide power button</span>
+          <ha-switch
+            .checked=${this._config.hide_power_button === true}
+            @change=${(ev: Event) =>
+              this._toggleChanged("hide_power_button", ev)}
+          ></ha-switch>
+        </label>
+        <label class="toggle-row">
+          <span>Hide night light controls</span>
+          <ha-switch
+            .checked=${this._config.hide_night_light === true}
+            @change=${(ev: Event) =>
+              this._toggleChanged("hide_night_light", ev)}
+          ></ha-switch>
+        </label>
+        <label class="toggle-row">
+          <span>Hide sound machine controls</span>
+          <ha-switch
+            .checked=${this._config.hide_sound_machine === true}
+            @change=${(ev: Event) =>
+              this._toggleChanged("hide_sound_machine", ev)}
+          ></ha-switch>
+        </label>
       </div>
     `;
   }
@@ -50,6 +107,12 @@ export class NanitCardEditor extends LitElement {
     }
     ha-entity-picker {
       display: block;
+    }
+    .toggle-row {
+      align-items: center;
+      display: flex;
+      justify-content: space-between;
+      padding-top: 16px;
     }
   `;
 }

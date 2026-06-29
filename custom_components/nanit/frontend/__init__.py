@@ -6,6 +6,8 @@ Lovelace resource so the card appears in the card picker automatically.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from pathlib import Path
 from typing import Any, cast
@@ -24,15 +26,32 @@ _CARD_URL = f"{_URL_BASE}/{_CARD_FILENAME}"
 
 _REGISTERED_KEY = "nanit_card_registered"
 
+
+def _card_resource_version() -> str:
+    manifest_version = "0"
+    try:
+        manifest: dict[str, Any] = json.loads(
+            (Path(__file__).parent.parent / "manifest.json").read_text()
+        )
+        manifest_version = str(manifest.get("version", "0"))
+    except (FileNotFoundError, json.JSONDecodeError, KeyError):
+        pass
+
+    try:
+        card_hash = hashlib.sha256((_CARD_DIR / _CARD_FILENAME).read_bytes()).hexdigest()[:12]
+    except FileNotFoundError:
+        return manifest_version
+
+    return f"{manifest_version}-{card_hash}"
+
+
 _MANIFEST_VERSION: str = "0"
 try:
-    import json as _json
-
-    _manifest: dict[str, Any] = _json.loads(
+    _manifest: dict[str, Any] = json.loads(
         (Path(__file__).parent.parent / "manifest.json").read_text()
     )
     _MANIFEST_VERSION = str(_manifest.get("version", "0"))
-except (FileNotFoundError, _json.JSONDecodeError, KeyError):
+except (FileNotFoundError, json.JSONDecodeError, KeyError):
     pass
 
 
@@ -62,7 +81,7 @@ async def async_register_card(hass: HomeAssistant) -> None:
         _LOGGER.debug("Lovelace in YAML mode — skipping automatic card resource registration")
         return
 
-    resource_url = f"{_CARD_URL}?v={_MANIFEST_VERSION}"
+    resource_url = f"{_CARD_URL}?v={_card_resource_version()}"
     resources = cast(ResourceStorageCollection, lovelace_data.resources)
 
     if not resources.loaded:

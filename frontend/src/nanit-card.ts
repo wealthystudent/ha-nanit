@@ -129,16 +129,26 @@ export class NanitCard extends LitElement {
     entities: NanitEntities,
     cameraOn: boolean,
   ): TemplateResult {
-    const hasWifi = isEntityAvailable(this.hass, entities.wifi_ssid)
-      || isEntityAvailable(this.hass, entities.wifi_signal)
-      || isEntityAvailable(this.hass, entities.wifi_frequency);
+    const hasWifi = !this._config.hide_connectivity_status
+      && (isEntityAvailable(this.hass, entities.wifi_ssid)
+        || isEntityAvailable(this.hass, entities.wifi_signal)
+        || isEntityAvailable(this.hass, entities.wifi_frequency));
+    const showDeviceBadge = !this._config.hide_baby_name;
+    const showPowerButton = entities.power && !this._config.hide_power_button;
+    const showHeader = showDeviceBadge || !cameraOn || hasWifi || showPowerButton;
+
+    if (!showHeader) return html``;
 
     return html`
       <div class="header">
-        <div class="device-badge">
-          <ha-icon icon="mdi:baby-face-outline"></ha-icon>
-          <span class="device-name">${deviceName}</span>
-        </div>
+        ${showDeviceBadge
+          ? html`
+              <div class="device-badge">
+                <ha-icon icon="mdi:baby-face-outline"></ha-icon>
+                <span class="device-name">${deviceName}</span>
+              </div>
+            `
+          : nothing}
         ${!cameraOn
           ? html`<span class="camera-off-label">Camera Off</span>`
           : nothing}
@@ -153,7 +163,7 @@ export class NanitCard extends LitElement {
                 </button>
               `
             : nothing}
-          ${entities.power
+          ${showPowerButton
             ? html`
                 <button
                   class="power-btn ${cameraOn ? "" : "off"}"
@@ -339,8 +349,10 @@ export class NanitCard extends LitElement {
   }
 
   private _renderControls(entities: NanitEntities): TemplateResult {
-    const hasNightLight = isEntityAvailable(this.hass, entities.night_light);
-    const hasSoundMachine = isEntityAvailable(this.hass, entities.sound_machine);
+    const hasNightLight = !this._config.hide_night_light
+      && isEntityAvailable(this.hass, entities.night_light);
+    const hasSoundMachine = !this._config.hide_sound_machine
+      && isEntityAvailable(this.hass, entities.sound_machine);
     if (!hasNightLight && !hasSoundMachine) return html``;
 
     return html`

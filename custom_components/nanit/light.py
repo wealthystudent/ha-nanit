@@ -224,10 +224,12 @@ class NanitSoundLightLight(NanitSoundLightEntity, LightEntity):
 
     @property
     def is_on(self) -> bool | None:
-        """Return True if the light is on."""
+        """Return True if the light is effectively on."""
         if self.coordinator.data is None:
             return None
         state = self.coordinator.data
+        if state.power_on is False:
+            return False
         if state.light_enabled is not None:
             result: bool = state.light_enabled
             return result
@@ -265,6 +267,7 @@ class NanitSoundLightLight(NanitSoundLightEntity, LightEntity):
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn on the light, optionally setting brightness and/or color."""
         try:
+            await self._async_power_on_sound_light()
             await self.coordinator.sound_light.async_set_light_enabled(True)
 
             if ATTR_HS_COLOR in kwargs:

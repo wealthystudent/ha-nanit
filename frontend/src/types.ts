@@ -27,6 +27,8 @@ export interface HassEntityRegistryEntry {
 export interface NanitCardConfig {
   type: string;
   camera_entity_id?: string;
+  temperature_entity_id?: string;
+  humidity_entity_id?: string;
   hide_baby_name?: boolean;
   hide_connectivity_status?: boolean;
   hide_power_button?: boolean;

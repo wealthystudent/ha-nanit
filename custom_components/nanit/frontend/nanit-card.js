@@ -714,22 +714,6 @@ function t(t,e,i,s){var n,r=arguments.length,a=r<3?e:null===s?s=Object.getOwnPro
           allow-custom-entity
           @value-changed=${t=>this._entityChanged("camera_entity_id",t)}
         ></ha-entity-picker>
-        <ha-entity-picker
-          .hass=${this.hass}
-          .value=${this._config.temperature_entity_id||""}
-          .includeDomains=${["sensor"]}
-          .label=${"Temperature Entity Override"}
-          allow-custom-entity
-          @value-changed=${t=>this._entityChanged("temperature_entity_id",t)}
-        ></ha-entity-picker>
-        <ha-entity-picker
-          .hass=${this.hass}
-          .value=${this._config.humidity_entity_id||""}
-          .includeDomains=${["sensor"]}
-          .label=${"Humidity Entity Override"}
-          allow-custom-entity
-          @value-changed=${t=>this._entityChanged("humidity_entity_id",t)}
-        ></ha-entity-picker>
         <label class="toggle-row">
           <span>Hide baby name</span>
           <ha-switch
@@ -765,6 +749,22 @@ function t(t,e,i,s){var n,r=arguments.length,a=r<3?e:null===s?s=Object.getOwnPro
             @change=${t=>this._toggleChanged("hide_sound_machine",t)}
           ></ha-switch>
         </label>
+        <ha-entity-picker
+          .hass=${this.hass}
+          .value=${this._config.temperature_entity_id||""}
+          .includeDomains=${["sensor"]}
+          .label=${"Temperature Entity Override"}
+          allow-custom-entity
+          @value-changed=${t=>this._entityChanged("temperature_entity_id",t)}
+        ></ha-entity-picker>
+        <ha-entity-picker
+          .hass=${this.hass}
+          .value=${this._config.humidity_entity_id||""}
+          .includeDomains=${["sensor"]}
+          .label=${"Humidity Entity Override"}
+          allow-custom-entity
+          @value-changed=${t=>this._entityChanged("humidity_entity_id",t)}
+        ></ha-entity-picker>
       </div>
     `:F}};bt.styles=a`
     .editor {

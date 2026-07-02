@@ -11,11 +11,14 @@ export class NanitCardEditor extends LitElement {
     this._config = { ...config };
   }
 
-  private _entityChanged(ev: CustomEvent): void {
-    const value = (ev.detail as { value: string }).value;
-    if (!this._config || value === this._config.camera_entity_id) return;
+  private _entityChanged(
+    key: "camera_entity_id" | "temperature_entity_id" | "humidity_entity_id",
+    ev: CustomEvent,
+  ): void {
+    const value = (ev.detail as { value?: string }).value || undefined;
+    if (!this._config || value === this._config[key]) return;
 
-    this._updateConfig({ camera_entity_id: value });
+    this._updateConfig({ [key]: value });
   }
 
   private _toggleChanged(
@@ -33,6 +36,9 @@ export class NanitCardEditor extends LitElement {
 
   private _updateConfig(patch: Partial<NanitCardConfig>): void {
     const newConfig = { ...this._config, ...patch };
+    for (const [key, value] of Object.entries(patch) as [keyof NanitCardConfig, unknown][]) {
+      if (value === undefined) delete newConfig[key];
+    }
     this._config = newConfig;
 
     this.dispatchEvent(
@@ -55,7 +61,23 @@ export class NanitCardEditor extends LitElement {
           .includeDomains=${["camera"]}
           .label=${"Camera Entity"}
           allow-custom-entity
-          @value-changed=${this._entityChanged}
+          @value-changed=${(ev: CustomEvent) => this._entityChanged("camera_entity_id", ev)}
+        ></ha-entity-picker>
+        <ha-entity-picker
+          .hass=${this.hass}
+          .value=${this._config.temperature_entity_id || ""}
+          .includeDomains=${["sensor"]}
+          .label=${"Temperature Entity Override"}
+          allow-custom-entity
+          @value-changed=${(ev: CustomEvent) => this._entityChanged("temperature_entity_id", ev)}
+        ></ha-entity-picker>
+        <ha-entity-picker
+          .hass=${this.hass}
+          .value=${this._config.humidity_entity_id || ""}
+          .includeDomains=${["sensor"]}
+          .label=${"Humidity Entity Override"}
+          allow-custom-entity
+          @value-changed=${(ev: CustomEvent) => this._entityChanged("humidity_entity_id", ev)}
         ></ha-entity-picker>
         <label class="toggle-row">
           <span>Hide baby name</span>

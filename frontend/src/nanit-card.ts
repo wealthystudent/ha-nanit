@@ -284,26 +284,29 @@ export class NanitCard extends LitElement {
 
   private _renderSensorOverlays(entities: NanitEntities): TemplateResult {
     const pills: TemplateResult[] = [];
+    const temperatureEntity = this._config.temperature_entity_id || entities.temperature;
+    const humidityEntity = this._config.humidity_entity_id || entities.humidity;
 
-    if (isEntityAvailable(this.hass, entities.temperature)) {
-      const val = parseFloat(this.hass.states[entities.temperature!].state);
-      const display = isNaN(val) ? this.hass.states[entities.temperature!].state : val.toFixed(1);
-      const unit = (this.hass.states[entities.temperature!].attributes.unit_of_measurement as string) ?? "";
+    if (isEntityAvailable(this.hass, temperatureEntity)) {
+      const val = parseFloat(this.hass.states[temperatureEntity!].state);
+      const display = isNaN(val) ? this.hass.states[temperatureEntity!].state : val.toFixed(1);
+      const unit = (this.hass.states[temperatureEntity!].attributes.unit_of_measurement as string) ?? "";
       pills.push(html`
-        <div class="pill pill-temp" @click=${() => this._fireMoreInfo(entities.temperature!)}>
+        <div class="pill pill-temp" @click=${() => this._fireMoreInfo(temperatureEntity!)}>
           <ha-icon icon="mdi:thermometer"></ha-icon>
           <span>${display}${unit}</span>
         </div>
       `);
     }
 
-    if (isEntityAvailable(this.hass, entities.humidity)) {
-      const val = parseFloat(this.hass.states[entities.humidity!].state);
-      const display = isNaN(val) ? this.hass.states[entities.humidity!].state : val.toFixed(1);
+    if (isEntityAvailable(this.hass, humidityEntity)) {
+      const val = parseFloat(this.hass.states[humidityEntity!].state);
+      const display = isNaN(val) ? this.hass.states[humidityEntity!].state : val.toFixed(1);
+      const unit = (this.hass.states[humidityEntity!].attributes.unit_of_measurement as string) ?? "%";
       pills.push(html`
-        <div class="pill pill-humid" @click=${() => this._fireMoreInfo(entities.humidity!)}>
+        <div class="pill pill-humid" @click=${() => this._fireMoreInfo(humidityEntity!)}>
           <ha-icon icon="mdi:water-percent"></ha-icon>
-          <span>${display}%</span>
+          <span>${display}${unit}</span>
         </div>
       `);
     }

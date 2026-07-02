@@ -70,7 +70,7 @@ A companion Lovelace card is **bundled with the integration** — no HACS fronte
 
 The card provides:
 - Live camera stream with loading indicator
-- Temperature & humidity overlays
+- Temperature & humidity overlays, with optional semantic entity overrides for the displayed sensors
 - Motion & sound activity indicators
 - Optional baby name and connectivity status display
 - Header power button (can be hidden in card settings)
@@ -78,6 +78,15 @@ The card provides:
 - Sound machine controls with icon-based track selection (can be hidden in card settings)
 - Volume slider
 - Network info popup (WiFi name, frequency, signal strength)
+
+Optional sensor overrides can be set in the visual editor or YAML when you want the overlay to display another Home Assistant sensor instead of the Nanit-discovered sensor:
+
+```yaml
+type: custom:nanit-card
+camera_entity_id: camera.nursery
+temperature_entity_id: sensor.nursery_temperature
+humidity_entity_id: sensor.nursery_humidity
+```
 
 > [!NOTE]
 > If your Lovelace is in **YAML mode**, add the resource manually:

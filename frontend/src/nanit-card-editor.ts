@@ -63,22 +63,6 @@ export class NanitCardEditor extends LitElement {
           allow-custom-entity
           @value-changed=${(ev: CustomEvent) => this._entityChanged("camera_entity_id", ev)}
         ></ha-entity-picker>
-        <ha-entity-picker
-          .hass=${this.hass}
-          .value=${this._config.temperature_entity_id || ""}
-          .includeDomains=${["sensor"]}
-          .label=${"Temperature Entity Override"}
-          allow-custom-entity
-          @value-changed=${(ev: CustomEvent) => this._entityChanged("temperature_entity_id", ev)}
-        ></ha-entity-picker>
-        <ha-entity-picker
-          .hass=${this.hass}
-          .value=${this._config.humidity_entity_id || ""}
-          .includeDomains=${["sensor"]}
-          .label=${"Humidity Entity Override"}
-          allow-custom-entity
-          @value-changed=${(ev: CustomEvent) => this._entityChanged("humidity_entity_id", ev)}
-        ></ha-entity-picker>
         <label class="toggle-row">
           <span>Hide baby name</span>
           <ha-switch
@@ -119,6 +103,22 @@ export class NanitCardEditor extends LitElement {
               this._toggleChanged("hide_sound_machine", ev)}
           ></ha-switch>
         </label>
+        <ha-entity-picker
+          .hass=${this.hass}
+          .value=${this._config.temperature_entity_id || ""}
+          .includeDomains=${["sensor"]}
+          .label=${"Temperature Entity Override"}
+          allow-custom-entity
+          @value-changed=${(ev: CustomEvent) => this._entityChanged("temperature_entity_id", ev)}
+        ></ha-entity-picker>
+        <ha-entity-picker
+          .hass=${this.hass}
+          .value=${this._config.humidity_entity_id || ""}
+          .includeDomains=${["sensor"]}
+          .label=${"Humidity Entity Override"}
+          allow-custom-entity
+          @value-changed=${(ev: CustomEvent) => this._entityChanged("humidity_entity_id", ev)}
+        ></ha-entity-picker>
       </div>
     `;
   }

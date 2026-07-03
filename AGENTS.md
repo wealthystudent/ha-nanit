@@ -143,11 +143,12 @@ Rules:
 
 1. Branch from `main` → make changes → `just check` passes locally.
 2. Open PR against `main`. PR title must follow conventional commit format.
-3. If the PR should trigger a release: add a label — `release:patch`, `release:minor`, or `release:major`. PRs without a release label will not create a beta release.
-4. Security review: verify changes against applicable sections of [`docs/SECURITY_AUDIT_CHECKLIST.md`](docs/SECURITY_AUDIT_CHECKLIST.md).
-5. CI must pass (lint, format, typecheck, tests). If CI fails, fix in the same branch and push.
-6. Maintainer reviews and squash-merges. Head branch is auto-deleted.
-7. On merge, if a `release:*` label is present, `auto-beta.yaml` automatically creates a beta pre-release.
+3. Spin up the dev instance (`just dev`), verify the feature works end-to-end, then shut it down (`just dev stop`).
+4. If the PR should trigger a release: add a label — `release:patch`, `release:minor`, or `release:major`. PRs without a release label will not create a beta release.
+5. Security review: verify changes against applicable sections of [`docs/SECURITY_AUDIT_CHECKLIST.md`](docs/SECURITY_AUDIT_CHECKLIST.md).
+6. CI must pass (lint, format, typecheck, tests). If CI fails, fix in the same branch and push.
+7. Maintainer reviews and squash-merges. Head branch is auto-deleted.
+8. On merge, if a `release:*` label is present, `auto-beta.yaml` automatically creates a beta pre-release.
 
 ### Fork PRs (external contributors)
 
@@ -261,6 +262,7 @@ Full checklist: [`docs/SECURITY_AUDIT_CHECKLIST.md`](docs/SECURITY_AUDIT_CHECKLI
 - Follow existing code patterns — read neighboring files before writing new ones.
 - Ask questions before starting work if anything is unclear. Do not guess.
 - Verify changes work in a Home Assistant instance.
+- Test every new feature or PR in the dev instance before merging. Spin up a fresh instance with `just dev`, verify the feature works end-to-end, then shut it down with `just dev stop`. Do not leave the dev instance running after testing.
 
 ### Must not
 - Suppress type errors (`# type: ignore`, `cast()` to bypass, `Any` as escape hatch).

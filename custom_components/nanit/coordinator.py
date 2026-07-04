@@ -232,7 +232,12 @@ class NanitNetworkCoordinator(DataUpdateCoordinator[NetworkInfo | None]):
         self.baby = baby
 
     async def _async_update_data(self) -> NetworkInfo | None:
-        """Fetch network info from the Nanit API."""
+        """Fetch network info from the Nanit API.
+
+        Also checks if any cameras that failed to connect during setup now
+        report as connected in the Nanit cloud. If so, triggers a config entry
+        reload so HA re-runs setup and registers the camera's entities.
+        """
         try:
             client = self._hub.client
             assert client.token_manager is not None
@@ -250,6 +255,26 @@ class NanitNetworkCoordinator(DataUpdateCoordinator[NetworkInfo | None]):
                 translation_key="cloud_fetch_failed",
                 translation_placeholders={"error": str(err)},
             ) from err
+
+        # Check if any previously-failed camera has come back online.
+        # camera_connected is sourced from the Nanit cloud's own "connected"
+        # field — no extra probe needed.
+        failed = self._hub.failed_camera_uids
+        if failed:
+            recovered = [
+                b for b in babies
+                if b.camera_uid in failed and b.camera_connected is True
+            ]
+            if recovered:
+                names = ", ".join(b.name for b in recovered)
+                _LOGGER.info(
+                    "Previously offline camera(s) now connected per Nanit cloud: %s. "
+                    "Reloading integration to register entities.",
+                    names,
+                )
+                self.hass.async_create_task(
+                    self.hass.config_entries.async_reload(self.config_entry.entry_id)
+                )
 
         for baby in babies:
             if baby.camera_uid == self.baby.camera_uid:

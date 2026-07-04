@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from homeassistant.const import CONF_ACCESS_TOKEN
@@ -312,3 +313,69 @@ async def test_setup_camera_timeout_treated_as_connection_failure(
 
     assert len(hub.camera_data) == 1
     assert MOCK_BABY_2.camera_uid in hub.camera_data
+
+
+async def test_failed_camera_uids_populated(hass: HomeAssistant, mock_nanit_client) -> None:
+    """Cameras that fail to connect are tracked in failed_camera_uids."""
+    mock_nanit_client.async_get_babies.return_value = [MOCK_BABY_1, MOCK_BABY_2]
+    mock_nanit_client.camera.side_effect = lambda **kw: _make_mock_camera(kw["uid"], kw["baby_uid"])
+
+    entry = _make_entry(hass)
+    hub = NanitHub(hass, MagicMock(), entry)
+
+    with (
+        patch("custom_components.nanit.hub.NanitPushCoordinator") as push_cls,
+        patch("custom_components.nanit.hub.NanitCloudCoordinator") as cloud_cls,
+        patch("custom_components.nanit.hub.NanitNetworkCoordinator") as net_cls,
+    ):
+
+        def push_factory(_hass, _entry, camera, _baby):
+            mock = MagicMock()
+            if camera.uid == MOCK_BABY_1.camera_uid:
+                mock.async_setup = AsyncMock(side_effect=NanitConnectionError("unreachable"))
+            else:
+                mock.async_setup = AsyncMock()
+            return mock
+
+        push_cls.side_effect = push_factory
+        cloud_cls.return_value = MagicMock(async_config_entry_first_refresh=AsyncMock())
+        net_cls.return_value = MagicMock(async_config_entry_first_refresh=AsyncMock())
+        await hub.async_setup()
+
+    assert MOCK_BABY_1.camera_uid in hub.failed_camera_uids
+    assert MOCK_BABY_2.camera_uid not in hub.failed_camera_uids
+
+
+async def test_failed_camera_uid_logs_cloud_status(
+    hass: HomeAssistant, mock_nanit_client, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Log message includes cloud connected=False when camera is known offline."""
+    from aionanit.models import Baby
+
+    offline_baby = Baby(
+        uid=MOCK_BABY_1.uid,
+        name=MOCK_BABY_1.name,
+        camera_uid=MOCK_BABY_1.camera_uid,
+        camera_connected=False,
+    )
+    mock_nanit_client.async_get_babies.return_value = [offline_baby]
+    mock_nanit_client.camera.side_effect = lambda **kw: _make_mock_camera(kw["uid"], kw["baby_uid"])
+
+    entry = _make_entry(hass)
+    hub = NanitHub(hass, MagicMock(), entry)
+
+    with (
+        patch("custom_components.nanit.hub.NanitPushCoordinator") as push_cls,
+        patch("custom_components.nanit.hub.NanitCloudCoordinator"),
+        patch("custom_components.nanit.hub.NanitNetworkCoordinator"),
+        caplog.at_level("WARNING", logger="custom_components.nanit.hub"),
+    ):
+        push_cls.return_value = MagicMock(
+            async_setup=AsyncMock(side_effect=NanitConnectionError("unreachable"))
+        )
+        try:
+            await hub.async_setup()
+        except NanitConnectionError:
+            pass
+
+    assert "cloud reports connected=False" in caplog.text

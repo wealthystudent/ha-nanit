@@ -60,6 +60,14 @@ class NanitCameraEntity(NanitEntity, Camera):
         self._attr_unique_id = f"{camera.uid}_camera"
         self._cached_snapshot: bytes | None = None
         self._cached_snapshot_at: float = 0.0
+        self._rearm_task: asyncio.Task[None] | None = None
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Cancel any in-flight stream re-arm when the entity is removed."""
+        if self._rearm_task is not None and not self._rearm_task.done():
+            self._rearm_task.cancel()
+        self._rearm_task = None
+        await super().async_will_remove_from_hass()
 
     @property
     def is_on(self) -> bool:
@@ -81,20 +89,49 @@ class NanitCameraEntity(NanitEntity, Camera):
             # Camera power changed — invalidate cached stream.
             self._invalidate_stream("power state change")
 
-        # Invalidate stream after WebSocket reconnection so the RTMPS URL
-        # gets a fresh access token.  last_seen is updated only when the
-        # transport moves to CONNECTED, so this fires once per reconnect.
+        # On WebSocket reconnection the camera may have stopped pushing to the
+        # RTMPS ingest.  Rather than tearing down HA's stream worker — which
+        # blanks the live view until something re-requests the stream — re-arm
+        # the camera by re-sending PUT_STREAMING into the *same* ingest URL so a
+        # frozen feed resumes in place.  last_seen advances once per reconnect
+        # (set when the transport moves to CONNECTED).
         if self.coordinator.data is not None:
             cur_last_seen = self.coordinator.data.connection.last_seen
             if (
                 self._prev_last_seen is not None
                 and cur_last_seen != self._prev_last_seen
                 and self.stream is not None
+                and self.is_on
             ):
-                self._invalidate_stream("WebSocket reconnection (token refreshed)")
+                self._schedule_stream_rearm()
             self._prev_last_seen = cur_last_seen
 
         super()._handle_coordinator_update()
+
+    def _schedule_stream_rearm(self) -> None:
+        """Re-send PUT_STREAMING after a reconnect without dropping the stream.
+
+        Coordinator updates are synchronous, so the re-arm runs as a background
+        task.  Guarded so only one re-arm is in flight at a time — a burst of
+        reconnects collapses into a single retry cycle.
+        """
+        if self._rearm_task is not None and not self._rearm_task.done():
+            return
+        self._rearm_task = self.hass.async_create_background_task(
+            self._async_rearm_stream(),
+            name=f"nanit_stream_rearm_{self._camera.uid}",
+        )
+
+    async def _async_rearm_stream(self) -> None:
+        """Re-arm the camera's RTMPS push into the existing ingest URL."""
+        # The stream may have been torn down (power off) since scheduling.
+        if self.stream is None or not self.is_on:
+            return
+        if await self._async_start_streaming_safe():
+            _LOGGER.debug(
+                "Re-armed RTMPS stream for camera %s after reconnect",
+                self._camera.uid,
+            )
 
     def _invalidate_stream(self, reason: str = "state change") -> None:
         """Discard HA's cached stream so a fresh one is created on next view."""

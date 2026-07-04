@@ -40,9 +40,27 @@ def test_visual_editor_includes_semantic_override_entity_pickers() -> None:
     assert "Humidity Entity Override" in editor
 
 
+def test_card_remounts_stalled_stream_after_initial_load_timeout() -> None:
+    """The card should recover when HA's camera stream element stalls on refresh."""
+    card = _read(SRC_DIR / "nanit-card.ts")
+
+    assert "STREAM_STALL_CHECKS" in card
+    assert "_retryStreamLoad()" in card
+    assert "this._streamEpoch += 1" in card
+    assert "keyed(`${entities.camera}-${this._streamEpoch}`" in card
+
+
 def test_bundled_card_contains_semantic_override_support() -> None:
     """The shipped bundle should include the override logic after frontend build."""
     bundle = _read(BUNDLE)
 
     assert "temperature_entity_id" in bundle
     assert "humidity_entity_id" in bundle
+
+
+def test_bundled_card_contains_stalled_stream_remount_support() -> None:
+    """The shipped bundle should include stalled-stream remount recovery."""
+    bundle = _read(BUNDLE)
+
+    assert "data-stream-epoch" in bundle
+    assert "_streamEpoch" in bundle

@@ -1,9 +1,13 @@
 import { LitElement, html, nothing, type TemplateResult } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
+import { keyed } from "lit/directives/keyed.js";
 import type { HomeAssistant, NanitCardConfig, NanitEntities } from "./types";
 import { resolveEntities, isEntityAvailable, getDeviceName } from "./utils";
 import { cardStyles } from "./styles";
 import "./nanit-card-editor";
+
+const STREAM_STALL_CHECKS = 16;
+const MAX_STREAM_RETRIES = 2;
 
 @customElement("nanit-card")
 export class NanitCard extends LitElement {
@@ -11,7 +15,10 @@ export class NanitCard extends LitElement {
   @state() private _config!: NanitCardConfig;
   @state() private _streamLoaded = false;
   @state() private _showNetwork = false;
+  @state() private _streamEpoch = 0;
   private _streamCheckTimer?: ReturnType<typeof setTimeout>;
+  private _streamCheckCount = 0;
+  private _streamRetryCount = 0;
 
   static styles = cardStyles;
 
@@ -80,10 +87,25 @@ export class NanitCard extends LitElement {
       const root = streamEl.shadowRoot;
       if (root?.querySelector("video, img, canvas")) {
         this._streamLoaded = true;
+        this._streamCheckCount = 0;
+      } else if (++this._streamCheckCount >= STREAM_STALL_CHECKS) {
+        this._retryStreamLoad();
       } else {
         this._scheduleStreamCheck();
       }
     }, 500);
+  }
+
+  private _retryStreamLoad(): void {
+    this._clearStreamCheck();
+    this._streamCheckCount = 0;
+    if (this._streamRetryCount >= MAX_STREAM_RETRIES) {
+      this._scheduleStreamCheck();
+      return;
+    }
+    this._streamRetryCount += 1;
+    this._streamLoaded = false;
+    this._streamEpoch += 1;
   }
 
   private _clearStreamCheck(): void {
@@ -95,6 +117,8 @@ export class NanitCard extends LitElement {
 
   private _onStreamLoad(): void {
     this._streamLoaded = true;
+    this._streamCheckCount = 0;
+    this._streamRetryCount = 0;
     this._clearStreamCheck();
   }
 
@@ -107,6 +131,8 @@ export class NanitCard extends LitElement {
     const cameraOn = this._isCameraOn(entities);
     if (!cameraOn && this._streamLoaded) {
       this._streamLoaded = false;
+      this._streamCheckCount = 0;
+      this._streamRetryCount = 0;
       this._clearStreamCheck();
     }
     const deviceName = entities.camera
@@ -254,12 +280,15 @@ export class NanitCard extends LitElement {
                 class="stream-click"
                 @click=${() => entities.camera && this._fireMoreInfo(entities.camera)}
               >
-                <ha-camera-stream
-                  muted
-                  .hass=${this.hass}
-                  .stateObj=${cameraState}
-                  @load=${this._onStreamLoad}
-                ></ha-camera-stream>
+                ${keyed(`${entities.camera}-${this._streamEpoch}`, html`
+                  <ha-camera-stream
+                    muted
+                    data-stream-epoch=${this._streamEpoch}
+                    .hass=${this.hass}
+                    .stateObj=${cameraState}
+                    @load=${this._onStreamLoad}
+                  ></ha-camera-stream>
+                `)}
               </div>
               <div class="stream-loader ${this._streamLoaded ? "hidden" : ""}">
                 <div class="loader-content">

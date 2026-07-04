@@ -264,12 +264,21 @@ class NanitCamera:
         return status
 
     async def async_get_settings(self) -> SettingsState:
-        """GET_SETTINGS request."""
+        """GET_SETTINGS request.
+
+        Some Nanit firmware omits the optional proto2 ``sleep_mode`` field
+        when the camera is awake because ``False`` is the protobuf default.
+        For a full GET_SETTINGS response, absence therefore means camera-on;
+        partial push updates still preserve ``None`` so omitted fields do not
+        overwrite known state.
+        """
         resp = await self._send_request(
             RequestType.GET_SETTINGS,
             get_settings=GetSettings(all=True),
         )
         settings = _parse_settings(resp)
+        if resp.HasField("settings") and not resp.settings.HasField("sleep_mode"):
+            settings = dataclasses.replace(settings, sleep_mode=False)
         self._update_state(settings=settings, kind=CameraEventKind.SETTINGS_UPDATE)
         return settings
 
@@ -296,9 +305,18 @@ class NanitCamera:
         self._update_state(sensors=sensors, kind=CameraEventKind.SENSOR_UPDATE)
         return sensors
 
-    async def async_get_playback(self) -> PlaybackState:
+    async def async_get_playback(
+        self,
+        *,
+        reconnect_on_timeout: bool = True,
+        timeout: float = _DEFAULT_REQUEST_TIMEOUT,
+    ) -> PlaybackState:
         """GET_PLAYBACK request — query current sound machine state."""
-        resp = await self._send_request(RequestType.GET_PLAYBACK)
+        resp = await self._send_request(
+            RequestType.GET_PLAYBACK,
+            timeout=timeout,
+            reconnect_on_timeout=reconnect_on_timeout,
+        )
         pb = _parse_playback(resp)
         # Preserve available_tracks from existing state — GET_PLAYBACK does
         # not include the track list; only GET_SOUNDTRACKS provides it.
@@ -738,8 +756,10 @@ class NanitCamera:
         self,
         request_type: int,
         timeout: float = _DEFAULT_REQUEST_TIMEOUT,
+        *,
+        reconnect_on_timeout: bool = True,
         **kwargs: Any,
-    ) -> Any:
+    ) -> Response:
         """Send a protobuf request and await the correlated response.
 
         Includes automatic stale-connection detection and one transparent
@@ -794,7 +814,7 @@ class NanitCamera:
                 return await asyncio.wait_for(future, timeout=timeout)
             except TimeoutError:
                 _ = self._pending.resolve(request_id, Response())
-                if attempt == 0:
+                if attempt == 0 and reconnect_on_timeout:
                     _LOGGER.warning(
                         "Request %s (id=%s) timed out after %.1fs, reconnecting and retrying",
                         RequestType.Name(request_type),
@@ -1087,6 +1107,18 @@ class NanitCamera:
             self._playback_poll_task.cancel()
         self._playback_poll_task = None
 
+    async def _poll_playback_once(self, timeout: float = _DEFAULT_REQUEST_TIMEOUT) -> None:
+        """Poll playback state without forcing reconnect on timeout.
+
+        Playback polling is optional background state refresh. A timeout here
+        should not churn the camera WebSocket while an active RTMPS stream is
+        being viewed; command paths still use the default reconnect behavior.
+        """
+        try:
+            await self.async_get_playback(reconnect_on_timeout=False, timeout=timeout)
+        except (NanitRequestTimeout, NanitTransportError, NanitCameraUnavailable):
+            _LOGGER.debug("Playback poll failed — will retry next cycle")
+
     async def _playback_poll_loop(self) -> None:
         """Periodically poll GET_PLAYBACK for external state changes.
 
@@ -1100,7 +1132,7 @@ class NanitCamera:
                 if self._stopped or not self._transport.connected:
                     continue
                 try:
-                    await self.async_get_playback()
+                    await self._poll_playback_once()
                 except (
                     NanitRequestTimeout,
                     NanitTransportError,

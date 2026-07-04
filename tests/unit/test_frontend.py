@@ -12,7 +12,6 @@ from custom_components.nanit.frontend import (
     _CARD_URL,
     _MANIFEST_VERSION,
     _REGISTERED_KEY,
-    _card_resource_version,
     async_register_card,
 )
 
@@ -48,7 +47,7 @@ def _setup_hass_for_card(hass: HomeAssistant, resources: MagicMock) -> None:
     hass.data["lovelace"] = _mock_lovelace(resources)
 
 
-async def test_register_card_creates_resource(hass: HomeAssistant) -> None:
+async def test_register_card_creates_unversioned_resource(hass: HomeAssistant) -> None:
     resources = _mock_resources()
     _setup_hass_for_card(hass, resources)
 
@@ -59,8 +58,7 @@ async def test_register_card_creates_resource(hass: HomeAssistant) -> None:
     assert hass.data[_REGISTERED_KEY] is True
     resources.async_create_item.assert_awaited_once()
     call_args = resources.async_create_item.call_args[0][0]
-    assert call_args["res_type"] == "module"
-    assert _CARD_URL in call_args["url"]
+    assert call_args == {"res_type": "module", "url": _CARD_URL}
 
 
 async def test_register_card_idempotent(hass: HomeAssistant) -> None:
@@ -88,11 +86,26 @@ async def test_register_card_updates_existing_resource(hass: HomeAssistant) -> N
     resources.async_update_item.assert_awaited_once()
 
 
+async def test_register_card_does_not_calculate_version_in_executor(
+    hass: HomeAssistant,
+) -> None:
+    resources = _mock_resources()
+    _setup_hass_for_card(hass, resources)
+
+    with patch.object(hass, "async_add_executor_job", AsyncMock()) as executor:
+        with patch(f"{_FRONTEND_MODULE}._CARD_DIR", Path(__file__).parent):
+            with patch(f"{_FRONTEND_MODULE}._CARD_FILENAME", "conftest.py"):
+                await async_register_card(hass)
+
+    executor.assert_not_awaited()
+    call_args = resources.async_create_item.call_args[0][0]
+    assert call_args["url"] == _CARD_URL
+
+
 async def test_register_card_skips_update_when_url_matches(hass: HomeAssistant) -> None:
     with patch(f"{_FRONTEND_MODULE}._CARD_DIR", Path(__file__).parent):
         with patch(f"{_FRONTEND_MODULE}._CARD_FILENAME", "conftest.py"):
-            current_url = f"{_CARD_URL}?v={_card_resource_version()}"
-            resources = _mock_resources([{"id": "res1", "url": current_url}])
+            resources = _mock_resources([{"id": "res1", "url": _CARD_URL}])
             _setup_hass_for_card(hass, resources)
 
             await async_register_card(hass)

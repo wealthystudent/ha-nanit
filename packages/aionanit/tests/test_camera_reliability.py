@@ -173,6 +173,23 @@ async def test_reconnect_skips_when_lock_already_held() -> None:
 
 
 @pytest.mark.asyncio
+async def test_background_playback_poll_timeout_does_not_force_reconnect() -> None:
+    """Optional playback polling should not churn the WebSocket during streams."""
+    camera, _ = _make_camera()
+
+    camera._stopped = True
+    camera._transport = MagicMock()
+    camera._transport.connected = True
+    camera._transport.idle_seconds = 0.0
+    camera._transport.async_send = AsyncMock()
+    camera._async_reconnect = AsyncMock()
+
+    await camera._poll_playback_once(timeout=0.01)
+
+    camera._async_reconnect.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_reconnect_completes_with_unresponsive_camera() -> None:
     """_async_reconnect must not deadlock when the camera never responds.
 

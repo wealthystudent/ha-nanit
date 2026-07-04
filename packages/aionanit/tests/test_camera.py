@@ -698,6 +698,40 @@ class TestSendRequest:
 
 
 # ---------------------------------------------------------------------------
+# Get settings — full-state normalization
+# ---------------------------------------------------------------------------
+
+
+class TestGetSettings:
+    async def test_missing_sleep_mode_in_full_get_settings_means_camera_on(self) -> None:
+        """Full GET_SETTINGS may omit false sleep_mode; normalize it to camera-on."""
+        cam, *_ = _make_camera()
+        cam._transport = MagicMock()
+        cam._transport.connected = True
+        cam._transport.idle_seconds = 0.0
+
+        # Start from stale/restored off state to reproduce the dashboard showing
+        # "Camera Off" even though a full settings refresh returns camera-on
+        # defaults with sleep_mode omitted.
+        cam._update_state(
+            settings=SettingsState(sleep_mode=True, volume=25),
+            kind=CameraEventKind.SETTINGS_UPDATE,
+        )
+        resp = Response(status_code=200, settings=Settings(volume=50))
+
+        async def _fake_send(data: bytes) -> None:
+            cam._pending.resolve(1, resp)
+
+        cam._transport.async_send = AsyncMock(side_effect=_fake_send)
+
+        result = await cam.async_get_settings()
+
+        assert result.sleep_mode is False
+        assert result.volume == 50
+        assert cam.state.settings.sleep_mode is False
+
+
+# ---------------------------------------------------------------------------
 # Set settings / set control — response guard (Fix B)
 # ---------------------------------------------------------------------------
 

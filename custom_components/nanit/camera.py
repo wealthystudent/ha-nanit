@@ -60,6 +60,7 @@ class NanitCameraEntity(NanitEntity, Camera):
         self._attr_unique_id = f"{camera.uid}_camera"
         self._cached_snapshot: bytes | None = None
         self._cached_snapshot_at: float = 0.0
+        self._reconnecting: bool = False
 
     @property
     def is_on(self) -> bool:
@@ -144,12 +145,50 @@ class NanitCameraEntity(NanitEntity, Camera):
                     await asyncio.sleep(_STREAM_RETRY_DELAY)
                 else:
                     _LOGGER.warning(
-                        "PUT_STREAMING failed after %d attempts for camera %s",
+                        "PUT_STREAMING failed after %d attempts for camera %s; "
+                        "forcing an immediate reconnect",
                         _STREAM_START_ATTEMPTS,
                         self._camera.uid,
                         exc_info=True,
                     )
+                    # Force an immediate local-first reconnect instead of
+                    # waiting for the library's periodic ~5-minute probe, then
+                    # try PUT_STREAMING one last time.
+                    if await self._async_force_reconnect():
+                        try:
+                            await self._camera.async_start_streaming()
+                            return True
+                        except Exception:  # noqa: BLE001
+                            _LOGGER.warning(
+                                "PUT_STREAMING final retry failed for camera %s",
+                                self._camera.uid,
+                                exc_info=True,
+                            )
         return False
+
+    async def _async_force_reconnect(self) -> bool:
+        """Restart the camera transport (local-first) without waiting for the probe.
+
+        The library only re-probes the local connection every ~5 minutes; a
+        stop/start forces an immediate reconnect that tries local first.
+        Guarded so overlapping stream requests don't trigger competing restarts.
+        """
+        if self._reconnecting:
+            return False
+        self._reconnecting = True
+        try:
+            await self._camera.async_stop()
+            await self._camera.async_start()
+            return True
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug(
+                "Forced reconnect failed for camera %s",
+                self._camera.uid,
+                exc_info=True,
+            )
+            return False
+        finally:
+            self._reconnecting = False
 
     # ------------------------------------------------------------------
     # Snapshot (with caching)

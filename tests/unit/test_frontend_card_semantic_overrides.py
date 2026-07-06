@@ -61,6 +61,25 @@ def test_card_source_contains_stream_liveness_watchdog() -> None:
     assert "data-stream-epoch" in card
 
 
+def test_card_source_contains_one_shot_integration_reload_fallback() -> None:
+    """A persistent black/unavailable stream should trigger one integration reload fallback."""
+    card = _read(SRC_DIR / "nanit-card.ts")
+
+    assert "STREAM_UNAVAILABLE_RELOAD_TICKS" in card
+    assert "_reloadIntegrationOnce" in card
+    assert 'callService("homeassistant", "reload_config_entry"' in card
+    assert "entity_id: entities.camera" in card
+    assert "this._integrationReloadAttempted" in card
+
+
+def test_bundled_card_contains_one_shot_integration_reload_fallback() -> None:
+    """The shipped bundle should include the one-shot reload fallback after frontend build."""
+    bundle = _read(BUNDLE)
+
+    assert "reload_config_entry" in bundle
+    assert "homeassistant" in bundle
+
+
 def test_bundled_card_contains_stream_liveness_watchdog() -> None:
     """The shipped bundle should include stream remount markers after frontend build."""
     bundle = _read(BUNDLE)

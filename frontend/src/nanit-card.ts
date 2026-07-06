@@ -7,8 +7,7 @@ import { cardStyles } from "./styles";
 import "./nanit-card-editor";
 
 const STREAM_WATCHDOG_INTERVAL_MS = 1000;
-const STREAM_STALL_TICKS = 5;
-const STREAM_UNAVAILABLE_RELOAD_TICKS = 5;
+const STREAM_STALL_TICKS = 8;
 const STREAM_MAX_RELOADS = 3;
 const STREAM_RELOAD_COOLDOWN_MS = 60000;
 const STREAM_HEALTHY_RESET_TICKS = 10;
@@ -29,8 +28,6 @@ export class NanitCard extends LitElement {
   private _lastVideoTime = 0;
   private _sawProgress = false;
   private _stallStrikes = 0;
-  private _unavailableStrikes = 0;
-  private _integrationReloadAttempted = false;
   private _healthyTicks = 0;
   private _reloadCount = 0;
   private _reloadWindowStart = 0;
@@ -153,10 +150,7 @@ export class NanitCard extends LitElement {
       this._streamLoaded = true;
     }
 
-    if (!video) {
-      this._recordUnavailableStreamTick();
-      return;
-    }
+    if (!video) return;
 
     // A decoded frame is available (readyState >= HAVE_CURRENT_DATA). This is the
     // robust "there is a picture to show" signal for both HLS and WebRTC, where
@@ -165,15 +159,10 @@ export class NanitCard extends LitElement {
       this._streamLoaded = true;
     }
 
-    if (video.readyState < 2) {
-      this._recordUnavailableStreamTick();
-    }
-
     if (video.currentTime > this._lastVideoTime + STREAM_PROGRESS_EPSILON) {
       this._lastVideoTime = video.currentTime;
       this._sawProgress = true;
       this._stallStrikes = 0;
-      this._unavailableStrikes = 0;
       this._streamLoaded = true;
       // Refill the reload budget only after *sustained* playback, so a feed
       // that flaps (one frame, then freeze) can't keep topping it up.
@@ -190,30 +179,7 @@ export class NanitCard extends LitElement {
     if (!this._sawProgress || video.paused) return;
 
     this._stallStrikes += 1;
-    if (this._stallStrikes >= STREAM_STALL_TICKS) {
-      this._reloadIntegrationOnce();
-      this._reloadStream();
-    }
-  }
-
-  private _recordUnavailableStreamTick(): void {
-    this._healthyTicks = 0;
-    this._unavailableStrikes += 1;
-    if (this._unavailableStrikes >= STREAM_UNAVAILABLE_RELOAD_TICKS) {
-      this._reloadIntegrationOnce();
-      this._reloadStream();
-      this._unavailableStrikes = 0;
-    }
-  }
-
-  private _reloadIntegrationOnce(): void {
-    const entities = this._entities();
-    if (this._integrationReloadAttempted || !entities.camera) return;
-
-    this._integrationReloadAttempted = true;
-    void this.hass.callService("homeassistant", "reload_config_entry", {
-      entity_id: entities.camera,
-    });
+    if (this._stallStrikes >= STREAM_STALL_TICKS) this._reloadStream();
   }
 
   private _reloadStream(): void {
@@ -259,7 +225,6 @@ export class NanitCard extends LitElement {
       this._lastVideoTime = 0;
       this._sawProgress = false;
       this._stallStrikes = 0;
-      this._unavailableStrikes = 0;
       this._healthyTicks = 0;
       this._reloadWindowStart = 0;
       this._streamMountedAt = 0;

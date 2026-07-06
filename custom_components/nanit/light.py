@@ -14,6 +14,7 @@ from homeassistant.components.light import (
 from homeassistant.components.light.const import ColorMode
 from homeassistant.const import STATE_ON
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.util.color import (
@@ -279,6 +280,7 @@ class NanitSoundLightLight(NanitSoundLightEntity, LightEntity):
 
         except NanitTransportError as err:
             _LOGGER.error("Failed to control Sound & Light light: %s", err)
+            raise HomeAssistantError("Failed to control Sound & Light light") from err
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn off the light."""
@@ -286,3 +288,4 @@ class NanitSoundLightLight(NanitSoundLightEntity, LightEntity):
             await self.coordinator.sound_light.async_set_light_enabled(False)
         except NanitTransportError as err:
             _LOGGER.error("Failed to turn off Sound & Light light: %s", err)
+            raise HomeAssistantError("Failed to turn off Sound & Light light") from err

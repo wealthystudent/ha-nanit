@@ -195,16 +195,21 @@ class WsTransport:
 
     async def _async_close_ws(self) -> None:
         """Close WebSocket and cancel background tasks."""
+        current_task = asyncio.current_task()
         for task in (self._recv_task, self._keepalive_task, self._reconnect_task):
-            if task is not None and not task.done():
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-        self._recv_task = None
-        self._keepalive_task = None
-        self._reconnect_task = None
+            if task is None or task.done() or task is current_task:
+                continue
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        if self._recv_task is not current_task:
+            self._recv_task = None
+        if self._keepalive_task is not current_task:
+            self._keepalive_task = None
+        if self._reconnect_task is not current_task:
+            self._reconnect_task = None
 
         if self._ws is not None and not self._ws.closed:
             await self._ws.close()
@@ -252,6 +257,14 @@ class WsTransport:
                     await self.async_send(build_keepalive())
                 except NanitTransportError:
                     _LOGGER.warning("Keepalive send failed, triggering reconnect")
+                    if self._ws is not None and not self._ws.closed:
+                        await self._ws.close()
+                    if not self._closed and (
+                        self._reconnect_task is None or self._reconnect_task.done()
+                    ):
+                        self._reconnect_task = asyncio.get_running_loop().create_task(
+                            self._reconnect_loop()
+                        )
                     break
         except asyncio.CancelledError:
             return

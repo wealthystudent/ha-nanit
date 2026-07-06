@@ -8,7 +8,7 @@ import time
 from datetime import datetime
 
 from homeassistant.components.camera import Camera, CameraEntityFeature
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from aionanit import NanitCamera
@@ -102,6 +102,14 @@ class NanitCameraEntity(NanitEntity, Camera):
         if self.stream is not None:
             _LOGGER.debug("Invalidating cached stream after %s", reason)
             self.stream = None
+
+    @callback
+    def close_webrtc_session(self, session_id: str) -> None:
+        """Close a WebRTC session, ignoring duplicate go2rtc close callbacks."""
+        try:
+            super().close_webrtc_session(session_id)
+        except KeyError:
+            _LOGGER.debug("WebRTC session %s was already closed", session_id)
 
     # ------------------------------------------------------------------
     # Streaming

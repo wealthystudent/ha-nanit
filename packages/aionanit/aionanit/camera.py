@@ -1143,17 +1143,26 @@ class NanitCamera:
                             probe.async_connect_local(self._local_ip, token),
                             timeout=5.0,
                         )
-                        # Local is reachable — promote.
-                        await probe.async_close()
                     except (TimeoutError, NanitConnectionError, NanitTransportError):
                         _LOGGER.debug("Local probe failed, staying on cloud")
                         continue
+                    finally:
+                        await probe.async_close()
 
                     _LOGGER.info("Local camera reachable, promoting from cloud to local")
-                    # Close cloud, connect local.
                     self._pending.cancel_all()
-                    await self._transport.async_close()
-                    await self._transport.async_connect_local(self._local_ip, token)
+                    try:
+                        await self._transport.async_connect_local(self._local_ip, token)
+                    except (NanitConnectionError, NanitTransportError) as err:
+                        _LOGGER.info(
+                            "Local promotion to %s failed (%s), restoring cloud",
+                            self._local_ip,
+                            err,
+                        )
+                        token = await self._token_manager.async_get_access_token()
+                        await self._transport.async_connect_cloud(self._uid, token)
+                        await self._async_enable_sensor_push()
+                        continue
                     await self._async_request_initial_state()
                     await self._async_enable_sensor_push()
                     return  # Stop probing — now on local.

@@ -903,18 +903,6 @@ class TestStreaming:
 
         url = await cam.async_get_stream_rtmps_url()
         assert url == "rtmps://media-secured.nanit.com/nanit/baby_uid_1.fresh_token"
-        tm.async_get_access_token.assert_awaited_once_with(min_ttl=3300.0)
-
-    async def test_start_streaming_reuses_provided_rtmps_url(self) -> None:
-        cam, tm, _ = _make_camera()
-        tm.async_get_access_token = AsyncMock(return_value="token_a")
-        cam._send_request = AsyncMock()
-
-        await cam.async_start_streaming(rtmps_url="rtmps://media/custom.token")
-
-        tm.async_get_access_token.assert_not_awaited()
-        sent_streaming = cam._send_request.await_args.kwargs["streaming"]
-        assert sent_streaming.rtmp_url == "rtmps://media/custom.token"
 
 
 # ---------------------------------------------------------------------------

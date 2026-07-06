@@ -7,8 +7,9 @@ import logging
 import time
 
 from homeassistant.components.camera import Camera, CameraEntityFeature
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.event import async_call_later
 
 from aionanit import NanitCamera
 
@@ -60,6 +61,7 @@ class NanitCameraEntity(NanitEntity, Camera):
         self._cached_snapshot: bytes | None = None
         self._cached_snapshot_at: float = 0.0
         self._stream_source_started_at: float = 0.0
+        self._cancel_stream_expiry_timer: CALLBACK_TYPE | None = None
 
     @property
     def is_on(self) -> bool:
@@ -91,6 +93,9 @@ class NanitCameraEntity(NanitEntity, Camera):
             _LOGGER.debug("Invalidating cached stream after %s", reason)
             self.stream = None
         self._stream_source_started_at = 0.0
+        if self._cancel_stream_expiry_timer is not None:
+            self._cancel_stream_expiry_timer()
+            self._cancel_stream_expiry_timer = None
 
     def _invalidate_stream_if_expired(self) -> None:
         """Discard HA's cached stream shortly before its RTMPS token can expire."""
@@ -124,22 +129,44 @@ class NanitCameraEntity(NanitEntity, Camera):
         if not self.is_on:
             return None
 
-        if not await self._async_start_streaming_safe():
-            return None
-
         try:
             source = await self._camera.async_get_stream_rtmps_url()
         except Exception:  # noqa: BLE001
             _LOGGER.warning("Failed to build RTMPS stream URL", exc_info=True)
             return None
+
+        if not await self._async_start_streaming_safe(source):
+            return None
+
         self._stream_source_started_at = time.monotonic()
+        self._schedule_stream_expiry_timer()
         return source
 
-    async def _async_start_streaming_safe(self) -> bool:
+    def _schedule_stream_expiry_timer(self) -> None:
+        """Schedule backend stream invalidation so token expiry is not update-dependent."""
+        if self._cancel_stream_expiry_timer is not None:
+            self._cancel_stream_expiry_timer()
+        try:
+            hass = self.hass
+        except (AttributeError, RuntimeError):
+            self._cancel_stream_expiry_timer = None
+            return
+
+        if hass is None:
+            self._cancel_stream_expiry_timer = None
+            return
+
+        self._cancel_stream_expiry_timer = async_call_later(
+            hass,
+            _STREAM_SOURCE_MAX_AGE,
+            lambda _now: self._invalidate_stream("stream source age timer"),
+        )
+
+    async def _async_start_streaming_safe(self, rtmps_url: str | None = None) -> bool:
         """Send PUT_STREAMING with retry.  Returns True on success."""
         for attempt in range(1, _STREAM_START_ATTEMPTS + 1):
             try:
-                await self._camera.async_start_streaming()
+                await self._camera.async_start_streaming(rtmps_url=rtmps_url)
                 return True
             except Exception:  # noqa: BLE001
                 if attempt < _STREAM_START_ATTEMPTS:

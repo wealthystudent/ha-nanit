@@ -451,7 +451,8 @@ async def test_camera_stream_source_returns_url_when_on() -> None:
     source = await entity.stream_source()
 
     assert source == "rtmps://stream-url"
-    camera.async_start_streaming.assert_awaited_once()
+    camera.async_get_stream_rtmps_url.assert_awaited_once()
+    camera.async_start_streaming.assert_awaited_once_with(rtmps_url="rtmps://stream-url")
     assert entity._stream_source_started_at > 0
 
 
@@ -677,6 +678,30 @@ def test_camera_keeps_fresh_stream_source() -> None:
 
     assert entity.stream is stream
     assert entity._stream_source_started_at == 95.0
+
+
+async def test_camera_stream_source_schedules_backend_expiry_timer(
+    hass: HomeAssistant,
+) -> None:
+    coordinator = _push_coordinator(_camera_state(sleep_mode=False))
+    camera = MagicMock(uid="cam_1")
+    camera.async_get_stream_rtmps_url = AsyncMock(return_value="rtmps://stream-url")
+    camera.async_start_streaming = AsyncMock()
+    entity = NanitCameraEntity(coordinator, camera)
+    entity.hass = hass
+    cancel_timer = MagicMock()
+
+    with patch(
+        "custom_components.nanit.camera.async_call_later",
+        return_value=cancel_timer,
+    ) as mock_call_later:
+        source = await entity.stream_source()
+
+    assert source == "rtmps://stream-url"
+    mock_call_later.assert_called_once()
+    assert mock_call_later.call_args.args[0] is hass
+    assert mock_call_later.call_args.args[1] == 2.5 * 60 * 60
+    assert entity._cancel_stream_expiry_timer is cancel_timer
 
 
 def test_camera_invalidates_stream_on_power_state_change() -> None:

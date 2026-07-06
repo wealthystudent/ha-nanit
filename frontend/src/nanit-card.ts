@@ -12,6 +12,10 @@ const STREAM_MAX_RELOADS = 3;
 const STREAM_RELOAD_COOLDOWN_MS = 60000;
 const STREAM_HEALTHY_RESET_TICKS = 10;
 const STREAM_PROGRESS_EPSILON = 0.05;
+// Hide the loader after this long even if we can't confirm liveness, so a
+// detection miss (WebRTC currentTime quirks, blocked inline autoplay, unusual
+// player nesting) can never permanently mask a working stream.
+const STREAM_LOADED_FAILOPEN_MS = 10000;
 
 @customElement("nanit-card")
 export class NanitCard extends LitElement {
@@ -28,6 +32,8 @@ export class NanitCard extends LitElement {
   private _reloadCount = 0;
   private _reloadWindowStart = 0;
   private _cooldownUntil = 0;
+  private _streamMountedAt = 0;
+  private _watchedEpoch = -1;
 
   static styles = cardStyles;
 
@@ -83,8 +89,17 @@ export class NanitCard extends LitElement {
   protected updated(changedProps: Map<string, unknown>): void {
     super.updated(changedProps);
     const streamEl = this.renderRoot.querySelector("ha-camera-stream");
-    if (streamEl && !this._streamWatchdog) this._startStreamWatchdog();
-    if (!streamEl) this._clearStreamWatchdog();
+    if (streamEl) {
+      // A new <ha-camera-stream> mounted (first render or a reload) — restart the
+      // fail-open grace window for it.
+      if (this._watchedEpoch !== this._streamEpoch) {
+        this._watchedEpoch = this._streamEpoch;
+        this._streamMountedAt = Date.now();
+      }
+      if (!this._streamWatchdog) this._startStreamWatchdog();
+    } else {
+      this._clearStreamWatchdog();
+    }
   }
 
   private _startStreamWatchdog(): void {
@@ -123,7 +138,26 @@ export class NanitCard extends LitElement {
     if (!streamEl) return;
 
     const video = this._findStreamVideo(streamEl);
+
+    // Fail open: after a grace window, hide the loader regardless — never let it
+    // permanently cover a stream that is actually playing (e.g. WebRTC, where
+    // currentTime is unreliable, or when the <video> can't be located).
+    if (
+      !this._streamLoaded &&
+      this._streamMountedAt > 0 &&
+      Date.now() - this._streamMountedAt > STREAM_LOADED_FAILOPEN_MS
+    ) {
+      this._streamLoaded = true;
+    }
+
     if (!video) return;
+
+    // A decoded frame is available (readyState >= HAVE_CURRENT_DATA). This is the
+    // robust "there is a picture to show" signal for both HLS and WebRTC, where
+    // currentTime may never advance — so hide the loader immediately.
+    if (!this._streamLoaded && video.readyState >= 2) {
+      this._streamLoaded = true;
+    }
 
     if (video.currentTime > this._lastVideoTime + STREAM_PROGRESS_EPSILON) {
       this._lastVideoTime = video.currentTime;
@@ -193,6 +227,8 @@ export class NanitCard extends LitElement {
       this._stallStrikes = 0;
       this._healthyTicks = 0;
       this._reloadWindowStart = 0;
+      this._streamMountedAt = 0;
+      this._watchedEpoch = -1;
     }
     const deviceName = entities.camera
       ? getDeviceName(this.hass, entities.camera)

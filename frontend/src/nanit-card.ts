@@ -10,6 +10,7 @@ const STREAM_WATCHDOG_INTERVAL_MS = 1000;
 const STREAM_STALL_TICKS = 8;
 const STREAM_MAX_RELOADS = 3;
 const STREAM_RELOAD_COOLDOWN_MS = 60000;
+const STREAM_HEALTHY_RESET_TICKS = 10;
 const STREAM_PROGRESS_EPSILON = 0.05;
 
 @customElement("nanit-card")
@@ -23,7 +24,9 @@ export class NanitCard extends LitElement {
   private _lastVideoTime = 0;
   private _sawProgress = false;
   private _stallStrikes = 0;
+  private _healthyTicks = 0;
   private _reloadCount = 0;
+  private _reloadWindowStart = 0;
   private _cooldownUntil = 0;
 
   static styles = cardStyles;
@@ -127,12 +130,17 @@ export class NanitCard extends LitElement {
       this._sawProgress = true;
       this._stallStrikes = 0;
       this._streamLoaded = true;
-      if (this._reloadCount > 0 && !video.paused) {
+      // Refill the reload budget only after *sustained* playback, so a feed
+      // that flaps (one frame, then freeze) can't keep topping it up.
+      if (!video.paused && ++this._healthyTicks >= STREAM_HEALTHY_RESET_TICKS) {
         this._reloadCount = 0;
         this._cooldownUntil = 0;
+        this._reloadWindowStart = 0;
       }
       return;
     }
+
+    this._healthyTicks = 0;
 
     if (!this._sawProgress || video.paused) return;
 
@@ -142,11 +150,16 @@ export class NanitCard extends LitElement {
 
   private _reloadStream(): void {
     const now = Date.now();
-    if (this._reloadCount >= STREAM_MAX_RELOADS && now < this._cooldownUntil) {
+    // Backing off after hitting the cap — don't remount.
+    if (now < this._cooldownUntil) {
       this._stallStrikes = 0;
       return;
     }
-    if (now >= this._cooldownUntil) this._reloadCount = 0;
+    // Start a fresh window once the previous one has fully elapsed.
+    if (now - this._reloadWindowStart > STREAM_RELOAD_COOLDOWN_MS) {
+      this._reloadWindowStart = now;
+      this._reloadCount = 0;
+    }
 
     this._reloadCount += 1;
     if (this._reloadCount >= STREAM_MAX_RELOADS) {
@@ -158,6 +171,7 @@ export class NanitCard extends LitElement {
     this._lastVideoTime = 0;
     this._sawProgress = false;
     this._stallStrikes = 0;
+    this._healthyTicks = 0;
   }
 
   private _onStreamLoad(): void {
@@ -177,6 +191,8 @@ export class NanitCard extends LitElement {
       this._lastVideoTime = 0;
       this._sawProgress = false;
       this._stallStrikes = 0;
+      this._healthyTicks = 0;
+      this._reloadWindowStart = 0;
     }
     const deviceName = entities.camera
       ? getDeviceName(this.hass, entities.camera)

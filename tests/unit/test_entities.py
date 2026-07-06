@@ -452,6 +452,7 @@ async def test_camera_stream_source_returns_url_when_on() -> None:
 
     assert source == "rtmps://stream-url"
     camera.async_start_streaming.assert_awaited_once()
+    assert entity._stream_source_started_at > 0
 
 
 async def test_camera_stream_source_returns_none_when_camera_off() -> None:
@@ -639,6 +640,45 @@ def test_camera_keeps_stream_on_reconnection() -> None:
     assert entity.stream is not None
 
 
+def test_camera_invalidates_expired_stream_source() -> None:
+    coordinator = _push_coordinator(_camera_state(sleep_mode=False))
+    camera = MagicMock(uid="cam_1")
+    entity = NanitCameraEntity(coordinator, camera)
+    _disable_state_writes(entity)
+    entity._handle_coordinator_update()
+
+    entity.stream = MagicMock()
+    with (
+        patch("custom_components.nanit.camera._STREAM_SOURCE_MAX_AGE", 10.0),
+        patch("custom_components.nanit.camera.time.monotonic", return_value=100.0),
+    ):
+        entity._stream_source_started_at = 89.0
+        entity._handle_coordinator_update()
+
+    assert entity.stream is None
+    assert entity._stream_source_started_at == 0.0
+
+
+def test_camera_keeps_fresh_stream_source() -> None:
+    coordinator = _push_coordinator(_camera_state(sleep_mode=False))
+    camera = MagicMock(uid="cam_1")
+    entity = NanitCameraEntity(coordinator, camera)
+    _disable_state_writes(entity)
+    entity._handle_coordinator_update()
+
+    stream = MagicMock()
+    entity.stream = stream
+    with (
+        patch("custom_components.nanit.camera._STREAM_SOURCE_MAX_AGE", 10.0),
+        patch("custom_components.nanit.camera.time.monotonic", return_value=100.0),
+    ):
+        entity._stream_source_started_at = 95.0
+        entity._handle_coordinator_update()
+
+    assert entity.stream is stream
+    assert entity._stream_source_started_at == 95.0
+
+
 def test_camera_invalidates_stream_on_power_state_change() -> None:
     from datetime import UTC, datetime
 
@@ -653,10 +693,12 @@ def test_camera_invalidates_stream_on_power_state_change() -> None:
 
     mock_stream = MagicMock()
     entity.stream = mock_stream
+    entity._stream_source_started_at = 100.0
     coordinator.data = _camera_state(last_seen=t1, sleep_mode=True)
     entity._handle_coordinator_update()
 
     assert entity.stream is None
+    assert entity._stream_source_started_at == 0.0
 
 
 async def test_camera_start_streaming_safe_does_not_restart_shared_camera() -> None:

@@ -22,6 +22,7 @@ _LOGGER = logging.getLogger(__name__)
 
 _STREAM_START_ATTEMPTS = 3
 _STREAM_RETRY_DELAY = 2.0
+_STREAM_SOURCE_MAX_AGE = 2.5 * 60 * 60
 _SNAPSHOT_CACHE_TTL = 60.0
 _SNAPSHOT_PREFETCH_AGE = 30.0
 
@@ -58,6 +59,7 @@ class NanitCameraEntity(NanitEntity, Camera):
         self._attr_unique_id = f"{camera.uid}_camera"
         self._cached_snapshot: bytes | None = None
         self._cached_snapshot_at: float = 0.0
+        self._stream_source_started_at: float = 0.0
 
     @property
     def is_on(self) -> bool:
@@ -78,6 +80,8 @@ class NanitCameraEntity(NanitEntity, Camera):
         if prev_on is not None and prev_on != cur_on:
             # Camera power changed — invalidate cached stream.
             self._invalidate_stream("power state change")
+        else:
+            self._invalidate_stream_if_expired()
 
         super()._handle_coordinator_update()
 
@@ -86,6 +90,16 @@ class NanitCameraEntity(NanitEntity, Camera):
         if self.stream is not None:
             _LOGGER.debug("Invalidating cached stream after %s", reason)
             self.stream = None
+        self._stream_source_started_at = 0.0
+
+    def _invalidate_stream_if_expired(self) -> None:
+        """Discard HA's cached stream shortly before its RTMPS token can expire."""
+        if self.stream is None or self._stream_source_started_at == 0.0:
+            return
+
+        stream_age = time.monotonic() - self._stream_source_started_at
+        if stream_age >= _STREAM_SOURCE_MAX_AGE:
+            self._invalidate_stream(f"stream source age {stream_age:.0f}s")
 
     @callback
     def close_webrtc_session(self, session_id: str) -> None:
@@ -114,10 +128,12 @@ class NanitCameraEntity(NanitEntity, Camera):
             return None
 
         try:
-            return await self._camera.async_get_stream_rtmps_url()
+            source = await self._camera.async_get_stream_rtmps_url()
         except Exception:  # noqa: BLE001
             _LOGGER.warning("Failed to build RTMPS stream URL", exc_info=True)
             return None
+        self._stream_source_started_at = time.monotonic()
+        return source
 
     async def _async_start_streaming_safe(self) -> bool:
         """Send PUT_STREAMING with retry.  Returns True on success."""

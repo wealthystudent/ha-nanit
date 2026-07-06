@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from datetime import datetime
 
 from homeassistant.components.camera import Camera, CameraEntityFeature
 from homeassistant.core import HomeAssistant, callback
@@ -56,11 +55,9 @@ class NanitCameraEntity(NanitEntity, Camera):
         Camera.__init__(self)
         self._camera = camera
         self._prev_is_on: bool | None = None
-        self._prev_last_seen: datetime | None = None
         self._attr_unique_id = f"{camera.uid}_camera"
         self._cached_snapshot: bytes | None = None
         self._cached_snapshot_at: float = 0.0
-        self._reconnecting: bool = False
 
     @property
     def is_on(self) -> bool:
@@ -81,19 +78,6 @@ class NanitCameraEntity(NanitEntity, Camera):
         if prev_on is not None and prev_on != cur_on:
             # Camera power changed — invalidate cached stream.
             self._invalidate_stream("power state change")
-
-        # Invalidate stream after WebSocket reconnection so the RTMPS URL
-        # gets a fresh access token.  last_seen is updated only when the
-        # transport moves to CONNECTED, so this fires once per reconnect.
-        if self.coordinator.data is not None:
-            cur_last_seen = self.coordinator.data.connection.last_seen
-            if (
-                self._prev_last_seen is not None
-                and cur_last_seen != self._prev_last_seen
-                and self.stream is not None
-            ):
-                self._invalidate_stream("WebSocket reconnection (token refreshed)")
-            self._prev_last_seen = cur_last_seen
 
         super()._handle_coordinator_update()
 
@@ -153,50 +137,12 @@ class NanitCameraEntity(NanitEntity, Camera):
                     await asyncio.sleep(_STREAM_RETRY_DELAY)
                 else:
                     _LOGGER.warning(
-                        "PUT_STREAMING failed after %d attempts for camera %s; "
-                        "forcing an immediate reconnect",
+                        "PUT_STREAMING failed after %d attempts for camera %s",
                         _STREAM_START_ATTEMPTS,
                         self._camera.uid,
                         exc_info=True,
                     )
-                    # Force an immediate local-first reconnect instead of
-                    # waiting for the library's periodic ~5-minute probe, then
-                    # try PUT_STREAMING one last time.
-                    if await self._async_force_reconnect():
-                        try:
-                            await self._camera.async_start_streaming()
-                            return True
-                        except Exception:  # noqa: BLE001
-                            _LOGGER.warning(
-                                "PUT_STREAMING final retry failed for camera %s",
-                                self._camera.uid,
-                                exc_info=True,
-                            )
         return False
-
-    async def _async_force_reconnect(self) -> bool:
-        """Restart the camera transport (local-first) without waiting for the probe.
-
-        The library only re-probes the local connection every ~5 minutes; a
-        stop/start forces an immediate reconnect that tries local first.
-        Guarded so overlapping stream requests don't trigger competing restarts.
-        """
-        if self._reconnecting:
-            return False
-        self._reconnecting = True
-        try:
-            await self._camera.async_stop()
-            await self._camera.async_start()
-            return True
-        except Exception:  # noqa: BLE001
-            _LOGGER.debug(
-                "Forced reconnect failed for camera %s",
-                self._camera.uid,
-                exc_info=True,
-            )
-            return False
-        finally:
-            self._reconnecting = False
 
     # ------------------------------------------------------------------
     # Snapshot (with caching)

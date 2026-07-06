@@ -46,3 +46,24 @@ def test_bundled_card_contains_semantic_override_support() -> None:
 
     assert "temperature_entity_id" in bundle
     assert "humidity_entity_id" in bundle
+
+
+def test_card_source_contains_stream_liveness_watchdog() -> None:
+    """The card should continuously monitor live video progress and remount frozen streams."""
+    card = _read(SRC_DIR / "nanit-card.ts")
+
+    assert "STREAM_STALL_TICKS" in card
+    assert "_findStreamVideo" in card
+    assert "ha-hls-player, ha-web-rtc-player" in card
+    assert "video.currentTime > this._lastVideoTime" in card
+    assert "!this._sawProgress || video.paused" in card
+    assert "_reloadStream" in card
+    assert "data-stream-epoch" in card
+
+
+def test_bundled_card_contains_stream_liveness_watchdog() -> None:
+    """The shipped bundle should include stream remount markers after frontend build."""
+    bundle = _read(BUNDLE)
+
+    assert "data-stream-epoch" in bundle
+    assert "ha-hls-player, ha-web-rtc-player" in bundle

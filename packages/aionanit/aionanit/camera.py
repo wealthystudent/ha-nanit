@@ -85,6 +85,7 @@ _HEALTH_CHECK_INTERVAL: float = 270.0  # 4.5 min — periodic session liveness c
 _FRESH_CONNECTION_WINDOW: float = 10.0  # skip reconnect if connected within this
 _DEFAULT_SENSOR_POLL_INTERVAL: float = 120.0  # 2 min — poll sensors camera doesn't push
 _DEFAULT_PLAYBACK_POLL_INTERVAL: float = 30.0  # 30s — poll GET_PLAYBACK for external changes
+_STREAM_TOKEN_MIN_TTL: float = 3300.0  # Require ~55 min remaining for media URLs
 
 
 class NanitCamera:
@@ -471,7 +472,7 @@ class NanitCamera:
 
         Returns: rtmps://media-secured.nanit.com/nanit/{baby_uid}.{access_token}
         """
-        token = await self._token_manager.async_get_access_token()
+        token = await self._token_manager.async_get_access_token(min_ttl=_STREAM_TOKEN_MIN_TTL)
         token_ttl = self._token_manager._expires_at - time.monotonic()
         _LOGGER.debug(
             "Built RTMPS stream URL for baby %s (token TTL: %.0fs)",
@@ -480,9 +481,10 @@ class NanitCamera:
         )
         return f"rtmps://media-secured.nanit.com/nanit/{self._baby_uid}.{token}"
 
-    async def async_start_streaming(self) -> None:
+    async def async_start_streaming(self, *, rtmps_url: str | None = None) -> None:
         """Send PUT_STREAMING with status=STARTED to camera."""
-        rtmps_url = await self.async_get_stream_rtmps_url()
+        if rtmps_url is None:
+            rtmps_url = await self.async_get_stream_rtmps_url()
         streaming = Streaming(
             id=StreamIdentifier.MOBILE,
             status=StreamingStatus.STARTED,
@@ -557,7 +559,7 @@ class NanitCamera:
         Called by WsTransport._reconnect_loop before each reconnect attempt
         so that stale tokens are replaced with freshly issued ones.
         """
-        token = await self._token_manager.async_get_access_token()
+        token = await self._token_manager.async_get_access_token(min_ttl=300.0)
         if self._transport.transport_kind == TransportKind.LOCAL:
             return {"Authorization": f"token {token}"}
         return {"Authorization": f"Bearer {token}"}
@@ -1143,17 +1145,26 @@ class NanitCamera:
                             probe.async_connect_local(self._local_ip, token),
                             timeout=5.0,
                         )
-                        # Local is reachable — promote.
-                        await probe.async_close()
                     except (TimeoutError, NanitConnectionError, NanitTransportError):
                         _LOGGER.debug("Local probe failed, staying on cloud")
                         continue
+                    finally:
+                        await probe.async_close()
 
                     _LOGGER.info("Local camera reachable, promoting from cloud to local")
-                    # Close cloud, connect local.
                     self._pending.cancel_all()
-                    await self._transport.async_close()
-                    await self._transport.async_connect_local(self._local_ip, token)
+                    try:
+                        await self._transport.async_connect_local(self._local_ip, token)
+                    except (NanitConnectionError, NanitTransportError) as err:
+                        _LOGGER.info(
+                            "Local promotion to %s failed (%s), restoring cloud",
+                            self._local_ip,
+                            err,
+                        )
+                        token = await self._token_manager.async_get_access_token()
+                        await self._transport.async_connect_cloud(self._uid, token)
+                        await self._async_enable_sensor_push()
+                        continue
                     await self._async_request_initial_state()
                     await self._async_enable_sensor_push()
                     return  # Stop probing — now on local.

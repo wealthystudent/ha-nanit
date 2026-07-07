@@ -21,9 +21,7 @@ from custom_components.nanit.const import (
     CONF_CAMERA_IP,
     CONF_CAMERA_IPS,
     CONF_MFA_CODE,
-    CONF_PLAYBACK_POLL_INTERVAL,
     CONF_REFRESH_TOKEN,
-    CONF_SENSOR_POLL_INTERVAL,
     CONF_STORE_CREDENTIALS,
     DOMAIN,
 )
@@ -680,11 +678,6 @@ async def test_options_flow_init_no_cameras_aborts(hass: HomeAssistant) -> None:
     entry.add_to_hass(hass)
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
-    assert result.get("type") is FlowResultType.MENU
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        {"next_step_id": "device_ips"},
-    )
 
     assert result.get("type") is FlowResultType.ABORT
     assert result.get("reason") == "no_cameras"
@@ -699,11 +692,6 @@ async def test_options_flow_init_single_camera_goes_to_camera_ip(
     entry.add_to_hass(hass)
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
-    assert result.get("type") is FlowResultType.MENU
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        {"next_step_id": "device_ips"},
-    )
 
     assert result.get("type") is FlowResultType.FORM
     assert result.get("step_id") == "camera_ip"
@@ -718,14 +706,9 @@ async def test_options_flow_init_multiple_cameras_shows_selector(
     entry.add_to_hass(hass)
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
-    assert result.get("type") is FlowResultType.MENU
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        {"next_step_id": "device_ips"},
-    )
 
     assert result.get("type") is FlowResultType.FORM
-    assert result.get("step_id") == "device_ips"
+    assert result.get("step_id") == "init"
 
 
 async def test_options_flow_camera_ip_sets_ip(hass: HomeAssistant) -> None:
@@ -735,11 +718,6 @@ async def test_options_flow_camera_ip_sets_ip(hass: HomeAssistant) -> None:
     entry.add_to_hass(hass)
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
-    assert result.get("type") is FlowResultType.MENU
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        {"next_step_id": "device_ips"},
-    )
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
         {CONF_CAMERA_IP: "192.168.1.25"},
@@ -759,13 +737,8 @@ async def test_options_flow_multi_camera_select_then_set_ip(
     entry.add_to_hass(hass)
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
-    assert result.get("type") is FlowResultType.MENU
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        {"next_step_id": "device_ips"},
-    )
     assert result.get("type") is FlowResultType.FORM
-    assert result.get("step_id") == "device_ips"
+    assert result.get("step_id") == "init"
 
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
@@ -796,11 +769,6 @@ async def test_options_flow_camera_ip_clears_ip_when_empty(
     entry.add_to_hass(hass)
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
-    assert result.get("type") is FlowResultType.MENU
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        {"next_step_id": "device_ips"},
-    )
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
         {CONF_CAMERA_IP: ""},
@@ -809,60 +777,3 @@ async def test_options_flow_camera_ip_clears_ip_when_empty(
     result_data = _as_dict(result)
     assert result_data.get("type") is FlowResultType.CREATE_ENTRY
     assert result_data["data"][CONF_CAMERA_IPS] == {}
-
-
-async def test_options_flow_polling_sets_intervals(hass: HomeAssistant) -> None:
-    hass = await _resolve_hass(hass)
-    entry = MockConfigEntry(domain=DOMAIN, options={CONF_CAMERA_IPS: {"cam_1": "10.0.0.8"}})
-    entry.runtime_data = SimpleNamespace(hub=SimpleNamespace(babies=[MOCK_BABY_1]))
-    entry.add_to_hass(hass)
-
-    result = await hass.config_entries.options.async_init(entry.entry_id)
-    assert result.get("type") is FlowResultType.MENU
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        {"next_step_id": "polling"},
-    )
-    assert result.get("type") is FlowResultType.FORM
-    assert result.get("step_id") == "polling"
-
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        {CONF_SENSOR_POLL_INTERVAL: 300, CONF_PLAYBACK_POLL_INTERVAL: 180},
-    )
-
-    result_data = _as_dict(result)
-    assert result_data.get("type") is FlowResultType.CREATE_ENTRY
-    assert result_data["data"][CONF_SENSOR_POLL_INTERVAL] == 300
-    assert result_data["data"][CONF_PLAYBACK_POLL_INTERVAL] == 180
-    # Existing options must be preserved, not replaced.
-    assert result_data["data"][CONF_CAMERA_IPS] == {"cam_1": "10.0.0.8"}
-
-
-async def test_options_flow_camera_ip_preserves_other_options(
-    hass: HomeAssistant,
-) -> None:
-    """Saving an IP must not drop unrelated options like poll intervals."""
-    hass = await _resolve_hass(hass)
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        options={CONF_CAMERA_IPS: {}, CONF_SENSOR_POLL_INTERVAL: 300},
-    )
-    entry.runtime_data = SimpleNamespace(hub=SimpleNamespace(babies=[MOCK_BABY_1]))
-    entry.add_to_hass(hass)
-
-    result = await hass.config_entries.options.async_init(entry.entry_id)
-    assert result.get("type") is FlowResultType.MENU
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        {"next_step_id": "device_ips"},
-    )
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        {CONF_CAMERA_IP: "192.168.1.40"},
-    )
-
-    result_data = _as_dict(result)
-    assert result_data.get("type") is FlowResultType.CREATE_ENTRY
-    assert result_data["data"][CONF_SENSOR_POLL_INTERVAL] == 300
-    assert result_data["data"][CONF_CAMERA_IPS] == {MOCK_BABY_1.camera_uid: "192.168.1.40"}

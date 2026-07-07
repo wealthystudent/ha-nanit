@@ -700,68 +700,8 @@ async def test_camera_stream_source_schedules_backend_expiry_timer(
     assert source == "rtmps://stream-url"
     mock_call_later.assert_called_once()
     assert mock_call_later.call_args.args[0] is hass
-    assert mock_call_later.call_args.args[1] == 45 * 60
+    assert mock_call_later.call_args.args[1] == 2.5 * 60 * 60
     assert entity._cancel_stream_expiry_timer is cancel_timer
-
-
-async def test_camera_renews_stream_source_on_token_refresh(
-    hass: HomeAssistant,
-) -> None:
-    """A token rotation must swap the new RTMPS URL into the live stream."""
-    coordinator = _push_coordinator(_camera_state(sleep_mode=False))
-    camera = MagicMock(uid="cam_1")
-    camera.async_get_stream_rtmps_url = AsyncMock(return_value="rtmps://media/baby.new_token")
-    camera.async_start_streaming = AsyncMock()
-    entity = NanitCameraEntity(coordinator, camera)
-    entity.hass = hass
-
-    stream = MagicMock()
-    entity.stream = stream
-    entity._stream_source_started_at = 123.0
-
-    with patch("custom_components.nanit.camera.async_call_later", return_value=MagicMock()):
-        entity._on_tokens_refreshed("new_access", "new_refresh")
-        await hass.async_block_till_done()
-
-    camera.async_start_streaming.assert_awaited_once_with(rtmps_url="rtmps://media/baby.new_token")
-    stream.update_source.assert_called_once_with("rtmps://media/baby.new_token")
-    assert entity._stream_source_started_at != 123.0
-
-
-async def test_camera_token_refresh_without_active_stream_is_noop(
-    hass: HomeAssistant,
-) -> None:
-    coordinator = _push_coordinator(_camera_state(sleep_mode=False))
-    camera = MagicMock(uid="cam_1")
-    camera.async_get_stream_rtmps_url = AsyncMock()
-    entity = NanitCameraEntity(coordinator, camera)
-    entity.hass = hass
-    entity.stream = None
-
-    entity._on_tokens_refreshed("new_access", "new_refresh")
-    await hass.async_block_till_done()
-
-    camera.async_get_stream_rtmps_url.assert_not_awaited()
-
-
-async def test_camera_invalidate_stream_stops_old_worker(
-    hass: HomeAssistant,
-) -> None:
-    """Invalidation must stop the old stream worker, not just drop it."""
-    coordinator = _push_coordinator(_camera_state(sleep_mode=False))
-    camera = MagicMock(uid="cam_1")
-    entity = NanitCameraEntity(coordinator, camera)
-    entity.hass = hass
-
-    stream = MagicMock()
-    stream.stop = AsyncMock()
-    entity.stream = stream
-
-    entity._invalidate_stream("test")
-    await hass.async_block_till_done()
-
-    assert entity.stream is None
-    stream.stop.assert_awaited_once()
 
 
 def test_camera_invalidates_stream_on_power_state_change() -> None:

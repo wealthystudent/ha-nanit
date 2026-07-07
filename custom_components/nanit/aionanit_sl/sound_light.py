@@ -485,23 +485,16 @@ class NanitSoundLight:
             )
 
     async def _async_close_ws(self) -> None:
-        """Close WebSocket and cancel recv/reconnect tasks.
-
-        Never cancels or awaits the *current* task — the reconnect loop calls
-        this on each iteration, and cancelling/awaiting itself would kill the
-        loop on its first pass (leaving the device permanently disconnected).
-        """
-        current_task = asyncio.current_task()
+        """Close WebSocket and cancel recv/reconnect tasks."""
         for task_attr in ("_recv_task", "_reconnect_task"):
             task = getattr(self, task_attr, None)
-            if task is not None and not task.done() and task is not current_task:
+            if task is not None and not task.done():
                 task.cancel()
                 try:
                     await task
                 except asyncio.CancelledError:
                     pass
-            if task is not current_task:
-                setattr(self, task_attr, None)
+            setattr(self, task_attr, None)
 
         if self._ws is not None and not self._ws.closed:
             await self._ws.close()

@@ -2,22 +2,6 @@
 
 All notable changes to the Nanit Home Assistant integration are documented in this file.
 
-## [1.8.8] – Unreleased
-
-### Fixed
-- **Streams no longer go black after ~1 hour** — the RTMPS URL embeds a 1-hour access token, but Home Assistant cached the stream for 2.5 hours. Live streams now renew their URL in place (`stream.update_source`) whenever tokens rotate, and the cache safety-net dropped to 45 minutes.
-- Transient Nanit API failures (5xx/gateway errors) during token refresh no longer masquerade as auth failures that kill the integration and demand re-login; refresh now retries briefly and only real 401/404 responses trigger reauth.
-- Invalidated camera streams are now stopped explicitly instead of orphaned — leaked RTMPS pulls counted against Nanit's small concurrent-session limit and evicted HA's own sessions.
-- Sound & Light machine reconnect loop no longer cancels itself on its first iteration (it never survived a disconnect).
-- A single request timeout no longer forces a full WebSocket reconnect (reconnect storms); reconnects now require two consecutive timeouts.
-- Camera health check now recovers a transport stuck retrying a dead local IP by falling back to cloud.
-- Saving a camera IP in the options flow no longer wipes unrelated options.
-- Nanit card waits 20s (was 8s) before reloading a starting stream, and only resets the backend stream after repeated failures — cold cloud ingests were being aborted mid-startup.
-- `baby_name` is now redacted in diagnostics downloads.
-
-### Added
-- Options → Polling intervals: sensor and sound-machine poll intervals are configurable (30–3600s, default 120s). The sound-machine poll default was raised from 30s to 120s to reduce session contention with the Nanit phone app.
-
 ## [1.8.0] – Unreleased
 
 ### Added

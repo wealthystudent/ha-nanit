@@ -172,12 +172,7 @@ async def test_setup_reads_camera_ips_from_options(hass: HomeAssistant, mock_nan
         await hub.async_setup()
 
     mock_nanit_client.camera.assert_called_once_with(
-        uid="cam_1",
-        baby_uid="baby_1",
-        prefer_local=True,
-        local_ip="10.0.0.8",
-        sensor_poll_interval=None,
-        playback_poll_interval=None,
+        uid="cam_1", baby_uid="baby_1", prefer_local=True, local_ip="10.0.0.8"
     )
 
 

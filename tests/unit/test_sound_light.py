@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import ssl
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -166,45 +166,6 @@ class TestReconnectTaskTracking:
         sl._reconnect_task = asyncio.get_running_loop().create_task(dummy())
         await sl._async_close_ws()
         assert sl._reconnect_task is None
-
-    @pytest.mark.asyncio
-    async def test_close_ws_does_not_cancel_or_await_current_reconnect_task(self) -> None:
-        """Regression: the reconnect loop calls _async_close_ws on each
-        iteration — cleanup must skip the current task or the loop
-        cancels/awaits itself and dies on its first pass."""
-        sl = _make_sound_light()
-        current = asyncio.current_task()
-        assert current is not None
-        sl._reconnect_task = current
-
-        await asyncio.wait_for(sl._async_close_ws(), timeout=1.0)
-
-        assert sl._reconnect_task is current
-        assert not current.cancelled()
-
-    @pytest.mark.asyncio
-    async def test_reconnect_loop_survives_first_iteration(self) -> None:
-        """The reconnect loop must reach its connect attempt, not self-cancel."""
-        sl = _make_sound_light()
-        sl._stopped = False
-        connect_calls = 0
-
-        async def _fake_connect() -> None:
-            nonlocal connect_calls
-            connect_calls += 1
-
-        sl._async_connect = _fake_connect  # type: ignore[method-assign]
-        sl._async_fetch_device_token = AsyncMock()
-
-        with (
-            patch("custom_components.nanit.aionanit_sl.sound_light._INITIAL_BACKOFF", 0.0),
-            patch("custom_components.nanit.aionanit_sl.sound_light._JITTER_MAX", 0.0),
-        ):
-            task = asyncio.get_running_loop().create_task(sl._reconnect_loop())
-            sl._reconnect_task = task
-            await asyncio.wait_for(task, timeout=5.0)
-
-        assert connect_calls == 1
 
 
 class TestCloudRelayPrefersDefaultTls:

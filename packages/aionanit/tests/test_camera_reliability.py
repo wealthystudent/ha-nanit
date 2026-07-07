@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import aiohttp
@@ -39,7 +40,7 @@ def _make_camera() -> tuple[NanitCamera, MagicMock]:
 @pytest.mark.asyncio
 async def test_token_refresh_task_started_on_start() -> None:
     camera, token_manager = _make_camera()
-    token_manager.expires_in = 3600.0
+    token_manager._expires_at = time.monotonic() + 3600.0
 
     camera._transport = MagicMock()
     camera._transport.async_connect_cloud = AsyncMock()
@@ -65,7 +66,7 @@ async def test_token_refresh_task_started_on_start() -> None:
 @pytest.mark.asyncio
 async def test_token_refresh_task_cancelled_on_stop() -> None:
     camera, token_manager = _make_camera()
-    token_manager.expires_in = 3600.0
+    token_manager._expires_at = time.monotonic() + 3600.0
 
     camera._transport = MagicMock()
     camera._transport.async_close = AsyncMock()
@@ -85,7 +86,7 @@ async def test_token_refresh_task_cancelled_on_stop() -> None:
 async def test_token_refresh_forces_reconnect_before_expiry() -> None:
     camera, token_manager = _make_camera()
     camera._stopped = False
-    token_manager.expires_in = 50.0
+    token_manager._expires_at = 1050.0
 
     camera._transport = MagicMock()
     camera._transport.connected = True
@@ -95,7 +96,10 @@ async def test_token_refresh_forces_reconnect_before_expiry() -> None:
 
     camera._transport.async_force_reconnect = AsyncMock(side_effect=_force_and_stop)
 
-    with patch("aionanit.camera.asyncio.sleep", AsyncMock(return_value=None)):
+    with (
+        patch("aionanit.camera.time.monotonic", return_value=1000.0),
+        patch("aionanit.camera.asyncio.sleep", AsyncMock(return_value=None)),
+    ):
         await asyncio.wait_for(camera._token_refresh_loop(), timeout=0.1)
 
     camera._transport.async_force_reconnect.assert_awaited_once()

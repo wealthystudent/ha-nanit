@@ -23,9 +23,7 @@ _LOGGER = logging.getLogger(__name__)
 
 _STREAM_START_ATTEMPTS = 3
 _STREAM_RETRY_DELAY = 2.0
-# Safety net below the 1 h Nanit token lifetime; the primary renewal path is
-# the token-refresh callback which updates the stream source in place.
-_STREAM_SOURCE_MAX_AGE = 45 * 60
+_STREAM_SOURCE_MAX_AGE = 2.5 * 60 * 60
 _SNAPSHOT_CACHE_TTL = 60.0
 _SNAPSHOT_PREFETCH_AGE = 30.0
 
@@ -74,59 +72,6 @@ class NanitCameraEntity(NanitEntity, Camera):
         self._cached_snapshot_at: float = 0.0
         self._stream_source_started_at: float = 0.0
         self._cancel_stream_expiry_timer: CALLBACK_TYPE | None = None
-        self._stream_renewal_in_progress: bool = False
-
-    async def async_added_to_hass(self) -> None:
-        """Subscribe to token refreshes so live streams get renewed URLs."""
-        await super().async_added_to_hass()
-        self.async_on_remove(
-            self._camera.token_manager.on_tokens_refreshed(self._on_tokens_refreshed)
-        )
-
-    @callback
-    def _on_tokens_refreshed(self, _access_token: str, _refresh_token: str) -> None:
-        """Renew the cached stream's RTMPS URL after a token rotation.
-
-        The RTMPS URL embeds the access token, so a rotation would otherwise
-        leave the cached stream pointing at a URL that dies with the old
-        token. Rebuild the URL and swap it into the running stream in place.
-        """
-        if self.stream is None or self._stream_source_started_at == 0.0:
-            return
-        if self._stream_renewal_in_progress:
-            return
-        self._stream_renewal_in_progress = True
-        self.hass.async_create_task(
-            self._async_renew_stream_source(),
-            name=f"nanit_stream_renew_{self._camera.uid}",
-        )
-
-    async def _async_renew_stream_source(self) -> None:
-        """Rebuild the RTMPS URL and update the running stream in place."""
-        try:
-            stream = self.stream
-            if stream is None:
-                return
-            try:
-                source = await self._camera.async_get_stream_rtmps_url()
-            except Exception:  # noqa: BLE001
-                _LOGGER.warning("Failed to rebuild RTMPS URL for stream renewal", exc_info=True)
-                return
-            if not await self._async_start_streaming_safe(source):
-                _LOGGER.warning(
-                    "PUT_STREAMING failed during stream renewal for camera %s",
-                    self._camera.uid,
-                )
-                return
-            stream.update_source(source)
-            self._stream_source_started_at = time.monotonic()
-            self._schedule_stream_expiry_timer()
-            _LOGGER.debug(
-                "Renewed RTMPS stream source for camera %s after token refresh",
-                self._camera.uid,
-            )
-        finally:
-            self._stream_renewal_in_progress = False
 
     @property
     def is_on(self) -> bool:
@@ -153,23 +98,10 @@ class NanitCameraEntity(NanitEntity, Camera):
         super()._handle_coordinator_update()
 
     def _invalidate_stream(self, reason: str = "state change") -> None:
-        """Discard HA's cached stream so a fresh one is created on next view.
-
-        The old stream worker is stopped explicitly — dropping the reference
-        alone leaves it pulling RTMPS until its idle timeout, and stacked-up
-        orphan pulls count against Nanit's small concurrent-session limit.
-        """
-        old_stream = self.stream
-        if old_stream is not None:
+        """Discard HA's cached stream so a fresh one is created on next view."""
+        if self.stream is not None:
             _LOGGER.debug("Invalidating cached stream after %s", reason)
             self.stream = None
-            try:
-                self.hass.async_create_task(
-                    old_stream.stop(),
-                    name=f"nanit_stream_stop_{self._camera.uid}",
-                )
-            except (AttributeError, RuntimeError):
-                _LOGGER.debug("Could not schedule stop of old stream", exc_info=True)
         self._stream_source_started_at = 0.0
         if self._cancel_stream_expiry_timer is not None:
             self._cancel_stream_expiry_timer()

@@ -25,14 +25,7 @@ from aionanit.exceptions import (
 from aionanit.models import Baby
 
 from .aionanit_sl.sound_light import NanitSoundLight
-from .const import (
-    CONF_CAMERA_IPS,
-    CONF_PLAYBACK_POLL_INTERVAL,
-    CONF_REFRESH_TOKEN,
-    CONF_SENSOR_POLL_INTERVAL,
-    CONF_SPEAKER_IPS,
-    DOMAIN,
-)
+from .const import CONF_CAMERA_IPS, CONF_REFRESH_TOKEN, CONF_SPEAKER_IPS, DOMAIN
 from .coordinator import (
     NanitCloudCoordinator,
     NanitNetworkCoordinator,
@@ -221,14 +214,11 @@ class NanitHub:
         speaker_uid: str | None = None,
     ) -> None:
         """Create a camera instance and its coordinators for a single baby."""
-        options = self._entry.options
         camera = self._client.camera(
             uid=baby.camera_uid,
             baby_uid=baby.uid,
             prefer_local=camera_ip is not None,
             local_ip=camera_ip,
-            sensor_poll_interval=options.get(CONF_SENSOR_POLL_INTERVAL),
-            playback_poll_interval=options.get(CONF_PLAYBACK_POLL_INTERVAL),
         )
 
         push_coordinator = NanitPushCoordinator(self._hass, self._entry, camera, baby)
@@ -364,7 +354,6 @@ class NanitHub:
         async with rest.session.get(
             f"{rest.base_url}/babies",
             headers={"Authorization": access_token},
-            timeout=aiohttp.ClientTimeout(total=15),
         ) as resp:
             resp.raise_for_status()
             body = await resp.json()

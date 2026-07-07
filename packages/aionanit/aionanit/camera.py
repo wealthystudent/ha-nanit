@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -83,15 +84,8 @@ _STALE_CONNECTION_THRESHOLD: float = 300.0  # 5 min — reconnect before send
 _HEALTH_CHECK_INTERVAL: float = 270.0  # 4.5 min — periodic session liveness check
 _FRESH_CONNECTION_WINDOW: float = 10.0  # skip reconnect if connected within this
 _DEFAULT_SENSOR_POLL_INTERVAL: float = 120.0  # 2 min — poll sensors camera doesn't push
-# 2 min — poll GET_PLAYBACK for external changes. Kept long deliberately:
-# each poll contends with the Nanit phone app for the camera's small
-# session budget, and a timed-out poll can trigger a reconnect.
-_DEFAULT_PLAYBACK_POLL_INTERVAL: float = 120.0
-# Reconnect only after this many consecutive request timeouts. A single
-# lost response is not a reliable signal that the session is dead, and
-# reconnecting cancels every other in-flight request (reconnect storms).
-_TIMEOUTS_BEFORE_RECONNECT: int = 2
-_STREAM_TOKEN_MIN_TTL: float = 600.0  # Require ≥10 min remaining for media URLs
+_DEFAULT_PLAYBACK_POLL_INTERVAL: float = 30.0  # 30s — poll GET_PLAYBACK for external changes
+_STREAM_TOKEN_MIN_TTL: float = 3300.0  # Require ~55 min remaining for media URLs
 
 
 class NanitCamera:
@@ -112,7 +106,6 @@ class NanitCamera:
         prefer_local: bool = True,
         local_ip: str | None = None,
         sensor_poll_interval: float | None = None,
-        playback_poll_interval: float | None = None,
     ) -> None:
         self._uid: str = uid
         self._baby_uid: str = baby_uid
@@ -126,12 +119,6 @@ class NanitCamera:
             if sensor_poll_interval is not None
             else _DEFAULT_SENSOR_POLL_INTERVAL
         )
-        self._playback_poll_interval: float = (
-            playback_poll_interval
-            if playback_poll_interval is not None
-            else _DEFAULT_PLAYBACK_POLL_INTERVAL
-        )
-        self._consecutive_timeouts: int = 0
 
         self._state: CameraState = CameraState()
         self._pending: PendingRequests = PendingRequests()
@@ -166,11 +153,6 @@ class NanitCamera:
     def baby_uid(self) -> str:
         """Baby UID associated with this camera."""
         return self._baby_uid
-
-    @property
-    def token_manager(self) -> TokenManager:
-        """Token manager shared by this camera (for refresh subscriptions)."""
-        return self._token_manager
 
     @property
     def state(self) -> CameraState:
@@ -491,7 +473,7 @@ class NanitCamera:
         Returns: rtmps://media-secured.nanit.com/nanit/{baby_uid}.{access_token}
         """
         token = await self._token_manager.async_get_access_token(min_ttl=_STREAM_TOKEN_MIN_TTL)
-        token_ttl = self._token_manager.expires_in
+        token_ttl = self._token_manager._expires_at - time.monotonic()
         _LOGGER.debug(
             "Built RTMPS stream URL for baby %s (token TTL: %.0fs)",
             self._baby_uid,
@@ -811,37 +793,21 @@ class NanitCamera:
                 raise
 
             try:
-                result = await asyncio.wait_for(future, timeout=timeout)
+                return await asyncio.wait_for(future, timeout=timeout)
             except TimeoutError:
                 _ = self._pending.resolve(request_id, Response())
-                self._consecutive_timeouts += 1
                 if attempt == 0:
-                    # A single lost response is not proof the session is dead;
-                    # only reconnect once timeouts repeat back-to-back.
-                    if self._consecutive_timeouts >= _TIMEOUTS_BEFORE_RECONNECT:
-                        _LOGGER.warning(
-                            "Request %s (id=%s) timed out after %.1fs "
-                            "(%d consecutive), reconnecting and retrying",
-                            RequestType.Name(request_type),
-                            request_id,
-                            timeout,
-                            self._consecutive_timeouts,
-                        )
-                        await self._async_reconnect()
-                    else:
-                        _LOGGER.debug(
-                            "Request %s (id=%s) timed out after %.1fs, retrying",
-                            RequestType.Name(request_type),
-                            request_id,
-                            timeout,
-                        )
+                    _LOGGER.warning(
+                        "Request %s (id=%s) timed out after %.1fs, reconnecting and retrying",
+                        RequestType.Name(request_type),
+                        request_id,
+                        timeout,
+                    )
+                    await self._async_reconnect()
                     continue
                 raise NanitRequestTimeout(
                     RequestType.Name(request_type), request_id, timeout
                 ) from None
-            else:
-                self._consecutive_timeouts = 0
-                return result
 
         # Should never be reached — the loop always returns or raises.
         raise NanitCameraUnavailable(f"Camera {self._uid} request failed")
@@ -1008,7 +974,7 @@ class NanitCamera:
     async def _token_refresh_loop(self) -> None:
         try:
             while not self._stopped:
-                ttl = self._token_manager.expires_in
+                ttl = self._token_manager._expires_at - time.monotonic()
                 sleep_for = max(ttl - 300.0, 60.0)
                 await asyncio.sleep(sleep_for)
                 if self._stopped or not self._transport.connected:
@@ -1048,23 +1014,7 @@ class NanitCamera:
         try:
             while not self._stopped:
                 await asyncio.sleep(_HEALTH_CHECK_INTERVAL)
-                if self._stopped:
-                    continue
-                if not self._transport.connected:
-                    # The transport's own reconnect loop may be stuck retrying
-                    # a dead URL (e.g. the camera's local IP changed). Force a
-                    # full reconnect here — it tries local first, then falls
-                    # back to cloud.
-                    _LOGGER.info(
-                        "Health check: transport still disconnected — "
-                        "forcing reconnect with transport fallback"
-                    )
-                    try:
-                        await self._async_reconnect()
-                    except (NanitCameraUnavailable, NanitConnectionError, NanitTransportError):
-                        _LOGGER.info("Health check reconnect failed — will retry next cycle")
-                    except Exception:
-                        _LOGGER.debug("Health check reconnect error", exc_info=True)
+                if self._stopped or not self._transport.connected:
                     continue
                 try:
                     await self.async_get_status()
@@ -1148,7 +1098,7 @@ class NanitCamera:
         """
         try:
             while not self._stopped:
-                await asyncio.sleep(self._playback_poll_interval)
+                await asyncio.sleep(_DEFAULT_PLAYBACK_POLL_INTERVAL)
                 if self._stopped or not self._transport.connected:
                     continue
                 try:

@@ -23,18 +23,12 @@ from .const import (
     CONF_CAMERA_IP,
     CONF_CAMERA_IPS,
     CONF_MFA_CODE,
-    CONF_PLAYBACK_POLL_INTERVAL,
     CONF_REFRESH_TOKEN,
-    CONF_SENSOR_POLL_INTERVAL,
     CONF_SPEAKER_IP,
     CONF_SPEAKER_IPS,
     CONF_STORE_CREDENTIALS,
-    DEFAULT_PLAYBACK_POLL_INTERVAL,
-    DEFAULT_SENSOR_POLL_INTERVAL,
     DOMAIN,
     LOGGER,
-    MAX_POLL_INTERVAL,
-    MIN_POLL_INTERVAL,
 )
 from .sanitize import display_name
 
@@ -326,15 +320,6 @@ class NanitOptionsFlow(OptionsFlow):
         self._selected_camera_uid: str = ""
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        """Show the options menu."""
-        return self.async_show_menu(
-            step_id="init",
-            menu_options=["device_ips", "polling"],
-        )
-
-    async def async_step_device_ips(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
         """Select which camera to configure."""
         hub = self.config_entry.runtime_data.hub
         babies = hub.babies
@@ -354,52 +339,10 @@ class NanitOptionsFlow(OptionsFlow):
         camera_options = {baby.camera_uid: display_name(baby.name, baby.uid) for baby in babies}
 
         return self.async_show_form(
-            step_id="device_ips",
+            step_id="init",
             data_schema=vol.Schema(
                 {
                     vol.Required("camera"): vol.In(camera_options),
-                }
-            ),
-        )
-
-    async def async_step_polling(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Configure control-channel polling intervals.
-
-        Each poll contends with the Nanit phone app for the camera's small
-        session budget — longer intervals reduce stream evictions.
-        """
-        if user_input is not None:
-            return self.async_create_entry(
-                title="",
-                data={
-                    **self.config_entry.options,
-                    CONF_SENSOR_POLL_INTERVAL: int(user_input[CONF_SENSOR_POLL_INTERVAL]),
-                    CONF_PLAYBACK_POLL_INTERVAL: int(user_input[CONF_PLAYBACK_POLL_INTERVAL]),
-                },
-            )
-
-        options = self.config_entry.options
-        interval_validator = vol.All(
-            vol.Coerce(int), vol.Range(min=MIN_POLL_INTERVAL, max=MAX_POLL_INTERVAL)
-        )
-        return self.async_show_form(
-            step_id="polling",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(
-                        CONF_SENSOR_POLL_INTERVAL,
-                        default=options.get(
-                            CONF_SENSOR_POLL_INTERVAL, DEFAULT_SENSOR_POLL_INTERVAL
-                        ),
-                    ): interval_validator,
-                    vol.Required(
-                        CONF_PLAYBACK_POLL_INTERVAL,
-                        default=options.get(
-                            CONF_PLAYBACK_POLL_INTERVAL, DEFAULT_PLAYBACK_POLL_INTERVAL
-                        ),
-                    ): interval_validator,
                 }
             ),
         )
@@ -441,12 +384,9 @@ class NanitOptionsFlow(OptionsFlow):
                 else:
                     current_speaker_ips.pop(self._selected_camera_uid, None)
 
-                # Merge into the full options dict — replacing it wholesale
-                # would silently drop unrelated options (e.g. poll intervals).
                 return self.async_create_entry(
                     title="",
                     data={
-                        **self.config_entry.options,
                         CONF_CAMERA_IPS: current_ips,
                         CONF_SPEAKER_IPS: current_speaker_ips,
                     },

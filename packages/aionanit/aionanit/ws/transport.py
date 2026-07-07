@@ -270,21 +270,14 @@ class WsTransport:
             return
 
     async def _reconnect_loop(self) -> None:
-        """Exponential-backoff reconnect loop.
-
-        The actual connect attempt runs under ``_connect_lock`` so it cannot
-        race an inline ``_async_connect`` (camera-level reconnect) into two
-        live sockets. Header refresh stays outside the lock — it may block on
-        a token refresh.
-        """
+        """Exponential-backoff reconnect loop."""
         if self._closed:
             return
 
         backoff = _INITIAL_BACKOFF
 
         while not self._closed:
-            async with self._connect_lock:
-                await self._async_close_ws()
+            await self._async_close_ws()
             self._on_connection_change(ConnectionState.RECONNECTING, self._transport_kind, None)
 
             wait_time = backoff + random.random() * _JITTER_MAX
@@ -302,21 +295,17 @@ class WsTransport:
                     except Exception as hdr_err:
                         _LOGGER.warning("Failed to refresh headers: %s", hdr_err)
                 assert self._url is not None
-                async with self._connect_lock:
-                    if self._closed:
-                        return
-                    self._ws = await self._session.ws_connect(
-                        self._url,
-                        headers=self._headers,
-                        heartbeat=_HEARTBEAT_INTERVAL,
-                        timeout=aiohttp.ClientWSTimeout(ws_close=_HANDSHAKE_TIMEOUT),
-                        ssl=self._ssl_context,  # type: ignore[arg-type]
-                        max_msg_size=_MAX_MSG_SIZE,
-                    )
-                    loop = asyncio.get_running_loop()
-                    self._last_received_at = loop.time()
-                    self._recv_task = loop.create_task(self._recv_loop())
-                    self._keepalive_task = loop.create_task(self._keepalive_loop())
+                self._ws = await self._session.ws_connect(
+                    self._url,
+                    headers=self._headers,
+                    heartbeat=_HEARTBEAT_INTERVAL,
+                    timeout=aiohttp.ClientWSTimeout(ws_close=_HANDSHAKE_TIMEOUT),
+                    ssl=self._ssl_context,  # type: ignore[arg-type]
+                    max_msg_size=_MAX_MSG_SIZE,
+                )
+                loop = asyncio.get_running_loop()
+                self._recv_task = loop.create_task(self._recv_loop())
+                self._keepalive_task = loop.create_task(self._keepalive_loop())
                 self._on_connection_change(ConnectionState.CONNECTED, self._transport_kind, None)
                 _LOGGER.info("Reconnected successfully")
                 return

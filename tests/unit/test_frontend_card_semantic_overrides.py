@@ -102,14 +102,10 @@ def test_card_styles_force_stable_stream_aspect_ratio() -> None:
 
 
 def test_card_source_resets_stream_bookkeeping_whenever_camera_turns_off() -> None:
-    """Power-off cleanup must not depend on the stream having reached loaded state.
-
-    The reset fires on the on→off transition in willUpdate (not render —
-    mutating reactive state during render is a Lit anti-pattern).
-    """
+    """Power-off cleanup must not depend on the stream having reached loaded state."""
     card = _read(SRC_DIR / "nanit-card.ts")
 
-    assert "if (!cameraOn && this._wasCameraOn)" in card
+    assert "if (!cameraOn)" in card
     assert "_resetStreamState" in card
     assert "this._streamMountedAt = 0" in card
     assert "this._watchedEpoch = -1" in card

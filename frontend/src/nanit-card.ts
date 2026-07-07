@@ -7,7 +7,7 @@ import { cardStyles } from "./styles";
 import "./nanit-card-editor";
 
 const STREAM_WATCHDOG_INTERVAL_MS = 1000;
-const STREAM_STARTUP_RELOAD_TICKS = 8;
+const STREAM_STARTUP_RELOAD_TICKS = 4;
 const STREAM_STALL_TICKS = 8;
 const STREAM_MAX_RELOADS = 3;
 const STREAM_RELOAD_COOLDOWN_MS = 60000;
@@ -17,7 +17,7 @@ const STREAM_BACKEND_RESET_FALLBACK_MS = 3000;
 // Hide the loader after this long even if we can't confirm liveness, so a
 // detection miss (WebRTC currentTime quirks, blocked inline autoplay, unusual
 // player nesting) can never permanently mask a working stream.
-const STREAM_LOADED_FAILOPEN_MS = 10000;
+const STREAM_LOADED_FAILOPEN_MS = 3500;
 
 @customElement("nanit-card")
 export class NanitCard extends LitElement {

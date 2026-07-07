@@ -222,29 +222,14 @@ class NanitHub:
     ) -> None:
         """Create a camera instance and its coordinators for a single baby."""
         options = self._entry.options
-        try:
-            camera = self._client.camera(
-                uid=baby.camera_uid,
-                baby_uid=baby.uid,
-                prefer_local=camera_ip is not None,
-                local_ip=camera_ip,
-                sensor_poll_interval=options.get(CONF_SENSOR_POLL_INTERVAL),
-                playback_poll_interval=options.get(CONF_PLAYBACK_POLL_INTERVAL),
-            )
-        except TypeError:
-            # Installed aionanit predates the poll-interval parameters —
-            # fall back to the legacy signature (defaults apply).
-            _LOGGER.debug(
-                "Installed aionanit does not support poll-interval options; "
-                "using library defaults for camera %s",
-                baby.camera_uid,
-            )
-            camera = self._client.camera(
-                uid=baby.camera_uid,
-                baby_uid=baby.uid,
-                prefer_local=camera_ip is not None,
-                local_ip=camera_ip,
-            )
+        camera = self._client.camera(
+            uid=baby.camera_uid,
+            baby_uid=baby.uid,
+            prefer_local=camera_ip is not None,
+            local_ip=camera_ip,
+            sensor_poll_interval=options.get(CONF_SENSOR_POLL_INTERVAL),
+            playback_poll_interval=options.get(CONF_PLAYBACK_POLL_INTERVAL),
+        )
 
         push_coordinator = NanitPushCoordinator(self._hass, self._entry, camera, baby)
         await push_coordinator.async_setup()

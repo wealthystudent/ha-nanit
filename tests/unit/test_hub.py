@@ -181,39 +181,6 @@ async def test_setup_reads_camera_ips_from_options(hass: HomeAssistant, mock_nan
     )
 
 
-async def test_setup_falls_back_when_library_lacks_poll_intervals(
-    hass: HomeAssistant, mock_nanit_client
-) -> None:
-    """Older aionanit (≤1.8.8b1) rejects the poll-interval kwargs — the hub
-    must retry with the legacy signature instead of failing setup."""
-    entry = _make_entry(hass, options={CONF_CAMERA_IPS: {"cam_1": "10.0.0.8"}})
-    hub = NanitHub(hass, MagicMock(), entry)
-
-    legacy_camera = MagicMock()
-
-    def _camera(*args, **kwargs):
-        if "playback_poll_interval" in kwargs or "sensor_poll_interval" in kwargs:
-            raise TypeError("unexpected keyword argument 'playback_poll_interval'")
-        return legacy_camera
-
-    mock_nanit_client.camera.side_effect = _camera
-
-    with (
-        patch("custom_components.nanit.hub.NanitPushCoordinator") as push_cls,
-        patch("custom_components.nanit.hub.NanitCloudCoordinator") as cloud_cls,
-        patch("custom_components.nanit.hub.NanitNetworkCoordinator") as net_cls,
-    ):
-        push_cls.return_value = MagicMock(async_setup=AsyncMock())
-        cloud_cls.return_value = MagicMock(async_config_entry_first_refresh=AsyncMock())
-        net_cls.return_value = MagicMock(async_config_entry_first_refresh=AsyncMock())
-        await hub.async_setup()
-
-    assert mock_nanit_client.camera.call_count == 2
-    legacy_call = mock_nanit_client.camera.call_args_list[1]
-    assert "playback_poll_interval" not in legacy_call.kwargs
-    assert hub.camera_data["cam_1"].camera is legacy_camera
-
-
 async def test_camera_connection_failure_creates_repair_issue(
     hass: HomeAssistant, mock_nanit_client
 ) -> None:

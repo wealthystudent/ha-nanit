@@ -16,7 +16,7 @@
   "iot_class": "cloud_push",
   "integration_type": "hub",
   "requirements": [
-    "aionanit>=1.8.8b1"
+    "aionanit>=1.8.8"
   ],
   "loggers": [
     "custom_components.nanit",

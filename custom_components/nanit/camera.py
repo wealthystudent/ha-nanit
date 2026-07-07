@@ -79,18 +79,9 @@ class NanitCameraEntity(NanitEntity, Camera):
     async def async_added_to_hass(self) -> None:
         """Subscribe to token refreshes so live streams get renewed URLs."""
         await super().async_added_to_hass()
-        # Older aionanit releases don't expose the token manager on the
-        # camera; without it, renewal degrades to the 45-min max-age
-        # invalidation (still below the 1 h token lifetime).
-        token_manager = getattr(self._camera, "token_manager", None)
-        if token_manager is None:
-            _LOGGER.debug(
-                "Installed aionanit does not expose token_manager; "
-                "in-place stream renewal disabled for camera %s",
-                self._camera.uid,
-            )
-            return
-        self.async_on_remove(token_manager.on_tokens_refreshed(self._on_tokens_refreshed))
+        self.async_on_remove(
+            self._camera.token_manager.on_tokens_refreshed(self._on_tokens_refreshed)
+        )
 
     @callback
     def _on_tokens_refreshed(self, _access_token: str, _refresh_token: str) -> None:

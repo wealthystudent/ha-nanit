@@ -21,6 +21,26 @@ _DEFAULT_TIMEOUT = aiohttp.ClientTimeout(total=15)
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 
 
+async def _read_json_body(resp: aiohttp.ClientResponse) -> dict[str, Any]:
+    """Parse a JSON response body, mapping parse failures to connection errors.
+
+    Gateway errors (Cloudflare 5xx pages) return HTML; treating them as
+    anything but a transient connection problem would misclassify an API
+    outage as an auth failure.
+    """
+    if resp.status >= 500:
+        raise NanitConnectionError(f"Nanit API server error: HTTP {resp.status}")
+    try:
+        body = await resp.json(content_type=None)
+    except (aiohttp.ClientError, ValueError) as err:
+        raise NanitConnectionError(
+            f"Invalid response from Nanit API (HTTP {resp.status}): {err}"
+        ) from err
+    if not isinstance(body, dict):
+        raise NanitConnectionError(f"Unexpected response body from Nanit API (HTTP {resp.status})")
+    return body
+
+
 def _extract_error_message(body: dict[str, Any]) -> str | None:
     """Extract error message from an API error response.
 
@@ -37,6 +57,20 @@ def _extract_error_message(body: dict[str, Any]) -> str | None:
     if "message" in body and "access_token" not in body:
         return str(body["message"])
     return None
+
+
+def _extract_tokens(body: dict[str, Any]) -> dict[str, str]:
+    """Pull the token pair out of a success body.
+
+    A 200 without both tokens is a malformed/partial response, not an auth
+    rejection — classify it as a connection error so callers retry instead
+    of discarding credentials.
+    """
+    access_token = body.get("access_token")
+    refresh_token = body.get("refresh_token")
+    if not access_token or not refresh_token:
+        raise NanitConnectionError("Nanit API response missing tokens")
+    return {"access_token": str(access_token), "refresh_token": str(refresh_token)}
 
 
 def _sanitize_name(raw: str | None) -> str:
@@ -136,7 +170,7 @@ class NanitRestClient:
         # Nanit returns HTTP 482 when MFA is required. Parse the body
         # before raise_for_status() since 482 is non-standard and aiohttp
         # would raise ClientResponseError for it.
-        body = await resp.json()
+        body = await _read_json_body(resp)
 
         if "mfa_token" in body:
             raise NanitMfaRequiredError(body["mfa_token"])
@@ -147,10 +181,7 @@ class NanitRestClient:
 
         resp.raise_for_status()
 
-        return {
-            "access_token": body["access_token"],
-            "refresh_token": body["refresh_token"],
-        }
+        return _extract_tokens(body)
 
     async def async_refresh_token(
         self,
@@ -173,7 +204,7 @@ class NanitRestClient:
         if resp.status == 401:
             raise NanitAuthError("Access token invalid during refresh")
 
-        body = await resp.json()
+        body = await _read_json_body(resp)
 
         error_msg = _extract_error_message(body)
         if error_msg:
@@ -181,10 +212,7 @@ class NanitRestClient:
 
         resp.raise_for_status()
 
-        return {
-            "access_token": body["access_token"],
-            "refresh_token": body["refresh_token"],
-        }
+        return _extract_tokens(body)
 
     async def async_get_babies(
         self,
@@ -241,6 +269,7 @@ class NanitRestClient:
             resp = await self._session.get(
                 f"{self._base_url}/speakers/{speaker_uid}/udtokens",
                 headers=headers,
+                timeout=_DEFAULT_TIMEOUT,
             )
         except aiohttp.ClientError as err:
             raise NanitConnectionError(str(err)) from err

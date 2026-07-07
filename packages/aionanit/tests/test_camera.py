@@ -693,8 +693,10 @@ class TestSendRequest:
                 get_status=GetStatus(all=True),
             )
 
-        # Reconnect was called once (after first timeout, before retry).
-        cam._async_reconnect.assert_awaited_once()
+        # First timeout is below the consecutive-timeout threshold — the
+        # retry goes over the existing connection without a reconnect.
+        cam._async_reconnect.assert_not_awaited()
+        assert cam._consecutive_timeouts == 2
 
 
 # ---------------------------------------------------------------------------
@@ -903,7 +905,7 @@ class TestStreaming:
 
         url = await cam.async_get_stream_rtmps_url()
         assert url == "rtmps://media-secured.nanit.com/nanit/baby_uid_1.fresh_token"
-        tm.async_get_access_token.assert_awaited_once_with(min_ttl=3300.0)
+        tm.async_get_access_token.assert_awaited_once_with(min_ttl=600.0)
 
     async def test_start_streaming_reuses_provided_rtmps_url(self) -> None:
         cam, tm, _ = _make_camera()
@@ -1063,7 +1065,7 @@ class TestOnReconnected:
 
 class TestTimeoutForceReconnect:
     async def test_timeout_calls_reconnect_before_retry(self) -> None:
-        """Request timeout triggers _async_reconnect, then retries."""
+        """Once timeouts repeat, the next timeout triggers _async_reconnect."""
         cam, *_ = _make_camera()
 
         cam._transport = MagicMock()
@@ -1071,6 +1073,9 @@ class TestTimeoutForceReconnect:
         cam._transport.idle_seconds = 0.0
         cam._transport.async_send = AsyncMock()
         cam._async_reconnect = AsyncMock()
+        # A previous request already timed out — the next timeout crosses
+        # the consecutive-timeout threshold.
+        cam._consecutive_timeouts = 1
 
         with pytest.raises(NanitRequestTimeout):
             await cam._send_request(
@@ -1079,8 +1084,39 @@ class TestTimeoutForceReconnect:
                 get_status=GetStatus(all=True),
             )
 
-        # Reconnect called once (after first timeout, before retry).
+        # Reconnect called once (threshold reached on first timeout).
         cam._async_reconnect.assert_awaited_once()
+
+    async def test_single_timeout_does_not_reconnect(self) -> None:
+        """A lone timeout retries without tearing the connection down."""
+        cam, *_ = _make_camera()
+
+        cam._transport = MagicMock()
+        cam._transport.connected = True
+        cam._transport.idle_seconds = 0.0
+        cam._async_reconnect = AsyncMock()
+
+        resp = Response(status_code=200)
+        call_count = 0
+
+        async def _fake_send(data: bytes) -> None:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:
+                cam._pending.resolve(2, resp)
+
+        cam._transport.async_send = AsyncMock(side_effect=_fake_send)
+
+        result = await cam._send_request(
+            RequestType.GET_STATUS,
+            timeout=0.05,
+            get_status=GetStatus(all=True),
+        )
+
+        assert result.status_code == 200
+        cam._async_reconnect.assert_not_awaited()
+        # Success resets the consecutive-timeout counter.
+        assert cam._consecutive_timeouts == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1122,7 +1158,7 @@ class TestStaleConnectionDetection:
 
 class TestRetryAfterTimeout:
     async def test_retry_succeeds_after_first_timeout(self) -> None:
-        """First attempt times out, reconnect, second attempt succeeds."""
+        """First attempt times out, retry over same connection succeeds."""
         cam, *_ = _make_camera()
 
         cam._transport = MagicMock()
@@ -1148,7 +1184,8 @@ class TestRetryAfterTimeout:
         )
 
         assert result.status_code == 200
-        cam._async_reconnect.assert_awaited_once()
+        # Below the consecutive-timeout threshold — no reconnect needed.
+        cam._async_reconnect.assert_not_awaited()
         assert call_count == 2
 
 

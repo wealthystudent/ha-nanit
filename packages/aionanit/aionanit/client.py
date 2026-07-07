@@ -140,6 +140,8 @@ class NanitClient:
         *,
         prefer_local: bool = True,
         local_ip: str | None = None,
+        sensor_poll_interval: float | None = None,
+        playback_poll_interval: float | None = None,
     ) -> NanitCamera:
         """Get or create a NanitCamera instance (cached by camera uid).
 
@@ -161,6 +163,8 @@ class NanitClient:
             session=self._session,
             prefer_local=prefer_local,
             local_ip=local_ip,
+            sensor_poll_interval=sensor_poll_interval,
+            playback_poll_interval=playback_poll_interval,
         )
         self._cameras[uid] = cam
         return cam

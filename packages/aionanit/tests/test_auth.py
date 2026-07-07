@@ -6,12 +6,12 @@ import asyncio
 import base64
 import json
 import time
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from aionanit.auth import TokenManager
-from aionanit.exceptions import NanitAuthError
+from aionanit.exceptions import NanitAuthError, NanitConnectionError
 
 
 def _jwt_with_exp(exp: int) -> str:
@@ -190,14 +190,60 @@ class TestRefreshFailure:
         with pytest.raises(NanitAuthError, match="Refresh token expired"):
             await token_manager.async_get_access_token()
 
-    async def test_unexpected_error_wrapped_in_auth_error(
+    async def test_unexpected_error_wrapped_in_connection_error(
         self, token_manager: TokenManager, mock_rest: MagicMock
     ) -> None:
+        """Non-auth failures must NOT become auth errors (no false reauth)."""
         mock_rest.async_refresh_token.side_effect = RuntimeError("network down")
         token_manager._expires_at = time.monotonic() - 1
 
-        with pytest.raises(NanitAuthError, match="Token refresh failed"):
+        with (
+            patch("aionanit.auth.asyncio.sleep", AsyncMock(return_value=None)),
+            pytest.raises(NanitConnectionError, match="Token refresh failed"),
+        ):
             await token_manager.async_get_access_token()
+
+    async def test_connection_error_propagates_after_retries(
+        self, token_manager: TokenManager, mock_rest: MagicMock
+    ) -> None:
+        mock_rest.async_refresh_token.side_effect = NanitConnectionError("HTTP 502")
+        token_manager._expires_at = time.monotonic() - 1
+
+        with (
+            patch("aionanit.auth.asyncio.sleep", AsyncMock(return_value=None)) as mock_sleep,
+            pytest.raises(NanitConnectionError, match="HTTP 502"),
+        ):
+            await token_manager.async_get_access_token()
+
+        # Initial attempt + one retry per configured delay.
+        assert mock_rest.async_refresh_token.call_count == 3
+        assert mock_sleep.await_count == 2
+
+    async def test_transient_failure_recovers_on_retry(
+        self, token_manager: TokenManager, mock_rest: MagicMock
+    ) -> None:
+        mock_rest.async_refresh_token.side_effect = [
+            NanitConnectionError("HTTP 502"),
+            {"access_token": "new_access", "refresh_token": "new_refresh"},
+        ]
+        token_manager._expires_at = time.monotonic() - 1
+
+        with patch("aionanit.auth.asyncio.sleep", AsyncMock(return_value=None)):
+            token = await token_manager.async_get_access_token()
+
+        assert token == "new_access"
+        assert token_manager.refresh_token == "new_refresh"
+
+    async def test_auth_error_not_retried(
+        self, token_manager: TokenManager, mock_rest: MagicMock
+    ) -> None:
+        mock_rest.async_refresh_token.side_effect = NanitAuthError("Refresh token expired")
+        token_manager._expires_at = time.monotonic() - 1
+
+        with pytest.raises(NanitAuthError):
+            await token_manager.async_get_access_token()
+
+        mock_rest.async_refresh_token.assert_called_once()
 
     async def test_tokens_unchanged_after_failure(
         self, token_manager: TokenManager, mock_rest: MagicMock

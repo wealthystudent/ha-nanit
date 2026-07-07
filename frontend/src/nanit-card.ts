@@ -7,7 +7,10 @@ import { cardStyles } from "./styles";
 import "./nanit-card-editor";
 
 const STREAM_WATCHDOG_INTERVAL_MS = 1000;
-const STREAM_STARTUP_RELOAD_TICKS = 8;
+// A cold cloud RTMPS ingest can take well over 8s to deliver a first frame;
+// reloading earlier aborts streams that were about to work and multiplies
+// backend sessions against Nanit's small concurrent-session limit.
+const STREAM_STARTUP_RELOAD_TICKS = 20;
 const STREAM_STALL_TICKS = 8;
 const STREAM_MAX_RELOADS = 3;
 const STREAM_RELOAD_COOLDOWN_MS = 60000;
@@ -38,6 +41,8 @@ export class NanitCard extends LitElement {
   private _watchedEpoch = -1;
   private _recoveringStream = false;
   private _resumeRecoverUntil = 0;
+  private _startupReloads = 0;
+  private _wasCameraOn = true;
 
   static styles = cardStyles;
 
@@ -166,7 +171,7 @@ export class NanitCard extends LitElement {
 
     if (!video) {
       this._startupStrikes += 1;
-      if (this._startupStrikes >= STREAM_STARTUP_RELOAD_TICKS) void this._recoverStream();
+      if (this._startupStrikes >= STREAM_STARTUP_RELOAD_TICKS) this._handleStartupFailure();
       return;
     }
 
@@ -179,7 +184,7 @@ export class NanitCard extends LitElement {
 
     if (video.readyState < 2) {
       this._startupStrikes += 1;
-      if (this._startupStrikes >= STREAM_STARTUP_RELOAD_TICKS) void this._recoverStream();
+      if (this._startupStrikes >= STREAM_STARTUP_RELOAD_TICKS) this._handleStartupFailure();
       return;
     }
 
@@ -188,6 +193,7 @@ export class NanitCard extends LitElement {
       this._sawProgress = true;
       this._stallStrikes = 0;
       this._startupStrikes = 0;
+      this._startupReloads = 0;
       this._streamLoaded = true;
       // Refill the reload budget only after *sustained* playback, so a feed
       // that flaps (one frame, then freeze) can't keep topping it up.
@@ -224,6 +230,19 @@ export class NanitCard extends LitElement {
       this._recoveringStream = false;
     }
     this._reloadStream();
+  }
+
+  private _handleStartupFailure(): void {
+    // First startup failure: plain remount — the backend stream is usually
+    // healthy and a reset would tear down a session that was about to
+    // deliver. Only repeated startup failures suggest the cached backend
+    // stream itself is dead and worth resetting.
+    this._startupReloads += 1;
+    if (this._startupReloads >= 2) {
+      void this._recoverStream();
+    } else {
+      this._reloadStream();
+    }
   }
 
   private _recoverStreamOnResume = (): void => {
@@ -277,11 +296,24 @@ export class NanitCard extends LitElement {
     this._sawProgress = false;
     this._stallStrikes = 0;
     this._startupStrikes = 0;
+    this._startupReloads = 0;
     this._healthyTicks = 0;
     this._reloadWindowStart = 0;
     this._resumeRecoverUntil = 0;
     this._streamMountedAt = 0;
     this._watchedEpoch = -1;
+  }
+
+  protected willUpdate(changedProps: Map<string, unknown>): void {
+    // Reset stream tracking on the on→off transition here rather than in
+    // render() — mutating reactive state during render is a Lit anti-pattern.
+    super.willUpdate(changedProps);
+    if (!this.hass || !this._config) return;
+    const cameraOn = this._isCameraOn(this._entities());
+    if (!cameraOn && this._wasCameraOn) {
+      this._resetStreamState();
+    }
+    this._wasCameraOn = cameraOn;
   }
 
   protected render(): TemplateResult {
@@ -291,9 +323,6 @@ export class NanitCard extends LitElement {
 
     const entities = this._entities();
     const cameraOn = this._isCameraOn(entities);
-    if (!cameraOn) {
-      this._resetStreamState();
-    }
     const deviceName = entities.camera
       ? getDeviceName(this.hass, entities.camera)
       : "Nanit";

@@ -17,6 +17,7 @@ TO_REDACT = {
     "refresh_token",
     "mfa_token",
     "mfa_code",
+    "baby_name",
     "baby_uid",
     "camera_uid",
     "camera_ip",

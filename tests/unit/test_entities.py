@@ -726,6 +726,41 @@ def test_camera_invalidates_stream_on_power_state_change() -> None:
     assert entity._stream_source_started_at == 0.0
 
 
+def test_camera_reset_stream_service_invalidates_cached_stream() -> None:
+    coordinator = _push_coordinator(_camera_state())
+    entity = NanitCameraEntity(coordinator, MagicMock(uid="cam_1"))
+    entity.stream = MagicMock()
+    entity._stream_source_started_at = 100.0
+    cancel = MagicMock()
+    entity._cancel_stream_expiry_timer = cancel
+
+    entity.async_reset_stream()
+
+    assert entity.stream is None
+    assert entity._stream_source_started_at == 0.0
+    cancel.assert_called_once_with()
+    assert entity._cancel_stream_expiry_timer is None
+
+
+async def test_camera_start_streaming_safe_falls_back_for_legacy_client_signature() -> None:
+    coordinator = _push_coordinator(_camera_state(sleep_mode=False))
+    camera = MagicMock(uid="cam_1")
+    calls: list[dict[str, Any]] = []
+
+    async def async_start_streaming(**kwargs: Any) -> None:
+        calls.append(kwargs)
+        if "rtmps_url" in kwargs:
+            raise TypeError(
+                "NanitCamera.async_start_streaming() got an unexpected keyword argument 'rtmps_url'"
+            )
+
+    camera.async_start_streaming = AsyncMock(side_effect=async_start_streaming)
+    entity = NanitCameraEntity(coordinator, camera)
+
+    assert await entity._async_start_streaming_safe("rtmps://stream-url") is True
+    assert calls == [{"rtmps_url": "rtmps://stream-url"}, {}]
+
+
 async def test_camera_start_streaming_safe_does_not_restart_shared_camera() -> None:
     coordinator = _push_coordinator(_camera_state(sleep_mode=False))
     camera = MagicMock(uid="cam_1")

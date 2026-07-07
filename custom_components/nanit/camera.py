@@ -8,7 +8,7 @@ import time
 
 from homeassistant.components.camera import Camera, CameraEntityFeature
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddEntitiesCallback, async_get_current_platform
 from homeassistant.helpers.event import async_call_later
 
 from aionanit import NanitCamera
@@ -34,6 +34,16 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Nanit camera entities for all cameras on the account."""
+    try:
+        platform = async_get_current_platform()
+    except RuntimeError:
+        platform = None
+    if platform is not None:
+        platform.async_register_entity_service(
+            "reset_stream",
+            {},
+            "async_reset_stream",
+        )
     async_add_entities(
         NanitCameraEntity(cam_data.push_coordinator, cam_data.camera)
         for cam_data in entry.runtime_data.cameras.values()
@@ -96,6 +106,11 @@ class NanitCameraEntity(NanitEntity, Camera):
         if self._cancel_stream_expiry_timer is not None:
             self._cancel_stream_expiry_timer()
             self._cancel_stream_expiry_timer = None
+
+    @callback
+    def async_reset_stream(self) -> None:
+        """Reset HA's cached Nanit stream so the next viewer gets a fresh RTMPS URL."""
+        self._invalidate_stream("frontend recovery request")
 
     def _invalidate_stream_if_expired(self) -> None:
         """Discard HA's cached stream shortly before its RTMPS token can expire."""
@@ -166,7 +181,17 @@ class NanitCameraEntity(NanitEntity, Camera):
         """Send PUT_STREAMING with retry.  Returns True on success."""
         for attempt in range(1, _STREAM_START_ATTEMPTS + 1):
             try:
-                await self._camera.async_start_streaming(rtmps_url=rtmps_url)
+                try:
+                    await self._camera.async_start_streaming(rtmps_url=rtmps_url)
+                except TypeError as err:
+                    if "rtmps_url" not in str(err):
+                        raise
+                    _LOGGER.debug(
+                        "Nanit client does not support explicit RTMPS URL reuse; "
+                        "falling back to legacy stream start for camera %s",
+                        self._camera.uid,
+                    )
+                    await self._camera.async_start_streaming()
                 return True
             except Exception:  # noqa: BLE001
                 if attempt < _STREAM_START_ATTEMPTS:

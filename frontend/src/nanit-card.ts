@@ -7,6 +7,7 @@ import { cardStyles } from "./styles";
 import "./nanit-card-editor";
 
 const STREAM_WATCHDOG_INTERVAL_MS = 1000;
+const STREAM_STARTUP_RELOAD_TICKS = 8;
 const STREAM_STALL_TICKS = 8;
 const STREAM_MAX_RELOADS = 3;
 const STREAM_RELOAD_COOLDOWN_MS = 60000;
@@ -28,6 +29,7 @@ export class NanitCard extends LitElement {
   private _lastVideoTime = 0;
   private _sawProgress = false;
   private _stallStrikes = 0;
+  private _startupStrikes = 0;
   private _healthyTicks = 0;
   private _reloadCount = 0;
   private _reloadWindowStart = 0;
@@ -150,7 +152,11 @@ export class NanitCard extends LitElement {
       this._streamLoaded = true;
     }
 
-    if (!video) return;
+    if (!video) {
+      this._startupStrikes += 1;
+      if (this._startupStrikes >= STREAM_STARTUP_RELOAD_TICKS) this._recoverStream();
+      return;
+    }
 
     // A decoded frame is available (readyState >= HAVE_CURRENT_DATA). This is the
     // robust "there is a picture to show" signal for both HLS and WebRTC, where
@@ -159,10 +165,17 @@ export class NanitCard extends LitElement {
       this._streamLoaded = true;
     }
 
+    if (video.readyState < 2) {
+      this._startupStrikes += 1;
+      if (this._startupStrikes >= STREAM_STARTUP_RELOAD_TICKS) this._recoverStream();
+      return;
+    }
+
     if (video.currentTime > this._lastVideoTime + STREAM_PROGRESS_EPSILON) {
       this._lastVideoTime = video.currentTime;
       this._sawProgress = true;
       this._stallStrikes = 0;
+      this._startupStrikes = 0;
       this._streamLoaded = true;
       // Refill the reload budget only after *sustained* playback, so a feed
       // that flaps (one frame, then freeze) can't keep topping it up.
@@ -179,7 +192,20 @@ export class NanitCard extends LitElement {
     if (!this._sawProgress || video.paused) return;
 
     this._stallStrikes += 1;
-    if (this._stallStrikes >= STREAM_STALL_TICKS) this._reloadStream();
+    if (this._stallStrikes >= STREAM_STALL_TICKS) this._recoverStream();
+  }
+
+  private _requestBackendStreamReset(): void {
+    const entities = this._entities();
+    if (!entities.camera) return;
+    void this.hass.callService("nanit", "reset_stream", {
+      entity_id: entities.camera,
+    });
+  }
+
+  private _recoverStream(): void {
+    this._requestBackendStreamReset();
+    this._reloadStream();
   }
 
   private _reloadStream(): void {
@@ -205,6 +231,7 @@ export class NanitCard extends LitElement {
     this._lastVideoTime = 0;
     this._sawProgress = false;
     this._stallStrikes = 0;
+    this._startupStrikes = 0;
     this._healthyTicks = 0;
   }
 
@@ -218,6 +245,7 @@ export class NanitCard extends LitElement {
     this._lastVideoTime = 0;
     this._sawProgress = false;
     this._stallStrikes = 0;
+    this._startupStrikes = 0;
     this._healthyTicks = 0;
     this._reloadWindowStart = 0;
     this._streamMountedAt = 0;

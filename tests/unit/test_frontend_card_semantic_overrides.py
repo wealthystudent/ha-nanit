@@ -61,6 +61,24 @@ def test_card_source_contains_stream_liveness_watchdog() -> None:
     assert "data-stream-epoch" in card
 
 
+def test_card_source_requests_backend_stream_reset_before_recovery_remount() -> None:
+    """Frontend recovery should clear HA's cached backend stream before remounting."""
+    card = _read(SRC_DIR / "nanit-card.ts")
+
+    assert "STREAM_STARTUP_RELOAD_TICKS" in card
+    assert "_recoverStream" in card
+    assert 'callService("nanit", "reset_stream"' in card
+    assert "reload_config_entry" not in card
+
+
+def test_bundled_card_requests_backend_stream_reset_before_recovery_remount() -> None:
+    """The shipped bundle should include the lighter Nanit stream reset service."""
+    bundle = _read(BUNDLE)
+
+    assert "reset_stream" in bundle
+    assert "reload_config_entry" not in bundle
+
+
 def test_card_source_resets_stream_bookkeeping_whenever_camera_turns_off() -> None:
     """Power-off cleanup must not depend on the stream having reached loaded state."""
     card = _read(SRC_DIR / "nanit-card.ts")

@@ -261,10 +261,7 @@ class NanitNetworkCoordinator(DataUpdateCoordinator[NetworkInfo | None]):
         # field — no extra probe needed.
         failed = self._hub.failed_camera_uids
         if failed:
-            recovered = [
-                b for b in babies
-                if b.camera_uid in failed and b.camera_connected is True
-            ]
+            recovered = [b for b in babies if b.camera_uid in failed and b.camera_connected is True]
             if recovered:
                 names = ", ".join(b.name for b in recovered)
                 _LOGGER.info(

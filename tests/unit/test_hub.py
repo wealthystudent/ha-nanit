@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import importlib
-import pytest
+from contextlib import suppress
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from homeassistant.const import CONF_ACCESS_TOKEN
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -373,9 +374,7 @@ async def test_failed_camera_uid_logs_cloud_status(
         push_cls.return_value = MagicMock(
             async_setup=AsyncMock(side_effect=NanitConnectionError("unreachable"))
         )
-        try:
+        with suppress(NanitConnectionError):
             await hub.async_setup()
-        except NanitConnectionError:
-            pass
 
     assert "cloud reports connected=False" in caplog.text

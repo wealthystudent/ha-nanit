@@ -13,6 +13,7 @@ const STREAM_MAX_RELOADS = 3;
 const STREAM_RELOAD_COOLDOWN_MS = 60000;
 const STREAM_HEALTHY_RESET_TICKS = 10;
 const STREAM_PROGRESS_EPSILON = 0.05;
+const STREAM_BACKEND_RESET_FALLBACK_MS = 3000;
 // Hide the loader after this long even if we can't confirm liveness, so a
 // detection miss (WebRTC currentTime quirks, blocked inline autoplay, unusual
 // player nesting) can never permanently mask a working stream.
@@ -38,6 +39,7 @@ export class NanitCard extends LitElement {
   private _watchedEpoch = -1;
   private _recoveringStream = false;
   private _resumeRecoverUntil = 0;
+  private _backendRecoveryFallback: number | undefined;
 
   static styles = cardStyles;
 
@@ -98,6 +100,7 @@ export class NanitCard extends LitElement {
     window.removeEventListener("pageshow", this._recoverStreamOnResume);
     window.removeEventListener("focus", this._recoverStreamOnResume);
     this._clearStreamWatchdog();
+    this._clearBackendRecoveryFallback();
   }
 
   protected updated(changedProps: Map<string, unknown>): void {
@@ -162,6 +165,7 @@ export class NanitCard extends LitElement {
       Date.now() - this._streamMountedAt > STREAM_LOADED_FAILOPEN_MS
     ) {
       this._streamLoaded = true;
+      this._clearBackendRecoveryFallback();
     }
 
     if (!video) {
@@ -175,6 +179,7 @@ export class NanitCard extends LitElement {
     // currentTime may never advance — so hide the loader immediately.
     if (!this._streamLoaded && video.readyState >= 2) {
       this._streamLoaded = true;
+      this._clearBackendRecoveryFallback();
     }
 
     if (video.readyState < 2) {
@@ -189,6 +194,7 @@ export class NanitCard extends LitElement {
       this._stallStrikes = 0;
       this._startupStrikes = 0;
       this._streamLoaded = true;
+      this._clearBackendRecoveryFallback();
       // Refill the reload budget only after *sustained* playback, so a feed
       // that flaps (one frame, then freeze) can't keep topping it up.
       if (!video.paused && ++this._healthyTicks >= STREAM_HEALTHY_RESET_TICKS) {
@@ -215,6 +221,22 @@ export class NanitCard extends LitElement {
     });
   }
 
+  private _clearBackendRecoveryFallback(): void {
+    if (this._backendRecoveryFallback !== undefined) {
+      window.clearTimeout(this._backendRecoveryFallback);
+      this._backendRecoveryFallback = undefined;
+    }
+  }
+
+  private _scheduleBackendRecoveryFallback(): void {
+    this._clearBackendRecoveryFallback();
+    this._backendRecoveryFallback = window.setTimeout(() => {
+      this._backendRecoveryFallback = undefined;
+      if (this._streamLoaded) return;
+      void this._recoverStream();
+    }, STREAM_BACKEND_RESET_FALLBACK_MS);
+  }
+
   private async _recoverStream(): Promise<void> {
     if (this._recoveringStream) return;
     this._recoveringStream = true;
@@ -236,7 +258,8 @@ export class NanitCard extends LitElement {
     const now = Date.now();
     if (now < this._resumeRecoverUntil) return;
     this._resumeRecoverUntil = now + STREAM_RELOAD_COOLDOWN_MS;
-    void this._recoverStream();
+    this._reloadStream();
+    this._scheduleBackendRecoveryFallback();
   };
 
   private _reloadStream(): void {
@@ -268,11 +291,13 @@ export class NanitCard extends LitElement {
 
   private _onStreamLoad(): void {
     this._streamLoaded = true;
+    this._clearBackendRecoveryFallback();
   }
 
   private _resetStreamState(): void {
     this._streamLoaded = false;
     this._clearStreamWatchdog();
+    this._clearBackendRecoveryFallback();
     this._lastVideoTime = 0;
     this._sawProgress = false;
     this._stallStrikes = 0;

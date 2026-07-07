@@ -91,8 +91,8 @@ def test_card_source_recovers_stream_on_page_resume() -> None:
     assert "focus" in card
     assert "_recoverStreamOnResume" in card
     assert "_scheduleBackendRecoveryFallback" in card
-    assert "STREAM_BACKEND_RESET_FALLBACK_MS" in card
-    assert "this._reloadStream()" in card
+    assert "STREAM_LOADED_FAILOPEN_MS = 3500" in card
+    assert "STREAM_STARTUP_RELOAD_TICKS = 4" in card
 
 
 def test_card_styles_force_stable_stream_aspect_ratio() -> None:

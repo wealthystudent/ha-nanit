@@ -68,6 +68,9 @@ def test_card_source_requests_backend_stream_reset_before_recovery_remount() -> 
     assert "STREAM_STARTUP_RELOAD_TICKS" in card
     assert "_recoverStream" in card
     assert 'callService("nanit", "reset_stream"' in card
+    assert "async _recoverStream" in card
+    assert "await this._requestBackendStreamReset()" in card
+    assert "this._reloadStream()" in card
     assert "reload_config_entry" not in card
 
 
@@ -77,6 +80,25 @@ def test_bundled_card_requests_backend_stream_reset_before_recovery_remount() ->
 
     assert "reset_stream" in bundle
     assert "reload_config_entry" not in bundle
+
+
+def test_card_source_recovers_stream_on_page_resume() -> None:
+    """Mobile/browser resume should force a viewer-scoped stream recovery."""
+    card = _read(SRC_DIR / "nanit-card.ts")
+
+    assert "visibilitychange" in card
+    assert "pageshow" in card
+    assert "focus" in card
+    assert "_recoverStreamOnResume" in card
+
+
+def test_card_styles_force_stable_stream_aspect_ratio() -> None:
+    """The stream area should reserve 16:9 space even before video internals load."""
+    styles = _read(SRC_DIR / "styles.ts")
+
+    assert ".stream-wrap" in styles
+    assert "aspect-ratio: 16 / 9" in styles
+    assert ".stream-click ha-camera-stream" in styles
 
 
 def test_card_source_resets_stream_bookkeeping_whenever_camera_turns_off() -> None:

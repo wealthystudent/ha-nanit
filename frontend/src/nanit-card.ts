@@ -36,6 +36,8 @@ export class NanitCard extends LitElement {
   private _cooldownUntil = 0;
   private _streamMountedAt = 0;
   private _watchedEpoch = -1;
+  private _recoveringStream = false;
+  private _resumeRecoverUntil = 0;
 
   static styles = cardStyles;
 
@@ -83,8 +85,18 @@ export class NanitCard extends LitElement {
     this.hass.callService(domain, service, { entity_id: entityId });
   }
 
+  connectedCallback(): void {
+    super.connectedCallback();
+    document.addEventListener("visibilitychange", this._recoverStreamOnResume);
+    window.addEventListener("pageshow", this._recoverStreamOnResume);
+    window.addEventListener("focus", this._recoverStreamOnResume);
+  }
+
   disconnectedCallback(): void {
     super.disconnectedCallback();
+    document.removeEventListener("visibilitychange", this._recoverStreamOnResume);
+    window.removeEventListener("pageshow", this._recoverStreamOnResume);
+    window.removeEventListener("focus", this._recoverStreamOnResume);
     this._clearStreamWatchdog();
   }
 
@@ -154,7 +166,7 @@ export class NanitCard extends LitElement {
 
     if (!video) {
       this._startupStrikes += 1;
-      if (this._startupStrikes >= STREAM_STARTUP_RELOAD_TICKS) this._recoverStream();
+      if (this._startupStrikes >= STREAM_STARTUP_RELOAD_TICKS) void this._recoverStream();
       return;
     }
 
@@ -167,7 +179,7 @@ export class NanitCard extends LitElement {
 
     if (video.readyState < 2) {
       this._startupStrikes += 1;
-      if (this._startupStrikes >= STREAM_STARTUP_RELOAD_TICKS) this._recoverStream();
+      if (this._startupStrikes >= STREAM_STARTUP_RELOAD_TICKS) void this._recoverStream();
       return;
     }
 
@@ -192,21 +204,40 @@ export class NanitCard extends LitElement {
     if (!this._sawProgress || video.paused) return;
 
     this._stallStrikes += 1;
-    if (this._stallStrikes >= STREAM_STALL_TICKS) this._recoverStream();
+    if (this._stallStrikes >= STREAM_STALL_TICKS) void this._recoverStream();
   }
 
-  private _requestBackendStreamReset(): void {
+  private _requestBackendStreamReset(): Promise<void> {
     const entities = this._entities();
-    if (!entities.camera) return;
-    void this.hass.callService("nanit", "reset_stream", {
+    if (!entities.camera) return Promise.resolve();
+    return this.hass.callService("nanit", "reset_stream", {
       entity_id: entities.camera,
     });
   }
 
-  private _recoverStream(): void {
-    this._requestBackendStreamReset();
+  private async _recoverStream(): Promise<void> {
+    if (this._recoveringStream) return;
+    this._recoveringStream = true;
+    try {
+      await this._requestBackendStreamReset();
+    } finally {
+      this._recoveringStream = false;
+    }
     this._reloadStream();
   }
+
+  private _recoverStreamOnResume = (): void => {
+    if (document.hidden) return;
+    const entities = this._entities();
+    if (!this._isCameraOn(entities)) return;
+    const streamEl = this.renderRoot.querySelector("ha-camera-stream");
+    if (!streamEl) return;
+
+    const now = Date.now();
+    if (now < this._resumeRecoverUntil) return;
+    this._resumeRecoverUntil = now + STREAM_RELOAD_COOLDOWN_MS;
+    void this._recoverStream();
+  };
 
   private _reloadStream(): void {
     const now = Date.now();
@@ -248,6 +279,7 @@ export class NanitCard extends LitElement {
     this._startupStrikes = 0;
     this._healthyTicks = 0;
     this._reloadWindowStart = 0;
+    this._resumeRecoverUntil = 0;
     this._streamMountedAt = 0;
     this._watchedEpoch = -1;
   }

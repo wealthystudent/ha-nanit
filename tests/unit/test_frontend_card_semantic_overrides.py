@@ -61,6 +61,24 @@ def test_card_source_contains_stream_liveness_watchdog() -> None:
     assert "data-stream-epoch" in card
 
 
+def test_card_source_resets_stream_bookkeeping_whenever_camera_turns_off() -> None:
+    """Power-off cleanup must not depend on the stream having reached loaded state."""
+    card = _read(SRC_DIR / "nanit-card.ts")
+
+    assert "if (!cameraOn)" in card
+    assert "_resetStreamState" in card
+    assert "this._streamMountedAt = 0" in card
+    assert "this._watchedEpoch = -1" in card
+
+
+def test_bundled_card_resets_stream_bookkeeping_whenever_camera_turns_off() -> None:
+    """The shipped bundle should contain unconditional power-off stream cleanup."""
+    bundle = _read(BUNDLE)
+
+    assert "_resetStreamState" in bundle
+    assert "_watchedEpoch=-1" in bundle
+
+
 def test_bundled_card_contains_stream_liveness_watchdog() -> None:
     """The shipped bundle should include stream remount markers after frontend build."""
     bundle = _read(BUNDLE)

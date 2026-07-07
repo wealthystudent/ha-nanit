@@ -212,6 +212,18 @@ export class NanitCard extends LitElement {
     this._streamLoaded = true;
   }
 
+  private _resetStreamState(): void {
+    this._streamLoaded = false;
+    this._clearStreamWatchdog();
+    this._lastVideoTime = 0;
+    this._sawProgress = false;
+    this._stallStrikes = 0;
+    this._healthyTicks = 0;
+    this._reloadWindowStart = 0;
+    this._streamMountedAt = 0;
+    this._watchedEpoch = -1;
+  }
+
   protected render(): TemplateResult {
     if (!this.hass || !this._config) {
       return html`<ha-card><div class="header"><span class="device-name">Nanit</span></div></ha-card>`;
@@ -219,16 +231,8 @@ export class NanitCard extends LitElement {
 
     const entities = this._entities();
     const cameraOn = this._isCameraOn(entities);
-    if (!cameraOn && this._streamLoaded) {
-      this._streamLoaded = false;
-      this._clearStreamWatchdog();
-      this._lastVideoTime = 0;
-      this._sawProgress = false;
-      this._stallStrikes = 0;
-      this._healthyTicks = 0;
-      this._reloadWindowStart = 0;
-      this._streamMountedAt = 0;
-      this._watchedEpoch = -1;
+    if (!cameraOn) {
+      this._resetStreamState();
     }
     const deviceName = entities.camera
       ? getDeviceName(this.hass, entities.camera)

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import time
 from unittest.mock import AsyncMock, MagicMock
 
@@ -10,6 +12,11 @@ import pytest
 
 from aionanit.auth import TokenManager
 from aionanit.exceptions import NanitAuthError
+
+
+def _jwt_with_exp(exp: int) -> str:
+    payload = base64.urlsafe_b64encode(json.dumps({"exp": exp}).encode()).rstrip(b"=").decode()
+    return f"header.{payload}.sig"
 
 
 @pytest.fixture
@@ -110,6 +117,28 @@ class TestUpdateTokens:
         await token_manager.update_tokens("manual_access", "manual_refresh", 1800.0)
         assert token_manager.access_token == "manual_access"
         assert token_manager.refresh_token == "manual_refresh"
+
+    async def test_update_tokens_uses_jwt_exp_when_present(self, mock_rest: MagicMock) -> None:
+        now = int(time.time())
+        token = _jwt_with_exp(now + 7200)
+        manager = TokenManager(mock_rest, "initial", "refresh", expires_in=3600.0)
+
+        await manager.update_tokens(token, "manual_refresh", 1800.0)
+
+        assert 7000 <= manager.expires_in <= 7200
+
+    async def test_refresh_uses_jwt_exp_when_present(self, mock_rest: MagicMock) -> None:
+        now = int(time.time())
+        token = _jwt_with_exp(now + 7200)
+        mock_rest.async_refresh_token.return_value = {
+            "access_token": token,
+            "refresh_token": "new_refresh",
+        }
+        manager = TokenManager(mock_rest, "initial", "refresh", expires_in=0.0)
+
+        await manager.async_get_access_token()
+
+        assert 7000 <= manager.expires_in <= 7200
 
 
 class TestCallbacks:

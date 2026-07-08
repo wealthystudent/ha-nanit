@@ -253,6 +253,25 @@ class TestGetHeadersCallback:
 
         await t.async_close()
 
+    async def test_reconnect_attempts_before_backoff_sleep(self) -> None:
+        t, session, _, _ = _make_transport()
+        t._url = "wss://api.nanit.com/focus/cameras/cam1/user_connect"
+        t._headers = {"Authorization": "Bearer token"}
+        t._transport_kind = TransportKind.CLOUD
+        t._closed = False
+
+        mock_ws = AsyncMock(spec=aiohttp.ClientWebSocketResponse)
+        mock_ws.closed = False
+        mock_ws.__aiter__ = MagicMock(return_value=iter([]))
+        session.ws_connect = AsyncMock(return_value=mock_ws)
+
+        with patch("aionanit.ws.transport.asyncio.sleep", new_callable=AsyncMock) as sleep:
+            await t._reconnect_loop()
+
+        session.ws_connect.assert_awaited_once()
+        sleep.assert_not_awaited()
+        await t.async_close()
+
     async def test_reconnect_without_get_headers_keeps_original(self) -> None:
         """Without get_headers callback, reconnect reuses existing headers."""
         t, session, _, conn_cb = _make_transport()  # no get_headers

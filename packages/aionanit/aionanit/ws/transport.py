@@ -280,10 +280,6 @@ class WsTransport:
             await self._async_close_ws()
             self._on_connection_change(ConnectionState.RECONNECTING, self._transport_kind, None)
 
-            wait_time = backoff + random.random() * _JITTER_MAX
-            _LOGGER.info("Reconnecting in %.1fs", wait_time)
-            await asyncio.sleep(wait_time)
-
             if self._closed:
                 return
 
@@ -311,4 +307,7 @@ class WsTransport:
                 return
             except Exception as err:
                 _LOGGER.warning("Reconnect failed: %s", err)
+                wait_time = backoff + random.random() * _JITTER_MAX
+                _LOGGER.info("Reconnecting in %.1fs", wait_time)
+                await asyncio.sleep(wait_time)
                 backoff = min(backoff * _BACKOFF_FACTOR, _MAX_BACKOFF)

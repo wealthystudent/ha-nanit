@@ -767,6 +767,31 @@ async def test_camera_start_streaming_safe_falls_back_for_legacy_client_signatur
     assert calls == [{"rtmps_url": "rtmps://stream-url", "timeout": 5.0}, {}]
 
 
+async def test_camera_stream_keepalive_resends_put_streaming() -> None:
+    coordinator = _push_coordinator(_camera_state(sleep_mode=False))
+    camera = MagicMock(uid="cam_1")
+    camera.async_start_streaming = AsyncMock()
+    entity = NanitCameraEntity(coordinator, camera)
+    entity.stream = MagicMock()  # type: ignore[assignment]
+    sleep_count = 0
+
+    async def _sleep_until_second_tick(_: float) -> None:
+        nonlocal sleep_count
+        sleep_count += 1
+        if sleep_count > 1:
+            entity.stream = None
+
+    with patch(
+        "custom_components.nanit.camera.asyncio.sleep", side_effect=_sleep_until_second_tick
+    ):
+        await entity._stream_keepalive_loop("rtmps://stream-url")
+
+    camera.async_start_streaming.assert_awaited_once_with(
+        rtmps_url="rtmps://stream-url",
+        timeout=5.0,
+    )
+
+
 async def test_camera_start_streaming_safe_does_not_restart_shared_camera() -> None:
     coordinator = _push_coordinator(_camera_state(sleep_mode=False))
     camera = MagicMock(uid="cam_1")

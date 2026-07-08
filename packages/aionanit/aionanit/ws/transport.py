@@ -226,7 +226,10 @@ class WsTransport:
             async for msg in self._ws:
                 if msg.type == aiohttp.WSMsgType.BINARY:
                     self._last_received_at = asyncio.get_event_loop().time()
-                    self._on_message(msg.data)
+                    try:
+                        self._on_message(msg.data)
+                    except Exception:
+                        _LOGGER.exception("Ignoring malformed WebSocket frame")
                 elif msg.type in (
                     aiohttp.WSMsgType.CLOSE,
                     aiohttp.WSMsgType.CLOSING,

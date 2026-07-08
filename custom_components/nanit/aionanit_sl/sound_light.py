@@ -519,7 +519,10 @@ class NanitSoundLight:
         try:
             async for msg in self._ws:
                 if msg.type == aiohttp.WSMsgType.BINARY:
-                    self._on_message(msg.data)
+                    try:
+                        self._on_message(msg.data)
+                    except Exception:
+                        _LOGGER.exception("Ignoring malformed S&L WebSocket frame")
                 elif msg.type in (
                     aiohttp.WSMsgType.CLOSE,
                     aiohttp.WSMsgType.CLOSING,

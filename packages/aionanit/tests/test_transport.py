@@ -210,6 +210,30 @@ class TestRecvLoop:
                 task.cancel()
         await asyncio.sleep(0)
 
+    async def test_malformed_frame_does_not_end_recv_loop(self) -> None:
+        msg_cb = MagicMock(side_effect=[ValueError("bad frame"), None])
+        t, session, _, conn_cb = _make_transport(on_message=msg_cb)
+
+        bad_msg = MagicMock(type=aiohttp.WSMsgType.BINARY, data=b"bad")
+        good_msg = MagicMock(type=aiohttp.WSMsgType.BINARY, data=b"good")
+
+        async def _aiter(self_=None):
+            yield bad_msg
+            yield good_msg
+
+        mock_ws = AsyncMock(spec=aiohttp.ClientWebSocketResponse)
+        mock_ws.closed = False
+        mock_ws.__aiter__ = _aiter
+        session.ws_connect = AsyncMock(return_value=mock_ws)
+
+        await t.async_connect_cloud("cam1", "tok1")
+        await asyncio.sleep(0.05)
+
+        assert msg_cb.call_args_list[0].args == (b"bad",)
+        assert msg_cb.call_args_list[1].args == (b"good",)
+        t._closed = True
+        await asyncio.sleep(0)
+
     async def test_recv_loop_exit_reports_disconnected_before_reconnect(self) -> None:
         conn_cb = MagicMock()
         t, session, _, _ = _make_transport(on_connection_change=conn_cb)

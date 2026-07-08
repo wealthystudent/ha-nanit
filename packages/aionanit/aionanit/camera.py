@@ -794,6 +794,17 @@ class NanitCamera:
 
             try:
                 return await asyncio.wait_for(future, timeout=timeout)
+            except NanitTransportError:
+                _ = self._pending.resolve(request_id, Response())
+                if attempt == 0:
+                    _LOGGER.warning(
+                        "Request %s (id=%s) lost connection, reconnecting and retrying",
+                        RequestType.Name(request_type),
+                        request_id,
+                    )
+                    await self._async_reconnect()
+                    continue
+                raise
             except TimeoutError:
                 _ = self._pending.resolve(request_id, Response())
                 if attempt == 0:

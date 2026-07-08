@@ -85,7 +85,7 @@ _HEALTH_CHECK_INTERVAL: float = 270.0  # 4.5 min — periodic session liveness c
 _FRESH_CONNECTION_WINDOW: float = 10.0  # skip reconnect if connected within this
 _DEFAULT_SENSOR_POLL_INTERVAL: float = 120.0  # 2 min — poll sensors camera doesn't push
 _DEFAULT_PLAYBACK_POLL_INTERVAL: float = 30.0  # 30s — poll GET_PLAYBACK for external changes
-_STREAM_TOKEN_MIN_TTL: float = 1800.0  # Avoid blocking most stream opens on token refresh
+_STREAM_TOKEN_MIN_TTL: float = 3300.0  # Require ~55 min remaining for media URLs
 
 
 class NanitCamera:
@@ -669,7 +669,7 @@ class NanitCamera:
         elif state in (ConnectionState.DISCONNECTED, ConnectionState.RECONNECTING):
             self._connected_event.clear()
 
-        if state in (ConnectionState.DISCONNECTED, ConnectionState.RECONNECTING):
+        if state == ConnectionState.DISCONNECTED:
             self._pending.cancel_all(NanitTransportError("Connection lost"))
 
         self._notify_subscribers(CameraEventKind.CONNECTION_CHANGE)
@@ -794,16 +794,6 @@ class NanitCamera:
 
             try:
                 return await asyncio.wait_for(future, timeout=timeout)
-            except NanitTransportError:
-                if attempt == 0:
-                    _LOGGER.warning(
-                        "Request %s (id=%s) lost connection, reconnecting and retrying",
-                        RequestType.Name(request_type),
-                        request_id,
-                    )
-                    await self._async_reconnect()
-                    continue
-                raise
             except TimeoutError:
                 _ = self._pending.resolve(request_id, Response())
                 if attempt == 0:

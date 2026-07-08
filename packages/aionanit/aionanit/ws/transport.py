@@ -226,10 +226,7 @@ class WsTransport:
             async for msg in self._ws:
                 if msg.type == aiohttp.WSMsgType.BINARY:
                     self._last_received_at = asyncio.get_event_loop().time()
-                    try:
-                        self._on_message(msg.data)
-                    except Exception:
-                        _LOGGER.exception("Error processing WebSocket message")
+                    self._on_message(msg.data)
                 elif msg.type in (
                     aiohttp.WSMsgType.CLOSE,
                     aiohttp.WSMsgType.CLOSING,
@@ -247,7 +244,6 @@ class WsTransport:
 
         # If we weren't explicitly closed, attempt to reconnect.
         if not self._closed:
-            self._on_connection_change(ConnectionState.RECONNECTING, self._transport_kind, None)
             self._reconnect_task = asyncio.get_running_loop().create_task(self._reconnect_loop())
 
     async def _keepalive_loop(self) -> None:
@@ -279,17 +275,14 @@ class WsTransport:
             return
 
         backoff = _INITIAL_BACKOFF
-        first_attempt = True
 
         while not self._closed:
             await self._async_close_ws()
-            if first_attempt:
-                _LOGGER.info("Reconnecting immediately")
-            else:
-                self._on_connection_change(ConnectionState.RECONNECTING, self._transport_kind, None)
-                wait_time = backoff + random.random() * _JITTER_MAX
-                _LOGGER.info("Reconnecting in %.1fs", wait_time)
-                await asyncio.sleep(wait_time)
+            self._on_connection_change(ConnectionState.RECONNECTING, self._transport_kind, None)
+
+            wait_time = backoff + random.random() * _JITTER_MAX
+            _LOGGER.info("Reconnecting in %.1fs", wait_time)
+            await asyncio.sleep(wait_time)
 
             if self._closed:
                 return
@@ -318,5 +311,4 @@ class WsTransport:
                 return
             except Exception as err:
                 _LOGGER.warning("Reconnect failed: %s", err)
-                first_attempt = False
                 backoff = min(backoff * _BACKOFF_FACTOR, _MAX_BACKOFF)

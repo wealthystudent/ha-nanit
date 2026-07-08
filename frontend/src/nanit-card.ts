@@ -257,16 +257,10 @@ export class NanitCard extends LitElement {
     this._recoveringStream = true;
     try {
       await this._requestBackendStreamReset();
-    } catch (err) {
-      // HA can be restarting or the entity can briefly disappear during exactly
-      // the recovery window. Still remount locally so the card does not get
-      // stuck retrying a failed service call forever.
-      console.warn("Nanit stream reset failed; remounting local stream anyway", err);
     } finally {
       this._recoveringStream = false;
     }
     this._reloadStream();
-    this._scheduleBackendRecoveryFallback();
   }
 
   private _recoverStreamOnResume = (): void => {
@@ -290,7 +284,6 @@ export class NanitCard extends LitElement {
     // Backing off after hitting the cap — don't remount.
     if (now < this._cooldownUntil) {
       this._stallStrikes = 0;
-      this._startupStrikes = 0;
       return;
     }
     // Start a fresh window once the previous one has fully elapsed.

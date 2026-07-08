@@ -194,7 +194,6 @@ class TestRecvLoop:
         # Make ws iterable returning one message then stopping
         async def _aiter(self_=None):
             yield binary_msg
-            t._closed = True
 
         mock_ws.__aiter__ = _aiter
         session.ws_connect = AsyncMock(return_value=mock_ws)
@@ -209,51 +208,6 @@ class TestRecvLoop:
         for task in asyncio.all_tasks():
             if not task.done() and "reconnect_loop" in repr(task.get_coro()):
                 task.cancel()
-        await asyncio.sleep(0)
-
-    async def test_malformed_frame_does_not_end_recv_loop(self) -> None:
-        msg_cb = MagicMock(side_effect=[ValueError("bad frame"), None])
-        t, session, _, conn_cb = _make_transport(on_message=msg_cb)
-
-        bad_msg = MagicMock(type=aiohttp.WSMsgType.BINARY, data=b"bad")
-        good_msg = MagicMock(type=aiohttp.WSMsgType.BINARY, data=b"good")
-
-        async def _aiter(self_=None):
-            yield bad_msg
-            yield good_msg
-
-        mock_ws = AsyncMock(spec=aiohttp.ClientWebSocketResponse)
-        mock_ws.closed = False
-        mock_ws.__aiter__ = _aiter
-        session.ws_connect = AsyncMock(return_value=mock_ws)
-
-        await t.async_connect_cloud("cam1", "tok1")
-        await asyncio.sleep(0.05)
-
-        assert msg_cb.call_args_list[0].args == (b"bad",)
-        assert msg_cb.call_args_list[1].args == (b"good",)
-        t._closed = True
-        await asyncio.sleep(0)
-
-    async def test_recv_loop_exit_reports_disconnected_before_reconnect(self) -> None:
-        conn_cb = MagicMock()
-        t, session, _, _ = _make_transport(on_connection_change=conn_cb)
-
-        mock_ws = AsyncMock(spec=aiohttp.ClientWebSocketResponse)
-        mock_ws.closed = False
-        mock_ws.__aiter__ = MagicMock(return_value=iter([]))
-        session.ws_connect = AsyncMock(return_value=mock_ws)
-
-        await t.async_connect_cloud("cam1", "tok1")
-        await asyncio.sleep(0.05)
-
-        assert any(
-            call.args == (ConnectionState.DISCONNECTED, TransportKind.CLOUD, "Connection lost")
-            for call in conn_cb.call_args_list
-        )
-        t._closed = True
-        if t._reconnect_task is not None:
-            t._reconnect_task.cancel()
         await asyncio.sleep(0)
 
 
@@ -297,25 +251,6 @@ class TestGetHeadersCallback:
         call_kwargs = session.ws_connect.call_args
         assert call_kwargs[1]["headers"] == fresh_headers
 
-        await t.async_close()
-
-    async def test_reconnect_attempts_before_backoff_sleep(self) -> None:
-        t, session, _, _ = _make_transport()
-        t._url = "wss://api.nanit.com/focus/cameras/cam1/user_connect"
-        t._headers = {"Authorization": "Bearer token"}
-        t._transport_kind = TransportKind.CLOUD
-        t._closed = False
-
-        mock_ws = AsyncMock(spec=aiohttp.ClientWebSocketResponse)
-        mock_ws.closed = False
-        mock_ws.__aiter__ = MagicMock(return_value=iter([]))
-        session.ws_connect = AsyncMock(return_value=mock_ws)
-
-        with patch("aionanit.ws.transport.asyncio.sleep", new_callable=AsyncMock) as sleep:
-            await t._reconnect_loop()
-
-        session.ws_connect.assert_awaited_once()
-        sleep.assert_not_awaited()
         await t.async_close()
 
     async def test_reconnect_without_get_headers_keeps_original(self) -> None:

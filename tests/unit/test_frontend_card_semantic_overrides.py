@@ -70,7 +70,6 @@ def test_card_source_requests_backend_stream_reset_before_recovery_remount() -> 
     assert 'callService("nanit", "reset_stream"' in card
     assert "async _recoverStream" in card
     assert "await this._requestBackendStreamReset()" in card
-    assert 'console.debug("Nanit stream reset failed; remounting anyway", err)' in card
     assert "this._reloadStream()" in card
     assert "reload_config_entry" not in card
 

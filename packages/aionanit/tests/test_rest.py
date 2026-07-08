@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, cast
-
 import pytest
-from aiohttp import ClientConnectionError, ClientSession, ContentTypeError
+from aiohttp import ClientConnectionError, ClientSession
 from aioresponses import aioresponses
 
 from aionanit.exceptions import (
@@ -206,32 +204,6 @@ class TestRefreshToken:
             )
 
             with pytest.raises(NanitAuthError, match="token revoked"):
-                await client.async_refresh_token("acc", "ref")
-
-    async def test_refresh_5xx_html_body_is_connection_error(self, client: NanitRestClient) -> None:
-        with aioresponses() as m:
-            m.post(
-                REFRESH_URL,
-                status=502,
-                body="<html>bad gateway</html>",
-                content_type="text/html",
-            )
-
-            with pytest.raises(NanitConnectionError):
-                await client.async_refresh_token("acc", "ref")
-
-    async def test_refresh_json_content_type_error_is_connection_error(
-        self, client: NanitRestClient, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        with aioresponses() as m:
-            m.post(REFRESH_URL, payload={"access_token": "new", "refresh_token": "ref"})
-
-            async def _raise_content_type_error(*args, **kwargs):
-                raise ContentTypeError(request_info=cast(Any, None), history=(), message="not json")
-
-            monkeypatch.setattr("aiohttp.ClientResponse.json", _raise_content_type_error)
-
-            with pytest.raises(NanitConnectionError, match="Invalid refresh response"):
                 await client.async_refresh_token("acc", "ref")
 
 

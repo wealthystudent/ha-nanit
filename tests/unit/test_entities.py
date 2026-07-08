@@ -452,10 +452,7 @@ async def test_camera_stream_source_returns_url_when_on() -> None:
 
     assert source == "rtmps://stream-url"
     camera.async_get_stream_rtmps_url.assert_awaited_once()
-    camera.async_start_streaming.assert_awaited_once_with(
-        rtmps_url="rtmps://stream-url",
-        timeout=5.0,
-    )
+    camera.async_start_streaming.assert_awaited_once_with(rtmps_url="rtmps://stream-url")
     assert entity._stream_source_started_at > 0
 
 
@@ -490,17 +487,11 @@ async def test_camera_start_streaming_safe_logs_failure_without_raising() -> Non
     camera.async_start_streaming = AsyncMock(side_effect=RuntimeError("ws closed"))
     entity = NanitCameraEntity(coordinator, camera)
 
-    def _close_background(coro: Any) -> None:
-        coro.close()
-
-    with patch(
-        "custom_components.nanit.camera.asyncio.create_task", side_effect=_close_background
-    ) as create_task:
+    with patch("custom_components.nanit.camera._STREAM_RETRY_DELAY", 0):
         result = await entity._async_start_streaming_safe()
 
-    assert result is True
-    assert camera.async_start_streaming.await_count == 1
-    create_task.assert_called_once()
+    assert result is False
+    assert camera.async_start_streaming.await_count == 3
 
 
 @pytest.mark.asyncio
@@ -709,7 +700,7 @@ async def test_camera_stream_source_schedules_backend_expiry_timer(
     assert source == "rtmps://stream-url"
     mock_call_later.assert_called_once()
     assert mock_call_later.call_args.args[0] is hass
-    assert mock_call_later.call_args.args[1] == 25 * 60
+    assert mock_call_later.call_args.args[1] == 45 * 60
     assert entity._cancel_stream_expiry_timer is cancel_timer
 
 
@@ -767,32 +758,7 @@ async def test_camera_start_streaming_safe_falls_back_for_legacy_client_signatur
     entity = NanitCameraEntity(coordinator, camera)
 
     assert await entity._async_start_streaming_safe("rtmps://stream-url") is True
-    assert calls == [{"rtmps_url": "rtmps://stream-url", "timeout": 5.0}, {}]
-
-
-async def test_camera_stream_keepalive_resends_put_streaming() -> None:
-    coordinator = _push_coordinator(_camera_state(sleep_mode=False))
-    camera = MagicMock(uid="cam_1")
-    camera.async_start_streaming = AsyncMock()
-    entity = NanitCameraEntity(coordinator, camera)
-    entity.stream = MagicMock()  # type: ignore[assignment]
-    sleep_count = 0
-
-    async def _sleep_until_second_tick(_: float) -> None:
-        nonlocal sleep_count
-        sleep_count += 1
-        if sleep_count > 1:
-            entity.stream = None
-
-    with patch(
-        "custom_components.nanit.camera.asyncio.sleep", side_effect=_sleep_until_second_tick
-    ):
-        await entity._stream_keepalive_loop("rtmps://stream-url")
-
-    camera.async_start_streaming.assert_awaited_once_with(
-        rtmps_url="rtmps://stream-url",
-        timeout=5.0,
-    )
+    assert calls == [{"rtmps_url": "rtmps://stream-url"}, {}]
 
 
 async def test_camera_start_streaming_safe_does_not_restart_shared_camera() -> None:
@@ -803,16 +769,10 @@ async def test_camera_start_streaming_safe_does_not_restart_shared_camera() -> N
     camera.async_start = AsyncMock()
     entity = NanitCameraEntity(coordinator, camera)
 
-    def _close_background(coro: Any) -> None:
-        coro.close()
-
-    with patch(
-        "custom_components.nanit.camera.asyncio.create_task", side_effect=_close_background
-    ) as create_task:
+    with patch("custom_components.nanit.camera._STREAM_RETRY_DELAY", 0):
         result = await entity._async_start_streaming_safe()
 
-    assert result is True
-    assert camera.async_start_streaming.await_count == 1
-    create_task.assert_called_once()
+    assert result is False
+    assert camera.async_start_streaming.await_count == 3
     camera.async_stop.assert_not_awaited()
     camera.async_start.assert_not_awaited()

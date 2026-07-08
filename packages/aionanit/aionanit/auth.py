@@ -9,7 +9,7 @@ import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from .exceptions import NanitAuthError, NanitConnectionError
+from .exceptions import NanitAuthError
 
 if TYPE_CHECKING:
     from .rest import NanitRestClient
@@ -95,7 +95,7 @@ class TokenManager:
     async def _async_refresh(self) -> None:
         try:
             tokens = await self._rest.async_refresh_token(self._access_token, self._refresh_token)
-        except (NanitAuthError, NanitConnectionError):
+        except NanitAuthError:
             raise
         except Exception as err:
             raise NanitAuthError(f"Token refresh failed: {err}") from err

@@ -696,37 +696,6 @@ class TestSendRequest:
         # Reconnect was called once (after first timeout, before retry).
         cam._async_reconnect.assert_awaited_once()
 
-    async def test_response_transport_error_reconnects_and_retries(self) -> None:
-        cam, *_ = _make_camera()
-
-        cam._transport = MagicMock()
-        cam._transport.connected = True
-        cam._transport.idle_seconds = 0.0
-        cam._async_reconnect = AsyncMock()
-        response = Response(status_code=200)
-
-        send_count = 0
-
-        async def _fake_send(data: bytes) -> None:
-            nonlocal send_count
-            send_count += 1
-            if send_count == 1:
-                cam._pending.cancel_all(NanitTransportError("Connection lost"))
-                return
-            cam._pending.resolve(2, response)
-
-        cam._transport.async_send = AsyncMock(side_effect=_fake_send)
-
-        result = await cam._send_request(
-            RequestType.GET_STATUS,
-            timeout=0.01,
-            get_status=GetStatus(all=True),
-        )
-
-        assert result is response
-        assert cam._transport.async_send.await_count == 2
-        cam._async_reconnect.assert_awaited_once()
-
 
 # ---------------------------------------------------------------------------
 # Set settings / set control — response guard (Fix B)
@@ -941,11 +910,9 @@ class TestStreaming:
         tm.async_get_access_token = AsyncMock(return_value="token_a")
         cam._send_request = AsyncMock()
 
-        await cam.async_start_streaming(rtmps_url="rtmps://media/custom.token", timeout=5.0)
+        await cam.async_start_streaming(rtmps_url="rtmps://media/custom.token")
 
         tm.async_get_access_token.assert_not_awaited()
-        assert cam._send_request.await_args is not None
-        assert cam._send_request.await_args.kwargs["timeout"] == 5.0
         sent_streaming = cam._send_request.await_args.kwargs["streaming"]
         assert sent_streaming.rtmp_url == "rtmps://media/custom.token"
 

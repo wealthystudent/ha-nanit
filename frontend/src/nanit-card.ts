@@ -257,11 +257,7 @@ export class NanitCard extends LitElement {
     if (!this._canReloadStream()) return;
     this._recoveringStream = true;
     try {
-      try {
-        await this._requestBackendStreamReset();
-      } catch (err) {
-        console.debug("Nanit stream reset failed; remounting anyway", err);
-      }
+      await this._requestBackendStreamReset();
     } finally {
       this._recoveringStream = false;
     }

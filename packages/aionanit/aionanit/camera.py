@@ -86,8 +86,6 @@ _FRESH_CONNECTION_WINDOW: float = 10.0  # skip reconnect if connected within thi
 _DEFAULT_SENSOR_POLL_INTERVAL: float = 120.0  # 2 min — poll sensors camera doesn't push
 _DEFAULT_PLAYBACK_POLL_INTERVAL: float = 30.0  # 30s — poll GET_PLAYBACK for external changes
 _STREAM_TOKEN_MIN_TTL: float = 1800.0  # Avoid blocking most stream opens on token refresh
-_BACKGROUND_STREAM_TOKEN_MIN_TTL: float = 1900.0
-_CONNECTED_TOKEN_RECONNECT_MIN_TTL: float = 300.0
 
 
 class NanitCamera:
@@ -137,19 +135,10 @@ class NanitCamera:
         self._playback_poll_task: asyncio.Task[None] | None = None
         self._token_refresh_task: asyncio.Task[None] | None = None
         self._reconnected_task: asyncio.Task[None] | None = None
-        self._connection_token_expires_at: float = 0.0
         self._reconnect_lock: asyncio.Lock = asyncio.Lock()
         self._stopped: bool = False
         self._connected_event: asyncio.Event = asyncio.Event()
         self._connected_event.set()
-
-    def _mark_connected_token_expiry(self) -> None:
-        """Remember the token expiry for the currently-open WebSocket."""
-        self._connection_token_expires_at = getattr(
-            self._token_manager,
-            "_expires_at",
-            time.monotonic() + 3600.0,
-        )
 
     # ------------------------------------------------------------------
     # Properties
@@ -196,7 +185,6 @@ class NanitCamera:
             try:
                 token = await self._token_manager.async_get_access_token()
                 await self._transport.async_connect_local(self._local_ip, token)
-                self._mark_connected_token_expiry()
                 connected = True
             except (NanitConnectionError, NanitTransportError) as err:
                 _LOGGER.info(
@@ -210,7 +198,6 @@ class NanitCamera:
             try:
                 token = await self._token_manager.async_get_access_token()
                 await self._transport.async_connect_cloud(self._uid, token)
-                self._mark_connected_token_expiry()
             except (NanitConnectionError, NanitTransportError) as err:
                 raise NanitCameraUnavailable(
                     f"Cannot reach camera {self._uid} via any transport: {err}"
@@ -494,12 +481,7 @@ class NanitCamera:
         )
         return f"rtmps://media-secured.nanit.com/nanit/{self._baby_uid}.{token}"
 
-    async def async_start_streaming(
-        self,
-        *,
-        rtmps_url: str | None = None,
-        timeout: float = _DEFAULT_REQUEST_TIMEOUT,
-    ) -> None:
+    async def async_start_streaming(self, *, rtmps_url: str | None = None) -> None:
         """Send PUT_STREAMING with status=STARTED to camera."""
         if rtmps_url is None:
             rtmps_url = await self.async_get_stream_rtmps_url()
@@ -516,7 +498,6 @@ class NanitCamera:
         try:
             await self._send_request(
                 RequestType.PUT_STREAMING,
-                timeout=timeout,
                 streaming=streaming,
             )
         except (NanitRequestTimeout, NanitTransportError, NanitCameraUnavailable) as err:
@@ -813,17 +794,6 @@ class NanitCamera:
 
             try:
                 return await asyncio.wait_for(future, timeout=timeout)
-            except NanitTransportError:
-                _ = self._pending.resolve(request_id, Response())
-                if attempt == 0:
-                    _LOGGER.warning(
-                        "Request %s (id=%s) lost connection, reconnecting and retrying",
-                        RequestType.Name(request_type),
-                        request_id,
-                    )
-                    await self._async_reconnect()
-                    continue
-                raise
             except TimeoutError:
                 _ = self._pending.resolve(request_id, Response())
                 if attempt == 0:
@@ -959,7 +929,6 @@ class NanitCamera:
                 try:
                     token = await self._token_manager.async_get_access_token()
                     await self._transport.async_connect_local(self._local_ip, token)
-                    self._mark_connected_token_expiry()
                     connected = True
                 except (NanitConnectionError, NanitTransportError) as err:
                     _LOGGER.info(
@@ -972,7 +941,6 @@ class NanitCamera:
                 try:
                     token = await self._token_manager.async_get_access_token()
                     await self._transport.async_connect_cloud(self._uid, token)
-                    self._mark_connected_token_expiry()
                 except (NanitConnectionError, NanitTransportError) as err:
                     raise NanitCameraUnavailable(f"Cannot reach camera {self._uid}: {err}") from err
 
@@ -1006,37 +974,16 @@ class NanitCamera:
     async def _token_refresh_loop(self) -> None:
         try:
             while not self._stopped:
-                now = time.monotonic()
-                manager_ttl = self._token_manager._expires_at - now
-                connected_ttl = self._connection_token_expires_at - now
-                sleep_for = max(
-                    min(
-                        manager_ttl - _BACKGROUND_STREAM_TOKEN_MIN_TTL,
-                        connected_ttl - _CONNECTED_TOKEN_RECONNECT_MIN_TTL,
-                    ),
-                    60.0,
-                )
+                ttl = self._token_manager._expires_at - time.monotonic()
+                sleep_for = max(ttl - 300.0, 60.0)
                 await asyncio.sleep(sleep_for)
-                if self._stopped:
+                if self._stopped or not self._transport.connected:
                     continue
-
+                _LOGGER.info("Pre-emptive token refresh: forcing reconnect before expiry")
                 try:
-                    await self._token_manager.async_get_access_token(
-                        min_ttl=_BACKGROUND_STREAM_TOKEN_MIN_TTL
-                    )
+                    await self._transport.async_force_reconnect()
                 except Exception:
-                    _LOGGER.debug("Background token refresh failed", exc_info=True)
-
-                if not self._transport.connected:
-                    continue
-
-                connected_ttl = self._connection_token_expires_at - time.monotonic()
-                if connected_ttl <= _CONNECTED_TOKEN_RECONNECT_MIN_TTL:
-                    _LOGGER.info("Pre-emptive token refresh: forcing reconnect before expiry")
-                    try:
-                        await self._transport.async_force_reconnect()
-                    except Exception:
-                        _LOGGER.debug("Pre-emptive reconnect trigger failed", exc_info=True)
+                    _LOGGER.debug("Pre-emptive reconnect trigger failed", exc_info=True)
         except asyncio.CancelledError:
             return
 

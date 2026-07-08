@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from aionanit.auth import TokenManager
-from aionanit.exceptions import NanitAuthError
+from aionanit.exceptions import NanitAuthError, NanitConnectionError
 
 
 def _jwt_with_exp(exp: int) -> str:
@@ -190,10 +190,19 @@ class TestRefreshFailure:
         with pytest.raises(NanitAuthError, match="Refresh token expired"):
             await token_manager.async_get_access_token()
 
+    async def test_connection_error_propagates_without_reauth(
+        self, token_manager: TokenManager, mock_rest: MagicMock
+    ) -> None:
+        mock_rest.async_refresh_token.side_effect = NanitConnectionError("network down")
+        token_manager._expires_at = time.monotonic() - 1
+
+        with pytest.raises(NanitConnectionError, match="network down"):
+            await token_manager.async_get_access_token()
+
     async def test_unexpected_error_wrapped_in_auth_error(
         self, token_manager: TokenManager, mock_rest: MagicMock
     ) -> None:
-        mock_rest.async_refresh_token.side_effect = RuntimeError("network down")
+        mock_rest.async_refresh_token.side_effect = RuntimeError("unexpected")
         token_manager._expires_at = time.monotonic() - 1
 
         with pytest.raises(NanitAuthError, match="Token refresh failed"):

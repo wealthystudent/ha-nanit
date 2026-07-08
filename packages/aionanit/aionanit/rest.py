@@ -167,13 +167,19 @@ class NanitRestClient:
         except aiohttp.ClientError as err:
             raise NanitConnectionError(str(err)) from err
 
+        if resp.status >= 500:
+            raise NanitConnectionError(f"Nanit refresh failed with HTTP {resp.status}")
+
         if resp.status == 404:
             raise NanitAuthError("Refresh token expired")
 
         if resp.status == 401:
             raise NanitAuthError("Access token invalid during refresh")
 
-        body = await resp.json()
+        try:
+            body = await resp.json()
+        except (aiohttp.ClientError, aiohttp.ContentTypeError) as err:
+            raise NanitConnectionError("Invalid refresh response") from err
 
         error_msg = _extract_error_message(body)
         if error_msg:

@@ -487,11 +487,17 @@ async def test_camera_start_streaming_safe_logs_failure_without_raising() -> Non
     camera.async_start_streaming = AsyncMock(side_effect=RuntimeError("ws closed"))
     entity = NanitCameraEntity(coordinator, camera)
 
-    with patch("custom_components.nanit.camera._STREAM_RETRY_DELAY", 0):
+    def _close_background(coro: Any) -> None:
+        coro.close()
+
+    with patch(
+        "custom_components.nanit.camera.asyncio.create_task", side_effect=_close_background
+    ) as create_task:
         result = await entity._async_start_streaming_safe()
 
-    assert result is False
-    assert camera.async_start_streaming.await_count == 3
+    assert result is True
+    assert camera.async_start_streaming.await_count == 1
+    create_task.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -758,7 +764,7 @@ async def test_camera_start_streaming_safe_falls_back_for_legacy_client_signatur
     entity = NanitCameraEntity(coordinator, camera)
 
     assert await entity._async_start_streaming_safe("rtmps://stream-url") is True
-    assert calls == [{"rtmps_url": "rtmps://stream-url"}, {}]
+    assert calls == [{"rtmps_url": "rtmps://stream-url", "timeout": 5.0}, {}]
 
 
 async def test_camera_start_streaming_safe_does_not_restart_shared_camera() -> None:
@@ -769,10 +775,16 @@ async def test_camera_start_streaming_safe_does_not_restart_shared_camera() -> N
     camera.async_start = AsyncMock()
     entity = NanitCameraEntity(coordinator, camera)
 
-    with patch("custom_components.nanit.camera._STREAM_RETRY_DELAY", 0):
+    def _close_background(coro: Any) -> None:
+        coro.close()
+
+    with patch(
+        "custom_components.nanit.camera.asyncio.create_task", side_effect=_close_background
+    ) as create_task:
         result = await entity._async_start_streaming_safe()
 
-    assert result is False
-    assert camera.async_start_streaming.await_count == 3
+    assert result is True
+    assert camera.async_start_streaming.await_count == 1
+    create_task.assert_called_once()
     camera.async_stop.assert_not_awaited()
     camera.async_start.assert_not_awaited()

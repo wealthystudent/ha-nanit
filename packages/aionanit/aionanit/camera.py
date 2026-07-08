@@ -490,7 +490,12 @@ class NanitCamera:
         )
         return f"rtmps://media-secured.nanit.com/nanit/{self._baby_uid}.{token}"
 
-    async def async_start_streaming(self, *, rtmps_url: str | None = None) -> None:
+    async def async_start_streaming(
+        self,
+        *,
+        rtmps_url: str | None = None,
+        timeout: float = _DEFAULT_REQUEST_TIMEOUT,
+    ) -> None:
         """Send PUT_STREAMING with status=STARTED to camera."""
         if rtmps_url is None:
             rtmps_url = await self.async_get_stream_rtmps_url()
@@ -507,6 +512,7 @@ class NanitCamera:
         try:
             await self._send_request(
                 RequestType.PUT_STREAMING,
+                timeout=timeout,
                 streaming=streaming,
             )
         except (NanitRequestTimeout, NanitTransportError, NanitCameraUnavailable) as err:

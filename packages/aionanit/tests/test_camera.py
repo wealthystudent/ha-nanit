@@ -941,9 +941,11 @@ class TestStreaming:
         tm.async_get_access_token = AsyncMock(return_value="token_a")
         cam._send_request = AsyncMock()
 
-        await cam.async_start_streaming(rtmps_url="rtmps://media/custom.token")
+        await cam.async_start_streaming(rtmps_url="rtmps://media/custom.token", timeout=5.0)
 
         tm.async_get_access_token.assert_not_awaited()
+        assert cam._send_request.await_args is not None
+        assert cam._send_request.await_args.kwargs["timeout"] == 5.0
         sent_streaming = cam._send_request.await_args.kwargs["streaming"]
         assert sent_streaming.rtmp_url == "rtmps://media/custom.token"
 

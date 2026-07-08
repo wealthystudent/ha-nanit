@@ -21,7 +21,8 @@ PARALLEL_UPDATES = 0
 
 _LOGGER = logging.getLogger(__name__)
 
-_STREAM_START_ATTEMPTS = 3
+_STREAM_START_ATTEMPTS = 2
+_STREAM_START_TIMEOUT = 5.0
 _STREAM_RETRY_DELAY = 2.0
 _STREAM_SOURCE_MAX_AGE = 25 * 60
 _SNAPSHOT_CACHE_TTL = 60.0
@@ -72,6 +73,7 @@ class NanitCameraEntity(NanitEntity, Camera):
         self._cached_snapshot_at: float = 0.0
         self._stream_source_started_at: float = 0.0
         self._cancel_stream_expiry_timer: CALLBACK_TYPE | None = None
+        self._stream_start_task: asyncio.Task[None] | None = None
 
     @property
     def is_on(self) -> bool:
@@ -177,26 +179,35 @@ class NanitCameraEntity(NanitEntity, Camera):
             lambda _now: self._invalidate_stream("stream source age timer"),
         )
 
-    async def _async_start_streaming_safe(self, rtmps_url: str | None = None) -> bool:
-        """Send PUT_STREAMING with retry.  Returns True on success."""
+    async def _async_call_start_streaming(
+        self,
+        rtmps_url: str | None,
+        *,
+        timeout: float,
+    ) -> None:
+        """Call aionanit stream start with compatibility for older client signatures."""
+        try:
+            await self._camera.async_start_streaming(rtmps_url=rtmps_url, timeout=timeout)
+        except TypeError as err:
+            if "rtmps_url" not in str(err) and "timeout" not in str(err):
+                raise
+            _LOGGER.debug(
+                "Nanit client does not support explicit RTMPS URL/timeout reuse; "
+                "falling back to legacy stream start for camera %s",
+                self._camera.uid,
+            )
+            await self._camera.async_start_streaming()
+
+    async def _async_background_start_streaming(self, rtmps_url: str | None = None) -> None:
+        """Retry PUT_STREAMING in the background while HA opens ffmpeg."""
         for attempt in range(1, _STREAM_START_ATTEMPTS + 1):
             try:
-                try:
-                    await self._camera.async_start_streaming(rtmps_url=rtmps_url)
-                except TypeError as err:
-                    if "rtmps_url" not in str(err):
-                        raise
-                    _LOGGER.debug(
-                        "Nanit client does not support explicit RTMPS URL reuse; "
-                        "falling back to legacy stream start for camera %s",
-                        self._camera.uid,
-                    )
-                    await self._camera.async_start_streaming()
-                return True
+                await self._async_call_start_streaming(rtmps_url, timeout=_STREAM_START_TIMEOUT)
+                return
             except Exception:  # noqa: BLE001
                 if attempt < _STREAM_START_ATTEMPTS:
                     _LOGGER.debug(
-                        "PUT_STREAMING attempt %d/%d failed for camera %s, retrying in %.0fs",
+                        "Background PUT_STREAMING attempt %d/%d failed for camera %s, retrying in %.0fs",
                         attempt,
                         _STREAM_START_ATTEMPTS,
                         self._camera.uid,
@@ -205,12 +216,37 @@ class NanitCameraEntity(NanitEntity, Camera):
                     await asyncio.sleep(_STREAM_RETRY_DELAY)
                 else:
                     _LOGGER.warning(
-                        "PUT_STREAMING failed after %d attempts for camera %s",
+                        "Background PUT_STREAMING failed after %d attempts for camera %s",
                         _STREAM_START_ATTEMPTS,
                         self._camera.uid,
                         exc_info=True,
                     )
-        return False
+
+    async def _async_start_streaming_safe(self, rtmps_url: str | None = None) -> bool:
+        """Start streaming quickly; continue retries in the background on failure."""
+        try:
+            await self._async_call_start_streaming(rtmps_url, timeout=_STREAM_START_TIMEOUT)
+            return True
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug(
+                "Initial PUT_STREAMING failed for camera %s; returning stream URL and retrying in background",
+                self._camera.uid,
+                exc_info=True,
+            )
+            try:
+                hass = self.hass
+            except (AttributeError, RuntimeError):
+                hass = None
+            if hass is None:
+                self._stream_start_task = asyncio.create_task(
+                    self._async_background_start_streaming(rtmps_url)
+                )
+            else:
+                hass.async_create_background_task(
+                    self._async_background_start_streaming(rtmps_url),
+                    name=f"nanit_stream_start_{self._camera.uid}",
+                )
+            return True
 
     # ------------------------------------------------------------------
     # Snapshot (with caching)

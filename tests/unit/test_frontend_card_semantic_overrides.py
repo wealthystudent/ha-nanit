@@ -83,16 +83,25 @@ def test_bundled_card_requests_backend_stream_reset_before_recovery_remount() ->
 
 
 def test_card_source_recovers_stream_on_page_resume() -> None:
-    """Mobile/browser resume should try a fast remount before backend reset fallback."""
+    """Mobile/browser resume should observe first and only recover if still unhealthy."""
     card = _read(SRC_DIR / "nanit-card.ts")
 
     assert "visibilitychange" in card
     assert "pageshow" in card
-    assert "focus" in card
+    assert "focus" not in card
     assert "_recoverStreamOnResume" in card
-    assert "_scheduleBackendRecoveryFallback" in card
-    assert "STREAM_LOADED_FAILOPEN_MS = 3500" in card
-    assert "STREAM_STARTUP_RELOAD_TICKS = 4" in card
+    assert "STREAM_VISUAL_READY_SELECTORS" in card
+    assert "_hasVisualStreamElement" in card
+    assert "this._streamLoaded = true" in card
+    assert "STREAM_STARTUP_RELOAD_TICKS = 10" in card
+    assert "STREAM_BACKEND_RESET_FALLBACK_MS = 8000" in card
+    assert "this._scheduleBackendRecoveryFallback()" not in card
+    assert (
+        "this._reloadStream()"
+        not in card.split("private _recoverStreamOnResume", 1)[1].split(
+            ";\n\n  private _reloadStream", 1
+        )[0]
+    )
 
 
 def test_card_styles_force_stable_stream_aspect_ratio() -> None:

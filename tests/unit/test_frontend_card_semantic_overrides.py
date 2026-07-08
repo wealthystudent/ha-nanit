@@ -74,12 +74,30 @@ def test_card_source_requests_backend_stream_reset_before_recovery_remount() -> 
     assert "reload_config_entry" not in card
 
 
+def test_card_source_does_not_reset_backend_stream_during_reload_cooldown() -> None:
+    """Recovery cooldown should block backend reset spam as well as remounts."""
+    card = _read(SRC_DIR / "nanit-card.ts")
+
+    assert "private _canReloadStream" in card
+    assert "if (!this._canReloadStream()) return;" in card
+    recover_body = card.split("private async _recoverStream", 1)[1].split(
+        "\n  private _recoverStreamOnResume", 1
+    )[0]
+    assert recover_body.index("if (!this._canReloadStream()) return;") < recover_body.index(
+        "await this._requestBackendStreamReset()"
+    )
+    cooldown_body = card.split("if (now < this._cooldownUntil)", 1)[1].split("return;", 1)[0]
+    assert "this._stallStrikes = 0" in cooldown_body
+    assert "this._startupStrikes = 0" in cooldown_body
+
+
 def test_bundled_card_requests_backend_stream_reset_before_recovery_remount() -> None:
     """The shipped bundle should include the lighter Nanit stream reset service."""
     bundle = _read(BUNDLE)
 
     assert "reset_stream" in bundle
     assert "reload_config_entry" not in bundle
+    assert "_canReloadStream" in bundle
 
 
 def test_card_source_recovers_stream_on_page_resume() -> None:

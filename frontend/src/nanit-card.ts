@@ -254,6 +254,7 @@ export class NanitCard extends LitElement {
 
   private async _recoverStream(): Promise<void> {
     if (this._recoveringStream) return;
+    if (!this._canReloadStream()) return;
     this._recoveringStream = true;
     try {
       await this._requestBackendStreamReset();
@@ -279,12 +280,13 @@ export class NanitCard extends LitElement {
     this._checkStreamLiveness();
   };
 
-  private _reloadStream(): void {
+  private _canReloadStream(): boolean {
     const now = Date.now();
-    // Backing off after hitting the cap — don't remount.
+    // Backing off after hitting the cap — don't reset HA's backend stream or remount.
     if (now < this._cooldownUntil) {
       this._stallStrikes = 0;
-      return;
+      this._startupStrikes = 0;
+      return false;
     }
     // Start a fresh window once the previous one has fully elapsed.
     if (now - this._reloadWindowStart > STREAM_RELOAD_COOLDOWN_MS) {
@@ -296,7 +298,10 @@ export class NanitCard extends LitElement {
     if (this._reloadCount >= STREAM_MAX_RELOADS) {
       this._cooldownUntil = now + STREAM_RELOAD_COOLDOWN_MS;
     }
+    return true;
+  }
 
+  private _reloadStream(): void {
     this._streamEpoch += 1;
     this._streamLoaded = false;
     this._lastVideoTime = 0;

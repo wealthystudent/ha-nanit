@@ -23,7 +23,7 @@ _LOGGER = logging.getLogger(__name__)
 
 _STREAM_START_ATTEMPTS = 3
 _STREAM_RETRY_DELAY = 2.0
-_STREAM_SOURCE_MAX_AGE = 2.5 * 60 * 60
+_STREAM_SOURCE_MAX_AGE = 45 * 60
 _SNAPSHOT_CACHE_TTL = 60.0
 _SNAPSHOT_PREFETCH_AGE = 30.0
 
@@ -101,11 +101,43 @@ class NanitCameraEntity(NanitEntity, Camera):
         """Discard HA's cached stream so a fresh one is created on next view."""
         if self.stream is not None:
             _LOGGER.debug("Invalidating cached stream after %s", reason)
+            self._async_stop_stream(self.stream)
             self.stream = None
         self._stream_source_started_at = 0.0
         if self._cancel_stream_expiry_timer is not None:
             self._cancel_stream_expiry_timer()
             self._cancel_stream_expiry_timer = None
+
+    def _async_stop_stream(self, stream: object) -> None:
+        """Schedule best-effort stop for a discarded HA stream worker."""
+        stop = getattr(stream, "stop", None)
+        if not callable(stop):
+            return
+
+        async def _stop() -> None:
+            try:
+                result = stop()
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception:  # noqa: BLE001
+                _LOGGER.debug("Failed to stop discarded Nanit stream", exc_info=True)
+
+        try:
+            hass = self.hass
+        except (AttributeError, RuntimeError):
+            hass = None
+
+        if hass is not None:
+            hass.async_create_background_task(
+                _stop(),
+                name=f"nanit_stop_stream_{self._camera.uid}",
+            )
+            return
+
+        try:
+            asyncio.get_running_loop().create_task(_stop())
+        except RuntimeError:
+            _LOGGER.debug("No running loop available to stop discarded Nanit stream")
 
     @callback
     def async_reset_stream(self) -> None:

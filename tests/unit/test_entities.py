@@ -700,7 +700,7 @@ async def test_camera_stream_source_schedules_backend_expiry_timer(
     assert source == "rtmps://stream-url"
     mock_call_later.assert_called_once()
     assert mock_call_later.call_args.args[0] is hass
-    assert mock_call_later.call_args.args[1] == 2.5 * 60 * 60
+    assert mock_call_later.call_args.args[1] == 45 * 60
     assert entity._cancel_stream_expiry_timer is cancel_timer
 
 

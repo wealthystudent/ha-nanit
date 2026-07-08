@@ -16,7 +16,7 @@ from aionanit.camera import (
     Response,
 )
 from aionanit.exceptions import NanitTransportError
-from aionanit.models import TransportKind
+from aionanit.models import ConnectionState, TransportKind
 from aionanit.rest import NanitRestClient
 
 
@@ -158,6 +158,50 @@ async def test_send_request_timeout_when_not_reconnecting() -> None:
         )
 
     camera._async_reconnect.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_send_request_retries_when_pending_request_fails_midflight() -> None:
+    camera, _ = _make_camera()
+
+    camera._transport = MagicMock()
+    camera._transport.connected = True
+    camera._transport.idle_seconds = 0.0
+    camera._async_reconnect = AsyncMock()
+
+    response = Response(status_code=200)
+
+    async def _fake_send(_: bytes) -> None:
+        request_id = camera._pending._counter
+        if request_id == 1:
+            camera._pending.cancel_all(NanitTransportError("Connection lost"))
+        else:
+            camera._pending.resolve(request_id, response)
+
+    camera._transport.async_send = AsyncMock(side_effect=_fake_send)
+
+    result = await camera._send_request(
+        RequestType.GET_STATUS,
+        get_status=GetStatus(all=True),
+    )
+
+    assert result.status_code == 200
+    assert camera._transport.async_send.await_count == 2
+    camera._async_reconnect.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_reconnecting_state_fails_pending_requests_immediately() -> None:
+    camera, _ = _make_camera()
+
+    future = camera._pending.track(1)
+
+    camera._on_connection_change(ConnectionState.RECONNECTING, TransportKind.CLOUD, None)
+
+    assert camera._pending.pending_count == 0
+    assert future.done()
+    with pytest.raises(NanitTransportError):
+        future.result()
 
 
 @pytest.mark.asyncio

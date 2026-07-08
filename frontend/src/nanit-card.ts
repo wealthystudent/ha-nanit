@@ -7,16 +7,16 @@ import { cardStyles } from "./styles";
 import "./nanit-card-editor";
 
 const STREAM_WATCHDOG_INTERVAL_MS = 1000;
-const STREAM_STARTUP_RELOAD_TICKS = 4;
+const STREAM_STARTUP_RELOAD_TICKS = 10;
 const STREAM_STALL_TICKS = 8;
 const STREAM_MAX_RELOADS = 3;
 const STREAM_RELOAD_COOLDOWN_MS = 60000;
 const STREAM_HEALTHY_RESET_TICKS = 10;
 const STREAM_PROGRESS_EPSILON = 0.05;
-const STREAM_BACKEND_RESET_FALLBACK_MS = 3000;
-// Hide the loader after this long even if we can't confirm liveness, so a
-// detection miss (WebRTC currentTime quirks, blocked inline autoplay, unusual
-// player nesting) can never permanently mask a working stream.
+const STREAM_BACKEND_RESET_FALLBACK_MS = 8000;
+const STREAM_VISUAL_READY_SELECTORS = "video, img, canvas, ha-hls-player, ha-web-rtc-player";
+// Hide the loader quickly when HA has mounted a stream/player element, while
+// the stricter liveness watchdog continues in the background for self-healing.
 const STREAM_LOADED_FAILOPEN_MS = 3500;
 
 @customElement("nanit-card")
@@ -91,14 +91,12 @@ export class NanitCard extends LitElement {
     super.connectedCallback();
     document.addEventListener("visibilitychange", this._recoverStreamOnResume);
     window.addEventListener("pageshow", this._recoverStreamOnResume);
-    window.addEventListener("focus", this._recoverStreamOnResume);
   }
 
   disconnectedCallback(): void {
     super.disconnectedCallback();
     document.removeEventListener("visibilitychange", this._recoverStreamOnResume);
     window.removeEventListener("pageshow", this._recoverStreamOnResume);
-    window.removeEventListener("focus", this._recoverStreamOnResume);
     this._clearStreamWatchdog();
     this._clearBackendRecoveryFallback();
   }
@@ -131,6 +129,18 @@ export class NanitCard extends LitElement {
     }
   }
 
+  private _hasVisualStreamElement(streamEl: Element): boolean {
+    const root = streamEl.shadowRoot;
+    if (!root) return false;
+    if (root.querySelector(STREAM_VISUAL_READY_SELECTORS)) return true;
+
+    for (const child of Array.from(root.querySelectorAll("*"))) {
+      if ((child as HTMLElement).shadowRoot?.querySelector(STREAM_VISUAL_READY_SELECTORS)) return true;
+    }
+
+    return false;
+  }
+
   private _findStreamVideo(streamEl: Element): HTMLVideoElement | null {
     const root = streamEl.shadowRoot;
     if (!root) return null;
@@ -153,6 +163,11 @@ export class NanitCard extends LitElement {
   private _checkStreamLiveness(): void {
     const streamEl = this.renderRoot.querySelector("ha-camera-stream");
     if (!streamEl) return;
+
+    if (!this._streamLoaded && this._hasVisualStreamElement(streamEl)) {
+      this._streamLoaded = true;
+      this._clearBackendRecoveryFallback();
+    }
 
     const video = this._findStreamVideo(streamEl);
 
@@ -258,8 +273,10 @@ export class NanitCard extends LitElement {
     const now = Date.now();
     if (now < this._resumeRecoverUntil) return;
     this._resumeRecoverUntil = now + STREAM_RELOAD_COOLDOWN_MS;
-    this._reloadStream();
-    this._scheduleBackendRecoveryFallback();
+    this._startupStrikes = 0;
+    this._stallStrikes = 0;
+    this._healthyTicks = 0;
+    this._checkStreamLiveness();
   };
 
   private _reloadStream(): void {

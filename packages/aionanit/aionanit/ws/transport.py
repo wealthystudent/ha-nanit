@@ -242,8 +242,13 @@ class WsTransport:
         except Exception as err:
             _LOGGER.error("Recv loop error: %s", err)
 
-        # If we weren't explicitly closed, attempt to reconnect.
+        # If we weren't explicitly closed, fail in-flight requests before reconnecting.
         if not self._closed:
+            self._on_connection_change(
+                ConnectionState.DISCONNECTED,
+                self._transport_kind,
+                "Connection lost",
+            )
             self._reconnect_task = asyncio.get_running_loop().create_task(self._reconnect_loop())
 
     async def _keepalive_loop(self) -> None:

@@ -210,6 +210,27 @@ class TestRecvLoop:
                 task.cancel()
         await asyncio.sleep(0)
 
+    async def test_recv_loop_exit_reports_disconnected_before_reconnect(self) -> None:
+        conn_cb = MagicMock()
+        t, session, _, _ = _make_transport(on_connection_change=conn_cb)
+
+        mock_ws = AsyncMock(spec=aiohttp.ClientWebSocketResponse)
+        mock_ws.closed = False
+        mock_ws.__aiter__ = MagicMock(return_value=iter([]))
+        session.ws_connect = AsyncMock(return_value=mock_ws)
+
+        await t.async_connect_cloud("cam1", "tok1")
+        await asyncio.sleep(0.05)
+
+        assert any(
+            call.args == (ConnectionState.DISCONNECTED, TransportKind.CLOUD, "Connection lost")
+            for call in conn_cb.call_args_list
+        )
+        t._closed = True
+        if t._reconnect_task is not None:
+            t._reconnect_task.cancel()
+        await asyncio.sleep(0)
+
 
 class TestGetHeadersCallback:
     async def test_transport_stores_get_headers(self) -> None:

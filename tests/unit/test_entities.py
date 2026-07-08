@@ -452,7 +452,10 @@ async def test_camera_stream_source_returns_url_when_on() -> None:
 
     assert source == "rtmps://stream-url"
     camera.async_get_stream_rtmps_url.assert_awaited_once()
-    camera.async_start_streaming.assert_awaited_once_with(rtmps_url="rtmps://stream-url")
+    camera.async_start_streaming.assert_awaited_once_with(
+        rtmps_url="rtmps://stream-url",
+        timeout=5.0,
+    )
     assert entity._stream_source_started_at > 0
 
 
@@ -706,7 +709,7 @@ async def test_camera_stream_source_schedules_backend_expiry_timer(
     assert source == "rtmps://stream-url"
     mock_call_later.assert_called_once()
     assert mock_call_later.call_args.args[0] is hass
-    assert mock_call_later.call_args.args[1] == 45 * 60
+    assert mock_call_later.call_args.args[1] == 25 * 60
     assert entity._cancel_stream_expiry_timer is cancel_timer
 
 

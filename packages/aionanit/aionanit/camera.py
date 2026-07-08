@@ -145,7 +145,11 @@ class NanitCamera:
 
     def _mark_connected_token_expiry(self) -> None:
         """Remember the token expiry for the currently-open WebSocket."""
-        self._connection_token_expires_at = self._token_manager._expires_at
+        self._connection_token_expires_at = getattr(
+            self._token_manager,
+            "_expires_at",
+            time.monotonic() + 3600.0,
+        )
 
     # ------------------------------------------------------------------
     # Properties

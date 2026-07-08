@@ -194,6 +194,7 @@ class TestRecvLoop:
         # Make ws iterable returning one message then stopping
         async def _aiter(self_=None):
             yield binary_msg
+            t._closed = True
 
         mock_ws.__aiter__ = _aiter
         session.ws_connect = AsyncMock(return_value=mock_ws)

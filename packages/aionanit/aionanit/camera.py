@@ -85,7 +85,7 @@ _HEALTH_CHECK_INTERVAL: float = 270.0  # 4.5 min — periodic session liveness c
 _FRESH_CONNECTION_WINDOW: float = 10.0  # skip reconnect if connected within this
 _DEFAULT_SENSOR_POLL_INTERVAL: float = 120.0  # 2 min — poll sensors camera doesn't push
 _DEFAULT_PLAYBACK_POLL_INTERVAL: float = 30.0  # 30s — poll GET_PLAYBACK for external changes
-_STREAM_TOKEN_MIN_TTL: float = 3300.0  # Require ~55 min remaining for media URLs
+_STREAM_TOKEN_MIN_TTL: float = 1800.0  # Avoid blocking most stream opens on token refresh
 
 
 class NanitCamera:

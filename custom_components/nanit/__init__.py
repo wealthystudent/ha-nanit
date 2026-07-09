@@ -46,25 +46,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: NanitConfigEntry) -> boo
     session = async_get_clientsession(hass)
 
     hub = NanitHub(hass, session, entry)
+
     try:
         await hub.async_setup()
     except NanitAuthError as err:
-        await hub.async_close()
         raise ConfigEntryAuthFailed(
             translation_domain=DOMAIN,
             translation_key="auth_failed",
             translation_placeholders={"error": str(err)},
         ) from err
     except NanitConnectionError as err:
-        await hub.async_close()
         raise ConfigEntryNotReady(
             translation_domain=DOMAIN,
             translation_key="connection_failed",
             translation_placeholders={"error": str(err)},
         ) from err
-    except Exception:
-        await hub.async_close()
-        raise
 
     entry.runtime_data = NanitData(hub=hub, cameras=hub.camera_data)
 

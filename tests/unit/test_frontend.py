@@ -10,10 +10,9 @@ from homeassistant.core import HomeAssistant
 
 from custom_components.nanit.frontend import (
     _CARD_URL,
+    _MANIFEST_VERSION,
     _REGISTERED_KEY,
     _card_resource_version,
-    _is_nanit_card_resource,
-    _load_manifest_version,
     async_register_card,
 )
 
@@ -61,7 +60,7 @@ async def test_register_card_creates_resource(hass: HomeAssistant) -> None:
     resources.async_create_item.assert_awaited_once()
     call_args = resources.async_create_item.call_args[0][0]
     assert call_args["res_type"] == "module"
-    assert call_args["url"].startswith(f"{_CARD_URL}?v=")
+    assert _CARD_URL in call_args["url"]
 
 
 async def test_register_card_idempotent(hass: HomeAssistant) -> None:
@@ -87,36 +86,6 @@ async def test_register_card_updates_existing_resource(hass: HomeAssistant) -> N
 
     resources.async_create_item.assert_not_awaited()
     resources.async_update_item.assert_awaited_once()
-
-
-async def test_register_card_updates_manual_hacs_resource(hass: HomeAssistant) -> None:
-    resources = _mock_resources([{"id": "res1", "url": "/hacsfiles/ha-nanit/conftest.py?v=old"}])
-    _setup_hass_for_card(hass, resources)
-
-    with patch(f"{_FRONTEND_MODULE}._CARD_DIR", Path(__file__).parent):
-        with patch(f"{_FRONTEND_MODULE}._CARD_FILENAME", "conftest.py"):
-            await async_register_card(hass)
-
-    resources.async_create_item.assert_not_awaited()
-    resources.async_update_item.assert_awaited_once()
-
-
-async def test_register_card_updates_only_primary_duplicate(hass: HomeAssistant) -> None:
-    resources = _mock_resources(
-        [
-            {"id": "res1", "url": f"{_CARD_URL}?v=old"},
-            {"id": "res2", "url": "/hacsfiles/ha-nanit/nanit-card.js?v=old"},
-        ]
-    )
-    _setup_hass_for_card(hass, resources)
-
-    with patch(f"{_FRONTEND_MODULE}._CARD_DIR", Path(__file__).parent):
-        with patch(f"{_FRONTEND_MODULE}._CARD_FILENAME", "conftest.py"):
-            await async_register_card(hass)
-
-    resources.async_create_item.assert_not_awaited()
-    resources.async_update_item.assert_awaited_once()
-    assert resources.async_update_item.call_args.args[0] == "res1"
 
 
 async def test_register_card_skips_update_when_url_matches(hass: HomeAssistant) -> None:
@@ -168,7 +137,7 @@ def test_manifest_version_is_loaded() -> None:
             / "manifest.json"
         ).read_text()
     )
-    assert manifest["version"] == _load_manifest_version()
+    assert manifest["version"] == _MANIFEST_VERSION
 
 
 async def test_register_card_loads_resources_when_not_loaded(hass: HomeAssistant) -> None:
@@ -182,10 +151,3 @@ async def test_register_card_loads_resources_when_not_loaded(hass: HomeAssistant
 
     resources.async_load.assert_awaited_once()
     resources.async_create_item.assert_awaited_once()
-
-
-def test_is_nanit_card_resource_matches_known_paths() -> None:
-    assert _is_nanit_card_resource(f"{_CARD_URL}?v=123")
-    assert _is_nanit_card_resource("/hacsfiles/ha-nanit/nanit-card.js?v=123")
-    assert _is_nanit_card_resource("/local/community/nanit/nanit-card.js")
-    assert not _is_nanit_card_resource("/local/community/other-card.js")

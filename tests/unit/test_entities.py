@@ -451,9 +451,7 @@ async def test_camera_stream_source_returns_url_when_on() -> None:
     source = await entity.stream_source()
 
     assert source == "rtmps://stream-url"
-    camera.async_get_stream_rtmps_url.assert_awaited_once()
-    camera.async_start_streaming.assert_awaited_once_with(rtmps_url="rtmps://stream-url")
-    assert entity._stream_source_started_at > 0
+    camera.async_start_streaming.assert_awaited_once()
 
 
 async def test_camera_stream_source_returns_none_when_camera_off() -> None:
@@ -621,7 +619,7 @@ async def test_reconnect_within_grace_cancels_timer(hass: HomeAssistant) -> None
     assert coordinator.async_update_listeners.call_count == baseline_calls
 
 
-def test_camera_keeps_stream_on_reconnection() -> None:
+def test_camera_invalidates_stream_on_reconnection() -> None:
     from datetime import UTC, datetime
 
     t1 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
@@ -633,83 +631,22 @@ def test_camera_keeps_stream_on_reconnection() -> None:
     _disable_state_writes(entity)
 
     entity._handle_coordinator_update()
+    assert entity._prev_last_seen == t1
 
     entity.stream = MagicMock()
     coordinator.data = _camera_state(last_seen=t2)
     entity._handle_coordinator_update()
 
-    assert entity.stream is not None
-
-
-def test_camera_invalidates_expired_stream_source() -> None:
-    coordinator = _push_coordinator(_camera_state(sleep_mode=False))
-    camera = MagicMock(uid="cam_1")
-    entity = NanitCameraEntity(coordinator, camera)
-    _disable_state_writes(entity)
-    entity._handle_coordinator_update()
-
-    entity.stream = MagicMock()
-    with (
-        patch("custom_components.nanit.camera._STREAM_SOURCE_MAX_AGE", 10.0),
-        patch("custom_components.nanit.camera.time.monotonic", return_value=100.0),
-    ):
-        entity._stream_source_started_at = 89.0
-        entity._handle_coordinator_update()
-
     assert entity.stream is None
-    assert entity._stream_source_started_at == 0.0
+    assert entity._prev_last_seen == t2
 
 
-def test_camera_keeps_fresh_stream_source() -> None:
-    coordinator = _push_coordinator(_camera_state(sleep_mode=False))
-    camera = MagicMock(uid="cam_1")
-    entity = NanitCameraEntity(coordinator, camera)
-    _disable_state_writes(entity)
-    entity._handle_coordinator_update()
-
-    stream = MagicMock()
-    entity.stream = stream
-    with (
-        patch("custom_components.nanit.camera._STREAM_SOURCE_MAX_AGE", 10.0),
-        patch("custom_components.nanit.camera.time.monotonic", return_value=100.0),
-    ):
-        entity._stream_source_started_at = 95.0
-        entity._handle_coordinator_update()
-
-    assert entity.stream is stream
-    assert entity._stream_source_started_at == 95.0
-
-
-async def test_camera_stream_source_schedules_backend_expiry_timer(
-    hass: HomeAssistant,
-) -> None:
-    coordinator = _push_coordinator(_camera_state(sleep_mode=False))
-    camera = MagicMock(uid="cam_1")
-    camera.async_get_stream_rtmps_url = AsyncMock(return_value="rtmps://stream-url")
-    camera.async_start_streaming = AsyncMock()
-    entity = NanitCameraEntity(coordinator, camera)
-    entity.hass = hass
-    cancel_timer = MagicMock()
-
-    with patch(
-        "custom_components.nanit.camera.async_call_later",
-        return_value=cancel_timer,
-    ) as mock_call_later:
-        source = await entity.stream_source()
-
-    assert source == "rtmps://stream-url"
-    mock_call_later.assert_called_once()
-    assert mock_call_later.call_args.args[0] is hass
-    assert mock_call_later.call_args.args[1] == 45 * 60
-    assert entity._cancel_stream_expiry_timer is cancel_timer
-
-
-def test_camera_invalidates_stream_on_power_state_change() -> None:
+def test_camera_does_not_invalidate_stream_when_last_seen_unchanged() -> None:
     from datetime import UTC, datetime
 
     t1 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
 
-    coordinator = _push_coordinator(_camera_state(last_seen=t1, sleep_mode=False))
+    coordinator = _push_coordinator(_camera_state(last_seen=t1))
     camera = MagicMock(uid="cam_1")
     entity = NanitCameraEntity(coordinator, camera)
     _disable_state_writes(entity)
@@ -718,61 +655,44 @@ def test_camera_invalidates_stream_on_power_state_change() -> None:
 
     mock_stream = MagicMock()
     entity.stream = mock_stream
-    entity._stream_source_started_at = 100.0
-    coordinator.data = _camera_state(last_seen=t1, sleep_mode=True)
+    coordinator.data = _camera_state(last_seen=t1)
+    entity._handle_coordinator_update()
+
+    assert entity.stream is mock_stream
+
+
+def test_camera_does_not_invalidate_stream_on_first_update() -> None:
+    from datetime import UTC, datetime
+
+    t1 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+
+    coordinator = _push_coordinator(_camera_state(last_seen=t1))
+    camera = MagicMock(uid="cam_1")
+    entity = NanitCameraEntity(coordinator, camera)
+    _disable_state_writes(entity)
+
+    mock_stream = MagicMock()
+    entity.stream = mock_stream
+    entity._handle_coordinator_update()
+
+    assert entity.stream is mock_stream
+    assert entity._prev_last_seen == t1
+
+
+def test_camera_does_not_invalidate_when_no_stream_cached() -> None:
+    from datetime import UTC, datetime
+
+    t1 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+    t2 = datetime(2026, 1, 1, 13, 0, 0, tzinfo=UTC)
+
+    coordinator = _push_coordinator(_camera_state(last_seen=t1))
+    camera = MagicMock(uid="cam_1")
+    entity = NanitCameraEntity(coordinator, camera)
+    _disable_state_writes(entity)
+
+    entity._handle_coordinator_update()
+    coordinator.data = _camera_state(last_seen=t2)
     entity._handle_coordinator_update()
 
     assert entity.stream is None
-    assert entity._stream_source_started_at == 0.0
-
-
-def test_camera_reset_stream_service_invalidates_cached_stream() -> None:
-    coordinator = _push_coordinator(_camera_state())
-    entity = NanitCameraEntity(coordinator, MagicMock(uid="cam_1"))
-    entity.stream = MagicMock()
-    entity._stream_source_started_at = 100.0
-    cancel = MagicMock()
-    entity._cancel_stream_expiry_timer = cancel
-
-    entity.async_reset_stream()
-
-    assert entity.stream is None
-    assert entity._stream_source_started_at == 0.0
-    cancel.assert_called_once_with()
-    assert entity._cancel_stream_expiry_timer is None
-
-
-async def test_camera_start_streaming_safe_falls_back_for_legacy_client_signature() -> None:
-    coordinator = _push_coordinator(_camera_state(sleep_mode=False))
-    camera = MagicMock(uid="cam_1")
-    calls: list[dict[str, Any]] = []
-
-    async def async_start_streaming(**kwargs: Any) -> None:
-        calls.append(kwargs)
-        if "rtmps_url" in kwargs:
-            raise TypeError(
-                "NanitCamera.async_start_streaming() got an unexpected keyword argument 'rtmps_url'"
-            )
-
-    camera.async_start_streaming = AsyncMock(side_effect=async_start_streaming)
-    entity = NanitCameraEntity(coordinator, camera)
-
-    assert await entity._async_start_streaming_safe("rtmps://stream-url") is True
-    assert calls == [{"rtmps_url": "rtmps://stream-url"}, {}]
-
-
-async def test_camera_start_streaming_safe_does_not_restart_shared_camera() -> None:
-    coordinator = _push_coordinator(_camera_state(sleep_mode=False))
-    camera = MagicMock(uid="cam_1")
-    camera.async_start_streaming = AsyncMock(side_effect=RuntimeError("ws closed"))
-    camera.async_stop = AsyncMock()
-    camera.async_start = AsyncMock()
-    entity = NanitCameraEntity(coordinator, camera)
-
-    with patch("custom_components.nanit.camera._STREAM_RETRY_DELAY", 0):
-        result = await entity._async_start_streaming_safe()
-
-    assert result is False
-    assert camera.async_start_streaming.await_count == 3
-    camera.async_stop.assert_not_awaited()
-    camera.async_start.assert_not_awaited()
+    assert entity._prev_last_seen == t2

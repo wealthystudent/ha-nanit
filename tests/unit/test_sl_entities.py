@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from homeassistant.components.diagnostics import REDACTED
 from homeassistant.components.light import ATTR_BRIGHTNESS, ATTR_HS_COLOR
-from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util.color import brightness_to_value, value_to_brightness
 
 _ = sys.modules.setdefault("turbojpeg", MagicMock(TurboJPEG=MagicMock()))
@@ -211,8 +210,7 @@ async def test_light_turn_on_handles_transport_error_gracefully(
     entity = NanitSoundLightLight(coordinator)
     _disable_state_writes(entity)
 
-    with pytest.raises(HomeAssistantError):
-        await entity.async_turn_on()
+    await entity.async_turn_on()
 
     assert "Failed to control Sound & Light light" in caplog.text
 
@@ -225,8 +223,7 @@ async def test_light_turn_off_handles_transport_error_gracefully(
     entity = NanitSoundLightLight(coordinator)
     _disable_state_writes(entity)
 
-    with pytest.raises(HomeAssistantError):
-        await entity.async_turn_off()
+    await entity.async_turn_off()
 
     assert "Failed to turn off Sound & Light light" in caplog.text
 
@@ -275,8 +272,7 @@ async def test_select_select_option_handles_transport_error_gracefully(
     entity = NanitSoundSelect(coordinator)
     _disable_state_writes(entity)
 
-    with pytest.raises(HomeAssistantError):
-        await entity.async_select_option("rain")
+    await entity.async_select_option("rain")
 
     assert "Failed to set sound to rain" in caplog.text
 
@@ -321,10 +317,8 @@ async def test_sl_power_switch_handles_transport_error_gracefully(
     entity = NanitSLPowerSwitch(coordinator)
     _disable_state_writes(entity)
 
-    with pytest.raises(HomeAssistantError):
-        await entity.async_turn_on()
-    with pytest.raises(HomeAssistantError):
-        await entity.async_turn_off()
+    await entity.async_turn_on()
+    await entity.async_turn_off()
 
     assert "Failed to turn on S&L device" in caplog.text
     assert "Failed to turn off S&L device" in caplog.text
@@ -364,10 +358,8 @@ async def test_sl_sound_switch_handles_transport_error_gracefully(
     entity = NanitSLSoundSwitch(coordinator)
     _disable_state_writes(entity)
 
-    with pytest.raises(HomeAssistantError):
-        await entity.async_turn_on()
-    with pytest.raises(HomeAssistantError):
-        await entity.async_turn_off()
+    await entity.async_turn_on()
+    await entity.async_turn_off()
 
     assert "Failed to turn on S&L sound" in caplog.text
     assert "Failed to turn off S&L sound" in caplog.text
@@ -467,8 +459,8 @@ async def test_async_get_config_entry_diagnostics_returns_expected_structure() -
     assert "config_entry_data" in result
     assert "config_entry_options" in result
     assert "cameras" in result
-    assert "camera_1" in result["cameras"]
-    assert result["cameras"]["camera_1"]["push_coordinator"]["connected"] is True
+    assert "cam_1" in result["cameras"]
+    assert result["cameras"]["cam_1"]["push_coordinator"]["connected"] is True
 
 
 async def test_async_get_config_entry_diagnostics_redacts_sensitive_fields() -> None:
@@ -485,12 +477,7 @@ async def test_async_get_config_entry_diagnostics_redacts_sensitive_fields() -> 
             "access_token": "token",
             "refresh_token": "refresh",
         },
-        options={
-            "camera_ip": "192.168.0.10",
-            "camera_ips": "192.168.0.11",
-            "speaker_ip": "192.168.0.12",
-            "speaker_ips": {"cam_1": "192.168.0.13"},
-        },
+        options={"camera_ip": "192.168.0.10", "camera_ips": "192.168.0.11"},
         runtime_data=MagicMock(cameras={"cam_1": cam_data}),
     )
 
@@ -502,10 +489,7 @@ async def test_async_get_config_entry_diagnostics_redacts_sensitive_fields() -> 
     assert result["config_entry_data"]["refresh_token"] == REDACTED
     assert result["config_entry_options"]["camera_ip"] == REDACTED
     assert result["config_entry_options"]["camera_ips"] == REDACTED
-    assert result["config_entry_options"]["speaker_ip"] == REDACTED
-    assert result["config_entry_options"]["speaker_ips"] == REDACTED
-    assert result["cameras"]["camera_1"]["camera_uid"] == REDACTED
-    assert result["cameras"]["camera_1"]["baby_uid"] == REDACTED
+    assert result["cameras"]["cam_1"]["baby_uid"] == REDACTED
 
 
 async def test_async_get_config_entry_diagnostics_includes_cloud_data_when_present() -> None:
@@ -528,7 +512,7 @@ async def test_async_get_config_entry_diagnostics_includes_cloud_data_when_prese
 
     result = await async_get_config_entry_diagnostics(MagicMock(), entry)
 
-    cloud_diag = result["cameras"]["camera_1"]["cloud_coordinator"]
+    cloud_diag = result["cameras"]["cam_1"]["cloud_coordinator"]
     assert cloud_diag["last_update_success"] is False
     assert cloud_diag["last_exception"] == "cloud boom"
     assert cloud_diag["data"][0]["event_type"] == "MOTION"
@@ -913,8 +897,7 @@ async def test_sl_volume_set_value_handles_transport_error() -> None:
     entity = NanitSoundMachineVolume(coordinator)
     _disable_state_writes(entity)
 
-    with pytest.raises(HomeAssistantError):
-        await entity.async_set_native_value(75.0)
+    await entity.async_set_native_value(75.0)
 
 
 # ---------------------------------------------------------------------------

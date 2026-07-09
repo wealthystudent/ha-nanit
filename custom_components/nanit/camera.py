@@ -5,11 +5,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from datetime import datetime
 
 from homeassistant.components.camera import Camera, CameraEntityFeature
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
+from homeassistant.helpers.entity_platform import AddEntitiesCallback, async_get_current_platform
+from homeassistant.helpers.event import async_call_later
 
 from aionanit import NanitCamera
 
@@ -23,6 +23,7 @@ _LOGGER = logging.getLogger(__name__)
 
 _STREAM_START_ATTEMPTS = 3
 _STREAM_RETRY_DELAY = 2.0
+_STREAM_SOURCE_MAX_AGE = 45 * 60
 _SNAPSHOT_CACHE_TTL = 60.0
 _SNAPSHOT_PREFETCH_AGE = 30.0
 
@@ -33,6 +34,16 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Nanit camera entities for all cameras on the account."""
+    try:
+        platform = async_get_current_platform()
+    except RuntimeError:
+        platform = None
+    if platform is not None:
+        platform.async_register_entity_service(
+            "reset_stream",
+            {},
+            "async_reset_stream",
+        )
     async_add_entities(
         NanitCameraEntity(cam_data.push_coordinator, cam_data.camera)
         for cam_data in entry.runtime_data.cameras.values()
@@ -56,10 +67,11 @@ class NanitCameraEntity(NanitEntity, Camera):
         Camera.__init__(self)
         self._camera = camera
         self._prev_is_on: bool | None = None
-        self._prev_last_seen: datetime | None = None
         self._attr_unique_id = f"{camera.uid}_camera"
         self._cached_snapshot: bytes | None = None
         self._cached_snapshot_at: float = 0.0
+        self._stream_source_started_at: float = 0.0
+        self._cancel_stream_expiry_timer: CALLBACK_TYPE | None = None
 
     @property
     def is_on(self) -> bool:
@@ -80,19 +92,8 @@ class NanitCameraEntity(NanitEntity, Camera):
         if prev_on is not None and prev_on != cur_on:
             # Camera power changed — invalidate cached stream.
             self._invalidate_stream("power state change")
-
-        # Invalidate stream after WebSocket reconnection so the RTMPS URL
-        # gets a fresh access token.  last_seen is updated only when the
-        # transport moves to CONNECTED, so this fires once per reconnect.
-        if self.coordinator.data is not None:
-            cur_last_seen = self.coordinator.data.connection.last_seen
-            if (
-                self._prev_last_seen is not None
-                and cur_last_seen != self._prev_last_seen
-                and self.stream is not None
-            ):
-                self._invalidate_stream("WebSocket reconnection (token refreshed)")
-            self._prev_last_seen = cur_last_seen
+        else:
+            self._invalidate_stream_if_expired()
 
         super()._handle_coordinator_update()
 
@@ -101,6 +102,32 @@ class NanitCameraEntity(NanitEntity, Camera):
         if self.stream is not None:
             _LOGGER.debug("Invalidating cached stream after %s", reason)
             self.stream = None
+        self._stream_source_started_at = 0.0
+        if self._cancel_stream_expiry_timer is not None:
+            self._cancel_stream_expiry_timer()
+            self._cancel_stream_expiry_timer = None
+
+    @callback
+    def async_reset_stream(self) -> None:
+        """Reset HA's cached Nanit stream so the next viewer gets a fresh RTMPS URL."""
+        self._invalidate_stream("frontend recovery request")
+
+    def _invalidate_stream_if_expired(self) -> None:
+        """Discard HA's cached stream shortly before its RTMPS token can expire."""
+        if self.stream is None or self._stream_source_started_at == 0.0:
+            return
+
+        stream_age = time.monotonic() - self._stream_source_started_at
+        if stream_age >= _STREAM_SOURCE_MAX_AGE:
+            self._invalidate_stream(f"stream source age {stream_age:.0f}s")
+
+    @callback
+    def close_webrtc_session(self, session_id: str) -> None:
+        """Close a WebRTC session, ignoring duplicate go2rtc close callbacks."""
+        try:
+            super().close_webrtc_session(session_id)
+        except KeyError:
+            _LOGGER.debug("WebRTC session %s was already closed", session_id)
 
     # ------------------------------------------------------------------
     # Streaming
@@ -117,20 +144,54 @@ class NanitCameraEntity(NanitEntity, Camera):
         if not self.is_on:
             return None
 
-        if not await self._async_start_streaming_safe():
-            return None
-
         try:
-            return await self._camera.async_get_stream_rtmps_url()
+            source = await self._camera.async_get_stream_rtmps_url()
         except Exception:  # noqa: BLE001
             _LOGGER.warning("Failed to build RTMPS stream URL", exc_info=True)
             return None
 
-    async def _async_start_streaming_safe(self) -> bool:
+        if not await self._async_start_streaming_safe(source):
+            return None
+
+        self._stream_source_started_at = time.monotonic()
+        self._schedule_stream_expiry_timer()
+        return source
+
+    def _schedule_stream_expiry_timer(self) -> None:
+        """Schedule backend stream invalidation so token expiry is not update-dependent."""
+        if self._cancel_stream_expiry_timer is not None:
+            self._cancel_stream_expiry_timer()
+        try:
+            hass = self.hass
+        except (AttributeError, RuntimeError):
+            self._cancel_stream_expiry_timer = None
+            return
+
+        if hass is None:
+            self._cancel_stream_expiry_timer = None
+            return
+
+        self._cancel_stream_expiry_timer = async_call_later(
+            hass,
+            _STREAM_SOURCE_MAX_AGE,
+            lambda _now: self._invalidate_stream("stream source age timer"),
+        )
+
+    async def _async_start_streaming_safe(self, rtmps_url: str | None = None) -> bool:
         """Send PUT_STREAMING with retry.  Returns True on success."""
         for attempt in range(1, _STREAM_START_ATTEMPTS + 1):
             try:
-                await self._camera.async_start_streaming()
+                try:
+                    await self._camera.async_start_streaming(rtmps_url=rtmps_url)
+                except TypeError as err:
+                    if "rtmps_url" not in str(err):
+                        raise
+                    _LOGGER.debug(
+                        "Nanit client does not support explicit RTMPS URL reuse; "
+                        "falling back to legacy stream start for camera %s",
+                        self._camera.uid,
+                    )
+                    await self._camera.async_start_streaming()
                 return True
             except Exception:  # noqa: BLE001
                 if attempt < _STREAM_START_ATTEMPTS:

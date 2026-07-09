@@ -301,6 +301,17 @@ class TestGetHeadersCallback:
 
         await t.async_close()
 
+    async def test_close_ws_does_not_cancel_or_await_current_reconnect_task(self) -> None:
+        """Regression: cleanup must skip self._reconnect_task when it is current."""
+        t, *_ = _make_transport()
+        current = asyncio.current_task()
+        assert current is not None
+        t._reconnect_task = current
+
+        await asyncio.wait_for(t._async_close_ws(), timeout=1.0)
+
+        assert t._reconnect_task is current
+
 
 class TestAsyncForceReconnect:
     async def test_force_reconnect_closes_ws(self) -> None:

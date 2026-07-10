@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import time
+
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from aionanit.models import CameraState
+
+from .const import BREATHING_STALE_AFTER, DOMAIN
 from .coordinator import (
     NanitCloudCoordinator,
     NanitNetworkCoordinator,
@@ -13,6 +17,18 @@ from .coordinator import (
     NanitSoundLightCoordinator,
 )
 from .sanitize import display_name
+
+
+def breathing_is_fresh(state: CameraState | None) -> bool:
+    """Return True if a breathing reading arrived recently enough to trust.
+
+    The camera stops pushing STING frames when a tracking session ends, so a
+    reading older than ``BREATHING_STALE_AFTER`` means monitoring is off and the
+    breathing entities should report unavailable rather than a stale value.
+    """
+    if state is None or state.breathing.received_at is None:
+        return False
+    return (time.time() - state.breathing.received_at) < BREATHING_STALE_AFTER
 
 
 class NanitEntity(CoordinatorEntity[NanitPushCoordinator]):

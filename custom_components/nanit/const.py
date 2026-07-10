@@ -21,6 +21,12 @@ PLATFORMS = [
 # Cloud event detection window (seconds)
 CLOUD_EVENT_WINDOW = 300
 
+# Breathing (STING) staleness window (seconds). The camera pushes a
+# PUT_STING_STATUS frame every ~4-5s while tracking is active and simply stops
+# when the session ends, so a reading older than this means monitoring is off
+# and the breathing entities report unavailable rather than a stale value.
+BREATHING_STALE_AFTER = 30
+
 # Cloud event poll interval (seconds)
 CLOUD_POLL_INTERVAL = 30
 

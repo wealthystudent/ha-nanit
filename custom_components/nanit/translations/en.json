@@ -88,6 +88,7 @@
       "temperature": { "name": "Temperature" },
       "humidity": { "name": "Humidity" },
       "light": { "name": "Light Level" },
+      "breaths_per_minute": { "name": "Breaths Per Minute" },
       "sl_temperature": { "name": "Temperature" },
       "sl_humidity": { "name": "Humidity" },
       "sl_connection_mode": {
@@ -105,6 +106,7 @@
     "binary_sensor": {
       "motion": { "name": "Motion" },
       "sound": { "name": "Sound" },
+      "breathing_alert": { "name": "Breathing Alert" },
       "connectivity": { "name": "Connectivity" },
       "sl_connectivity": { "name": "Connectivity" }
     },

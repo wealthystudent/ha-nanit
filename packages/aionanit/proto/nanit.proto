@@ -235,6 +235,28 @@ message GetSettings {
   optional bool all = 1;
 }
 
+// Breathing Motion Monitoring ("STING") status, pushed by the camera as a
+// PUT_STING_STATUS request (~every 4-5s) while a breathing-tracking session is
+// active (Nanit Breathing Wear on the baby, tracking started in the app). The
+// camera computes breaths-per-minute on-device via computer vision and streams
+// it to any subscribed local websocket client.
+//
+// Field 10 (breaths_per_minute) and field 4 (is_alert) were confirmed by
+// capturing live frames and ground-truthing #10 against the app's displayed
+// value. Remaining fields are annotated with their observed meaning; unlabeled
+// wire fields (e.g. instantaneous signal floats at 18/19) are intentionally
+// omitted and ignored by the parser.
+message StingStatus {
+  optional int32 state = 1;              // observed constant 2 while measuring
+  optional bool is_measuring = 2;        // inferred: 1 while a session is active
+  optional bool is_detected = 3;         // inferred: 1 while breathing is detected
+  optional bool is_alert = 4;            // red-alert flag; 0 = OK (confirmed)
+  optional int64 timestamp = 8;          // reading time (unix seconds)
+  optional string session = 9;           // "<camera_serial>_<session_start>"
+  optional int32 breaths_per_minute = 10;  // displayed BPM (confirmed vs app)
+  optional int64 session_start = 14;     // session start (unix seconds)
+}
+
 message Request {
   required int32 id = 1;
   required RequestType type = 2;
@@ -250,6 +272,7 @@ message Request {
   optional Playback playback = 16;
   optional GetControl get_control = 17;
   optional GetLogs get_logs = 18;
+  optional StingStatus sting_status = 23;
 }
 
 message Response {

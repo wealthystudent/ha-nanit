@@ -20,7 +20,12 @@ from aionanit.models import CameraState, CloudEvent, ConnectionState
 from . import NanitConfigEntry
 from .const import CLOUD_EVENT_WINDOW
 from .coordinator import NanitCloudCoordinator, NanitPushCoordinator, NanitSoundLightCoordinator
-from .entity import NanitCloudEntity, NanitEntity, NanitSoundLightEntity
+from .entity import (
+    NanitCloudEntity,
+    NanitEntity,
+    NanitSoundLightEntity,
+    breathing_is_fresh,
+)
 
 PARALLEL_UPDATES = 0
 
@@ -86,6 +91,8 @@ async def async_setup_entry(
         for push_desc in BINARY_SENSORS:
             entities.append(NanitBinarySensor(cam_data.push_coordinator, push_desc))
 
+        entities.append(NanitBreathingAlertBinarySensor(cam_data.push_coordinator))
+
         if cam_data.cloud_coordinator is not None:
             for cloud_desc in CLOUD_BINARY_SENSORS:
                 entities.append(NanitCloudBinarySensor(cam_data.cloud_coordinator, cloud_desc))
@@ -139,6 +146,38 @@ class NanitBinarySensor(NanitEntity, BinarySensorEntity):
         if self.entity_description.key == "connectivity":
             return bool(self.coordinator.connected)
         return self.entity_description.value_fn(self.coordinator.data)
+
+
+class NanitBreathingAlertBinarySensor(NanitEntity, BinarySensorEntity):
+    """Breathing Motion Monitoring red-alert from Nanit.
+
+    ON when the camera reports a breathing-motion alert during an active
+    tracking session. Only available while a fresh reading is being pushed, so
+    it does not sit at "clear" implying monitoring when none is running.
+
+    This mirrors the app for convenience/automation. The Nanit app remains the
+    safety-critical alerting path — do not rely on this entity for that.
+    """
+
+    _attr_translation_key = "breathing_alert"
+    _attr_device_class = BinarySensorDeviceClass.SAFETY
+
+    def __init__(self, coordinator: NanitPushCoordinator) -> None:
+        """Initialize."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.camera.uid}_breathing_alert"
+
+    @property
+    def available(self) -> bool:
+        """Available only while a fresh breathing reading is being pushed."""
+        return super().available and breathing_is_fresh(self.coordinator.data)
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True when a breathing-motion alert is active."""
+        if self.coordinator.data is None:
+            return None
+        return self.coordinator.data.breathing.is_alert
 
 
 class NanitCloudBinarySensor(NanitCloudEntity, BinarySensorEntity):

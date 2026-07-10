@@ -90,6 +90,23 @@ class PlaybackState:
 
 
 @dataclass(frozen=True)
+class BreathingState:
+    """Breathing Motion Monitoring ("STING") state, pushed while a tracking
+    session is active (Breathing Wear on the baby, tracking started in the app).
+
+    ``received_at`` is the local wall-clock time (``time.time()``) the reading
+    was ingested, used to detect a stopped session — the camera simply stops
+    pushing frames when tracking ends rather than sending a terminal event.
+    """
+
+    breaths_per_minute: int | None = None
+    is_alert: bool = False
+    is_measuring: bool = False
+    is_detected: bool = False
+    received_at: float | None = None
+
+
+@dataclass(frozen=True)
 class ConnectionInfo:
     state: ConnectionState = ConnectionState.DISCONNECTED
     transport: TransportKind = TransportKind.NONE
@@ -108,6 +125,7 @@ class CameraState:
     control: ControlState = field(default_factory=ControlState)
     status: StatusState = field(default_factory=StatusState)
     playback: PlaybackState = field(default_factory=PlaybackState)
+    breathing: BreathingState = field(default_factory=BreathingState)
 
 
 class CameraEventKind(Enum):
@@ -116,6 +134,7 @@ class CameraEventKind(Enum):
     CONTROL_UPDATE = "control_update"
     STATUS_UPDATE = "status_update"
     PLAYBACK_UPDATE = "playback_update"
+    BREATHING_UPDATE = "breathing_update"
     CONNECTION_CHANGE = "connection_change"
 
 

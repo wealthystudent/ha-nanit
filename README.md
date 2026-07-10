@@ -52,8 +52,12 @@ Copy `custom_components/nanit/` into your HA `config/custom_components/` directo
 - 📷 Live camera stream (RTMPS)
 - 🌡️ Temperature & humidity sensors
 - 👁️ Motion & sound detection
+- 🫁 Breaths-per-minute & breathing alert (with Nanit Breathing Wear; available while tracking is active in the app)
 - 💡 Night light switch
 - 🔌 Camera power switch
+
+> [!NOTE]
+> The breathing entities mirror the app for dashboards and automations. The Nanit app remains the safety-critical alerting path — don't rely on Home Assistant for that.
 
 **Sound & Light Machine** (if linked):
 - Power, sound, and light switches

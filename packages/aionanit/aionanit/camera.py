@@ -20,6 +20,7 @@ from .exceptions import (
     NanitTransportError,
 )
 from .models import (
+    BreathingState,
     CameraEvent,
     CameraEventKind,
     CameraState,
@@ -44,6 +45,7 @@ from .parsers import (
     _parse_soundtracks,
     _parse_status,
     _parse_status_from_proto,
+    _parse_sting_status,
 )
 from .proto import (
     ControlNightLight,
@@ -629,6 +631,11 @@ class NanitCamera:
                     pb = dataclasses.replace(pb, available_tracks=current_tracks)
                 self._update_state(playback=pb, kind=CameraEventKind.PLAYBACK_UPDATE)
 
+        elif req_type == RequestType.PUT_STING_STATUS:
+            breathing = _parse_sting_status(proto_request)
+            if breathing is not None:
+                self._update_state(breathing=breathing, kind=CameraEventKind.BREATHING_UPDATE)
+
         else:
             _LOGGER.debug("Unhandled push request type: %s", req_type)
 
@@ -701,6 +708,7 @@ class NanitCamera:
         control: ControlState | None = None,
         status: StatusState | None = None,
         playback: PlaybackState | None = None,
+        breathing: BreathingState | None = None,
         kind: CameraEventKind,
     ) -> None:
         """Apply a partial state update and notify subscribers."""
@@ -715,6 +723,8 @@ class NanitCamera:
             replacements["status"] = status
         if playback is not None:
             replacements["playback"] = playback
+        if breathing is not None:
+            replacements["breathing"] = breathing
 
         if replacements:
             self._state = dataclasses.replace(self._state, **replacements)

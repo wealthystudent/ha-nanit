@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import importlib
 import sys
+import time
 
 # pyright: basic, reportUnusedFunction=false
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -18,6 +19,7 @@ _ = sys.modules.setdefault("turbojpeg", MagicMock(TurboJPEG=MagicMock()))
 
 _MODELS = importlib.import_module("aionanit.models")
 Baby = _MODELS.Baby
+BreathingState = _MODELS.BreathingState
 CameraState = _MODELS.CameraState
 CloudEvent = _MODELS.CloudEvent
 ConnectionInfo = _MODELS.ConnectionInfo
@@ -41,6 +43,7 @@ from custom_components.nanit.binary_sensor import (
     BINARY_SENSORS,
     CLOUD_BINARY_SENSORS,
     NanitBinarySensor,
+    NanitBreathingAlertBinarySensor,
     NanitCloudBinarySensor,
 )
 from custom_components.nanit.camera import NanitCameraEntity
@@ -50,7 +53,7 @@ from custom_components.nanit.coordinator import (
     NanitPushCoordinator,
 )
 from custom_components.nanit.media_player import NanitMediaPlayer
-from custom_components.nanit.sensor import SENSORS, NanitSensor
+from custom_components.nanit.sensor import SENSORS, NanitBreathingRateSensor, NanitSensor
 from custom_components.nanit.switch import SWITCHES, NanitSwitch
 
 from .conftest import MOCK_BABY_1
@@ -205,6 +208,60 @@ def test_binary_sensor_connectivity_not_available_without_successful_update() ->
     entity = NanitBinarySensor(coordinator, _binary_description("connectivity"))
 
     assert entity.available is False
+
+
+def _breathing_state(
+    *,
+    breaths_per_minute: int | None = 43,
+    is_alert: bool = False,
+    is_measuring: bool = True,
+    age_seconds: float = 0.0,
+) -> CameraState:
+    return replace(
+        _camera_state(),
+        breathing=BreathingState(
+            breaths_per_minute=breaths_per_minute,
+            is_alert=is_alert,
+            is_measuring=is_measuring,
+            received_at=time.time() - age_seconds,
+        ),
+    )
+
+
+def test_breathing_rate_value_and_availability_when_fresh() -> None:
+    coordinator = _push_coordinator(_breathing_state(breaths_per_minute=43))
+    entity = NanitBreathingRateSensor(coordinator)
+
+    assert entity.native_value == 43
+    assert entity.available is True
+
+
+def test_breathing_rate_unavailable_when_stale() -> None:
+    coordinator = _push_coordinator(_breathing_state(age_seconds=120))
+    entity = NanitBreathingRateSensor(coordinator)
+
+    assert entity.available is False
+
+
+def test_breathing_rate_unavailable_without_data() -> None:
+    coordinator = _push_coordinator(None)
+    entity = NanitBreathingRateSensor(coordinator)
+
+    assert entity.native_value is None
+    assert entity.available is False
+
+
+def test_breathing_alert_reflects_flag_and_freshness() -> None:
+    on = NanitBreathingAlertBinarySensor(_push_coordinator(_breathing_state(is_alert=True)))
+    off = NanitBreathingAlertBinarySensor(_push_coordinator(_breathing_state(is_alert=False)))
+    stale = NanitBreathingAlertBinarySensor(
+        _push_coordinator(_breathing_state(is_alert=True, age_seconds=120))
+    )
+
+    assert on.is_on is True
+    assert on.available is True
+    assert off.is_on is False
+    assert stale.available is False
 
 
 def test_cloud_binary_motion_on_when_event_within_window() -> None:

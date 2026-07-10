@@ -2,6 +2,19 @@
 # name: TestEntityRegistration.test_binary_sensor[baseline]
   list([
     dict({
+      'class': 'NanitBreathingAlertBinarySensor',
+      'device_class': <BinarySensorDeviceClass.SAFETY: 'safety'>,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1',
+        ),
+      ]),
+      'entity_category': None,
+      'translation_key': 'breathing_alert',
+      'unique_id': 'cam_1_breathing_alert',
+    }),
+    dict({
       'class': 'NanitBinarySensor',
       'device_class': <BinarySensorDeviceClass.CONNECTIVITY: 'connectivity'>,
       'device_identifiers': list([
@@ -18,6 +31,19 @@
 # ---
 # name: TestEntityRegistration.test_binary_sensor[full]
   list([
+    dict({
+      'class': 'NanitBreathingAlertBinarySensor',
+      'device_class': <BinarySensorDeviceClass.SAFETY: 'safety'>,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1',
+        ),
+      ]),
+      'entity_category': None,
+      'translation_key': 'breathing_alert',
+      'unique_id': 'cam_1_breathing_alert',
+    }),
     dict({
       'class': 'NanitCloudBinarySensor',
       'device_class': <BinarySensorDeviceClass.MOTION: 'motion'>,
@@ -248,6 +274,19 @@
 # name: TestEntityRegistration.test_sensor[baseline]
   list([
     dict({
+      'class': 'NanitBreathingRateSensor',
+      'device_class': None,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1',
+        ),
+      ]),
+      'entity_category': None,
+      'translation_key': 'breaths_per_minute',
+      'unique_id': 'cam_1_breaths_per_minute',
+    }),
+    dict({
       'class': 'NanitSensor',
       'device_class': <SensorDeviceClass.HUMIDITY: 'humidity'>,
       'device_identifiers': list([
@@ -290,6 +329,19 @@
 # ---
 # name: TestEntityRegistration.test_sensor[full]
   list([
+    dict({
+      'class': 'NanitBreathingRateSensor',
+      'device_class': None,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1',
+        ),
+      ]),
+      'entity_category': None,
+      'translation_key': 'breaths_per_minute',
+      'unique_id': 'cam_1_breaths_per_minute',
+    }),
     dict({
       'class': 'NanitSensor',
       'device_class': <SensorDeviceClass.HUMIDITY: 'humidity'>,

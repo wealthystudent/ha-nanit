@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import time
+
 from .models import (
+    BreathingState,
     ControlState,
     NightLightState,
     PlaybackState,
@@ -192,3 +195,25 @@ def _parse_soundtracks(resp: Response) -> tuple[str, ...]:
         if st.filename:
             tracks.append(st.filename)
     return tuple(tracks)
+
+
+def _parse_sting_status(request: object) -> BreathingState | None:
+    """Parse a PUT_STING_STATUS push request into a BreathingState.
+
+    Returns ``None`` when the request carries no ``sting_status`` payload so the
+    caller can leave existing state untouched. A ``breaths_per_minute`` of 0
+    (calibrating / no lock yet) is normalised to ``None``.
+    """
+    from .proto import Request as ProtoRequest
+
+    if not isinstance(request, ProtoRequest) or not request.HasField("sting_status"):
+        return None
+
+    sting = request.sting_status
+    return BreathingState(
+        breaths_per_minute=sting.breaths_per_minute or None,
+        is_alert=bool(sting.is_alert),
+        is_measuring=bool(sting.is_measuring),
+        is_detected=bool(sting.is_detected),
+        received_at=time.time(),
+    )

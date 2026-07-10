@@ -5,6 +5,7 @@ All notable changes to the Nanit Home Assistant integration are documented in th
 ## [1.8.0] – Unreleased
 
 ### Added
+- **Breathing Motion Monitoring** — `breaths_per_minute` sensor and `breathing_alert` binary sensor (device class `safety`), decoded from the camera's `PUT_STING_STATUS` push. Available while a breathing-tracking session is active (Nanit Breathing Wear on the baby, tracking started in the app); reports unavailable rather than a stale value when monitoring stops. Mirrors the app for dashboards/automations — the app remains the safety-critical alerting path.
 - **Bundled Lovelace dashboard card** — zero-config companion card with live stream, nursery sensor overlays, night light & sound machine controls, and network info popup. Auto-registers as a Lovelace resource on setup.
 - Custom fat rounded sliders for night light brightness and sound machine volume
 - Icon-based sound track selection (replaces text list)

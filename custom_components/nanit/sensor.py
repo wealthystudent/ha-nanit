@@ -27,7 +27,12 @@ from aionanit.models import CameraState, NetworkInfo
 from . import NanitConfigEntry
 from .aionanit_sl.models import SoundLightFullState
 from .coordinator import NanitNetworkCoordinator, NanitPushCoordinator, NanitSoundLightCoordinator
-from .entity import NanitEntity, NanitNetworkEntity, NanitSoundLightEntity
+from .entity import (
+    NanitEntity,
+    NanitNetworkEntity,
+    NanitSoundLightEntity,
+    breathing_is_fresh,
+)
 
 PARALLEL_UPDATES = 0
 
@@ -148,6 +153,8 @@ async def async_setup_entry(
         for description in SENSORS:
             entities.append(NanitSensor(cam_data.push_coordinator, description))
 
+        entities.append(NanitBreathingRateSensor(cam_data.push_coordinator))
+
         # Sound & Light Machine sensors (optional)
         sl_coordinator = cam_data.sound_light_coordinator
         if sl_coordinator is not None:
@@ -185,6 +192,38 @@ class NanitSensor(NanitEntity, SensorEntity):
         if self.coordinator.data is None:
             return None
         return self.entity_description.value_fn(self.coordinator.data)
+
+
+class NanitBreathingRateSensor(NanitEntity, SensorEntity):
+    """Breaths-per-minute from Nanit Breathing Motion Monitoring.
+
+    Only available while a breathing-tracking session is active (Breathing Wear
+    on the baby, tracking started in the app). When monitoring stops the camera
+    stops pushing readings, so the entity reports unavailable rather than a stale
+    value. This is a convenience mirror of the app — not a safety device.
+    """
+
+    _attr_translation_key = "breaths_per_minute"
+    _attr_native_unit_of_measurement = "breaths/min"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_icon = "mdi:lungs"
+
+    def __init__(self, coordinator: NanitPushCoordinator) -> None:
+        """Initialize."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.camera.uid}_breaths_per_minute"
+
+    @property
+    def available(self) -> bool:
+        """Available only while a fresh breathing reading is being pushed."""
+        return super().available and breathing_is_fresh(self.coordinator.data)
+
+    @property
+    def native_value(self) -> int | None:
+        """Return the current breaths per minute."""
+        if self.coordinator.data is None:
+            return None
+        return self.coordinator.data.breathing.breaths_per_minute
 
 
 class NanitSLSensor(NanitSoundLightEntity, SensorEntity):

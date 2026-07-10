@@ -464,6 +464,19 @@ class NanitCamera:
         self._update_state(playback=new_playback, kind=CameraEventKind.PLAYBACK_UPDATE)
         return new_playback
 
+    async def async_start_breathing_tracking(self) -> None:
+        """Start a Breathing Motion Monitoring ("STING") session.
+
+        Mirrors the Nanit app's "start breathing tracking" action. The camera
+        begins pushing PUT_STING_STATUS frames (bpm/alert) while the Breathing
+        Wear band is detected, and stops on its own when the baby leaves the
+        crib — there is no stop command (matches the app).
+
+        Display/convenience only: the Nanit app remains the safety-critical
+        breathing-alert path.
+        """
+        await self._send_request(RequestType.PUT_STING_START)
+
     # ------------------------------------------------------------------
     # Streaming
     # ------------------------------------------------------------------

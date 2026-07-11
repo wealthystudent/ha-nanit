@@ -51,10 +51,11 @@ See [tests/README.md](tests/README.md) for more details.
 1. **Branch** from `main`: `feat/<description>`, `fix/<description>`, or `chore/<description>`.
 2. Make your changes. Follow existing code patterns.
 3. Run `just check` (lint + format + typecheck + tests).
-4. Open a **pull request** against `main`. PR title must follow conventional commit format (e.g., `feat: add night vision toggle`).
-5. If the PR should trigger a release, add a label: `release:patch`, `release:minor`, or `release:major`.
-6. CI must pass. If it fails, fix in the same branch and push.
-7. Maintainer reviews and squash-merges. Branch is auto-deleted.
+4. **Verify with the dev HA instance.** Start it with `just dev`, add the integration, and confirm your change works end-to-end. This is how the maintainer will test your PR — if it doesn't work locally for you, it won't work for review either.
+5. Open a **pull request** against `main`. PR title must follow conventional commit format (e.g., `feat: add night vision toggle`).
+6. If the PR should trigger a release, add a label: `release:patch`, `release:minor`, or `release:major`.
+7. CI must pass. If it fails, fix in the same branch and push.
+8. Maintainer reviews and squash-merges. Branch is auto-deleted.
 
 For full details on branching, commits, and signing: see [AGENTS.md → Git Workflow](AGENTS.md#git-workflow).
 

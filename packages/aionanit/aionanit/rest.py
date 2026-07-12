@@ -62,6 +62,24 @@ def _parse_network(baby_json: dict[str, Any]) -> NetworkInfo | None:
     )
 
 
+def _parse_camera_connected(baby_json: dict[str, Any]) -> bool | None:
+    """Return the cloud-reported camera connected state, or None if absent."""
+    cam = baby_json.get("camera")
+    if not isinstance(cam, dict):
+        return None
+    val = cam.get("connected")
+    return bool(val) if isinstance(val, bool) else None
+
+
+def _parse_camera_last_seen(baby_json: dict[str, Any]) -> int | None:
+    """Return the Unix timestamp of the camera's last cloud contact, or None."""
+    cam = baby_json.get("camera")
+    if not isinstance(cam, dict):
+        return None
+    val = cam.get("last_seen")
+    return int(val) if isinstance(val, int | float) else None
+
+
 # Headers required by the Nanit API. The API rejects requests without
 # nanit-api-version (especially when MFA is enabled) and may reject
 # requests with a non-mobile User-Agent.
@@ -212,6 +230,8 @@ class NanitRestClient:
                 camera_uid=baby["camera_uid"],
                 speaker_uid=((baby.get("speaker") or {}).get("speaker") or {}).get("uid"),
                 network=_parse_network(baby),
+                camera_connected=_parse_camera_connected(baby),
+                camera_last_seen=_parse_camera_last_seen(baby),
             )
             for baby in body.get("babies", [])
         ]

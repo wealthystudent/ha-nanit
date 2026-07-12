@@ -295,6 +295,72 @@ class TestGetBabies:
             with pytest.raises(NanitAuthError):
                 await client.async_get_babies("bad_token")
 
+    async def test_get_babies_camera_connected_true(self, client: NanitRestClient) -> None:
+        with aioresponses() as m:
+            m.get(
+                BABIES_URL,
+                payload={
+                    "babies": [
+                        {
+                            "uid": "baby1",
+                            "name": "Ezra",
+                            "camera_uid": "cam1",
+                            "camera": {
+                                "connected": True,
+                                "last_seen": 1783109177,
+                            },
+                        }
+                    ]
+                },
+            )
+            babies = await client.async_get_babies("token123")
+
+        assert babies[0].camera_connected is True
+        assert babies[0].camera_last_seen == 1783109177
+
+    async def test_get_babies_camera_connected_false(self, client: NanitRestClient) -> None:
+        with aioresponses() as m:
+            m.get(
+                BABIES_URL,
+                payload={
+                    "babies": [
+                        {
+                            "uid": "baby1",
+                            "name": "Ezra",
+                            "camera_uid": "cam1",
+                            "camera": {
+                                "connected": False,
+                                "last_seen": 1783000000,
+                            },
+                        }
+                    ]
+                },
+            )
+            babies = await client.async_get_babies("token123")
+
+        assert babies[0].camera_connected is False
+        assert babies[0].camera_last_seen == 1783000000
+
+    async def test_get_babies_camera_connected_absent(self, client: NanitRestClient) -> None:
+        """When the camera object is missing, camera_connected and camera_last_seen are None."""
+        with aioresponses() as m:
+            m.get(
+                BABIES_URL,
+                payload={
+                    "babies": [
+                        {
+                            "uid": "baby1",
+                            "name": "Ezra",
+                            "camera_uid": "cam1",
+                        }
+                    ]
+                },
+            )
+            babies = await client.async_get_babies("token123")
+
+        assert babies[0].camera_connected is None
+        assert babies[0].camera_last_seen is None
+
 
 class TestGetEvents:
     async def test_get_events_success(self, client: NanitRestClient) -> None:

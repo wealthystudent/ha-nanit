@@ -123,6 +123,13 @@ def test_card_source_resets_stream_bookkeeping_whenever_camera_turns_off() -> No
     assert "this._watchedEpoch = -1" in card
 
 
+def test_card_does_not_treat_unavailable_power_as_camera_off() -> None:
+    """A stale/unavailable power entity must not collapse the stream as off."""
+    card = _read(SRC_DIR / "nanit-card.ts")
+
+    assert 'state !== "off"' in card
+
+
 def test_bundled_card_resets_stream_bookkeeping_whenever_camera_turns_off() -> None:
     """The shipped bundle should contain unconditional power-off stream cleanup."""
     bundle = _read(BUNDLE)

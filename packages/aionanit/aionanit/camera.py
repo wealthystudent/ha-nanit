@@ -284,22 +284,26 @@ class NanitCamera:
         self._update_state(control=control, kind=CameraEventKind.CONTROL_UPDATE)
         return control
 
-    async def async_get_sensor_data(self) -> SensorState:
+    async def async_get_sensor_data(self, *, reconnect_on_failure: bool = True) -> SensorState:
         """GET_SENSOR_DATA request (all sensors)."""
         resp = cast(
             Any,
             await self._send_request(
                 RequestType.GET_SENSOR_DATA,
                 get_sensor_data=GetSensorData(all=True),
+                reconnect_on_failure=reconnect_on_failure,
             ),
         )
         sensors = _parse_sensor_data(resp.sensor_data, self._state.sensors)
         self._update_state(sensors=sensors, kind=CameraEventKind.SENSOR_UPDATE)
         return sensors
 
-    async def async_get_playback(self) -> PlaybackState:
+    async def async_get_playback(self, *, reconnect_on_failure: bool = True) -> PlaybackState:
         """GET_PLAYBACK request — query current sound machine state."""
-        resp = await self._send_request(RequestType.GET_PLAYBACK)
+        resp = await self._send_request(
+            RequestType.GET_PLAYBACK,
+            reconnect_on_failure=reconnect_on_failure,
+        )
         pb = _parse_playback(resp)
         # Preserve available_tracks from existing state — GET_PLAYBACK does
         # not include the track list; only GET_SOUNDTRACKS provides it.
@@ -740,6 +744,7 @@ class NanitCamera:
         self,
         request_type: int,
         timeout: float = _DEFAULT_REQUEST_TIMEOUT,
+        reconnect_on_failure: bool = True,
         **kwargs: Any,
     ) -> Any:
         """Send a protobuf request and await the correlated response.
@@ -786,7 +791,7 @@ class NanitCamera:
                 await self._transport.async_send(data)
             except NanitTransportError:
                 _ = self._pending.resolve(request_id, Response())
-                if attempt == 0:
+                if attempt == 0 and reconnect_on_failure:
                     _LOGGER.warning("Send failed, reconnecting and retrying")
                     await self._async_reconnect()
                     continue
@@ -794,9 +799,18 @@ class NanitCamera:
 
             try:
                 return await asyncio.wait_for(future, timeout=timeout)
+            except NanitTransportError:
+                if attempt == 0 and reconnect_on_failure:
+                    _LOGGER.warning(
+                        "Request %s lost during transport drop, reconnecting and retrying",
+                        RequestType.Name(request_type),
+                    )
+                    await self._async_reconnect()
+                    continue
+                raise
             except TimeoutError:
                 _ = self._pending.resolve(request_id, Response())
-                if attempt == 0:
+                if attempt == 0 and reconnect_on_failure:
                     _LOGGER.warning(
                         "Request %s (id=%s) timed out after %.1fs, reconnecting and retrying",
                         RequestType.Name(request_type),
@@ -1064,7 +1078,7 @@ class NanitCamera:
                 if self._stopped or not self._transport.connected:
                     continue
                 try:
-                    await self.async_get_sensor_data()
+                    await self.async_get_sensor_data(reconnect_on_failure=False)
                 except (
                     NanitRequestTimeout,
                     NanitTransportError,
@@ -1102,7 +1116,7 @@ class NanitCamera:
                 if self._stopped or not self._transport.connected:
                     continue
                 try:
-                    await self.async_get_playback()
+                    await self.async_get_playback(reconnect_on_failure=False)
                 except (
                     NanitRequestTimeout,
                     NanitTransportError,

@@ -167,10 +167,13 @@ class TestIdleSeconds:
         session.ws_connect = AsyncMock(return_value=mock_ws)
 
         await t.async_connect_cloud("cam1", "tok1")
+        t._closed = True
         await asyncio.sleep(0.05)
 
         # A binary message was received — idle should be small.
         assert t.idle_seconds < 1.0
+
+        await t.async_close()
 
         t._closed = True
         await asyncio.sleep(0)
@@ -199,10 +202,11 @@ class TestRecvLoop:
         session.ws_connect = AsyncMock(return_value=mock_ws)
 
         await t.async_connect_cloud("cam1", "tok1")
-        # Give recv loop a moment to process
+        t._closed = True
         await asyncio.sleep(0.05)
 
         msg_cb.assert_called_once_with(b"\x08\x00")
+        await t.async_close()
         t._closed = True
         await asyncio.sleep(0)
         for task in asyncio.all_tasks():

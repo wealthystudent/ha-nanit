@@ -70,7 +70,10 @@ export class NanitCard extends LitElement {
 
   private _isCameraOn(entities: NanitEntities): boolean {
     if (!entities.power) return true;
-    return this.hass.states[entities.power]?.state === "on";
+    // Unknown/unavailable control state is not an intentional power-off.
+    // Keep the stream mounted so a reconnect can recover it; only an explicit
+    // `off` state should collapse the card and show "Camera Off".
+    return this.hass.states[entities.power]?.state !== "off";
   }
 
   private _fireMoreInfo(entityId: string): void {

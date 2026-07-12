@@ -704,6 +704,25 @@ async def test_nanit_switch_async_added_to_hass_restores_state() -> None:
     assert entity._attr_is_on is True
 
 
+@pytest.mark.parametrize("stale_state", ["unavailable", "unknown"])
+async def test_nanit_switch_skips_restore_for_stale_state(stale_state: str) -> None:
+    """Unavailable/unknown last-state must not pin the switch to off on restart."""
+    coordinator = _push_coordinator(None)
+    camera = MagicMock(uid="cam_1")
+    entity = NanitSwitch(coordinator, camera, _switch_desc)
+    _disable_state_writes(entity)
+
+    last_state = MagicMock()
+    last_state.state = stale_state
+    entity.async_get_last_state = AsyncMock(return_value=last_state)
+    entity.async_on_remove = MagicMock()
+
+    with patch("homeassistant.helpers.restore_state.RestoreEntity.async_added_to_hass"):
+        await entity.async_added_to_hass()
+
+    assert entity._attr_is_on is None
+
+
 # ---------------------------------------------------------------------------
 # S&L Sound switch — is_on returns None when no data
 # ---------------------------------------------------------------------------
@@ -1444,3 +1463,21 @@ async def test_night_light_async_added_to_hass_skips_restore_when_data_present()
         await entity.async_added_to_hass()
 
     assert entity.is_on is True
+
+
+@pytest.mark.parametrize("stale_state", ["unavailable", "unknown"])
+async def test_night_light_skips_restore_for_stale_state(stale_state: str) -> None:
+    """Unavailable/unknown last-state must not pin the light to off on restart."""
+    entity, _ = _night_light_entity(data_is_none=True)
+
+    last_state = MagicMock()
+    last_state.state = stale_state
+    last_state.attributes = {ATTR_BRIGHTNESS: 180}
+    entity.async_get_last_state = AsyncMock(return_value=last_state)
+    entity.async_on_remove = MagicMock()
+
+    with patch("homeassistant.helpers.restore_state.RestoreEntity.async_added_to_hass"):
+        await entity.async_added_to_hass()
+
+    assert entity.is_on is None
+    assert entity.brightness is None

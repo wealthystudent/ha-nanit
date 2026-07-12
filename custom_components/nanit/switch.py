@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from homeassistant.components.switch import SwitchDeviceClass, SwitchEntity, SwitchEntityDescription
-from homeassistant.const import STATE_ON
+from homeassistant.const import STATE_OFF, STATE_ON
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
@@ -101,11 +101,17 @@ class NanitSwitch(NanitEntity, RestoreEntity, SwitchEntity):
             self._attr_is_on = self.entity_description.value_fn(coordinator.data)
 
     async def async_added_to_hass(self) -> None:
-        """Restore last known state on startup."""
+        """Restore last known state on startup.
+
+        Only restore from concrete on/off states; treat unavailable/unknown
+        as "no info" so a disconnect at shutdown doesn't pin the entity to
+        off until the next coordinator update.
+        """
         await super().async_added_to_hass()
         if (
             self._attr_is_on is None
             and (last_state := await self.async_get_last_state()) is not None
+            and last_state.state in (STATE_ON, STATE_OFF)
         ):
             self._attr_is_on = last_state.state == STATE_ON
 

@@ -193,6 +193,47 @@ async def test_active_device_not_removed(
     mock_device_registry.async_remove_device.assert_not_called()
 
 
+async def test_no_devices_removed_when_babies_list_empty(
+    hass: HomeAssistant,
+    mock_nanit_client,
+) -> None:
+    """If the API transiently returns no babies, don't wipe existing HA devices."""
+    mock_nanit_client.async_get_babies.return_value = []
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=mock_entry_data_v2(),
+        version=2,
+        unique_id=MOCK_EMAIL,
+    )
+    entry.add_to_hass(hass)
+
+    mock_device_registry = MagicMock()
+    existing_device = MagicMock()
+    existing_device.identifiers = {(DOMAIN, MOCK_BABY_1.camera_uid)}
+    existing_device.id = "device_existing"
+    existing_device.name = "Existing Camera"
+
+    with (
+        patch.object(
+            hass.config_entries,
+            "async_forward_entry_setups",
+            AsyncMock(return_value=True),
+        ),
+        patch(
+            "homeassistant.helpers.device_registry.async_get",
+            return_value=mock_device_registry,
+        ),
+        patch(
+            "homeassistant.helpers.device_registry.async_entries_for_config_entry",
+            return_value=[existing_device],
+        ),
+    ):
+        assert await async_setup_entry(hass, entry)
+
+    mock_device_registry.async_remove_device.assert_not_called()
+
+
 async def test_deprecated_switch_entity_removed_on_setup(
     hass: HomeAssistant,
     mock_nanit_client,

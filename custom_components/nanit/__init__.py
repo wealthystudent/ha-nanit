@@ -138,6 +138,12 @@ def _async_remove_stale_devices(
     hass: HomeAssistant, entry: NanitConfigEntry, hub: NanitHub
 ) -> None:
     """Remove HA devices for cameras no longer on the Nanit account."""
+    # If the API returned no babies (transient outage, account propagation),
+    # skip removal — otherwise we would wipe every device for the entry and
+    # force the user to re-add them.
+    if not hub.babies:
+        return
+
     device_reg = dr.async_get(hass)
     known_camera_uids = {baby.camera_uid for baby in hub.babies}
 

@@ -278,6 +278,24 @@ export const cardStyles = css`
     opacity: 0;
   }
 
+  .stream-loader.connecting {
+    background: linear-gradient(
+      to bottom,
+      rgba(0, 0, 0, 0.18),
+      rgba(0, 0, 0, 0.08)
+    );
+  }
+
+  .stream-loader.connecting .loader-spinner {
+    display: none;
+  }
+
+  .loader-label {
+    color: rgba(255, 255, 255, 0.8);
+    font-size: 13px;
+    letter-spacing: 0.02em;
+  }
+
   .loader-content {
     display: flex;
     flex-direction: column;

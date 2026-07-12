@@ -1349,7 +1349,7 @@ class TestSensorPollLifecycle:
 
         call_count = 0
 
-        async def _fail_then_succeed() -> SensorState:
+        async def _fail_then_succeed(**_: object) -> SensorState:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -1363,7 +1363,6 @@ class TestSensorPollLifecycle:
 
         # Should have retried after the first failure
         assert call_count >= 2
-
         cam._cancel_sensor_poll()
 
 

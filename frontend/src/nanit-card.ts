@@ -7,13 +7,13 @@ import { cardStyles } from "./styles";
 import "./nanit-card-editor";
 
 const STREAM_WATCHDOG_INTERVAL_MS = 1000;
-const STREAM_STARTUP_RELOAD_TICKS = 10;
+const STREAM_STARTUP_RELOAD_TICKS = 15;
 const STREAM_STALL_TICKS = 8;
 const STREAM_MAX_RELOADS = 3;
 const STREAM_RELOAD_COOLDOWN_MS = 60000;
 const STREAM_HEALTHY_RESET_TICKS = 10;
 const STREAM_PROGRESS_EPSILON = 0.05;
-const STREAM_BACKEND_RESET_FALLBACK_MS = 8000;
+const STREAM_BACKEND_RESET_FALLBACK_MS = 10000;
 const STREAM_VISUAL_READY_SELECTORS = "video, img, canvas, ha-hls-player, ha-web-rtc-player";
 // Hide the loader quickly when HA has mounted a stream/player element, while
 // the stricter liveness watchdog continues in the background for self-healing.
@@ -24,6 +24,7 @@ export class NanitCard extends LitElement {
   @property({ attribute: false }) hass!: HomeAssistant;
   @state() private _config!: NanitCardConfig;
   @state() private _streamLoaded = false;
+  @state() private _streamPlayerMounted = false;
   @state() private _showNetwork = false;
   @state() private _streamEpoch = 0;
   private _streamWatchdog?: ReturnType<typeof setInterval>;
@@ -40,6 +41,7 @@ export class NanitCard extends LitElement {
   private _recoveringStream = false;
   private _resumeRecoverUntil = 0;
   private _backendRecoveryFallback: number | undefined;
+  private _backendRecoveryInFlight = false;
 
   static styles = cardStyles;
 
@@ -70,7 +72,10 @@ export class NanitCard extends LitElement {
 
   private _isCameraOn(entities: NanitEntities): boolean {
     if (!entities.power) return true;
-    return this.hass.states[entities.power]?.state === "on";
+    // Unknown/unavailable control state is not an intentional power-off.
+    // Keep the stream mounted so a reconnect can recover it; only an explicit
+    // `off` state should collapse the card and show "Camera Off".
+    return this.hass.states[entities.power]?.state !== "off";
   }
 
   private _fireMoreInfo(entityId: string): void {
@@ -164,10 +169,7 @@ export class NanitCard extends LitElement {
     const streamEl = this.renderRoot.querySelector("ha-camera-stream");
     if (!streamEl) return;
 
-    if (!this._streamLoaded && this._hasVisualStreamElement(streamEl)) {
-      this._streamLoaded = true;
-      this._clearBackendRecoveryFallback();
-    }
+    this._streamPlayerMounted = this._hasVisualStreamElement(streamEl);
 
     const video = this._findStreamVideo(streamEl);
 
@@ -179,8 +181,7 @@ export class NanitCard extends LitElement {
       this._streamMountedAt > 0 &&
       Date.now() - this._streamMountedAt > STREAM_LOADED_FAILOPEN_MS
     ) {
-      this._streamLoaded = true;
-      this._clearBackendRecoveryFallback();
+      this._streamPlayerMounted = true;
     }
 
     if (!video) {
@@ -194,6 +195,7 @@ export class NanitCard extends LitElement {
     // currentTime may never advance — so hide the loader immediately.
     if (!this._streamLoaded && video.readyState >= 2) {
       this._streamLoaded = true;
+      this._streamPlayerMounted = true;
       this._clearBackendRecoveryFallback();
     }
 
@@ -209,6 +211,7 @@ export class NanitCard extends LitElement {
       this._stallStrikes = 0;
       this._startupStrikes = 0;
       this._streamLoaded = true;
+      this._streamPlayerMounted = true;
       this._clearBackendRecoveryFallback();
       // Refill the reload budget only after *sustained* playback, so a feed
       // that flaps (one frame, then freeze) can't keep topping it up.
@@ -247,8 +250,14 @@ export class NanitCard extends LitElement {
     this._clearBackendRecoveryFallback();
     this._backendRecoveryFallback = window.setTimeout(() => {
       this._backendRecoveryFallback = undefined;
-      if (this._streamLoaded) return;
-      void this._recoverStream();
+      if (this._streamLoaded || this._backendRecoveryInFlight) return;
+      this._backendRecoveryInFlight = true;
+      void this._requestBackendStreamReset()
+        .catch(() => undefined)
+        .finally(() => {
+          this._backendRecoveryInFlight = false;
+          this._reloadStream();
+        });
     }, STREAM_BACKEND_RESET_FALLBACK_MS);
   }
 
@@ -256,11 +265,13 @@ export class NanitCard extends LitElement {
     if (this._recoveringStream) return;
     this._recoveringStream = true;
     try {
-      await this._requestBackendStreamReset();
+      // First restart only the viewer. HA/go2rtc may still be warming up and
+      // resetting the backend cache here can turn a slow startup into a loop.
+      this._reloadStream();
+      this._scheduleBackendRecoveryFallback();
     } finally {
       this._recoveringStream = false;
     }
-    this._reloadStream();
   }
 
   private _recoverStreamOnResume = (): void => {
@@ -307,12 +318,15 @@ export class NanitCard extends LitElement {
   }
 
   private _onStreamLoad(): void {
-    this._streamLoaded = true;
-    this._clearBackendRecoveryFallback();
+    // Player load is not proof that a decoded frame exists. The watchdog
+    // marks the stream ready only after readyState >= HAVE_CURRENT_DATA or
+    // observed playback progress.
+    this._streamPlayerMounted = true;
   }
 
   private _resetStreamState(): void {
     this._streamLoaded = false;
+    this._streamPlayerMounted = false;
     this._clearStreamWatchdog();
     this._clearBackendRecoveryFallback();
     this._lastVideoTime = 0;
@@ -491,10 +505,12 @@ export class NanitCard extends LitElement {
                   ></ha-camera-stream>
                 `)}
               </div>
-              <div class="stream-loader ${this._streamLoaded ? "hidden" : ""}">
+              <div class="stream-loader ${this._streamLoaded ? "hidden" : this._streamPlayerMounted ? "connecting" : ""}">
                 <div class="loader-content">
                   <ha-icon icon="mdi:camera"></ha-icon>
-                  <div class="loader-spinner"></div>
+                  ${this._streamPlayerMounted
+                    ? html`<span class="loader-label">Connecting video…</span>`
+                    : html`<div class="loader-spinner"></div>`}
                 </div>
               </div>
             `

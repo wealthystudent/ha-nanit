@@ -226,7 +226,12 @@ class WsTransport:
             async for msg in self._ws:
                 if msg.type == aiohttp.WSMsgType.BINARY:
                     self._last_received_at = asyncio.get_event_loop().time()
-                    self._on_message(msg.data)
+                    try:
+                        self._on_message(msg.data)
+                    except Exception:
+                        # A malformed/unexpected frame must not terminate the
+                        # receive loop and take down an otherwise healthy WS.
+                        _LOGGER.warning("Ignoring malformed Nanit WebSocket frame", exc_info=True)
                 elif msg.type in (
                     aiohttp.WSMsgType.CLOSE,
                     aiohttp.WSMsgType.CLOSING,
@@ -280,13 +285,6 @@ class WsTransport:
             await self._async_close_ws()
             self._on_connection_change(ConnectionState.RECONNECTING, self._transport_kind, None)
 
-            wait_time = backoff + random.random() * _JITTER_MAX
-            _LOGGER.info("Reconnecting in %.1fs", wait_time)
-            await asyncio.sleep(wait_time)
-
-            if self._closed:
-                return
-
             try:
                 # Fetch fresh headers if callback is available.
                 if self._get_headers is not None:
@@ -312,3 +310,6 @@ class WsTransport:
             except Exception as err:
                 _LOGGER.warning("Reconnect failed: %s", err)
                 backoff = min(backoff * _BACKOFF_FACTOR, _MAX_BACKOFF)
+                wait_time = backoff + random.random() * _JITTER_MAX
+                _LOGGER.info("Reconnecting in %.1fs", wait_time)
+                await asyncio.sleep(wait_time)

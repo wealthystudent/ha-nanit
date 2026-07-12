@@ -69,8 +69,9 @@ def test_card_source_requests_backend_stream_reset_before_recovery_remount() -> 
     assert "_recoverStream" in card
     assert 'callService("nanit", "reset_stream"' in card
     assert "async _recoverStream" in card
-    assert "await this._requestBackendStreamReset()" in card
-    assert "this._reloadStream()" in card
+    assert "_requestBackendStreamReset()" in card
+    assert "this._reloadStream();" in card
+    assert "_scheduleBackendRecoveryFallback()" in card
     assert "reload_config_entry" not in card
 
 
@@ -92,10 +93,10 @@ def test_card_source_recovers_stream_on_page_resume() -> None:
     assert "_recoverStreamOnResume" in card
     assert "STREAM_VISUAL_READY_SELECTORS" in card
     assert "_hasVisualStreamElement" in card
-    assert "this._streamLoaded = true" in card
-    assert "STREAM_STARTUP_RELOAD_TICKS = 10" in card
-    assert "STREAM_BACKEND_RESET_FALLBACK_MS = 8000" in card
-    assert "this._scheduleBackendRecoveryFallback()" not in card
+    assert "this._streamPlayerMounted = true" in card
+    assert "STREAM_STARTUP_RELOAD_TICKS = 15" in card
+    assert "STREAM_BACKEND_RESET_FALLBACK_MS = 10000" in card
+    assert "this._scheduleBackendRecoveryFallback()" in card
     assert (
         "this._reloadStream()"
         not in card.split("private _recoverStreamOnResume", 1)[1].split(

@@ -80,6 +80,7 @@ class NanitHub:
         self._client = NanitClient(session)
         self._camera_data: dict[str, CameraData] = {}
         self._babies: list[Baby] = []
+        self._failed_camera_uids: set[str] = set()
         self._sound_lights: dict[str, NanitSoundLight] = {}
         self._unsubscribe_tokens: Callable[[], None] | None = None
 
@@ -97,6 +98,11 @@ class NanitHub:
     def babies(self) -> list[Baby]:
         """Return all discovered babies (including ones that failed to connect)."""
         return self._babies
+
+    @property
+    def failed_camera_uids(self) -> set[str]:
+        """Return UIDs of cameras that failed to connect during setup."""
+        return self._failed_camera_uids
 
     async def async_setup(self) -> None:
         """Restore tokens, discover babies, create cameras and coordinators.
@@ -172,13 +178,22 @@ class NanitHub:
             if isinstance(result, NanitAuthError):
                 raise result
             if isinstance(result, NanitConnectionError | NanitCameraUnavailable | TimeoutError):
+                cloud_status = (
+                    "cloud reports connected=True (transient failure?)"
+                    if baby.camera_connected is True
+                    else "cloud reports connected=False (camera offline)"
+                    if baby.camera_connected is False
+                    else "cloud connected status unknown"
+                )
                 _LOGGER.warning(
-                    "Camera %s (%s) failed to connect: %s",
+                    "Camera %s (%s) failed to connect: %s — %s",
                     baby.name,
                     baby.camera_uid,
                     result,
+                    cloud_status,
                 )
                 failed_cameras.append(display_name(baby.name, baby.uid))
+                self._failed_camera_uids.add(baby.camera_uid)
                 ir.async_create_issue(
                     self._hass,
                     DOMAIN,

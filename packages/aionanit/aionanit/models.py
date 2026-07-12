@@ -141,6 +141,8 @@ class Baby:
     camera_uid: str
     speaker_uid: str | None = None
     network: NetworkInfo | None = None
+    camera_connected: bool | None = None  # True = camera online per Nanit cloud
+    camera_last_seen: int | None = None  # Unix timestamp of last cloud contact
 
 
 @dataclass(frozen=True)

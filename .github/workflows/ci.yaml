@@ -64,6 +64,37 @@ jobs:
       - name: Run aionanit tests
         run: python -m pytest packages/aionanit/tests/ -v --tb=short
 
+  protobuf-drift:
+    name: Protobuf Drift Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install protoc
+        run: |
+          # Pinned protoc: regenerating with a different version produces
+          # spurious diffs, so bump this deliberately alongside the
+          # committed *_pb2.py.
+          PROTOC_VERSION="29.5"
+          curl -LO "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
+          unzip protoc-${PROTOC_VERSION}-linux-x86_64.zip -d $HOME/.local
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          rm protoc-${PROTOC_VERSION}-linux-x86_64.zip
+
+      - name: Check S&L protobuf is in sync with its .proto
+        run: |
+          protoc --python_out=custom_components/nanit/aionanit_sl \
+            --pyi_out=custom_components/nanit/aionanit_sl \
+            --proto_path=custom_components/nanit/aionanit_sl \
+            custom_components/nanit/aionanit_sl/sound_light.proto
+          if ! git diff --quiet custom_components/nanit/aionanit_sl/; then
+            echo "sound_light_pb2.py/.pyi is out of date with sound_light.proto."
+            echo "Regenerate with protoc 29.5 (--python_out --pyi_out) and commit."
+            git diff custom_components/nanit/aionanit_sl/
+            exit 1
+          fi
+          echo "sound_light_pb2.py and .pyi are up to date"
+
   typecheck:
     name: Type Check
     runs-on: ubuntu-latest

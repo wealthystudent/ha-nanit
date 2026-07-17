@@ -77,13 +77,20 @@ class NanitSoundLightEntity(CoordinatorEntity[NanitSoundLightCoordinator]):
 
     @property
     def available(self) -> bool:
-        """Return True when the coordinator has received data.
+        """Return True when the coordinator has data and the device is reachable.
 
-        Does NOT require an active connection — entities retain their last
-        known values when the WebSocket drops. Connection state is reported
-        separately by the S&L connectivity binary sensor.
+        Mirrors the camera entities (and HA quality-scale guidance): when we
+        can't talk to the device, entities go unavailable rather than showing
+        stale values as live. The coordinator's `connected` flag is debounced
+        by a grace period, so brief reconnects don't flash "Unavailable". The
+        connectivity binary sensor and connection-mode sensor override this
+        so they can keep reporting the disconnected state.
         """
-        return self.coordinator.last_update_success and self.coordinator.data is not None
+        return (
+            self.coordinator.last_update_success
+            and self.coordinator.data is not None
+            and self.coordinator.connected
+        )
 
 
 class NanitNetworkEntity(CoordinatorEntity[NanitNetworkCoordinator]):

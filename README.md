@@ -104,6 +104,8 @@ For faster response times, you can connect directly to your camera over LAN:
 
 The integration will use your local network for sensors and controls, falling back to cloud for auth and events.
 
+The Sound & Light Machine needs no configuration for this: it is discovered on the LAN automatically (mDNS) and the local connection is preferred whenever the speaker is reachable, with the cloud relay as fallback. A manually configured speaker IP takes precedence over discovery.
+
 ## Troubleshooting
 
 | Problem | Solution |

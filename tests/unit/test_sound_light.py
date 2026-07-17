@@ -442,3 +442,65 @@ class TestConnectionEvents:
         api.close.assert_awaited_once()
         assert events[-1].kind == SoundLightEventKind.CONNECTION_CHANGE
         assert sl._stopped is True
+
+
+class TestEndToEndWithRealTransport:
+    """Drive the facade through its REAL transport against the fake relay.
+
+    Everything else in this file mocks the transport. This covers the wiring
+    between the two: callback registration, device registration, the startup
+    state prime, and a command flowing all the way to the wire.
+    """
+
+    @pytest.mark.usefixtures("socket_enabled")
+    async def test_start_command_and_stop_against_fake_relay(self, monkeypatch) -> None:
+        from custom_components.nanit.aionanit_sl import transport as transport_mod
+
+        from .test_sl_transport_reconnect import _FakeNanit, _wait_until
+
+        server = _FakeNanit()
+        await server.start()
+        monkeypatch.setattr(
+            transport_mod, "SOUND_LIGHT_WS_BASE_URL", f"ws://127.0.0.1:{server.port}"
+        )
+        # Keep startup fast: the fake's GetSettings ack carries no settings,
+        # so don't sit out the full initial-state wait.
+        monkeypatch.setattr(sound_light_mod, "_INITIAL_STATE_ATTEMPTS", 1)
+        monkeypatch.setattr(sound_light_mod, "_INITIAL_STATE_INTERVAL", 0.01)
+
+        async def no_local(_uid: str) -> None:
+            return None
+
+        sl = _make_sound_light()
+        sl._api.set_local_host_resolver(no_local)  # skip real mDNS in tests
+        events: list[SoundLightEvent] = []
+        sl.subscribe(events.append)
+
+        await sl.async_start()
+        await _wait_until(lambda: sl.connected)
+        assert sl.connection_mode == "cloud"
+        assert any(e.kind == SoundLightEventKind.CONNECTION_CHANGE for e in events)
+
+        await sl.async_set_power(True)
+        await _flushed(sl)
+
+        def got_power_on() -> bool:
+            from google.protobuf.message import DecodeError
+
+            from custom_components.nanit.aionanit_sl import sound_light_pb2 as pb2
+
+            for raw in server.received:
+                msg = pb2.Message()
+                try:
+                    msg.ParseFromString(raw)
+                except DecodeError:
+                    continue
+                if msg.HasField("request") and msg.request.settings.isOn:
+                    return True
+            return False
+
+        await _wait_until(got_power_on)
+
+        await sl.async_stop()
+        assert sl.connected is False
+        await server.stop()

@@ -954,8 +954,8 @@ async def test_sensor_async_setup_entry_creates_sl_sensors() -> None:
     await sensor_platform.async_setup_entry(MagicMock(), entry, async_add_entities)
 
     entities = async_add_entities.call_args.args[0]
-    # 3 camera sensors + 2 S&L sensors + 1 connection mode = 6
-    assert len(entities) == 6
+    # 3 camera + 4 S&L (temp, humidity, battery, firmware) + connection mode + wifi = 9
+    assert len(entities) == 9
 
 
 async def test_number_async_setup_entry_creates_sl_volume() -> None:
@@ -991,8 +991,8 @@ async def test_binary_sensor_async_setup_entry_creates_sl_connectivity() -> None
     await binary_sensor_platform.async_setup_entry(MagicMock(), entry, async_add_entities)
 
     entities = async_add_entities.call_args.args[0]
-    # 1 push binary sensor + 2 cloud binary sensors + 1 S&L connectivity = 4
-    assert len(entities) == 4
+    # 1 push + 2 cloud + S&L connectivity + S&L charging = 5
+    assert len(entities) == 5
 
 
 # ---------------------------------------------------------------------------
@@ -1556,3 +1556,74 @@ async def test_night_light_skips_restore_for_stale_state(stale_state: str) -> No
 
     assert entity.is_on is None
     assert entity.brightness is None
+
+
+# ---------------------------------------------------------------------------
+# S&L diagnostics sensors (battery, charging, wifi, firmware)
+# ---------------------------------------------------------------------------
+
+
+def test_sl_battery_sensor() -> None:
+    from custom_components.nanit.sensor import SL_SENSORS, NanitSLSensor
+
+    desc = next(d for d in SL_SENSORS if d.key == "sl_battery")
+    state = SoundLightFullState(battery_percent=75)
+    entity = NanitSLSensor(_sl_coordinator(state), desc)
+
+    assert entity.native_value == 75
+    assert entity.unique_id == "speaker_1_sl_battery"
+
+
+def test_sl_firmware_sensor() -> None:
+    from custom_components.nanit.sensor import SL_SENSORS, NanitSLSensor
+
+    desc = next(d for d in SL_SENSORS if d.key == "sl_firmware")
+    state = SoundLightFullState(firmware_version="1.3.1")
+    entity = NanitSLSensor(_sl_coordinator(state), desc)
+
+    assert entity.native_value == "1.3.1"
+    assert entity.unique_id == "speaker_1_sl_firmware"
+
+
+def test_sl_wifi_sensor_value_and_attributes() -> None:
+    from custom_components.nanit.sensor import NanitSLWifiSensor
+
+    state = SoundLightFullState(
+        wifi_rssi=-52,
+        wifi_ssid="HomeWifi",
+        wifi_bssid="aa:bb:cc:dd:ee:ff",
+        wifi_channel=11,
+    )
+    entity = NanitSLWifiSensor(_sl_coordinator(state))
+
+    assert entity.native_value == -52
+    assert entity.unique_id == "speaker_1_sl_wifi_signal"
+    assert entity.extra_state_attributes == {
+        "ssid": "HomeWifi",
+        "bssid": "aa:bb:cc:dd:ee:ff",
+        "channel": 11,
+    }
+    assert entity.entity_registry_enabled_default is False
+
+
+def test_sl_wifi_sensor_no_data() -> None:
+    from custom_components.nanit.sensor import NanitSLWifiSensor
+
+    entity = NanitSLWifiSensor(_sl_coordinator(None))
+
+    assert entity.native_value is None
+    assert entity.extra_state_attributes == {}
+
+
+def test_sl_charging_sensor() -> None:
+    from custom_components.nanit.binary_sensor import NanitSLChargingSensor
+
+    entity = NanitSLChargingSensor(_sl_coordinator(SoundLightFullState(battery_charging=True)))
+    assert entity.is_on is True
+    assert entity.unique_id == "speaker_1_sl_charging"
+
+    entity_off = NanitSLChargingSensor(_sl_coordinator(SoundLightFullState(battery_charging=False)))
+    assert entity_off.is_on is False
+
+    entity_unknown = NanitSLChargingSensor(_sl_coordinator(None))
+    assert entity_unknown.is_on is None

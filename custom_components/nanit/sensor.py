@@ -43,7 +43,7 @@ class NanitSensorEntityDescription(SensorEntityDescription):
 class NanitSLSensorEntityDescription(SensorEntityDescription):
     """Description for Nanit Sound & Light sensor."""
 
-    value_fn: Callable[[SoundLightFullState], float | int | None]
+    value_fn: Callable[[SoundLightFullState], str | float | int | None]
 
 
 SENSORS: tuple[NanitSensorEntityDescription, ...] = (
@@ -98,6 +98,21 @@ SL_SENSORS: tuple[NanitSLSensorEntityDescription, ...] = (
         value_fn=lambda state: (
             round(state.humidity_pct, 2) if state.humidity_pct is not None else None
         ),
+    ),
+    NanitSLSensorEntityDescription(
+        key="sl_battery",
+        device_class=SensorDeviceClass.BATTERY,
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        # The device reports a coarse 5-bucket state of charge, mapped to
+        # representative percentages by the transport.
+        value_fn=lambda state: state.battery_percent,
+    ),
+    NanitSLSensorEntityDescription(
+        key="sl_firmware",
+        translation_key="sl_firmware",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda state: state.firmware_version,
     ),
 )
 
@@ -159,6 +174,7 @@ async def async_setup_entry(
         for sl_description in SL_SENSORS:
             entities.append(NanitSLSensor(speaker_data.coordinator, sl_description))
         entities.append(NanitSLConnectionModeSensor(speaker_data.coordinator))
+        entities.append(NanitSLWifiSensor(speaker_data.coordinator))
 
     async_add_entities(entities)
 
@@ -202,11 +218,55 @@ class NanitSLSensor(NanitSoundLightEntity, SensorEntity):
         self._attr_unique_id = f"{coordinator.sound_light.speaker_uid}_{description.key}"
 
     @property
-    def native_value(self) -> float | int | None:
+    def native_value(self) -> str | float | int | None:
         """Return the state of the sensor."""
         if self.coordinator.data is None:
             return None
         return self.entity_description.value_fn(self.coordinator.data)
+
+
+class NanitSLWifiSensor(NanitSoundLightEntity, SensorEntity):
+    """WiFi signal-strength sensor for the S&L, SSID/BSSID/channel as attrs.
+
+    Diagnostic and registry-disabled by default, matching the pattern from
+    nanit-sound-light: RSSI updates every poll cycle, so keeping it off by
+    default avoids recorder churn for users who don't care.
+    """
+
+    _attr_device_class = SensorDeviceClass.SIGNAL_STRENGTH
+    _attr_native_unit_of_measurement = SIGNAL_STRENGTH_DECIBELS_MILLIWATT
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_entity_registry_enabled_default = False
+    _attr_translation_key = "sl_wifi_signal"
+
+    def __init__(
+        self,
+        coordinator: NanitSoundLightCoordinator,
+    ) -> None:
+        """Initialize."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.sound_light.speaker_uid}_sl_wifi_signal"
+
+    @property
+    def native_value(self) -> int | None:
+        """Return the WiFi RSSI in dBm."""
+        if self.coordinator.data is None:
+            return None
+        result: int | None = self.coordinator.data.wifi_rssi
+        return result
+
+    @property
+    def extra_state_attributes(self) -> dict[str, str | int | None]:
+        """Return SSID / BSSID / channel as attributes."""
+        state = self.coordinator.data
+        if state is None:
+            return {}
+        return {
+            "ssid": state.wifi_ssid,
+            "bssid": state.wifi_bssid,
+            "channel": state.wifi_channel,
+        }
 
 
 class NanitSLConnectionModeSensor(NanitSoundLightEntity, SensorEntity):

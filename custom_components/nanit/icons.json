@@ -1,14 +1,29 @@
 {
   "entity": {
     "sensor": {
-      "temperature": { "default": "mdi:thermometer" },
-      "humidity": { "default": "mdi:water-percent" },
-      "light": { "default": "mdi:brightness-6" }
+      "temperature": {
+        "default": "mdi:thermometer"
+      },
+      "humidity": {
+        "default": "mdi:water-percent"
+      },
+      "light": {
+        "default": "mdi:brightness-6"
+      },
+      "sl_firmware": {
+        "default": "mdi:chip"
+      }
     },
     "binary_sensor": {
-      "motion": { "default": "mdi:motion-sensor" },
-      "sound": { "default": "mdi:ear-hearing" },
-      "connectivity": { "default": "mdi:wifi" }
+      "motion": {
+        "default": "mdi:motion-sensor"
+      },
+      "sound": {
+        "default": "mdi:ear-hearing"
+      },
+      "connectivity": {
+        "default": "mdi:wifi"
+      }
     },
     "switch": {
       "camera_power": {
@@ -30,7 +45,9 @@
     },
     "number": {},
     "camera": {
-      "camera": { "default": "mdi:baby-face-outline" }
+      "camera": {
+        "default": "mdi:baby-face-outline"
+      }
     }
   }
 }

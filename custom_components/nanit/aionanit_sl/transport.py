@@ -676,6 +676,20 @@ class SoundLightTransport:
                 self._notify_connection_change(speaker_uid)
 
             except Exception as e:
+                if isinstance(e, RuntimeError) and "shutdown" in str(e).lower():
+                    # HA is tearing down its executor (restart/stop) while a
+                    # reconnect was in flight. The guard around the SSL-context
+                    # builder above catches most of these, but the RuntimeError
+                    # can also surface from inside the connect call (its DNS
+                    # resolution uses the executor too). Not a device failure:
+                    # no error counting, no retry scheduling, no loud log.
+                    _LOGGER.debug(
+                        "Skipping %s connect for %s during shutdown: %s",
+                        transport,
+                        speaker_uid,
+                        e,
+                    )
+                    return
                 status = self._handshake_status(e)
                 reject_statuses = (
                     _AUTH_REJECT_STATUSES_LOCAL

@@ -63,10 +63,10 @@ def _mock_transport(sl: NanitSoundLight) -> MagicMock:
 
 
 async def _flushed(sl: NanitSoundLight) -> None:
-    """Wait for the coalescing window to elapse and the flush task to finish."""
+    """Wait for the coalescing window to elapse and all flush tasks to finish."""
     await asyncio.sleep(0.05)
-    if sl._flush_task is not None:
-        await sl._flush_task
+    for task in list(sl._flush_tasks):
+        await task
 
 
 @pytest.fixture(autouse=True)
@@ -528,3 +528,83 @@ class TestEndToEndWithRealTransport:
         await sl.async_stop()
         assert sl.connected is False
         await server.stop()
+
+
+class TestReviewRegressions:
+    """Regressions from the multi-agent review of PR #105."""
+
+    async def test_light_on_during_restore_window_keeps_sound(self) -> None:
+        """Restored state says the speaker is playing; the live view is still
+        empty. Light-on must NOT silence the audio (and must not clobber the
+        restored brightness with a forced restore)."""
+        sl = _make_sound_light()
+        api = _mock_transport(sl)
+        sl.restore_state(
+            SoundLightFullState(power_on=True, sound_on=True, current_track="Rain", brightness=0.5)
+        )
+        assert sl._device_view == {}  # the restore window
+
+        await sl.async_set_light_enabled(True)
+        await _flushed(sl)
+
+        kwargs = api.send_control_command.await_args.kwargs
+        assert "sound" not in kwargs
+        assert "brightness" not in kwargs
+
+    async def test_light_on_with_unknown_everything_does_not_silence(self) -> None:
+        """Nothing restored, nothing live: unknown power must not be treated
+        as off (silencing audio that may be playing)."""
+        sl = _make_sound_light()
+        api = _mock_transport(sl)
+
+        await sl.async_set_light_enabled(True)
+        await _flushed(sl)
+
+        assert "sound" not in api.send_control_command.await_args.kwargs
+
+    async def test_last_color_not_poisoned_by_pinned_stale_echo(self) -> None:
+        """A lagging pre-command echo inside the pin window must not rewrite
+        the color-restore memory (the light would relight in the OLD color)."""
+        sl = _make_sound_light()
+        api = _mock_transport(sl)
+
+        await sl.async_set_color(0.6, 1.0)
+        await _flushed(sl)
+        assert sl._last_color["hue"] == 0.6
+
+        # Stale echo: the device still reports the pre-command red.
+        api.get_device_state.return_value = {"hue": 0.0, "saturation": 1.0, "no_color": False}
+        sl._ingest_device_state()
+
+        assert sl._last_color["hue"] == pytest.approx(0.6, abs=1e-6)
+
+    async def test_batch_success_does_not_erase_next_batch_rollback(self) -> None:
+        """Batch A succeeding must not clear batch B's rollback baseline."""
+        sl = _make_sound_light()
+        api = _mock_transport(sl)
+        sl._device_view = {"volume": 0.2}
+        sl._publish()
+
+        # Batch A (power) succeeds; batch B (volume) fails.
+        api.send_control_command.side_effect = [None, ConnectionError("boom")]
+
+        await sl.async_set_power(True)
+        await _flushed(sl)  # batch A sent and succeeded
+
+        await sl.async_set_volume(0.9)
+        await _flushed(sl)  # batch B sent and failed
+
+        assert sl.state.volume == 0.2  # rolled back despite batch A's success
+        assert sl.state.power_on is True  # batch A's result untouched
+
+    async def test_rollback_returns_never_known_field_to_unknown(self) -> None:
+        """A failed command on a field with no prior value must not leave the
+        optimistic value published."""
+        sl = _make_sound_light()
+        api = _mock_transport(sl)
+        api.send_control_command.side_effect = ConnectionError("unreachable")
+
+        await sl.async_set_brightness(0.5)
+        await _flushed(sl)
+
+        assert sl.state.brightness is None

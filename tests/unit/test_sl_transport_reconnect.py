@@ -187,7 +187,7 @@ async def test_provider_failure_is_transient_not_fatal(monkeypatch):
 
     api = make_transport(access_token_provider=failing_provider)
     api.register_device(UID)
-    api._closing = True  # single-shot test: no background retry loop
+    api._schedule_reconnect = lambda *_a, **_k: None  # drive attempts explicitly
     monkeypatch.setattr(transport_mod, "SOUND_LIGHT_WS_BASE_URL", "ws://127.0.0.1:1")
 
     await api.connect_device(UID)  # must not raise
@@ -377,7 +377,7 @@ async def test_persistent_remote_auth_reject_quiets_logs(monkeypatch, caplog):
     device can't flood the log with one ERROR per retry."""
     server = await _serve(monkeypatch, reject_status=403, reject_always=True)
     api = _registered_transport()
-    api._closing = True  # attempts are driven explicitly in this test
+    api._schedule_reconnect = lambda *_a, **_k: None  # drive attempts explicitly
     device_info = api._device_list[0]
     key = api._conn_key(UID, "remote")
 
@@ -485,7 +485,7 @@ async def test_repeated_transient_remote_failures_quiet_logs(monkeypatch, caplog
     level is throttled. Every call below still attempts a real connect
     (unlike the auth-reject cooldown, which short-circuits attempts)."""
     api = _registered_transport()
-    api._closing = True  # attempts are driven explicitly in this test
+    api._schedule_reconnect = lambda *_a, **_k: None  # drive attempts explicitly
     device_info = api._device_list[0]
     # Nothing listens here: every connect attempt fails fast (refused).
     monkeypatch.setattr(transport_mod, "SOUND_LIGHT_WS_BASE_URL", "ws://127.0.0.1:1")

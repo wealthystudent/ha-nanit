@@ -360,3 +360,44 @@ def test_light_off_sends_bare_no_color(api):
 def test_session_id_is_stamped_when_provided(api):
     raw, _ = api.build_control_message(session_id="abc123", is_on=True)
     assert _decode(raw).request.sessionId == "abc123"
+
+
+async def test_malformed_frames_are_handled_gracefully(api):
+    """Garbage, truncated, and oversized frames must not crash the parser.
+
+    This is the checklist's untrusted-deserialization contract: the speaker
+    protocol is the primary untrusted input surface.
+    """
+    key = api._conn_key(UID, "remote")
+    before = dict(api.get_device_state(UID))
+
+    await api._process_protobuf_message(key, b"\xff\x13garbage\x00\x01")
+    await api._process_protobuf_message(key, b"\x0a")  # truncated field header
+    await api._process_protobuf_message(key, bytes(64 * 1024))  # zero-filled blob
+
+    assert api.get_device_state(UID) == before
+    assert api.is_device_attached(UID) is False  # junk must not latch attachment
+
+
+async def test_non_finite_wire_floats_are_rejected(api):
+    """NaN/Inf/out-of-range floats from the wire must not reach HA state."""
+    import struct as _struct
+
+    settings = pb2.Settings(brightness=float("nan"), volume=float("inf"), temperature=1e30)
+    settings.color.hue = 5.0  # out of unit range: clamped
+    message = pb2.Message(response=pb2.Response(requestId=1, settings=settings))
+    await api._process_protobuf_message(api._conn_key(UID, "remote"), message.SerializeToString())
+
+    state = api.get_device_state(UID)
+    assert "brightness" not in state  # NaN rejected
+    assert "volume" not in state  # Inf rejected
+    assert state["temperature"] == pytest.approx(_struct.unpack("<f", _struct.pack("<f", 1e30))[0])
+    assert state["hue"] == 1.0  # clamped to the unit interval
+
+
+async def test_unprintable_track_name_is_dropped(api):
+    """An unprintable current-track string must not become the select state."""
+    settings = pb2.Settings(sound=pb2.Sound(noSound=False, track="bad\x07bell"))
+    message = pb2.Message(response=pb2.Response(requestId=1, settings=settings))
+    await api._process_protobuf_message(api._conn_key(UID, "remote"), message.SerializeToString())
+    assert "current_sound" not in api.get_device_state(UID)

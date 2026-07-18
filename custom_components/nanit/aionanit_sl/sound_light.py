@@ -116,6 +116,18 @@ def _command_to_device_fields(kwargs: dict[str, Any]) -> dict[str, Any]:
     return fields
 
 
+# Device-view keys mapped to the SoundLightFullState fields they publish,
+# used when a rollback must return a field to "never known" (the view entry
+# is popped, and the published model field must go back to None too).
+_VIEW_TO_MODEL: dict[str, tuple[str, ...]] = {
+    "is_on": ("power_on",),
+    "brightness": ("brightness",),
+    "volume": ("volume",),
+    "hue": ("color_r",),
+    "saturation": ("color_g",),
+}
+
+
 def _has_usable_state(state: dict[str, Any]) -> bool:
     """True once the device has reported real state (not just defaults)."""
     keys = ("brightness", "volume", "current_sound", "hue", "is_on")
@@ -162,11 +174,15 @@ class NanitSoundLight:
         self._device_view: dict[str, Any] = {}
 
         # Command coalescing + pin-guard + rollback (see module docstring).
+        # The snapshot accumulates alongside the pending batch and travels
+        # with it into the flush, so overlapping batches can't clear or
+        # restore each other's rollback baselines. Flush tasks live in a set
+        # so a second batch can't orphan a still-running first flush.
         self._pending_commands: dict[str, Any] = {}
+        self._pending_snapshot: dict[str, Any] = {}
         self._flush_handle: asyncio.TimerHandle | None = None
-        self._flush_task: asyncio.Task[None] | None = None
+        self._flush_tasks: set[asyncio.Task[None]] = set()
         self._pinned_fields: dict[str, tuple[Any, float]] = {}
-        self._rollback_snapshot: dict[str, Any] = {}
 
         # Last-known-good values for restores: light ON must re-send explicit
         # hue/saturation (the device does not restore color on a bare
@@ -256,7 +272,7 @@ class NanitSoundLight:
     def _fire_event(self, kind: SoundLightEventKind) -> None:
         """Fire an event to all subscribers."""
         event = SoundLightEvent(kind=kind, state=self._state)
-        for cb in self._subscribers:
+        for cb in list(self._subscribers):
             try:
                 cb(event)
             except Exception:
@@ -299,7 +315,8 @@ class NanitSoundLight:
 
         self._ingest_device_state()
         self._on_connection_change(self._speaker_uid)
-        self._poll_task = asyncio.get_running_loop().create_task(self._poll_loop())
+        if self._poll_task is None or self._poll_task.done():
+            self._poll_task = asyncio.get_running_loop().create_task(self._poll_loop())
 
     async def async_stop(self) -> None:
         """Stop the S&L connection gracefully."""
@@ -309,18 +326,23 @@ class NanitSoundLight:
             self._flush_handle.cancel()
             self._flush_handle = None
         self._pending_commands.clear()
+        self._pending_snapshot.clear()
         self._pinned_fields.clear()
-        self._rollback_snapshot.clear()
 
-        for task_attr in ("_poll_task", "_flush_task"):
-            task: asyncio.Task[None] | None = getattr(self, task_attr)
-            if task is not None and not task.done():
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-            setattr(self, task_attr, None)
+        tasks = [
+            task
+            for task in (self._poll_task, *self._flush_tasks)
+            if task is not None and not task.done()
+        ]
+        self._poll_task = None
+        self._flush_tasks.clear()
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
         await self._api.close()
 
@@ -354,9 +376,19 @@ class NanitSoundLight:
 
         view = self._device_view
         kwargs: dict[str, Any] = {"is_on": True}
-        if not view.get("is_on"):
+        # Before the first device frame the live view is empty, but restored
+        # state may know the answer, so fall back to it. And only silence
+        # sound when the device is KNOWN to be off: treating "unknown" as
+        # off would stop white noise that is actually playing (e.g. a
+        # nightlight automation firing right after an HA restart).
+        power = view.get("is_on")
+        if power is None:
+            power = self._state.power_on
+        if power is False:
             kwargs["sound"] = _NO_SOUND
         brightness = view.get("brightness")
+        if brightness is None:
+            brightness = self._state.brightness
         if not brightness or brightness <= 0:
             kwargs["brightness"] = self._last_brightness or 1.0
         last = self._last_color or {}
@@ -388,21 +420,20 @@ class NanitSoundLight:
         The device has no "selected but silent" slot, so the preference
         lives client-side in `_last_track`.
         """
+        self._ensure_started()
         if track_name == _NO_SOUND:
             self._queue_command({"sound": _NO_SOUND})
             return
         self._last_track = track_name
         current = self._device_view.get("current_sound")
-        if current is not None and current != _NO_SOUND:
+        # Before the first device frame, restored state may know sound is on.
+        playing = current != _NO_SOUND if current is not None else self._state.sound_on is True
+        if playing:
             self._queue_command({"sound": track_name})
             return
         # Sound is off (or unknown): publish the preference without sending.
         # The device keeps reporting "No sound", which leaves current_track
         # alone in the state mapping, so the pick sticks in the select.
-        if self._stopped:
-            raise NanitTransportError(
-                f"S&L {self._speaker_uid} is not started, cannot send commands"
-            )
         new_state = dataclasses.replace(self._state, current_track=track_name)
         if new_state != self._state:
             self._state = new_state
@@ -410,6 +441,7 @@ class NanitSoundLight:
 
     async def async_set_brightness(self, brightness: float) -> None:
         """Set light brightness (0.0-1.0)."""
+        self._ensure_started()
         if brightness > 0:
             self._last_brightness = brightness
         self._queue_command({"brightness": brightness})
@@ -420,6 +452,7 @@ class NanitSoundLight:
 
     async def async_set_color(self, color_a: float, color_b: float) -> None:
         """Set light color (hue and saturation, both 0.0-1.0)."""
+        self._ensure_started()
         self._last_color = {
             "hue": color_a,
             "saturation": color_b,
@@ -431,6 +464,13 @@ class NanitSoundLight:
     # Internal: command coalescing, pins, rollback
     # ------------------------------------------------------------------
 
+    def _ensure_started(self) -> None:
+        """Raise unless the facade is started (guards every command path)."""
+        if self._stopped:
+            raise NanitTransportError(
+                f"S&L {self._speaker_uid} is not started, cannot send commands"
+            )
+
     def _queue_command(self, kwargs: dict[str, Any]) -> None:
         """Queue a control command, coalescing concurrent fields into one send.
 
@@ -439,10 +479,7 @@ class NanitSoundLight:
         field, we merge the fields, apply optimistic state for instant UI
         feedback, and schedule a single combined flush.
         """
-        if self._stopped:
-            raise NanitTransportError(
-                f"S&L {self._speaker_uid} is not started, cannot send commands"
-            )
+        self._ensure_started()
 
         _LOGGER.debug("Queuing command for %s: %s", self._speaker_uid, kwargs)
         self._pending_commands.update(kwargs)
@@ -454,14 +491,28 @@ class NanitSoundLight:
         self._flush_handle = loop.call_later(COMMAND_COALESCE_DELAY, self._start_flush)
 
     def _start_flush(self) -> None:
-        """Timer callback: launch the flush task (strong ref against GC)."""
+        """Timer callback: launch the flush task (strong refs against GC).
+
+        A set, not a single slot: a flush can legitimately run for seconds
+        (reconnect + ack await), and a second batch starting in that window
+        must not orphan the first task's only strong reference.
+        """
         self._flush_handle = None
-        self._flush_task = asyncio.get_event_loop().create_task(self._flush_commands())
+        task = asyncio.get_event_loop().create_task(self._flush_commands())
+        self._flush_tasks.add(task)
+        task.add_done_callback(self._flush_tasks.discard)
 
     async def _flush_commands(self) -> None:
-        """Send all coalesced fields as one combined command."""
+        """Send all coalesced fields as one combined command.
+
+        The batch takes its rollback baselines with it, so a batch that
+        finishes (either way) can't clear or restore fields belonging to a
+        newer batch still being accumulated or sent.
+        """
         kwargs = dict(self._pending_commands)
+        snapshot = dict(self._pending_snapshot)
         self._pending_commands.clear()
+        self._pending_snapshot.clear()
         if not kwargs:
             return
 
@@ -469,7 +520,6 @@ class NanitSoundLight:
             await self._api.send_control_command(self._speaker_uid, **kwargs)
             # The command's ack already confirms receipt, and the device
             # pushes the resulting state on its own; the 30s poll reconciles.
-            self._rollback_snapshot.clear()
         except Exception as err:
             _LOGGER.error(
                 "Control command failed for %s (%s): %s, rolling back",
@@ -477,7 +527,7 @@ class NanitSoundLight:
                 type(err).__name__,
                 err,
             )
-            self._rollback_optimistic_state()
+            self._rollback_optimistic_state(snapshot)
 
     def _apply_optimistic_state(self, kwargs: dict[str, Any]) -> None:
         """Apply a command's fields to the published state immediately.
@@ -489,8 +539,8 @@ class NanitSoundLight:
         expiry = asyncio.get_running_loop().time() + COMMAND_PIN_SECONDS
 
         for key, value in fields.items():
-            if key not in self._rollback_snapshot:
-                self._rollback_snapshot[key] = self._device_view.get(key)
+            if key not in self._pending_snapshot:
+                self._pending_snapshot[key] = self._device_view.get(key)
             self._device_view[key] = value
             # Pin the float32-rounded value so the device's echo (float32 on
             # the wire) compares equal and releases the pin early.
@@ -498,18 +548,37 @@ class NanitSoundLight:
 
         self._publish()
 
-    def _rollback_optimistic_state(self) -> None:
-        """Undo optimistic state after a failed send so the UI doesn't lie."""
-        self._pinned_fields.clear()
-        snapshot = self._rollback_snapshot
-        self._rollback_snapshot = {}
+    def _rollback_optimistic_state(self, snapshot: dict[str, Any]) -> None:
+        """Undo a failed batch's optimistic state so the UI doesn't lie.
+
+        Scoped to the batch: only its fields are restored and only their
+        pins released. A field a NEWER pending batch has since re-claimed
+        belongs to that batch now and is left alone. A field that had no
+        known value before the command is returned to unknown in the
+        published state too (the presence-based publish can't remove it).
+        """
         if not snapshot:
             return
+        state_updates: dict[str, Any] = {}
         for key, value in snapshot.items():
+            if key in self._pending_snapshot:
+                continue  # a newer batch owns this field now
+            self._pinned_fields.pop(key, None)
             if value is None:
                 self._device_view.pop(key, None)
+                for model_field in _VIEW_TO_MODEL.get(key, ()):
+                    state_updates[model_field] = None
             else:
                 self._device_view[key] = value
+        view = self._device_view
+        if ("is_on" not in view or "brightness" not in view) and any(
+            key in snapshot for key in ("is_on", "brightness", "no_color")
+        ):
+            # light_enabled derives from these; with an input back to
+            # unknown the derived value is unknown too.
+            state_updates["light_enabled"] = None
+        if state_updates:
+            self._state = dataclasses.replace(self._state, **state_updates)
         self._publish()
         _LOGGER.warning(
             "Rolled back optimistic state for %s after a failed command",
@@ -544,29 +613,36 @@ class NanitSoundLight:
 
     def _ingest_device_state(self) -> None:
         """Pull the transport's parsed state, merge it, and publish."""
+        if self._stopped:
+            return
         parsed = dict(self._api.get_device_state(self._speaker_uid))
         if not parsed:
             return
 
-        # Remember the last real color/track/brightness the device reported,
-        # for the light-on color restore and sound-on track resume.
+        self._merge_parsed_state(parsed)
+
+        # Remember the last real color/track/brightness for the light-on
+        # color restore and sound-on track resume, read from the MERGED view
+        # (after pin filtering): the device's reported state lags a command
+        # by up to ~15s, and a stale pre-command echo must not poison the
+        # restore values while a pin is holding the commanded one.
+        view = self._device_view
         if (
-            not parsed.get("no_color", False)
-            and parsed.get("hue") is not None
-            and parsed.get("saturation") is not None
+            not view.get("no_color", False)
+            and view.get("hue") is not None
+            and view.get("saturation") is not None
         ):
             self._last_color = {
-                "hue": parsed["hue"],
-                "saturation": parsed["saturation"],
-                "brightness": parsed.get("brightness") or 1.0,
+                "hue": view["hue"],
+                "saturation": view["saturation"],
+                "brightness": view.get("brightness") or 1.0,
             }
-        track = parsed.get("current_sound")
+        track = view.get("current_sound")
         if track and track != _NO_SOUND:
             self._last_track = track
-        if parsed.get("brightness"):
-            self._last_brightness = parsed["brightness"]
+        if view.get("brightness"):
+            self._last_brightness = view["brightness"]
 
-        self._merge_parsed_state(parsed)
         self._publish()
 
     def _mapped_updates(self) -> dict[str, Any]:
@@ -626,6 +702,8 @@ class NanitSoundLight:
 
     def _on_connection_change(self, _speaker_uid: str) -> None:
         """Re-derive connectivity and notify subscribers on a change."""
+        if self._stopped:
+            return  # async_stop fires the final CONNECTION_CHANGE itself
         connected = self.connected
         if connected == self._last_connected:
             return

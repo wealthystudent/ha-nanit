@@ -76,7 +76,9 @@ jobs:
           # spurious diffs, so bump this deliberately alongside the
           # committed *_pb2.py.
           PROTOC_VERSION="29.5"
+          PROTOC_SHA256="a3f094363cd205c6f7af0d1b9305cb4c8517043f265cdb188f098cae93e8b217"
           curl -LO "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
+          echo "${PROTOC_SHA256}  protoc-${PROTOC_VERSION}-linux-x86_64.zip" | sha256sum -c -
           unzip protoc-${PROTOC_VERSION}-linux-x86_64.zip -d $HOME/.local
           echo "$HOME/.local/bin" >> $GITHUB_PATH
           rm protoc-${PROTOC_VERSION}-linux-x86_64.zip

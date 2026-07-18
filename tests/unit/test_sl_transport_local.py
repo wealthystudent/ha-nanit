@@ -163,7 +163,7 @@ async def test_resolver_substitutes_ip_into_local_url(monkeypatch):
     """When a resolver is injected, local connects to wss://<resolved-ip>:442."""
     api = make_transport()
     api.register_device(UID)
-    api._closing = True  # single-shot test: no background retry loop
+    api._schedule_reconnect = lambda *_a, **_k: None  # drive attempts explicitly
     api._device_tokens[UID] = ("dev-tok", None)
 
     async def resolver(speaker_uid):
@@ -188,7 +188,7 @@ async def test_manual_device_ip_overrides_resolver(monkeypatch):
     """A configured speaker IP wins over mDNS: connect straight to it."""
     api = make_transport()
     api.register_device(UID, device_ip="192.168.1.77")
-    api._closing = True  # single-shot test: no background retry loop
+    api._schedule_reconnect = lambda *_a, **_k: None  # drive attempts explicitly
     api._device_tokens[UID] = ("dev-tok", None)
 
     async def resolver(_uid):
@@ -212,7 +212,7 @@ async def test_resolver_failure_stays_on_relay(monkeypatch):
     """If the resolver can't find the device, local connect is skipped entirely."""
     api = make_transport()
     api.register_device(UID)
-    api._closing = True  # single-shot test: no background retry loop
+    api._schedule_reconnect = lambda *_a, **_k: None  # drive attempts explicitly
     api._device_tokens[UID] = ("dev-tok", None)
 
     async def resolver(_host):
@@ -386,7 +386,7 @@ async def test_local_403_invalidates_device_token_and_refetches(monkeypatch):
     fetcher = AsyncMock(return_value="FRESH")
     api = make_transport(device_token_fetcher=fetcher)
     api.register_device(UID)
-    api._closing = True  # attempts are driven explicitly in this test
+    api._schedule_reconnect = lambda *_a, **_k: None  # drive attempts explicitly
     # A stale cached token with no clock expiry: _ensure_device_token would
     # keep serving it indefinitely without the invalidation fix.
     api._device_tokens[UID] = ("STALE", None)
@@ -427,7 +427,7 @@ async def test_local_auth_reject_cooldown_stops_token_refetch(monkeypatch):
     fetcher = AsyncMock(return_value="T")
     api = make_transport(device_token_fetcher=fetcher)
     api.register_device(UID)
-    api._closing = True  # attempts are driven explicitly in this test
+    api._schedule_reconnect = lambda *_a, **_k: None  # drive attempts explicitly
     monkeypatch.setattr(api, "_local_ws_url", lambda _uid: f"ws://127.0.0.1:{local.port}")
     local_key = _local_key(api)
     device_info = api._device_list[0]

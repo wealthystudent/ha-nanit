@@ -15,6 +15,7 @@ it as best-effort: any failure just leaves the device on the cloud relay.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 from collections.abc import Awaitable, Callable
 
@@ -26,6 +27,10 @@ _SERVICE_TYPE = "_http._tcp.local."
 # How long to browse for the service when it isn't already cached.
 _BROWSE_POLLS = 30  # x interval = ~3s max
 _BROWSE_POLL_INTERVAL = 0.1  # seconds
+# Hard cap on one whole resolve. The per-name info requests can each block
+# for seconds on a half-dead advertisement (PTR answered, SRV/A never), and
+# the resolver runs inside the transport's connect path.
+_RESOLVE_TIMEOUT = 8.0  # seconds
 
 # One-shot flag so a broken zeroconf import warns once, not per connect.
 _zeroconf_import_warned = False
@@ -37,7 +42,12 @@ def make_local_host_resolver(
     """Build an async resolver: speaker_uid -> LAN IPv4 (or None)."""
 
     async def _resolve(speaker_uid: str) -> str | None:
-        return await _resolve_local_host(hass, speaker_uid)
+        try:
+            async with asyncio.timeout(_RESOLVE_TIMEOUT):
+                return await _resolve_local_host(hass, speaker_uid)
+        except TimeoutError:
+            _LOGGER.debug("mDNS resolve for S&L %s timed out", speaker_uid)
+            return None
 
     return _resolve
 
@@ -76,10 +86,27 @@ async def _resolve_local_host(hass: HomeAssistant, speaker_uid: str) -> str | No
             info = AsyncServiceInfo(_SERVICE_TYPE, name)
             if not info.load_from_cache(zc):
                 await info.async_request(zc, 3000)
+            # The speaker's TXT record carries UID=<speaker_uid>; when the
+            # advertisement has a UID at all, require an exact match so a
+            # name-substring coincidence can't hand back another device.
+            txt_uid = (info.properties or {}).get(b"UID")
+            if txt_uid is not None and txt_uid.decode("utf-8", "replace").lower() != uid:
+                return None
             for addr in info.parsed_addresses():
-                if "." in addr and ":" not in addr:  # IPv4
-                    _LOGGER.debug("Resolved S&L %s -> %s via mDNS", speaker_uid, addr)
-                    return addr
+                if "." not in addr or ":" in addr:  # IPv4 only
+                    continue
+                if not ipaddress.ip_address(addr).is_private:
+                    # The resolved address receives the per-device token over
+                    # trust-all TLS; a spoofed record must not be able to
+                    # route that off the local network.
+                    _LOGGER.debug(
+                        "Ignoring non-private mDNS address %s for S&L %s",
+                        addr,
+                        speaker_uid,
+                    )
+                    continue
+                _LOGGER.debug("Resolved S&L %s -> %s via mDNS", speaker_uid, addr)
+                return addr
             return None
 
         # Fast path: a matching service already in HA's zeroconf cache.

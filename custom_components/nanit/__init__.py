@@ -22,12 +22,13 @@ from .const import (
     CONF_CAMERA_IP,
     CONF_CAMERA_IPS,
     CONF_CAMERA_UID,
+    CONF_SPEAKER_IPS,
     DOMAIN,
     LOGGER,
     PLATFORMS,
 )
 from .frontend import async_register_card
-from .hub import CameraData, NanitHub
+from .hub import CameraData, NanitHub, SpeakerData
 
 
 @dataclass
@@ -36,6 +37,7 @@ class NanitData:
 
     hub: NanitHub
     cameras: dict[str, CameraData]
+    speakers: dict[str, SpeakerData]
 
 
 type NanitConfigEntry = ConfigEntry[NanitData]
@@ -66,8 +68,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: NanitConfigEntry) -> boo
         await hub.async_close()
         raise
 
-    entry.runtime_data = NanitData(hub=hub, cameras=hub.camera_data)
+    entry.runtime_data = NanitData(hub=hub, cameras=hub.camera_data, speakers=hub.speaker_data)
 
+    await _async_migrate_sl_identities(hass, entry, hub)
     _async_remove_stale_devices(hass, entry, hub)
     _async_remove_deprecated_entities(hass, hub)
 
@@ -138,10 +141,105 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
     return True
 
 
+# Unique-id suffixes owned by Sound & Light entities. Used to migrate
+# exactly these from camera_uid-prefixed to speaker_uid-prefixed ids —
+# camera entities share the camera_uid prefix and must not be touched.
+_SL_UNIQUE_ID_SUFFIXES: tuple[str, ...] = (
+    "sl_temperature",
+    "sl_humidity",
+    "sl_connection_mode",
+    "sl_connectivity",
+    "sound_machine_switch",
+    "sl_sound_switch",
+    "sound_machine_volume",
+    "sound_machine_sound",
+    "sound_light_light",
+)
+
+
+async def _async_migrate_sl_identities(
+    hass: HomeAssistant, entry: NanitConfigEntry, hub: NanitHub
+) -> None:
+    """Move S&L registry identity from camera_uid to speaker_uid (idempotent).
+
+    S&L entities and the S&L device were historically keyed on the camera's
+    uid because setup required a camera. The speaker's own uid is the only
+    identity that always exists, so unique_ids, the device registry
+    identifier, and the speaker-IP option keys all move to it. Runs after
+    the hub has resolved the account's camera→speaker pairing and before
+    platforms register entities, so every migrated entity keeps its
+    entity_id and history. Once migrated (or on a fresh install) nothing
+    here matches and the function is a no-op.
+    """
+    pairs: list[tuple[str, str]] = []
+    for baby in hub.babies:
+        speaker_uid = hub.speaker_uid_map.get(baby.uid)
+        if baby.camera_uid and speaker_uid:
+            pairs.append((baby.camera_uid, speaker_uid))
+    if not pairs:
+        return
+
+    ent_reg = er.async_get(hass)
+    dev_reg = dr.async_get(hass)
+
+    for camera_uid, speaker_uid in pairs:
+        old_ids = {
+            f"{camera_uid}_{suffix}": f"{speaker_uid}_{suffix}" for suffix in _SL_UNIQUE_ID_SUFFIXES
+        }
+
+        def _migrate_unique_id(
+            entity_entry: er.RegistryEntry,
+            old_ids: dict[str, str] = old_ids,
+        ) -> dict[str, Any] | None:
+            new_unique_id = old_ids.get(entity_entry.unique_id)
+            if new_unique_id is None:
+                return None
+            if ent_reg.async_get_entity_id(entity_entry.domain, DOMAIN, new_unique_id):
+                LOGGER.warning(
+                    "Cannot migrate %s to unique_id %s: already taken",
+                    entity_entry.entity_id,
+                    new_unique_id,
+                )
+                return None
+            LOGGER.info("Migrating %s unique_id to %s", entity_entry.entity_id, new_unique_id)
+            return {"new_unique_id": new_unique_id}
+
+        await er.async_migrate_entries(hass, entry.entry_id, _migrate_unique_id)
+
+        old_device = dev_reg.async_get_device(identifiers={(DOMAIN, f"{camera_uid}_sound_light")})
+        if old_device is not None:
+            if dev_reg.async_get_device(identifiers={(DOMAIN, speaker_uid)}) is None:
+                LOGGER.info(
+                    "Migrating S&L device identifier %s_sound_light to %s",
+                    camera_uid,
+                    speaker_uid,
+                )
+                dev_reg.async_update_device(old_device.id, new_identifiers={(DOMAIN, speaker_uid)})
+            else:
+                LOGGER.warning(
+                    "S&L device identifier %s already exists; leaving legacy device %s",
+                    speaker_uid,
+                    old_device.id,
+                )
+
+    # Re-key manual speaker IPs from camera_uid to speaker_uid. Runs before
+    # the options update listener is registered, so this does not reload.
+    speaker_ips: dict[str, str] = dict(entry.options.get(CONF_SPEAKER_IPS, {}))
+    if speaker_ips:
+        cam_to_speaker = dict(pairs)
+        migrated_ips = {cam_to_speaker.get(key, key): ip for key, ip in speaker_ips.items()}
+        if migrated_ips != speaker_ips:
+            hass.config_entries.async_update_entry(
+                entry,
+                options={**entry.options, CONF_SPEAKER_IPS: migrated_ips},
+            )
+            LOGGER.info("Re-keyed speaker IP options by speaker_uid")
+
+
 def _async_remove_stale_devices(
     hass: HomeAssistant, entry: NanitConfigEntry, hub: NanitHub
 ) -> None:
-    """Remove HA devices for cameras no longer on the Nanit account."""
+    """Remove HA devices for cameras/speakers no longer on the Nanit account."""
     # If the API returned no babies (transient outage, account propagation),
     # skip removal — otherwise we would wipe every device for the entry and
     # force the user to re-add them.
@@ -149,13 +247,15 @@ def _async_remove_stale_devices(
         return
 
     device_reg = dr.async_get(hass)
-    known_camera_uids = {baby.camera_uid for baby in hub.babies}
+    known_camera_uids = {baby.camera_uid for baby in hub.babies if baby.camera_uid}
 
-    # Build the set of valid device identifiers: raw camera UIDs and
-    # derived S&L identifiers ("{camera_uid}_sound_light").
+    # Build the set of valid device identifiers: raw camera UIDs, speaker
+    # UIDs, and legacy S&L identifiers ("{camera_uid}_sound_light") so a
+    # not-yet-migrated S&L device is never treated as stale.
     valid_uids = set(known_camera_uids)
     for uid in known_camera_uids:
         valid_uids.add(f"{uid}_sound_light")
+    valid_uids.update(hub.speaker_uid_map.values())
 
     for device in dr.async_entries_for_config_entry(device_reg, entry.entry_id):
         device_uids = {
@@ -183,7 +283,7 @@ def _async_remove_deprecated_entities(hass: HomeAssistant, hub: NanitHub) -> Non
     users don't see stale "unavailable" entities.
     """
     ent_reg = er.async_get(hass)
-    camera_uids = {baby.camera_uid for baby in hub.babies}
+    camera_uids = {baby.camera_uid for baby in hub.babies if baby.camera_uid}
 
     for old_domain, key in _DEPRECATED_ENTITIES:
         for camera_uid in camera_uids:

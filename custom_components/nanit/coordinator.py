@@ -368,8 +368,13 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator[SoundLightFullState]):
         entry: NanitConfigEntry,
         sound_light: NanitSoundLight,
         baby: Baby,
+        via_camera_uid: str | None = None,
     ) -> None:
-        """Initialize the Sound & Light coordinator."""
+        """Initialize the Sound & Light coordinator.
+
+        via_camera_uid links the S&L device to the baby's camera device in
+        the registry; None when the baby has no camera (standalone speaker).
+        """
         super().__init__(
             hass,
             _LOGGER,
@@ -378,6 +383,7 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator[SoundLightFullState]):
         )
         self.sound_light = sound_light
         self.baby = baby
+        self.via_camera_uid = via_camera_uid
         self._unsubscribe: Callable[[], None] | None = None
         self._store: Store[dict[str, Any]] = Store(
             hass,

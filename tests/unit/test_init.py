@@ -346,3 +346,134 @@ async def test_migrate_version_gt_2_returns_false(hass: HomeAssistant) -> None:
     entry.add_to_hass(hass)
 
     assert not await async_migrate_entry(hass, entry)
+
+
+# ---------------------------------------------------------------------------
+# S&L identity migration (camera_uid -> speaker_uid)
+# ---------------------------------------------------------------------------
+
+from types import SimpleNamespace
+
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
+
+from custom_components.nanit import _async_migrate_sl_identities
+from custom_components.nanit.const import CONF_SPEAKER_IPS
+
+Baby = importlib.import_module("aionanit.models").Baby
+
+_MIG_BABY = Baby(uid="baby_4", name="Nursery", camera_uid="cam_4", speaker_uid="spk_4")
+
+
+def _migration_entry(hass: HomeAssistant, options: dict | None = None) -> MockConfigEntry:
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=mock_entry_data_v2(),
+        version=2,
+        unique_id=MOCK_EMAIL,
+        options=options or {},
+    )
+    entry.add_to_hass(hass)
+    return entry
+
+
+def _migration_hub(babies=None, speaker_uid_map=None) -> SimpleNamespace:
+    return SimpleNamespace(
+        babies=babies if babies is not None else [_MIG_BABY],
+        speaker_uid_map=speaker_uid_map if speaker_uid_map is not None else {"baby_4": "spk_4"},
+    )
+
+
+async def test_sl_migration_moves_unique_ids_and_keeps_entity_id(
+    hass: HomeAssistant,
+) -> None:
+    entry = _migration_entry(hass)
+    ent_reg = er.async_get(hass)
+    old = ent_reg.async_get_or_create(
+        "switch", DOMAIN, "cam_4_sound_machine_switch", config_entry=entry
+    )
+    camera_entity = ent_reg.async_get_or_create(
+        "sensor", DOMAIN, "cam_4_temperature", config_entry=entry
+    )
+
+    await _async_migrate_sl_identities(hass, entry, _migration_hub())
+
+    migrated = ent_reg.async_get(old.entity_id)
+    assert migrated is not None
+    assert migrated.unique_id == "spk_4_sound_machine_switch"
+    assert migrated.entity_id == old.entity_id
+    # Camera entities sharing the prefix are untouched
+    assert ent_reg.async_get(camera_entity.entity_id).unique_id == "cam_4_temperature"
+
+
+async def test_sl_migration_moves_device_identifier(hass: HomeAssistant) -> None:
+    entry = _migration_entry(hass)
+    dev_reg = dr.async_get(hass)
+    device = dev_reg.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, "cam_4_sound_light")},
+    )
+
+    await _async_migrate_sl_identities(hass, entry, _migration_hub())
+
+    migrated = dev_reg.async_get(device.id)
+    assert migrated is not None
+    assert migrated.identifiers == {(DOMAIN, "spk_4")}
+
+
+async def test_sl_migration_collision_keeps_existing(hass: HomeAssistant) -> None:
+    """If the target unique_id already exists, the old entity is left alone."""
+    entry = _migration_entry(hass)
+    ent_reg = er.async_get(hass)
+    old = ent_reg.async_get_or_create(
+        "switch", DOMAIN, "cam_4_sound_machine_switch", config_entry=entry
+    )
+    new = ent_reg.async_get_or_create(
+        "switch", DOMAIN, "spk_4_sound_machine_switch", config_entry=entry
+    )
+
+    await _async_migrate_sl_identities(hass, entry, _migration_hub())
+
+    assert ent_reg.async_get(old.entity_id).unique_id == "cam_4_sound_machine_switch"
+    assert ent_reg.async_get(new.entity_id).unique_id == "spk_4_sound_machine_switch"
+
+
+async def test_sl_migration_rekeys_speaker_ip_options(hass: HomeAssistant) -> None:
+    entry = _migration_entry(hass, options={CONF_SPEAKER_IPS: {"cam_4": "192.168.1.70"}})
+
+    await _async_migrate_sl_identities(hass, entry, _migration_hub())
+
+    assert entry.options[CONF_SPEAKER_IPS] == {"spk_4": "192.168.1.70"}
+
+
+async def test_sl_migration_noop_for_standalone_speaker(hass: HomeAssistant) -> None:
+    """A speaker-only baby has no camera pairing, so there is nothing to migrate."""
+    entry = _migration_entry(hass, options={CONF_SPEAKER_IPS: {"spk_5": "192.168.1.71"}})
+    standalone = Baby(uid="baby_5", name="Den", camera_uid="", speaker_uid="spk_5")
+
+    await _async_migrate_sl_identities(
+        hass, entry, _migration_hub(babies=[standalone], speaker_uid_map={"baby_5": "spk_5"})
+    )
+
+    assert entry.options[CONF_SPEAKER_IPS] == {"spk_5": "192.168.1.71"}
+
+
+async def test_sl_migration_idempotent(hass: HomeAssistant) -> None:
+    entry = _migration_entry(hass, options={CONF_SPEAKER_IPS: {"cam_4": "192.168.1.72"}})
+    ent_reg = er.async_get(hass)
+    old = ent_reg.async_get_or_create(
+        "light", DOMAIN, "cam_4_sound_light_light", config_entry=entry
+    )
+    dev_reg = dr.async_get(hass)
+    device = dev_reg.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, "cam_4_sound_light")},
+    )
+
+    hub = _migration_hub()
+    await _async_migrate_sl_identities(hass, entry, hub)
+    await _async_migrate_sl_identities(hass, entry, hub)
+
+    assert ent_reg.async_get(old.entity_id).unique_id == "spk_4_sound_light_light"
+    assert dev_reg.async_get(device.id).identifiers == {(DOMAIN, "spk_4")}
+    assert entry.options[CONF_SPEAKER_IPS] == {"spk_4": "192.168.1.72"}

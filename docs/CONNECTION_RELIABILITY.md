@@ -52,6 +52,14 @@ camera:
   the app's own backoff schedules (remote 0/2/5/7s, local 0/3/10/60/90s), and
   a transport whose handshake keeps getting auth-rejected backs off to a long
   quiet interval so a wedged speaker can't flood the log.
+- **The speaker accepts only ONE local client at a time** (verified on real
+  hardware, firmware 1.3.1: a second client's local handshake gets HTTP 403
+  even with a freshly minted device token, and connects the moment the first
+  client releases the socket). A second HA instance, or another integration
+  holding the local socket, therefore runs on the cloud relay. The transport
+  keeps retrying with backoff and takes the local slot automatically when it
+  frees. This also means a persistent local 403 does not necessarily mean the
+  speaker is wedged: something else may simply own the slot.
 - **Keepalive is WebSocket protocol ping (~20s) only.** The speaker has no
   app-level keepalive frame. Do not add one (the camera's 25s keepalive
   message is a camera-only pattern).

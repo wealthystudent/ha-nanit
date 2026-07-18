@@ -329,6 +329,10 @@ failure that was observed on real hardware:
   which round-trips the stored color. The app's own `noColor` off relights in
   white on a bare re-enable, so light ON must always send explicit
   hue/saturation.
+- **One local client per speaker.** The device 403s a second local
+  WebSocket even with a fresh device token (verified on hardware). Don't
+  diagnose a persistent local 403 as a wedged device without checking
+  whether another client (a second HA, another integration) holds the slot.
 - `sound_light_pb2.py` / `.pyi` are generated from `sound_light.proto`
   (protoc 29.5, enforced by the CI drift check). Never hand-edit them.
 

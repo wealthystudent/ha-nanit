@@ -584,6 +584,17 @@ class SoundLightTransport:
                 try:
                     token = await self._access_token_provider()
                 except Exception as e:
+                    if isinstance(e, RuntimeError) and "shutdown" in str(e).lower():
+                        # Provider I/O rides HA's executor too, so teardown
+                        # can surface here as well. Same treatment as below:
+                        # not a device failure, no counting, no loud log.
+                        _LOGGER.debug(
+                            "Skipping %s connect for %s during shutdown: %s",
+                            transport,
+                            speaker_uid,
+                            e,
+                        )
+                        return
                     self._log_transient_connect_failure(connection_key, transport, speaker_uid, e)
                     self._schedule_reconnect(speaker_uid, transport)
                     return

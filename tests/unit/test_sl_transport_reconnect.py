@@ -534,3 +534,26 @@ async def test_inflight_command_fails_fast_on_socket_drop(monkeypatch):
 
     await api.close()
     await server.stop()
+
+
+async def test_provider_shutdown_error_is_quiet(monkeypatch, caplog):
+    """A token provider hitting HA's executor teardown must not log ERROR or
+    count as a transient failure (third executor-shutdown surface)."""
+
+    async def teardown_provider():
+        raise RuntimeError("Executor shutdown has been called")
+
+    api = make_transport(access_token_provider=teardown_provider)
+    api.register_device(UID)
+    monkeypatch.setattr(transport_mod, "SOUND_LIGHT_WS_BASE_URL", "ws://127.0.0.1:1")
+
+    with caplog.at_level(logging.DEBUG):
+        await api.connect_device(UID)
+
+    loud = [
+        r for r in caplog.records if r.levelno >= logging.WARNING and r.name.endswith(".transport")
+    ]
+    assert not loud
+    assert api._transient_fail_counts == {}
+
+    await api.close()

@@ -308,41 +308,52 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class NanitOptionsFlow(OptionsFlow):
-    """Handle Nanit options — configure camera IPs for local access.
+    """Handle Nanit options — configure device IPs for local access.
 
     Two-step flow:
-    1. Select which camera to configure (if multiple exist)
-    2. Enter or clear the camera IP for local connectivity
+    1. Select which baby's devices to configure (if multiple exist)
+    2. Enter or clear the camera / speaker IP for local connectivity
+
+    Selection is by baby (not camera) so speaker-only babies are
+    configurable too. Only the fields for devices the baby actually has
+    are shown, and speaker IPs are stored keyed by speaker_uid.
     """
 
     def __init__(self) -> None:
         """Initialize."""
-        self._selected_camera_uid: str = ""
+        self._selected_baby_uid: str = ""
+
+    def _selected_baby(self) -> Any:
+        """Return the Baby row for the current selection, or None."""
+        for baby in self.config_entry.runtime_data.hub.babies:
+            if baby.uid == self._selected_baby_uid:
+                return baby
+        return None
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        """Select which camera to configure."""
+        """Select which baby's devices to configure."""
         hub = self.config_entry.runtime_data.hub
         babies = hub.babies
 
         if not babies:
             return self.async_abort(reason="no_cameras")
 
-        # Single camera — skip selection, go straight to IP config
+        # Single baby — skip selection, go straight to IP config
         if len(babies) == 1:
-            self._selected_camera_uid = babies[0].camera_uid
+            self._selected_baby_uid = babies[0].uid
             return await self.async_step_camera_ip(user_input)
 
         if user_input is not None:
-            self._selected_camera_uid = user_input["camera"]
+            self._selected_baby_uid = user_input["device"]
             return await self.async_step_camera_ip()
 
-        camera_options = {baby.camera_uid: display_name(baby.name, baby.uid) for baby in babies}
+        device_options = {baby.uid: display_name(baby.name, baby.uid) for baby in babies}
 
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(
                 {
-                    vol.Required("camera"): vol.In(camera_options),
+                    vol.Required("device"): vol.In(device_options),
                 }
             ),
         )
@@ -350,8 +361,15 @@ class NanitOptionsFlow(OptionsFlow):
     async def async_step_camera_ip(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Configure IP for the selected camera."""
+        """Configure IPs for the selected baby's devices."""
         errors: dict[str, str] = {}
+
+        hub = self.config_entry.runtime_data.hub
+        baby = self._selected_baby()
+        if baby is None:
+            return self.async_abort(reason="no_cameras")
+        camera_uid: str | None = baby.camera_uid or None
+        speaker_uid: str | None = hub.speaker_uid_map.get(baby.uid)
 
         if user_input is not None:
             camera_ip = user_input.get(CONF_CAMERA_IP, "").strip()
@@ -372,17 +390,23 @@ class NanitOptionsFlow(OptionsFlow):
             if not errors:
                 # Merge with existing camera IPs
                 current_ips = dict(self.config_entry.options.get(CONF_CAMERA_IPS, {}))
-                if camera_ip:
-                    current_ips[self._selected_camera_uid] = camera_ip
-                else:
-                    current_ips.pop(self._selected_camera_uid, None)
+                if camera_uid:
+                    if camera_ip:
+                        current_ips[camera_uid] = camera_ip
+                    else:
+                        current_ips.pop(camera_uid, None)
 
-                # Merge with existing speaker IPs
+                # Merge with existing speaker IPs, keyed by speaker_uid.
+                # Always drop the legacy camera_uid-keyed entry so a cleared
+                # IP can't be resurrected by the hub's legacy-read fallback.
                 current_speaker_ips = dict(self.config_entry.options.get(CONF_SPEAKER_IPS, {}))
-                if speaker_ip:
-                    current_speaker_ips[self._selected_camera_uid] = speaker_ip
-                else:
-                    current_speaker_ips.pop(self._selected_camera_uid, None)
+                if camera_uid:
+                    current_speaker_ips.pop(camera_uid, None)
+                if speaker_uid:
+                    if speaker_ip:
+                        current_speaker_ips[speaker_uid] = speaker_ip
+                    else:
+                        current_speaker_ips.pop(speaker_uid, None)
 
                 return self.async_create_entry(
                     title="",
@@ -392,34 +416,25 @@ class NanitOptionsFlow(OptionsFlow):
                     },
                 )
 
-        current_ip = self.config_entry.options.get(CONF_CAMERA_IPS, {}).get(
-            self._selected_camera_uid, ""
-        )
-        current_speaker_ip = self.config_entry.options.get(CONF_SPEAKER_IPS, {}).get(
-            self._selected_camera_uid, ""
+        current_ip = self.config_entry.options.get(CONF_CAMERA_IPS, {}).get(camera_uid or "", "")
+        stored_speaker_ips = self.config_entry.options.get(CONF_SPEAKER_IPS, {})
+        current_speaker_ip = stored_speaker_ips.get(speaker_uid or "") or stored_speaker_ips.get(
+            camera_uid or "", ""
         )
 
-        # Resolve camera name for the description placeholder
-        camera_name = self._selected_camera_uid
-        for baby in self.config_entry.runtime_data.hub.babies:
-            if baby.camera_uid == self._selected_camera_uid:
-                camera_name = display_name(baby.name, baby.uid)
-                break
+        schema_fields: dict[Any, Any] = {}
+        if camera_uid:
+            schema_fields[
+                vol.Optional(CONF_CAMERA_IP, description={"suggested_value": current_ip})
+            ] = cv.string
+        if speaker_uid:
+            schema_fields[
+                vol.Optional(CONF_SPEAKER_IP, description={"suggested_value": current_speaker_ip})
+            ] = cv.string
 
         return self.async_show_form(
             step_id="camera_ip",
-            data_schema=vol.Schema(
-                {
-                    vol.Optional(
-                        CONF_CAMERA_IP,
-                        description={"suggested_value": current_ip},
-                    ): cv.string,
-                    vol.Optional(
-                        CONF_SPEAKER_IP,
-                        description={"suggested_value": current_speaker_ip},
-                    ): cv.string,
-                }
-            ),
-            description_placeholders={"camera_name": camera_name},
+            data_schema=vol.Schema(schema_fields),
+            description_placeholders={"camera_name": display_name(baby.name, baby.uid)},
             errors=errors,
         )

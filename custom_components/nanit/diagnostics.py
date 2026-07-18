@@ -58,9 +58,23 @@ async def async_get_config_entry_diagnostics(
 
         cameras_diag[camera_uid] = cam_diag
 
+    speakers_diag: dict[str, Any] = {}
+    for speaker_uid, speaker_data in entry.runtime_data.speakers.items():
+        coordinator = speaker_data.coordinator
+        speakers_diag[speaker_uid] = {
+            "baby_name": speaker_data.baby.name,
+            "baby_uid": speaker_data.baby.uid,
+            "connected": coordinator.connected,
+            "connection_mode": speaker_data.sound_light.connection_mode,
+            "last_update_success": coordinator.last_update_success,
+            "data": asdict(coordinator.data) if coordinator.data is not None else None,
+        }
+
     return {
         "config_entry_data": async_redact_data(dict(entry.data), TO_REDACT),
         "config_entry_options": async_redact_data(dict(entry.options), TO_REDACT),
         "camera_count": len(cameras_diag),
         "cameras": async_redact_data(cameras_diag, TO_REDACT),
+        "speaker_count": len(speakers_diag),
+        "speakers": async_redact_data(speakers_diag, TO_REDACT),
     }

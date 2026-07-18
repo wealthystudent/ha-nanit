@@ -13,8 +13,14 @@ All notable changes to the Nanit Home Assistant integration are documented in th
 
 ### Added
 
+- **Standalone Sound & Light support** (#79): the integration no longer requires a camera on the account. Setup now creates whatever devices exist per baby, so a Sound & Light Machine works on its own, alongside a camera, or on an account mixing both. A failed camera no longer blocks a working speaker (and the other way round); setup only fails when nothing on the account could start.
 - Protobuf schema (`sound_light.proto`) with generated code and a CI drift check, replacing the hand-rolled S&L wire parser.
 - `websockets` (>= 13) as an integration requirement, used by the S&L transport.
+
+### Changed (S&L identity)
+
+- **S&L entities and the S&L device are now identified by the speaker's own uid** instead of the paired camera's. Existing installs migrate automatically on first start: every entity keeps its entity id and history, and the S&L device keeps its name and area. The device is linked to the camera (via_device) only when the baby actually has one.
+- The options flow now selects by baby rather than by camera, shows only the IP fields for devices the baby has, and stores manual speaker IPs keyed by the speaker's uid (existing entries are re-keyed automatically).
 
 ## [1.8.0] – Unreleased
 

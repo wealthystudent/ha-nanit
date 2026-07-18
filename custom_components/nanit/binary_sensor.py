@@ -90,9 +90,10 @@ async def async_setup_entry(
             for cloud_desc in CLOUD_BINARY_SENSORS:
                 entities.append(NanitCloudBinarySensor(cam_data.cloud_coordinator, cloud_desc))
 
-    # Sound & Light connectivity sensor
+    # Sound & Light sensors
     for speaker_data in entry.runtime_data.speakers.values():
         entities.append(NanitSLConnectivitySensor(speaker_data.coordinator))
+        entities.append(NanitSLChargingSensor(speaker_data.coordinator))
 
     async_add_entities(entities)
 
@@ -207,4 +208,26 @@ class NanitSLConnectivitySensor(NanitSoundLightEntity, BinarySensorEntity):
     def is_on(self) -> bool:
         """Return True when the S&L WebSocket is connected."""
         result: bool = self.coordinator.connected
+        return result
+
+
+class NanitSLChargingSensor(NanitSoundLightEntity, BinarySensorEntity):
+    """Battery charging indicator for the Sound & Light Machine."""
+
+    _attr_device_class = BinarySensorDeviceClass.BATTERY_CHARGING
+
+    def __init__(
+        self,
+        coordinator: NanitSoundLightCoordinator,
+    ) -> None:
+        """Initialize."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.sound_light.speaker_uid}_sl_charging"
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True when the device reports it's charging."""
+        if self.coordinator.data is None:
+            return None
+        result: bool | None = self.coordinator.data.battery_charging
         return result

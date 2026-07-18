@@ -42,6 +42,15 @@ class SoundLightFullState:
     temperature_c: float | None = None
     humidity_pct: float | None = None
 
+    # Diagnostics (from the GetStatus / Network / Firmware query types)
+    battery_percent: int | None = None
+    battery_charging: bool | None = None
+    wifi_rssi: int | None = None
+    wifi_ssid: str | None = None
+    wifi_bssid: str | None = None
+    wifi_channel: int | None = None
+    firmware_version: str | None = None
+
     # Routines
     routines: tuple[SoundLightRoutine, ...] = ()
 

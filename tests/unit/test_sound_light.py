@@ -176,6 +176,7 @@ class TestCoalescing:
         await sl.async_set_power(True)
         await sl.async_set_volume(0.5)
         await sl.async_set_track("Pink Noise")
+        await sl.async_set_sound_on(True)
         await _flushed(sl)
 
         assert api.send_control_command.await_count == 1
@@ -272,13 +273,36 @@ class TestSoundSemantics:
         await _flushed(sl)
         assert api.send_control_command.await_args.kwargs == {"sound": None}
 
-    async def test_set_track_remembers_last_track(self) -> None:
+    async def test_set_track_while_playing_switches_immediately(self) -> None:
         sl = _make_sound_light()
         api = _mock_transport(sl)
+        sl._device_view = {"current_sound": "Rain"}
         await sl.async_set_track("Ocean")
         await _flushed(sl)
         assert api.send_control_command.await_args.kwargs == {"sound": "Ocean"}
         assert sl._last_track == "Ocean"
+
+    async def test_set_track_while_off_is_preference_only(self) -> None:
+        """Picking a track while sound is off must NOT start playback.
+
+        The sound switch owns on/off. The pick is stored client-side, shown
+        in the select, and played when the switch turns on.
+        """
+        sl = _make_sound_light()
+        api = _mock_transport(sl)
+        sl._device_view = {"current_sound": "No sound"}
+
+        await sl.async_set_track("Ocean")
+        await _flushed(sl)
+
+        api.send_control_command.assert_not_awaited()
+        assert sl.state.current_track == "Ocean"  # shown in the select
+        assert sl._last_track == "Ocean"
+
+        # The sound switch turning on plays the staged pick.
+        await sl.async_set_sound_on(True)
+        await _flushed(sl)
+        assert api.send_control_command.await_args.kwargs == {"sound": "Ocean"}
 
 
 class TestOptimisticStateAndRollback:

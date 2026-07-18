@@ -379,10 +379,34 @@ class NanitSoundLight:
             self._queue_command({"sound": _NO_SOUND})
 
     async def async_set_track(self, track_name: str) -> None:
-        """Change the sound track (selecting a track starts playing it)."""
-        if track_name != _NO_SOUND:
-            self._last_track = track_name
-        self._queue_command({"sound": track_name})
+        """Change the sound track.
+
+        While sound is playing, the new track applies immediately. While
+        sound is off, the pick is only stored as the preference (shown in
+        the select, played when the sound switch turns on). The sound switch
+        owns on/off, so selecting a track must not start playback by itself.
+        The device has no "selected but silent" slot, so the preference
+        lives client-side in `_last_track`.
+        """
+        if track_name == _NO_SOUND:
+            self._queue_command({"sound": _NO_SOUND})
+            return
+        self._last_track = track_name
+        current = self._device_view.get("current_sound")
+        if current is not None and current != _NO_SOUND:
+            self._queue_command({"sound": track_name})
+            return
+        # Sound is off (or unknown): publish the preference without sending.
+        # The device keeps reporting "No sound", which leaves current_track
+        # alone in the state mapping, so the pick sticks in the select.
+        if self._stopped:
+            raise NanitTransportError(
+                f"S&L {self._speaker_uid} is not started, cannot send commands"
+            )
+        new_state = dataclasses.replace(self._state, current_track=track_name)
+        if new_state != self._state:
+            self._state = new_state
+            self._fire_event(SoundLightEventKind.STATE_UPDATE)
 
     async def async_set_brightness(self, brightness: float) -> None:
         """Set light brightness (0.0-1.0)."""

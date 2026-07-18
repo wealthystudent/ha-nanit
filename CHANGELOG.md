@@ -14,6 +14,7 @@ All notable changes to the Nanit Home Assistant integration are documented in th
 ### Added
 
 - **Standalone Sound & Light support** (#79): the integration no longer requires a camera on the account. Setup now creates whatever devices exist per baby, so a Sound & Light Machine works on its own, alongside a camera, or on an account mixing both. A failed camera no longer blocks a working speaker (and the other way round); setup only fails when nothing on the account could start.
+- **Devices for hardware no longer on the account can now be deleted** from the device page. Deleting a speaker also clears it from the persisted speaker map, so it stays gone (the map otherwise deliberately shields speakers from transient API omissions).
 - Protobuf schema (`sound_light.proto`) with generated code and a CI drift check, replacing the hand-rolled S&L wire parser.
 - `websockets` (>= 13) as an integration requirement, used by the S&L transport.
 

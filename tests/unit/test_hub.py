@@ -559,8 +559,11 @@ async def test_get_babies_falls_back_to_raw_parse_on_keyerror(
             ]
         }
     )
+    resp_cm = MagicMock()
+    resp_cm.__aenter__ = AsyncMock(return_value=resp)
+    resp_cm.__aexit__ = AsyncMock(return_value=False)
     mock_nanit_client.rest_client.base_url = "https://api.example.invalid"
-    mock_nanit_client.rest_client.session.get = AsyncMock(return_value=resp)
+    mock_nanit_client.rest_client.session.get = MagicMock(return_value=resp_cm)
 
     entry = _make_entry(hass)
     hub = NanitHub(hass, MagicMock(), entry)
@@ -609,8 +612,10 @@ async def test_legacy_camera_keyed_speaker_map_translates(
 
     assert hub.speaker_uid_map == {"baby_4": "spk_4"}
     assert set(hub.speaker_data) == {"spk_4"}
-    # The persisted map is re-keyed by baby uid
-    assert entry.data["speaker_uid_map"] == {"baby_4": "spk_4"}
+    # The legacy pairing is retained for the identity migration; the
+    # re-keyed map is persisted by the migration step, not the hub
+    assert hub.camera_speaker_pairs == {"cam_4": "spk_4"}
+    assert entry.data["speaker_uid_map"] == {"cam_4": "spk_4"}
 
 
 async def test_legacy_camera_keyed_speaker_ip_still_applies(
@@ -637,3 +642,77 @@ async def test_legacy_camera_keyed_speaker_ip_still_applies(
         await hub.async_setup()
 
     assert sl_cls.call_args.kwargs["device_ip"] == "192.168.1.60"
+
+
+async def test_setup_babies_without_devices_raises(hass: HomeAssistant, mock_nanit_client) -> None:
+    """Babies with no cameras and no resolvable speakers must retry, not load empty."""
+    mock_nanit_client.async_get_babies.return_value = [
+        Baby(uid="baby_7", name="Nook", camera_uid="", speaker_uid=None)
+    ]
+    entry = _make_entry(hass)
+    hub = NanitHub(hass, MagicMock(), entry)
+
+    with pytest.raises(NanitConnectionError):
+        await hub.async_setup()
+
+
+async def test_raw_parse_skips_malformed_rows(hass: HomeAssistant, mock_nanit_client) -> None:
+    """Rows with bad shapes or hostile uid values are dropped, not fatal."""
+    mock_nanit_client.async_get_babies.side_effect = KeyError("camera_uid")
+
+    resp = MagicMock()
+    resp.status = 200
+    resp.raise_for_status = MagicMock()
+    resp.json = AsyncMock(
+        return_value={
+            "babies": [
+                "not-a-dict",
+                {"name": "no uid"},
+                {"uid": "../../evil", "speaker": {"speaker": {"uid": "spk_ok"}}},
+                {"uid": "baby_8", "name": 42, "speaker": "not-a-dict"},
+                {"uid": "baby_9", "name": "Den", "speaker": {"speaker": {"uid": "bad/uid"}}},
+                {"uid": "baby_10", "name": "Loft", "speaker": {"speaker": {"uid": "spk_10"}}},
+            ]
+        }
+    )
+    resp_cm = MagicMock()
+    resp_cm.__aenter__ = AsyncMock(return_value=resp)
+    resp_cm.__aexit__ = AsyncMock(return_value=False)
+    mock_nanit_client.rest_client.base_url = "https://api.example.invalid"
+    mock_nanit_client.rest_client.session.get = MagicMock(return_value=resp_cm)
+
+    entry = _make_entry(hass)
+    hub = NanitHub(hass, MagicMock(), entry)
+
+    sl_patch, coord_patch = _speaker_patches()
+    with sl_patch, coord_patch as coord_cls:
+        coord_cls.return_value = MagicMock(async_setup=AsyncMock())
+        await hub.async_setup()
+
+    assert {baby.uid for baby in hub.babies} == {"baby_8", "baby_9", "baby_10"}
+    # Only the row with a clean speaker uid produced a speaker
+    assert set(hub.speaker_data) == {"spk_10"}
+
+
+async def test_via_device_cleared_when_camera_fails(hass: HomeAssistant, mock_nanit_client) -> None:
+    """A speaker must not reference a camera device that never registered."""
+    mock_nanit_client.async_get_babies.return_value = [MOCK_BABY_BOTH]
+    mock_nanit_client.camera.side_effect = lambda **kw: _make_mock_camera(kw["uid"], kw["baby_uid"])
+    entry = _make_entry(hass)
+    hub = NanitHub(hass, MagicMock(), entry)
+
+    sl_patch, coord_patch = _speaker_patches()
+    with (
+        patch("custom_components.nanit.hub.NanitPushCoordinator") as push_cls,
+        sl_patch,
+        coord_patch as sl_coord_cls,
+    ):
+        push_cls.return_value = MagicMock(
+            async_setup=AsyncMock(side_effect=NanitConnectionError("unreachable"))
+        )
+        coordinator = MagicMock(async_setup=AsyncMock())
+        coordinator.via_camera_uid = "cam_4"
+        sl_coord_cls.return_value = coordinator
+        await hub.async_setup()
+
+    assert hub.speaker_data["spk_4"].coordinator.via_camera_uid is None

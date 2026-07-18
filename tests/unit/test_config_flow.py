@@ -871,3 +871,27 @@ async def test_options_flow_clearing_speaker_ip_also_drops_legacy_key(
     result_data = _as_dict(result)
     assert result_data.get("type") is FlowResultType.CREATE_ENTRY
     assert result_data["data"][CONF_SPEAKER_IPS] == {}
+
+
+async def test_options_flow_unresolved_speaker_keeps_legacy_ip(
+    hass: HomeAssistant,
+) -> None:
+    """Saving camera options must not discard a legacy speaker IP the hub still uses."""
+    hass = await _resolve_hass(hass)
+    baby = Baby(uid="baby_1", name="Nursery", camera_uid="cam_1", speaker_uid=None)
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        options={CONF_SPEAKER_IPS: {"cam_1": "192.168.1.90"}},
+    )
+    entry.runtime_data = SimpleNamespace(hub=SimpleNamespace(babies=[baby], speaker_uid_map={}))
+    entry.add_to_hass(hass)
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {CONF_CAMERA_IP: "192.168.1.91"},
+    )
+
+    result_data = _as_dict(result)
+    assert result_data.get("type") is FlowResultType.CREATE_ENTRY
+    assert result_data["data"][CONF_SPEAKER_IPS] == {"cam_1": "192.168.1.90"}

@@ -397,12 +397,15 @@ class NanitOptionsFlow(OptionsFlow):
                         current_ips.pop(camera_uid, None)
 
                 # Merge with existing speaker IPs, keyed by speaker_uid.
-                # Always drop the legacy camera_uid-keyed entry so a cleared
-                # IP can't be resurrected by the hub's legacy-read fallback.
+                # When the speaker is resolvable this session, also drop the
+                # legacy camera_uid-keyed entry so a cleared IP can't be
+                # resurrected by the hub's legacy-read fallback. When it
+                # isn't (no speaker field was shown), leave the legacy
+                # entry alone — the hub may still be using it.
                 current_speaker_ips = dict(self.config_entry.options.get(CONF_SPEAKER_IPS, {}))
-                if camera_uid:
-                    current_speaker_ips.pop(camera_uid, None)
                 if speaker_uid:
+                    if camera_uid:
+                        current_speaker_ips.pop(camera_uid, None)
                     if speaker_ip:
                         current_speaker_ips[speaker_uid] = speaker_ip
                     else:

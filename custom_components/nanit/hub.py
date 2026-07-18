@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -53,6 +54,22 @@ _CAMERA_SETUP_TIMEOUT: float = 60.0
 # transports are launched (connects continue in the background), so this
 # is a safety net rather than an expected wait.
 _SPEAKER_SETUP_TIMEOUT: float = 60.0
+
+# Timeout for the raw /babies fetches (matches aionanit's own request
+# timeout; without it the shared HA session's 5 minute default applies).
+_RAW_FETCH_TIMEOUT = aiohttp.ClientTimeout(total=15)
+
+# Device uids are used as registry identifiers, storage keys, and URL
+# components, so values from the API (or persisted from it) must look like
+# uids before they're trusted. Real ones are short alphanumerics.
+_UID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
+def _clean_uid(value: Any) -> str | None:
+    """Return the value when it looks like a device uid, else None."""
+    if isinstance(value, str) and _UID_RE.fullmatch(value):
+        return value
+    return None
 
 
 @dataclass
@@ -101,6 +118,8 @@ class NanitHub:
         self._babies: list[Baby] = []
         self._failed_camera_uids: set[str] = set()
         self._speaker_uid_map: dict[str, str] = {}
+        self._camera_speaker_pairs: dict[str, str] = {}
+        self._live_speaker_uids: set[str] = set()
         self._sound_lights: dict[str, NanitSoundLight] = {}
         self._unsubscribe_tokens: Callable[[], None] | None = None
 
@@ -134,6 +153,28 @@ class NanitHub:
         """Return the resolved baby_uid → speaker_uid map."""
         return self._speaker_uid_map
 
+    @property
+    def camera_speaker_pairs(self) -> dict[str, str]:
+        """Return every known camera_uid → speaker_uid pairing.
+
+        Sourced from live babies that carry both devices AND from the
+        legacy camera-keyed persisted map, so the identity migration can
+        still translate a pairing whose camera has since left the account.
+        """
+        return self._camera_speaker_pairs
+
+    @property
+    def live_device_uids(self) -> set[str]:
+        """Return uids of devices the account currently reports.
+
+        Camera uids plus speaker uids taken from the live /babies rows
+        only (not the persisted fallback map), for deciding whether a
+        registry device may be deleted by the user.
+        """
+        live = {baby.camera_uid for baby in self._babies if baby.camera_uid}
+        live |= self._live_speaker_uids
+        return live
+
     async def async_setup(self) -> None:
         """Restore tokens, discover devices, create coordinators for each.
 
@@ -166,16 +207,9 @@ class NanitHub:
 
         speaker_uid_map = await self._async_resolve_speaker_uids(babies)
         self._speaker_uid_map = speaker_uid_map
-
-        # Persist the resolved speaker UIDs so they survive restarts even if
-        # a later /babies response omits them.
-        stored_map = self._entry.data.get("speaker_uid_map", {})
-        if speaker_uid_map and speaker_uid_map != stored_map:
-            self._hass.config_entries.async_update_entry(
-                self._entry,
-                data={**self._entry.data, "speaker_uid_map": speaker_uid_map},
-            )
-            _LOGGER.debug("Persisted speaker UID map for %d camera(s)", len(speaker_uid_map))
+        # NOTE: the resolved map is persisted by the identity migration in
+        # __init__.py, not here — persisting it early would overwrite the
+        # legacy camera-keyed map before the migration has used it.
 
         # Per-device IP configuration from options
         camera_ips: dict[str, str] = self._entry.options.get(CONF_CAMERA_IPS, {})
@@ -210,8 +244,13 @@ class NanitHub:
                 owners.append(("speaker", baby))
 
         if not tasks:
-            _LOGGER.warning("No cameras or Sound & Light Machines found on Nanit account")
-            return
+            # Babies exist but nothing could even be attempted (no cameras
+            # and speaker resolution came up empty). Raise so HA retries —
+            # returning here would leave a loaded entry with zero devices
+            # and no recovery path short of a manual reload.
+            raise NanitConnectionError(
+                "No cameras or Sound & Light Machines found on Nanit account"
+            )
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -274,6 +313,14 @@ class NanitHub:
                 f"No devices could be set up: {', '.join(failed_cameras + failed_speakers)}"
             )
 
+        # via_device must point at a camera device that actually registered
+        # this run. The speaker tasks ran concurrently with the camera
+        # tasks, so the link is settled only now.
+        for speaker_data in self._speaker_data.values():
+            coordinator = speaker_data.coordinator
+            if coordinator.via_camera_uid and coordinator.via_camera_uid not in self._camera_data:
+                coordinator.via_camera_uid = None
+
         if failed_cameras:
             _LOGGER.warning(
                 "Some cameras failed to connect: %s. They will be retried on next reload.",
@@ -300,7 +347,13 @@ class NanitHub:
             return await self._async_get_babies_raw()
 
     async def _async_get_babies_raw(self) -> list[Baby]:
-        """Parse /babies directly, allowing camera-less babies."""
+        """Parse /babies directly, allowing camera-less babies.
+
+        Defensive on shape and content: uids are validated before they can
+        reach registry identifiers, storage keys, or URLs, and a malformed
+        row is skipped rather than failing the whole scan. Transport-level
+        failures surface as NanitConnectionError so setup retries.
+        """
         from aionanit.rest import (
             NANIT_API_HEADERS,
             _parse_camera_connected,
@@ -315,29 +368,45 @@ class NanitHub:
         access_token = await tm.async_get_access_token()
         rest = self._client.rest_client
         try:
-            resp = await rest.session.get(
+            async with rest.session.get(
                 f"{rest.base_url}/babies",
                 headers={**NANIT_API_HEADERS, "Authorization": access_token},
-            )
+                timeout=_RAW_FETCH_TIMEOUT,
+            ) as resp:
+                if resp.status == 401:
+                    raise NanitAuthError("Access token invalid")
+                resp.raise_for_status()
+                body = await resp.json()
         except aiohttp.ClientError as err:
             raise NanitConnectionError(str(err)) from err
-        if resp.status == 401:
-            raise NanitAuthError("Access token invalid")
-        resp.raise_for_status()
-        body = await resp.json()
 
-        return [
-            Baby(
-                uid=baby["uid"],
-                name=_sanitize_name(baby.get("name")),
-                camera_uid=baby.get("camera_uid") or "",
-                speaker_uid=((baby.get("speaker") or {}).get("speaker") or {}).get("uid"),
-                network=_parse_network(baby),
-                camera_connected=_parse_camera_connected(baby),
-                camera_last_seen=_parse_camera_last_seen(baby),
+        rows = body.get("babies", []) if isinstance(body, dict) else []
+        babies: list[Baby] = []
+        for baby in rows if isinstance(rows, list) else []:
+            if not isinstance(baby, dict):
+                continue
+            uid = _clean_uid(baby.get("uid"))
+            if uid is None:
+                _LOGGER.debug("Skipping /babies row without a usable uid")
+                continue
+            raw_name = baby.get("name")
+            speaker = baby.get("speaker")
+            speaker_obj = speaker.get("speaker") if isinstance(speaker, dict) else None
+            speaker_uid = (
+                _clean_uid(speaker_obj.get("uid")) if isinstance(speaker_obj, dict) else None
             )
-            for baby in body.get("babies", [])
-        ]
+            babies.append(
+                Baby(
+                    uid=uid,
+                    name=_sanitize_name(raw_name if isinstance(raw_name, str) else None),
+                    camera_uid=_clean_uid(baby.get("camera_uid")) or "",
+                    speaker_uid=speaker_uid,
+                    network=_parse_network(baby),
+                    camera_connected=_parse_camera_connected(baby),
+                    camera_last_seen=_parse_camera_last_seen(baby),
+                )
+            )
+        return babies
 
     async def _async_resolve_speaker_uids(self, babies: list[Baby]) -> dict[str, str]:
         """Resolve each baby's speaker uid, keyed by baby uid.
@@ -346,14 +415,30 @@ class NanitHub:
         map persisted from an earlier run (also accepts the legacy
         camera_uid-keyed shape), then the raw /babies API as final fallback
         for an installed aionanit that predates the speaker_uid field.
+
+        Side effects: records the live speaker uids (for the device
+        removal hook) and every known camera→speaker pairing including
+        legacy persisted ones (for the identity migration, which must be
+        able to translate a pairing whose camera has left the account).
         """
         speaker_uid_map: dict[str, str] = {}
+        self._live_speaker_uids = set()
+        self._camera_speaker_pairs = {}
         for baby in babies:
-            uid = getattr(baby, "speaker_uid", None)
+            uid = _clean_uid(getattr(baby, "speaker_uid", None))
             if uid:
                 speaker_uid_map[baby.uid] = uid
+                self._live_speaker_uids.add(uid)
+                if baby.camera_uid:
+                    self._camera_speaker_pairs[baby.camera_uid] = uid
 
-        stored: dict[str, str] = dict(self._entry.data.get("speaker_uid_map", {}))
+        stored_raw = self._entry.data.get("speaker_uid_map", {})
+        stored: dict[str, str] = {}
+        if isinstance(stored_raw, dict):
+            for key, value in stored_raw.items():
+                clean_key, clean_value = _clean_uid(key), _clean_uid(value)
+                if clean_key and clean_value:
+                    stored[clean_key] = clean_value
         if stored:
             baby_uids = {baby.uid for baby in babies}
             by_camera = {baby.camera_uid: baby.uid for baby in babies if baby.camera_uid}
@@ -362,12 +447,20 @@ class NanitHub:
                     speaker_uid_map.setdefault(key, uid)
                 elif key in by_camera:
                     speaker_uid_map.setdefault(by_camera[key], uid)
+                    self._camera_speaker_pairs.setdefault(key, uid)
+                else:
+                    # Legacy camera-keyed entry whose camera is no longer on
+                    # the account: unusable for setup, still needed by the
+                    # identity migration to rename the old registry rows.
+                    self._camera_speaker_pairs.setdefault(key, uid)
 
         if not speaker_uid_map:
             try:
                 speaker_uid_map = await self._discover_speaker_uids()
             except Exception:  # noqa: BLE001
                 _LOGGER.debug("Speaker UID discovery from raw API failed", exc_info=True)
+            else:
+                self._live_speaker_uids |= set(speaker_uid_map.values())
 
         return speaker_uid_map
 
@@ -516,16 +609,22 @@ class NanitHub:
         async with rest.session.get(
             f"{rest.base_url}/babies",
             headers={"Authorization": access_token},
+            timeout=_RAW_FETCH_TIMEOUT,
         ) as resp:
             resp.raise_for_status()
             body = await resp.json()
 
         result: dict[str, str] = {}
-        for baby in body.get("babies", []):
-            baby_uid = baby.get("uid")
-            speaker_data = baby.get("speaker", {})
-            speaker_obj = speaker_data.get("speaker", {})
-            speaker_uid = speaker_obj.get("uid")
+        rows = body.get("babies", []) if isinstance(body, dict) else []
+        for baby in rows if isinstance(rows, list) else []:
+            if not isinstance(baby, dict):
+                continue
+            baby_uid = _clean_uid(baby.get("uid"))
+            speaker_data = baby.get("speaker")
+            speaker_obj = speaker_data.get("speaker") if isinstance(speaker_data, dict) else None
+            speaker_uid = (
+                _clean_uid(speaker_obj.get("uid")) if isinstance(speaker_obj, dict) else None
+            )
             if baby_uid and speaker_uid:
                 result[baby_uid] = speaker_uid
                 _LOGGER.debug("Discovered speaker UID %s for baby %s", speaker_uid, baby_uid)

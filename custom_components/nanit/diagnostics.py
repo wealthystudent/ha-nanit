@@ -17,6 +17,7 @@ TO_REDACT = {
     "refresh_token",
     "mfa_token",
     "mfa_code",
+    "baby_name",
     "baby_uid",
     "camera_uid",
     "camera_ip",
@@ -32,9 +33,12 @@ async def async_get_config_entry_diagnostics(
     hass: HomeAssistant, entry: NanitConfigEntry
 ) -> dict[str, Any]:
     """Return diagnostics for a config entry."""
+    # Sections are keyed by index, not by device uid: async_redact_data
+    # redacts values under matching key names but never dict keys, so
+    # uid-keyed sections would leak the very uids TO_REDACT lists.
     cameras_diag: dict[str, Any] = {}
 
-    for camera_uid, cam_data in entry.runtime_data.cameras.items():
+    for index, cam_data in enumerate(entry.runtime_data.cameras.values()):
         push = cam_data.push_coordinator
         cloud = cam_data.cloud_coordinator
 
@@ -56,12 +60,12 @@ async def async_get_config_entry_diagnostics(
                 "data": ([asdict(e) for e in cloud.data] if cloud.data is not None else None),
             }
 
-        cameras_diag[camera_uid] = cam_diag
+        cameras_diag[f"camera_{index}"] = cam_diag
 
     speakers_diag: dict[str, Any] = {}
-    for speaker_uid, speaker_data in entry.runtime_data.speakers.items():
+    for index, speaker_data in enumerate(entry.runtime_data.speakers.values()):
         coordinator = speaker_data.coordinator
-        speakers_diag[speaker_uid] = {
+        speakers_diag[f"speaker_{index}"] = {
             "baby_name": speaker_data.baby.name,
             "baby_uid": speaker_data.baby.uid,
             "connected": coordinator.connected,

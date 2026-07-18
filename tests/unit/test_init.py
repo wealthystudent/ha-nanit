@@ -152,7 +152,9 @@ async def test_stale_device_removed_when_camera_no_longer_on_account(
     ):
         assert await async_setup_entry(hass, entry)
 
-    mock_device_registry.async_remove_device.assert_called_once_with("device_stale")
+    mock_device_registry.async_update_device.assert_called_once_with(
+        "device_stale", remove_config_entry_id=entry.entry_id
+    )
 
 
 async def test_active_device_not_removed(
@@ -190,7 +192,7 @@ async def test_active_device_not_removed(
     ):
         assert await async_setup_entry(hass, entry)
 
-    mock_device_registry.async_remove_device.assert_not_called()
+    mock_device_registry.async_update_device.assert_not_called()
 
 
 async def test_no_devices_removed_when_babies_list_empty(
@@ -231,7 +233,7 @@ async def test_no_devices_removed_when_babies_list_empty(
     ):
         assert await async_setup_entry(hass, entry)
 
-    mock_device_registry.async_remove_device.assert_not_called()
+    mock_device_registry.async_update_device.assert_not_called()
 
 
 async def test_deprecated_switch_entity_removed_on_setup(
@@ -357,7 +359,7 @@ from types import SimpleNamespace
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 
-from custom_components.nanit import _async_migrate_sl_identities
+from custom_components.nanit import _async_migrate_sl_identities, _async_remove_stale_devices
 from custom_components.nanit.const import CONF_SPEAKER_IPS
 
 Baby = importlib.import_module("aionanit.models").Baby
@@ -377,10 +379,19 @@ def _migration_entry(hass: HomeAssistant, options: dict | None = None) -> MockCo
     return entry
 
 
-def _migration_hub(babies=None, speaker_uid_map=None) -> SimpleNamespace:
+def _migration_hub(babies=None, speaker_uid_map=None, camera_speaker_pairs=None) -> SimpleNamespace:
+    babies = babies if babies is not None else [_MIG_BABY]
+    speaker_uid_map = speaker_uid_map if speaker_uid_map is not None else {"baby_4": "spk_4"}
+    if camera_speaker_pairs is None:
+        camera_speaker_pairs = {
+            baby.camera_uid: speaker_uid_map[baby.uid]
+            for baby in babies
+            if baby.camera_uid and baby.uid in speaker_uid_map
+        }
     return SimpleNamespace(
-        babies=babies if babies is not None else [_MIG_BABY],
-        speaker_uid_map=speaker_uid_map if speaker_uid_map is not None else {"baby_4": "spk_4"},
+        babies=babies,
+        speaker_uid_map=speaker_uid_map,
+        camera_speaker_pairs=camera_speaker_pairs,
     )
 
 
@@ -421,8 +432,8 @@ async def test_sl_migration_moves_device_identifier(hass: HomeAssistant) -> None
     assert migrated.identifiers == {(DOMAIN, "spk_4")}
 
 
-async def test_sl_migration_collision_keeps_existing(hass: HomeAssistant) -> None:
-    """If the target unique_id already exists, the old entity is left alone."""
+async def test_sl_migration_collision_removes_dead_old_entity(hass: HomeAssistant) -> None:
+    """If the target unique_id already exists, the unusable old entity is dropped."""
     entry = _migration_entry(hass)
     ent_reg = er.async_get(hass)
     old = ent_reg.async_get_or_create(
@@ -434,7 +445,7 @@ async def test_sl_migration_collision_keeps_existing(hass: HomeAssistant) -> Non
 
     await _async_migrate_sl_identities(hass, entry, _migration_hub())
 
-    assert ent_reg.async_get(old.entity_id).unique_id == "cam_4_sound_machine_switch"
+    assert ent_reg.async_get(old.entity_id) is None
     assert ent_reg.async_get(new.entity_id).unique_id == "spk_4_sound_machine_switch"
 
 
@@ -477,3 +488,128 @@ async def test_sl_migration_idempotent(hass: HomeAssistant) -> None:
     assert ent_reg.async_get(old.entity_id).unique_id == "spk_4_sound_light_light"
     assert dev_reg.async_get(device.id).identifiers == {(DOMAIN, "spk_4")}
     assert entry.options[CONF_SPEAKER_IPS] == {"spk_4": "192.168.1.72"}
+
+
+async def test_sl_migration_runs_when_camera_left_account(hass: HomeAssistant) -> None:
+    """A pairing whose camera was unpaired pre-upgrade still migrates.
+
+    The pairing comes from the legacy persisted map (via the hub's
+    camera_speaker_pairs), and the stale sweep must then keep the renamed
+    device rather than deleting the user's S&L history.
+    """
+    entry = _migration_entry(hass)
+    ent_reg = er.async_get(hass)
+    dev_reg = dr.async_get(hass)
+    old_entity = ent_reg.async_get_or_create(
+        "sensor", DOMAIN, "cam_4_sl_temperature", config_entry=entry
+    )
+    old_device = dev_reg.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, "cam_4_sound_light")},
+    )
+
+    standalone = Baby(uid="baby_4", name="Nursery", camera_uid="", speaker_uid="spk_4")
+    hub = _migration_hub(
+        babies=[standalone],
+        speaker_uid_map={"baby_4": "spk_4"},
+        camera_speaker_pairs={"cam_4": "spk_4"},
+    )
+
+    await _async_migrate_sl_identities(hass, entry, hub)
+    _async_remove_stale_devices(hass, entry, hub)
+
+    migrated_entity = ent_reg.async_get(old_entity.entity_id)
+    assert migrated_entity is not None
+    assert migrated_entity.unique_id == "spk_4_sl_temperature"
+    migrated_device = dev_reg.async_get(old_device.id)
+    assert migrated_device is not None
+    assert migrated_device.identifiers == {(DOMAIN, "spk_4")}
+
+
+async def test_stale_sweep_skipped_when_nothing_recognized(hass: HomeAssistant) -> None:
+    """Babies present but zero resolvable devices: don't judge staleness."""
+    entry = _migration_entry(hass)
+    dev_reg = dr.async_get(hass)
+    device = dev_reg.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, "spk_4")},
+    )
+
+    hub = _migration_hub(
+        babies=[Baby(uid="baby_4", name="Nursery", camera_uid="", speaker_uid=None)],
+        speaker_uid_map={},
+        camera_speaker_pairs={},
+    )
+    _async_remove_stale_devices(hass, entry, hub)
+
+    assert dev_reg.async_get(device.id) is not None
+
+
+async def test_stale_sweep_protects_persisted_speakers(hass: HomeAssistant) -> None:
+    """A speaker known only from the persisted map survives a transient outage."""
+    entry = _migration_entry(hass)
+    hass.config_entries.async_update_entry(
+        entry, data={**entry.data, "speaker_uid_map": {"baby_4": "spk_4"}}
+    )
+    dev_reg = dr.async_get(hass)
+    device = dev_reg.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, "spk_4")},
+    )
+
+    hub = _migration_hub(
+        babies=[Baby(uid="baby_4", name="Nursery", camera_uid="cam_4", speaker_uid=None)],
+        speaker_uid_map={},
+        camera_speaker_pairs={},
+    )
+    _async_remove_stale_devices(hass, entry, hub)
+
+    assert dev_reg.async_get(device.id) is not None
+
+
+async def test_remove_config_entry_device_denies_live_hardware(hass: HomeAssistant) -> None:
+    from custom_components.nanit import async_remove_config_entry_device
+
+    entry = _migration_entry(hass)
+    entry.runtime_data = SimpleNamespace(hub=SimpleNamespace(live_device_uids={"spk_4"}))
+    device = SimpleNamespace(identifiers={(DOMAIN, "spk_4")})
+
+    assert await async_remove_config_entry_device(hass, entry, device) is False
+
+
+async def test_remove_config_entry_device_allows_and_prunes_map(hass: HomeAssistant) -> None:
+    from custom_components.nanit import async_remove_config_entry_device
+
+    entry = _migration_entry(hass)
+    hass.config_entries.async_update_entry(
+        entry, data={**entry.data, "speaker_uid_map": {"baby_4": "spk_4", "baby_5": "spk_5"}}
+    )
+    entry.runtime_data = SimpleNamespace(hub=SimpleNamespace(live_device_uids={"spk_5"}))
+    device = SimpleNamespace(identifiers={(DOMAIN, "spk_4")})
+
+    assert await async_remove_config_entry_device(hass, entry, device) is True
+    assert entry.data["speaker_uid_map"] == {"baby_5": "spk_5"}
+
+
+async def test_sl_migration_persists_rekeyed_map(hass: HomeAssistant) -> None:
+    """The baby-keyed map lands in entry.data only after migration ran."""
+    entry = _migration_entry(hass)
+    hass.config_entries.async_update_entry(
+        entry, data={**entry.data, "speaker_uid_map": {"cam_4": "spk_4"}}
+    )
+
+    await _async_migrate_sl_identities(hass, entry, _migration_hub())
+
+    assert entry.data["speaker_uid_map"] == {"baby_4": "spk_4"}
+
+
+async def test_sl_migration_ip_rekey_prefers_speaker_keyed_entry(hass: HomeAssistant) -> None:
+    """When legacy and speaker-keyed IPs both exist, the speaker-keyed one wins."""
+    entry = _migration_entry(
+        hass,
+        options={CONF_SPEAKER_IPS: {"cam_4": "192.168.1.80", "spk_4": "192.168.1.81"}},
+    )
+
+    await _async_migrate_sl_identities(hass, entry, _migration_hub())
+
+    assert entry.options[CONF_SPEAKER_IPS] == {"spk_4": "192.168.1.81"}

@@ -551,6 +551,7 @@ class SoundLightTransport:
                     speaker_uid,
                     remaining,
                 )
+                self._schedule_reconnect(speaker_uid, transport)
                 return
 
             token: str | None
@@ -564,6 +565,7 @@ class SoundLightTransport:
                     token = await self._access_token_provider()
                 except Exception as e:
                     self._log_transient_connect_failure(connection_key, transport, speaker_uid, e)
+                    self._schedule_reconnect(speaker_uid, transport)
                     return
             else:  # local
                 ws_url = self._local_ws_url(speaker_uid)
@@ -584,11 +586,17 @@ class SoundLightTransport:
                             "Local mDNS resolve failed for %s, staying on relay",
                             speaker_uid,
                         )
+                        # Keep the local retry loop alive: the device may join
+                        # the LAN (or mDNS may settle) later. The local backoff
+                        # caps at 90s, so a permanently-remote setup only pays
+                        # a cheap periodic browse.
+                        self._schedule_reconnect(speaker_uid, transport)
                         return
                     ws_url = f"wss://{ip}:{SOUND_LIGHT_LOCAL_WS_PORT}"
                 token = await self._ensure_device_token(speaker_uid)
             if not token:
                 # No usable token (no access token, or local token unavailable).
+                self._schedule_reconnect(speaker_uid, transport)
                 return
 
             # The WebSocket handshake uses the `token` auth scheme, NOT `Bearer`,
@@ -681,6 +689,13 @@ class SoundLightTransport:
                     # drop). Keeps the fast app-matching backoff. Only the log
                     # level is throttled.
                     self._log_transient_connect_failure(connection_key, transport, speaker_uid, e)
+                # Arm the per-transport retry loop. Without this, a transport
+                # whose FIRST-EVER connect fails (e.g. a local 403 at startup)
+                # was never retried: the drop-driven reconnect only covers
+                # sockets that had connected, and the poll skips reconnects
+                # while the other transport is up. A no-op when the loop is
+                # already the caller.
+                self._schedule_reconnect(speaker_uid, transport)
 
     def _handle_auth_reject(
         self, connection_key: str, transport: str, speaker_uid: str, exc: Exception

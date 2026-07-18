@@ -163,6 +163,7 @@ async def test_resolver_substitutes_ip_into_local_url(monkeypatch):
     """When a resolver is injected, local connects to wss://<resolved-ip>:442."""
     api = make_transport()
     api.register_device(UID)
+    api._closing = True  # single-shot test: no background retry loop
     api._device_tokens[UID] = ("dev-tok", None)
 
     async def resolver(speaker_uid):
@@ -187,6 +188,7 @@ async def test_manual_device_ip_overrides_resolver(monkeypatch):
     """A configured speaker IP wins over mDNS: connect straight to it."""
     api = make_transport()
     api.register_device(UID, device_ip="192.168.1.77")
+    api._closing = True  # single-shot test: no background retry loop
     api._device_tokens[UID] = ("dev-tok", None)
 
     async def resolver(_uid):
@@ -210,6 +212,7 @@ async def test_resolver_failure_stays_on_relay(monkeypatch):
     """If the resolver can't find the device, local connect is skipped entirely."""
     api = make_transport()
     api.register_device(UID)
+    api._closing = True  # single-shot test: no background retry loop
     api._device_tokens[UID] = ("dev-tok", None)
 
     async def resolver(_host):
@@ -383,6 +386,7 @@ async def test_local_403_invalidates_device_token_and_refetches(monkeypatch):
     fetcher = AsyncMock(return_value="FRESH")
     api = make_transport(device_token_fetcher=fetcher)
     api.register_device(UID)
+    api._closing = True  # attempts are driven explicitly in this test
     # A stale cached token with no clock expiry: _ensure_device_token would
     # keep serving it indefinitely without the invalidation fix.
     api._device_tokens[UID] = ("STALE", None)
@@ -423,6 +427,7 @@ async def test_local_auth_reject_cooldown_stops_token_refetch(monkeypatch):
     fetcher = AsyncMock(return_value="T")
     api = make_transport(device_token_fetcher=fetcher)
     api.register_device(UID)
+    api._closing = True  # attempts are driven explicitly in this test
     monkeypatch.setattr(api, "_local_ws_url", lambda _uid: f"ws://127.0.0.1:{local.port}")
     local_key = _local_key(api)
     device_info = api._device_list[0]
@@ -470,3 +475,79 @@ async def test_local_disabled_connects_remote_only(monkeypatch):
     await api.close()
     await local.stop()
     await remote.stop()
+
+
+# ---------------------------------------------------------------------------
+# Initial-connect failures arm the retry loop (regression: local 403 at
+# startup was never retried while the relay was up, found on real hardware)
+# ---------------------------------------------------------------------------
+
+
+async def test_initial_local_403_is_retried_and_recovers(monkeypatch):
+    """A local 403 on the FIRST-EVER connect self-heals without any poll.
+
+    The rejected attempt must arm the per-transport reconnect loop, which
+    refetches a fresh device token (the 403 invalidated the cache) and
+    connects. Before the fix nothing retried: the drop-driven reconnect only
+    covers sockets that had connected, and the poll skips reconnects while
+    the other transport is up.
+    """
+    monkeypatch.setattr(transport_mod, "_LOCAL_BACKOFF_SCHEDULE", (0, 0.05, 0.05, 0.05))
+    local = _FakeNanit(reject_status=403, reject_first=1)
+    await local.start()
+
+    fetcher = AsyncMock(return_value="FRESH")
+    api = make_transport(device_token_fetcher=fetcher)
+    api.register_device(UID)
+    api._device_tokens[UID] = ("STALE", None)
+    monkeypatch.setattr(api, "_local_ws_url", lambda _uid: f"ws://127.0.0.1:{local.port}")
+
+    # ONE driver call, as async_start does. Recovery must be automatic.
+    await api._connect_transport(api._device_list[0], "local")
+    assert not api._transport_connected(_local_key(api))
+
+    await _wait_until(lambda: api._transport_connected(_local_key(api)))
+    assert api._device_tokens[UID][0] == "FRESH"
+
+    await api.close()
+    await local.stop()
+
+
+async def test_initial_resolver_miss_is_retried(monkeypatch):
+    """An mDNS miss at startup keeps retrying so a late-arriving device
+    still gets its local socket."""
+    monkeypatch.setattr(transport_mod, "_LOCAL_BACKOFF_SCHEDULE", (0, 0.05, 0.05, 0.05))
+    local = _FakeNanit()
+    await local.start()
+
+    api = make_transport()
+    api.register_device(UID)
+    api._device_tokens[UID] = ("dev-tok", None)
+    results = ["miss", "hit"]
+
+    async def resolver(_uid):
+        return None if results.pop(0) == "miss" else "127.0.0.1"
+
+    api.set_local_host_resolver(resolver)
+    monkeypatch.setattr(
+        transport_mod,
+        "SOUND_LIGHT_LOCAL_WS_PORT",
+        local.port,
+    )
+    # Downgrade wss to ws for the fake (the resolver path builds wss URLs).
+    real_connect = transport_mod.websockets.connect
+
+    def plain_ws_connect(url, **kw):
+        return real_connect(
+            url.replace("wss://", "ws://"), **{k: v for k, v in kw.items() if k != "ssl"}
+        )
+
+    monkeypatch.setattr(transport_mod.websockets, "connect", plain_ws_connect)
+
+    await api._connect_transport(api._device_list[0], "local")
+    assert not api._transport_connected(_local_key(api))
+
+    await _wait_until(lambda: api._transport_connected(_local_key(api)))
+
+    await api.close()
+    await local.stop()

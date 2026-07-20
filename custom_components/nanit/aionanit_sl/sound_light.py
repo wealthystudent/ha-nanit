@@ -1,16 +1,42 @@
-"""High-level API for the Nanit Sound & Light Machine."""
+"""High-level API for the Nanit Sound & Light Machine.
+
+`NanitSoundLight` keeps its original public surface (constructor, properties,
+`subscribe`, `async_start`/`async_stop`, and the `async_set_*` command
+methods) but is now a facade over the transport ported from
+com6056/nanit-sound-light (`transport.py`), which replaces the old
+fire-and-forget socket with the validated model: one command in flight with
+await-ack and no re-send, a backend readiness gate, dual local+remote
+sockets with app-matching backoff, and combined `Settings` writes.
+
+The facade adds the command layer that was validated in production there:
+
+- **Coalescing**: commands arriving within a short window (a Home Assistant
+  scene touching power + sound + volume + light at once) are merged and sent
+  as ONE combined `Settings` message instead of racing per-field writes.
+- **Pin-guard**: after a command, the affected fields are pinned so a stale
+  device echo can't flap a just-commanded value back. A pin releases early
+  the moment the device confirms the value.
+- **Optimistic state + rollback**: commands update the published state
+  immediately, and a failed send rolls that back so entities never show a
+  state the device didn't accept.
+- **Validated light semantics** (device firmware 1.3.1, 2026-07-11): the
+  lamp emits iff `isOn && brightness > 0 && !noColor`. Light OFF is sent as
+  `brightness: 0` (round-trips the stored color, unlike the app's `noColor`
+  off which relights in white), and light ON always sends explicit
+  hue/saturation, the only reliable color restore.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import dataclasses
 import logging
-import ssl
-from collections.abc import Callable
+import struct
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 import aiohttp
 
-from aionanit import NanitConnectionError
 from aionanit.auth import TokenManager
 from aionanit.rest import NanitRestClient
 
@@ -19,61 +45,108 @@ from .models import (
     SoundLightEvent,
     SoundLightEventKind,
     SoundLightFullState,
-    SoundLightRoutine,
 )
-from .sl_protocol import (
-    SLDecodedState,
-    build_brightness_cmd,
-    build_color_cmd,
-    build_light_enabled_cmd,
-    build_power_cmd,
-    build_sound_on_cmd,
-    build_track_cmd,
-    build_volume_cmd,
-    classify_message,
-    decode_cloud_relay,
-    decode_full_state,
-    decode_routines,
-    decode_sensors,
-    is_cloud_relay_ack,
-    is_cloud_relay_error,
-    is_cloud_relay_forbidden,
-)
+from .transport import SoundLightTransport
 
 _LOGGER = logging.getLogger(__name__)
 
-_HEARTBEAT_INTERVAL: float = 60.0
-_HANDSHAKE_TIMEOUT: float = 15.0
-_INITIAL_BACKOFF: float = 1.85
-_BACKOFF_FACTOR: float = 1.618
-_MAX_BACKOFF: float = 60.0
-_JITTER_MAX: float = 1.0
+# How long to gather rapid-fire commands before flushing them as one combined
+# message. A HA scene fires its member entities within the same event-loop
+# tick, so a short window collapses power + sound + volume + light into one
+# write.
+COMMAND_COALESCE_DELAY = 0.15  # seconds
 
-# Periodic re-poll: reconnect to get fresh state from device.
-# The device sends full state on connect, so a reconnect is effectively a poll.
-_POLL_INTERVAL: float = 300.0  # seconds between state re-polls (5 minutes)
+# After a command we "pin" the fields it set so a stale device echo can't flap
+# them back. The device's ACK is fast but its REPORTED STATE lags badly: it
+# keeps reporting the pre-command value for up to ~15s before catching up. A
+# pin is released early the moment the device confirms our value, so the
+# normal case stays snappy. This window is only the safety cap for that slow
+# propagation.
+COMMAND_PIN_SECONDS = 30.0
 
-# Device token refresh: re-fetch every 6 hours (tokens last ~1 week)
-_TOKEN_REFRESH_INTERVAL: float = 6 * 3600
+# This is a push client: real-time state arrives over the websocket. The
+# periodic poll is a backup nudge (a light GetSettings, NOT a reconnect) that
+# also reconciles optimistic state and re-establishes dropped sockets.
+_POLL_INTERVAL = 30.0  # seconds
+# After a poll ping, give the device this long to answer before reading state.
+_POLL_SETTLE = 2.0  # seconds
+
+# On startup, wait briefly for the device's first real state so entities
+# don't start "unknown". Capped so an unreachable device can't stall setup.
+_INITIAL_STATE_ATTEMPTS = 6  # x interval = ~3s max
+_INITIAL_STATE_INTERVAL = 0.5  # seconds
+
+_NO_SOUND = "No sound"
+
+
+def _proto_float32(value: Any) -> Any:
+    """Round a float through protobuf's float32 wire precision.
+
+    Settings.brightness/volume and Color.hue/saturation are proto2 `float`
+    (32-bit). We command a Python float64, but the device's echo comes back
+    float32-rounded, so pinning the raw float64 would make the confirmation
+    equality fail for almost every real value and the pin would silently hold
+    the full window. Pinning the float32-rounded value keeps the comparison
+    EXACT (no tolerance, so no false confirmation) while matching what the
+    device can actually echo back.
+    """
+    if isinstance(value, float):
+        return struct.unpack("<f", struct.pack("<f", value))[0]
+    return value
+
+
+def _command_to_device_fields(kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Map a control command's kwargs to the device-state keys it affects."""
+    fields: dict[str, Any] = {}
+    for key, value in kwargs.items():
+        if key == "sound":
+            if value is not None:
+                fields["current_sound"] = value
+        elif key in ("is_on", "brightness", "volume"):
+            fields[key] = value
+        elif key == "color":
+            if "noColor" in value:
+                fields["no_color"] = value["noColor"]
+            if "hue" in value:
+                fields["hue"] = value["hue"]
+            if "saturation" in value:
+                fields["saturation"] = value["saturation"]
+            if "brightness" in value:
+                fields["brightness"] = value["brightness"]
+    return fields
+
+
+# Device-view keys mapped to the SoundLightFullState fields they publish,
+# used when a rollback must return a field to "never known" (the view entry
+# is popped, and the published model field must go back to None too).
+_VIEW_TO_MODEL: dict[str, tuple[str, ...]] = {
+    "is_on": ("power_on",),
+    "brightness": ("brightness",),
+    "volume": ("volume",),
+    "hue": ("color_r",),
+    "saturation": ("color_g",),
+}
+
+
+def _has_usable_state(state: dict[str, Any]) -> bool:
+    """True once the device has reported real state (not just defaults)."""
+    keys = ("brightness", "volume", "current_sound", "hue", "is_on")
+    return bool(state) and any(state.get(k) is not None for k in keys)
 
 
 class NanitSoundLight:
     """High-level API for a single Nanit Sound & Light Machine.
 
-    Connects via local WebSocket (wss://{ip}:442) using a device token
-    obtained from the cloud API (/speakers/{uid}/udtokens).
+    Connects via the cloud relay
+    (wss://remote.nanit.com/speakers/{uid}/user_connect/) and, when the
+    speaker is reachable on the LAN, ALSO via a direct local WebSocket
+    (wss://{ip}:442, device token auth). Both sockets can be open at once
+    and sends prefer local. The local address comes from mDNS discovery
+    (via the injected resolver), with the manually configured speaker IP as
+    an optional override.
 
     Receives push state updates (protobuf) and provides command methods.
     """
-
-    # Connection strategy:
-    # - When a speaker IP is configured: prefer local WebSocket (wss://{ip}:442)
-    #   which provides full state on connect + temperature/humidity data.
-    #   Falls back to cloud relay if local connection fails.
-    # - When no IP is configured: use cloud relay
-    #   (wss://remote.nanit.com/speakers/{uid}/user_connect/) with Bearer token.
-    #   Cloud relay doesn't send initial state on connect, so we restore
-    #   the last known state from HA Store on startup.
 
     def __init__(
         self,
@@ -82,7 +155,9 @@ class NanitSoundLight:
         rest_client: NanitRestClient,
         session: aiohttp.ClientSession,
         device_ip: str | None = None,
+        local_host_resolver: Callable[[str], Awaitable[str | None]] | None = None,
     ) -> None:
+        """Initialize the Sound & Light facade for one speaker."""
         self._speaker_uid = speaker_uid
         self._device_ip = device_ip
         self._token_manager = token_manager
@@ -91,21 +166,48 @@ class NanitSoundLight:
 
         self._state = SoundLightFullState()
         self._subscribers: list[Callable[[SoundLightEvent], None]] = []
-        self._connected: bool = False
-        self._stopped: bool = False
-        self._device_token: str | None = None
-        # Prefer local WebSocket when IP is configured (sends full state on
-        # connect, includes temp/humidity).  Fall back to cloud relay otherwise.
-        self._use_cloud_relay: bool = device_ip is None
+        self._stopped: bool = True
+        self._last_connected: bool = False
 
-        # WebSocket state
-        self._ws: aiohttp.ClientWebSocketResponse | None = None
-        self._recv_task: asyncio.Task[None] | None = None
-        self._reconnect_task: asyncio.Task[None] | None = None
+        # Facade-side merged device state (the transport's parsed fields plus
+        # optimistic command overlays), keyed by the transport's field names.
+        self._device_view: dict[str, Any] = {}
+
+        # Command coalescing + pin-guard + rollback (see module docstring).
+        # The snapshot accumulates alongside the pending batch and travels
+        # with it into the flush, so overlapping batches can't clear or
+        # restore each other's rollback baselines. Flush tasks live in a set
+        # so a second batch can't orphan a still-running first flush.
+        self._pending_commands: dict[str, Any] = {}
+        self._pending_snapshot: dict[str, Any] = {}
+        self._flush_handle: asyncio.TimerHandle | None = None
+        self._flush_tasks: set[asyncio.Task[None]] = set()
+        self._pinned_fields: dict[str, tuple[Any, float]] = {}
+
+        # Last-known-good values for restores: light ON must re-send explicit
+        # hue/saturation (the device does not restore color on a bare
+        # re-enable), and a turn-on from brightness 0 needs a real brightness.
+        self._last_color: dict[str, float] | None = None
+        self._last_track: str | None = None
+        self._last_brightness: float | None = None
+
         self._poll_task: asyncio.Task[None] | None = None
-        self._token_refresh_task: asyncio.Task[None] | None = None
-        self._local_ssl_ctx: ssl.SSLContext | None = None
-        self._connect_lock = asyncio.Lock()
+
+        async def _access_token() -> str:
+            return await token_manager.async_get_access_token()
+
+        async def _device_token(uid: str) -> str:
+            access = await token_manager.async_get_access_token()
+            return await rest_client.async_get_device_token(access, uid)
+
+        self._api = SoundLightTransport(
+            access_token_provider=_access_token,
+            device_token_fetcher=_device_token,
+        )
+        if local_host_resolver is not None:
+            self._api.set_local_host_resolver(local_host_resolver)
+        self._api.set_state_change_callback(self._on_push)
+        self._api.set_connection_change_callback(self._on_connection_change)
 
     # ------------------------------------------------------------------
     # Properties
@@ -113,28 +215,45 @@ class NanitSoundLight:
 
     @property
     def speaker_uid(self) -> str:
+        """Return the speaker's uid."""
         return self._speaker_uid
 
     @property
     def state(self) -> SoundLightFullState:
+        """Return the last published device state."""
         return self._state
 
     @property
     def connected(self) -> bool:
-        return self._connected
+        """True when the device is reachable AND attached.
+
+        A cloud-relay socket can be up while the physical device is still
+        detached behind it, in which case commands only stall. So both a
+        live socket and the (sticky) attachment latch are required.
+        """
+        return self._api.is_websocket_connected(self._speaker_uid) and self._api.is_device_attached(
+            self._speaker_uid
+        )
 
     def restore_state(self, state: SoundLightFullState) -> None:
         """Restore persisted state (used by coordinator on startup)."""
         self._state = state
+        if state.color_r is not None and state.color_g is not None:
+            self._last_color = {
+                "hue": state.color_r,
+                "saturation": state.color_g,
+                "brightness": state.brightness or 1.0,
+            }
+        if state.current_track and state.current_track != _NO_SOUND:
+            self._last_track = state.current_track
+        if state.brightness:
+            self._last_brightness = state.brightness
 
     @property
     def connection_mode(self) -> str:
         """Return the current connection mode: 'local', 'cloud', or 'unavailable'."""
-        if not self._connected:
-            return "unavailable"
-        if self._use_cloud_relay:
-            return "cloud"
-        return "local"
+        mode = self._api.active_transport(self._speaker_uid)
+        return mode if mode is not None else "unavailable"
 
     # ------------------------------------------------------------------
     # Subscription
@@ -153,7 +272,7 @@ class NanitSoundLight:
     def _fire_event(self, kind: SoundLightEventKind) -> None:
         """Fire an event to all subscribers."""
         event = SoundLightEvent(kind=kind, state=self._state)
-        for cb in self._subscribers:
+        for cb in list(self._subscribers):
             try:
                 cb(event)
             except Exception:
@@ -166,45 +285,68 @@ class NanitSoundLight:
     async def async_start(self) -> None:
         """Start the S&L connection.
 
-        When a local IP is configured, connects via local WebSocket first
-        (wss://{ip}:442) — this provides full state on connect and includes
-        temperature/humidity data.  Falls back to cloud relay if local fails.
-
-        When no IP is configured, connects via cloud relay
-        (wss://remote.nanit.com) directly.
-
-        If the initial connection fails, a background reconnect loop is
-        started so the coordinator can still set up entities (they will
-        show as unavailable until the connection succeeds).
+        Opens the cloud relay socket (and the direct local socket when the
+        speaker is discoverable/configured on the LAN), primes the device
+        state with an initial GetSettings, and starts the 30s backup poll.
+        Connection failures are not fatal: the transport reconnects with
+        backoff and the poll re-establishes dropped sockets, while entities
+        show unavailable until the device is reachable.
         """
         self._stopped = False
-        # Reset preference based on whether IP is available
-        self._use_cloud_relay = self._device_ip is None
+        self._api.register_device(self._speaker_uid, self._device_ip)
         try:
-            await self._async_connect()
-        except (NanitTransportError, NanitConnectionError):
+            await self._api.connect_device(self._speaker_uid)
+        except Exception as err:
             _LOGGER.warning(
-                "S&L %s initial connection failed; will retry in background",
+                "S&L %s initial connection failed; will retry in background: %s",
                 self._speaker_uid,
+                err,
             )
-            self._reconnect_task = asyncio.get_running_loop().create_task(self._reconnect_loop())
+
+        try:
+            await self._api.send_saved_sounds_request(self._speaker_uid)
+            await self._api.send_ping_for_state(self._speaker_uid)
+            for _ in range(_INITIAL_STATE_ATTEMPTS):
+                if _has_usable_state(self._api.get_device_state(self._speaker_uid)):
+                    break
+                await asyncio.sleep(_INITIAL_STATE_INTERVAL)
+        except Exception as err:
+            _LOGGER.debug("S&L %s initial state prime failed: %s", self._speaker_uid, err)
+
+        self._ingest_device_state()
+        self._on_connection_change(self._speaker_uid)
+        if self._poll_task is None or self._poll_task.done():
+            self._poll_task = asyncio.get_running_loop().create_task(self._poll_loop())
 
     async def async_stop(self) -> None:
         """Stop the S&L connection gracefully."""
         self._stopped = True
-        await self._async_close_ws()
 
-        for task_attr in ("_reconnect_task", "_poll_task", "_token_refresh_task"):
-            task = getattr(self, task_attr, None)
-            if task is not None and not task.done():
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-                setattr(self, task_attr, None)
+        if self._flush_handle is not None:
+            self._flush_handle.cancel()
+            self._flush_handle = None
+        self._pending_commands.clear()
+        self._pending_snapshot.clear()
+        self._pinned_fields.clear()
 
-        self._connected = False
+        tasks = [
+            task
+            for task in (self._poll_task, *self._flush_tasks)
+            if task is not None and not task.done()
+        ]
+        self._poll_task = None
+        self._flush_tasks.clear()
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        await self._api.close()
+
+        self._last_connected = False
         self._fire_event(SoundLightEventKind.CONNECTION_CHANGE)
 
     # ------------------------------------------------------------------
@@ -212,513 +354,390 @@ class NanitSoundLight:
     # ------------------------------------------------------------------
 
     async def async_set_power(self, on: bool) -> None:
-        """Turn device power on or off (field 5)."""
-        cmd = build_power_cmd(on)
-        await self._async_send(cmd)
-        self._state = dataclasses.replace(self._state, power_on=on)
-        self._fire_event(SoundLightEventKind.STATE_UPDATE)
+        """Turn device power on or off (a bare `Settings{isOn}`)."""
+        self._queue_command({"is_on": on})
 
     async def async_set_light_enabled(self, on: bool) -> None:
-        """Turn the night light on or off (field 2 sub-1).
+        """Turn the night light on or off (validated semantics).
 
-        Passes current color values to preserve them in the command.
+        OFF sends `brightness: 0`: an app-legitimate off state that
+        round-trips the device's stored color, unlike the app's own
+        `noColor` off (a bare re-enable from that lands on white).
+
+        ON powers the device on, restores a non-zero brightness when the
+        light was dimmed to zero, and ALWAYS sends explicit hue/saturation
+        (the device does not restore its previous color by itself). When the
+        device was fully off, sound is explicitly kept at "No sound" so
+        turning the light on can't unexpectedly resume audio.
         """
-        cmd = build_light_enabled_cmd(
-            on,
-            color_a=self._state.color_r,
-            color_b=self._state.color_g,
-        )
-        await self._async_send(cmd)
-        self._state = dataclasses.replace(self._state, light_enabled=on)
-        self._fire_event(SoundLightEventKind.STATE_UPDATE)
+        if not on:
+            self._queue_command({"brightness": 0.0})
+            return
+
+        view = self._device_view
+        kwargs: dict[str, Any] = {"is_on": True}
+        # Before the first device frame the live view is empty, but restored
+        # state may know the answer, so fall back to it. And only silence
+        # sound when the device is KNOWN to be off: treating "unknown" as
+        # off would stop white noise that is actually playing (e.g. a
+        # nightlight automation firing right after an HA restart).
+        power = view.get("is_on")
+        if power is None:
+            power = self._state.power_on
+        if power is False:
+            kwargs["sound"] = _NO_SOUND
+        brightness = view.get("brightness")
+        if brightness is None:
+            brightness = self._state.brightness
+        if not brightness or brightness <= 0:
+            kwargs["brightness"] = self._last_brightness or 1.0
+        last = self._last_color or {}
+        kwargs["color"] = {
+            "noColor": False,
+            "hue": last.get("hue", view.get("hue", 0.0)),
+            "saturation": last.get("saturation", view.get("saturation", 0.0)),
+        }
+        self._queue_command(kwargs)
 
     async def async_set_sound_on(self, on: bool) -> None:
-        """Turn sound on or off (field 4 sub-1).
+        """Turn sound on or off.
 
-        Passes current track name to preserve it in the command.
+        ON resumes the last known track (or lets the device pick its last
+        track when none is known yet); OFF selects "No sound".
         """
-        cmd = build_sound_on_cmd(on, current_track=self._state.current_track)
-        await self._async_send(cmd)
-        self._state = dataclasses.replace(self._state, sound_on=on)
-        self._fire_event(SoundLightEventKind.STATE_UPDATE)
+        if on:
+            self._queue_command({"sound": self._last_track})
+        else:
+            self._queue_command({"sound": _NO_SOUND})
 
     async def async_set_track(self, track_name: str) -> None:
         """Change the sound track.
 
-        Passes current sound_on state to preserve it.
+        While sound is playing, the new track applies immediately. While
+        sound is off, the pick is only stored as the preference (shown in
+        the select, played when the sound switch turns on). The sound switch
+        owns on/off, so selecting a track must not start playback by itself.
+        The device has no "selected but silent" slot, so the preference
+        lives client-side in `_last_track`.
         """
-        cmd = build_track_cmd(track_name, sound_on=self._state.sound_on)
-        await self._async_send(cmd)
-        self._state = dataclasses.replace(self._state, current_track=track_name)
-        self._fire_event(SoundLightEventKind.STATE_UPDATE)
+        self._ensure_started()
+        if track_name == _NO_SOUND:
+            self._queue_command({"sound": _NO_SOUND})
+            return
+        self._last_track = track_name
+        current = self._device_view.get("current_sound")
+        # Before the first device frame, restored state may know sound is on.
+        playing = current != _NO_SOUND if current is not None else self._state.sound_on is True
+        if playing:
+            self._queue_command({"sound": track_name})
+            return
+        # Sound is off (or unknown): publish the preference without sending.
+        # The device keeps reporting "No sound", which leaves current_track
+        # alone in the state mapping, so the pick sticks in the select.
+        new_state = dataclasses.replace(self._state, current_track=track_name)
+        if new_state != self._state:
+            self._state = new_state
+            self._fire_event(SoundLightEventKind.STATE_UPDATE)
 
     async def async_set_brightness(self, brightness: float) -> None:
         """Set light brightness (0.0-1.0)."""
-        cmd = build_brightness_cmd(brightness)
-        await self._async_send(cmd)
-        self._state = dataclasses.replace(self._state, brightness=brightness)
-        self._fire_event(SoundLightEventKind.STATE_UPDATE)
+        self._ensure_started()
+        if brightness > 0:
+            self._last_brightness = brightness
+        self._queue_command({"brightness": brightness})
 
     async def async_set_volume(self, volume: float) -> None:
-        """Set sound volume (0.0-1.0).
-
-        Uses protobuf state field 3 (FIXED32 float). Confirmed working
-        by user testing.
-        """
-        cmd = build_volume_cmd(volume)
-        await self._async_send(cmd)
-        self._state = dataclasses.replace(self._state, volume=volume)
-        self._fire_event(SoundLightEventKind.STATE_UPDATE)
+        """Set sound volume (0.0-1.0)."""
+        self._queue_command({"volume": volume})
 
     async def async_set_color(self, color_a: float, color_b: float) -> None:
-        """Set light color using the device's 2-parameter color model.
-
-        The exact color model (likely HSV hue+saturation) is experimental.
-        color_a maps to state field 2 sub-field 2 (range 0.0-1.0).
-        color_b maps to state field 2 sub-field 3 (range 0.0-1.0).
-
-        Passes current light_enabled state to preserve it.
-        """
-        cmd = build_color_cmd(color_a, color_b, light_enabled=self._state.light_enabled)
-        await self._async_send(cmd)
-        self._state = dataclasses.replace(self._state, color_r=color_a, color_g=color_b)
-        self._fire_event(SoundLightEventKind.STATE_UPDATE)
+        """Set light color (hue and saturation, both 0.0-1.0)."""
+        self._ensure_started()
+        self._last_color = {
+            "hue": color_a,
+            "saturation": color_b,
+            "brightness": self._device_view.get("brightness") or 1.0,
+        }
+        self._queue_command({"color": {"noColor": False, "hue": color_a, "saturation": color_b}})
 
     # ------------------------------------------------------------------
-    # Internal — token management
+    # Internal: command coalescing, pins, rollback
     # ------------------------------------------------------------------
 
-    async def _async_fetch_device_token(self) -> None:
-        """Fetch the RS256 device token via GET /speakers/{uid}/udtokens.
-
-        The NanitLite app uses specific headers for this endpoint.
-        Returns a short-lived RS256 JWT used to authenticate the local
-        WebSocket connection (wss://{ip}:442/).
-
-        Uses the rest client's method if available, otherwise makes the
-        API call directly (the installed aionanit package may not have it).
-        """
-        access_token = await self._token_manager.async_get_access_token()
-
-        try:
-            self._device_token = await self._rest.async_get_device_token(
-                access_token, self._speaker_uid
+    def _ensure_started(self) -> None:
+        """Raise unless the facade is started (guards every command path)."""
+        if self._stopped:
+            raise NanitTransportError(
+                f"S&L {self._speaker_uid} is not started, cannot send commands"
             )
-        except AttributeError as err:
-            # Inline implementation matching the NanitLite app's exact request
-            headers = {
-                "accept": "application/json",
-                "authorization": f"token {access_token}",
-                "accept-charset": "UTF-8",
-                "x-nanit-platform": "homeassistant",
-                "user-agent": "NanitLite/1.8.0 (com.udisense.nanitlite; build:168; homeassistant)",
-                "x-nanit-service": "1.8.0 (168)",
-            }
-            async with self._session.get(
-                f"{self._rest.base_url}/speakers/{self._speaker_uid}/udtokens",
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=15),
-            ) as resp:
-                if resp.status == 401:
-                    from aionanit import NanitAuthError
 
-                    raise NanitAuthError("Access token invalid for udtokens") from err
-                if resp.status != 200:
-                    err_body = await resp.text()
-                    raise NanitConnectionError(
-                        f"HTTP {resp.status} fetching udtokens for {self._speaker_uid}: {err_body[:200]}"
-                    ) from err
-                body = await resp.json(content_type=None)
-                token = body.get("user_device_token", {}).get("token")
-                if not token:
-                    raise NanitConnectionError(
-                        f"No token in udtokens response for speaker {self._speaker_uid}"
-                    ) from err
-                self._device_token = token
+    def _queue_command(self, kwargs: dict[str, Any]) -> None:
+        """Queue a control command, coalescing concurrent fields into one send.
 
-        _LOGGER.debug(
-            "Fetched device token for speaker %s (len=%d)",
-            self._speaker_uid,
-            len(self._device_token or ""),
-        )
+        Entity services (switch/light/select/number) call this, and a scene
+        calls several at once. Rather than sending a racing message per
+        field, we merge the fields, apply optimistic state for instant UI
+        feedback, and schedule a single combined flush.
+        """
+        self._ensure_started()
 
-    async def _token_refresh_loop(self) -> None:
-        """Periodically refresh the device token."""
-        try:
-            while not self._stopped:
-                await asyncio.sleep(_TOKEN_REFRESH_INTERVAL)
-                if self._stopped:
-                    return
-                try:
-                    await self._async_fetch_device_token()
-                    _LOGGER.debug("S&L device token refreshed")
-                except Exception as err:
-                    _LOGGER.warning("S&L device token refresh failed: %s", err)
-        except asyncio.CancelledError:
+        _LOGGER.debug("Queuing command for %s: %s", self._speaker_uid, kwargs)
+        self._pending_commands.update(kwargs)
+        self._apply_optimistic_state(kwargs)
+
+        loop = asyncio.get_running_loop()
+        if self._flush_handle is not None:
+            self._flush_handle.cancel()
+        self._flush_handle = loop.call_later(COMMAND_COALESCE_DELAY, self._start_flush)
+
+    def _start_flush(self) -> None:
+        """Timer callback: launch the flush task (strong refs against GC).
+
+        A set, not a single slot: a flush can legitimately run for seconds
+        (reconnect + ack await), and a second batch starting in that window
+        must not orphan the first task's only strong reference.
+        """
+        self._flush_handle = None
+        task = asyncio.get_event_loop().create_task(self._flush_commands())
+        self._flush_tasks.add(task)
+        task.add_done_callback(self._flush_tasks.discard)
+
+    async def _flush_commands(self) -> None:
+        """Send all coalesced fields as one combined command.
+
+        The batch takes its rollback baselines with it, so a batch that
+        finishes (either way) can't clear or restore fields belonging to a
+        newer batch still being accumulated or sent.
+        """
+        kwargs = dict(self._pending_commands)
+        snapshot = dict(self._pending_snapshot)
+        self._pending_commands.clear()
+        self._pending_snapshot.clear()
+        if not kwargs:
             return
 
-    # ------------------------------------------------------------------
-    # Internal — WebSocket connection
-    # ------------------------------------------------------------------
-
-    async def _async_connect(self, *, silent: bool = False) -> None:
-        """Connect WebSocket to the S&L device.
-
-        Connection order depends on ``_use_cloud_relay``:
-        - False (IP configured): try local first, fall back to cloud relay.
-        - True  (no IP):         try cloud relay first, fall back to local.
-
-        Args:
-            silent: If True, suppress CONNECTION_CHANGE events during the
-                    disconnect/reconnect cycle.  Used by the poll loop to
-                    avoid briefly marking entities as unavailable.
-
-        """
-        async with self._connect_lock:
-            await self._async_close_ws()
-
-            # Local connections use self-signed certs → CERT_NONE.
-            # Cloud relay (remote.nanit.com) uses default TLS verification (ssl=None).
-            if self._local_ssl_ctx is None:
-                self._local_ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-                self._local_ssl_ctx.check_hostname = False
-                self._local_ssl_ctx.verify_mode = ssl.CERT_NONE
-
-            if not silent:
-                self._connected = False
-                self._fire_event(SoundLightEventKind.CONNECTION_CHANGE)
-
-            # ----- attempt local WebSocket first when preferred -----
-            if not self._use_cloud_relay and self._device_ip:
-                if not self._device_token:
-                    try:
-                        await self._async_fetch_device_token()
-                    except Exception as err:
-                        _LOGGER.debug(
-                            "Device token fetch failed for S&L %s: %s",
-                            self._speaker_uid,
-                            err,
-                        )
-
-                if self._device_token:
-                    url = f"wss://{self._device_ip}:442/"
-                    headers = {
-                        "Authorization": f"token {self._device_token}",
-                        "User-Agent": "NanitLite/1.8.0",
-                    }
-                    _LOGGER.debug(
-                        "Connecting S&L %s via local WebSocket at %s",
-                        self._speaker_uid,
-                        self._device_ip,
-                    )
-                    try:
-                        self._ws = await self._session.ws_connect(
-                            url,
-                            headers=headers,
-                            heartbeat=_HEARTBEAT_INTERVAL,
-                            timeout=aiohttp.ClientWSTimeout(ws_close=_HANDSHAKE_TIMEOUT),
-                            ssl=self._local_ssl_ctx,
-                        )
-                    except Exception as err:
-                        _LOGGER.debug(
-                            "Local WebSocket failed for S&L %s: %s; trying cloud relay",
-                            self._speaker_uid,
-                            err,
-                        )
-                        self._ws = None
-
-            # ----- cloud relay (primary when no IP, fallback when local failed) -----
-            if self._ws is None:
-                try:
-                    access_token = await self._token_manager.async_get_access_token()
-                    url = f"wss://remote.nanit.com/speakers/{self._speaker_uid}/user_connect/"
-                    headers = {
-                        "Authorization": f"Bearer {access_token}",
-                        "User-Agent": "NanitLite/1.8.0",
-                    }
-                    _LOGGER.debug("Connecting S&L %s via cloud relay", self._speaker_uid)
-                    self._ws = await self._session.ws_connect(
-                        url,
-                        headers=headers,
-                        heartbeat=_HEARTBEAT_INTERVAL,
-                        timeout=aiohttp.ClientWSTimeout(ws_close=_HANDSHAKE_TIMEOUT),
-                        # Cloud relay uses default TLS verification (no ssl= override)
-                    )
-                    # Track that we ended up on cloud relay (affects poll strategy)
-                    self._use_cloud_relay = True
-                except Exception as err:
-                    _LOGGER.warning(
-                        "Cloud relay failed for S&L %s: %s",
-                        self._speaker_uid,
-                        err,
-                    )
-                    self._ws = None
-
-            if self._ws is None:
-                raise NanitConnectionError(
-                    f"S&L {self._speaker_uid}: all connection methods failed"
-                )
-
-            self._connected = True
-            loop = asyncio.get_running_loop()
-            self._recv_task = loop.create_task(self._recv_loop())
-
-            # Start token refresh task if not already running
-            if self._token_refresh_task is None or self._token_refresh_task.done():
-                self._token_refresh_task = loop.create_task(self._token_refresh_loop())
-
-            # (Re)start poll task — cancel stale one first
-            if self._poll_task is not None and not self._poll_task.done():
-                self._poll_task.cancel()
-                try:
-                    await self._poll_task
-                except asyncio.CancelledError:
-                    pass
-            self._poll_task = loop.create_task(self._poll_loop())
-
-            self._fire_event(SoundLightEventKind.CONNECTION_CHANGE)
-
-            _LOGGER.info(
-                "S&L device %s connected via %s",
+        try:
+            await self._api.send_control_command(self._speaker_uid, **kwargs)
+            # The command's ack already confirms receipt, and the device
+            # pushes the resulting state on its own; the 30s poll reconciles.
+        except Exception as err:
+            _LOGGER.error(
+                "Control command failed for %s (%s): %s, rolling back",
                 self._speaker_uid,
-                "cloud relay" if self._use_cloud_relay else f"local ({self._device_ip}:442)",
+                type(err).__name__,
+                err,
             )
+            self._rollback_optimistic_state(snapshot)
 
-    async def _async_close_ws(self) -> None:
-        """Close WebSocket and cancel recv/reconnect tasks."""
-        for task_attr in ("_recv_task", "_reconnect_task"):
-            task = getattr(self, task_attr, None)
-            if task is not None and not task.done():
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-            setattr(self, task_attr, None)
+    def _apply_optimistic_state(self, kwargs: dict[str, Any]) -> None:
+        """Apply a command's fields to the published state immediately.
 
-        if self._ws is not None and not self._ws.closed:
-            await self._ws.close()
-        self._ws = None
-
-    async def _async_send(self, data: bytes) -> None:
-        """Send binary data over the WebSocket."""
-        if self._ws is None or self._ws.closed:
-            raise NanitTransportError("S&L not connected")
-        try:
-            await self._ws.send_bytes(data)
-        except Exception as err:
-            raise NanitTransportError(f"S&L send failed: {err}") from err
-
-    # ------------------------------------------------------------------
-    # Internal — recv loop and message handling
-    # ------------------------------------------------------------------
-
-    async def _recv_loop(self) -> None:
-        """Read binary frames and dispatch to message handler."""
-        assert self._ws is not None
-        try:
-            async for msg in self._ws:
-                if msg.type == aiohttp.WSMsgType.BINARY:
-                    self._on_message(msg.data)
-                elif msg.type in (
-                    aiohttp.WSMsgType.CLOSE,
-                    aiohttp.WSMsgType.CLOSING,
-                    aiohttp.WSMsgType.CLOSED,
-                ):
-                    _LOGGER.debug("S&L WebSocket closed by device")
-                    break
-                elif msg.type == aiohttp.WSMsgType.ERROR:
-                    _LOGGER.error("S&L WebSocket error: %s", self._ws.exception())
-                    break
-        except asyncio.CancelledError:
-            return
-        except Exception as err:
-            _LOGGER.error("S&L recv loop error: %s", err)
-
-        # Auto-reconnect if not explicitly stopped
-        self._connected = False
-        self._fire_event(SoundLightEventKind.CONNECTION_CHANGE)
-        if not self._stopped:
-            self._reconnect_task = asyncio.get_running_loop().create_task(self._reconnect_loop())
-
-    def _apply_state(self, decoded: SLDecodedState) -> None:
-        """Merge a decoded state into the current state and fire event."""
-        self._state = dataclasses.replace(
-            self._state,
-            brightness=decoded.brightness
-            if decoded.brightness is not None
-            else self._state.brightness,
-            light_enabled=decoded.light_enabled
-            if decoded.light_enabled is not None
-            else self._state.light_enabled,
-            color_r=decoded.color_r if decoded.color_r is not None else self._state.color_r,
-            color_g=decoded.color_g if decoded.color_g is not None else self._state.color_g,
-            volume=decoded.volume if decoded.volume is not None else self._state.volume,
-            current_track=decoded.current_track
-            if decoded.current_track is not None
-            else self._state.current_track,
-            sound_on=decoded.sound_on if decoded.sound_on is not None else self._state.sound_on,
-            power_on=decoded.power_on if decoded.power_on is not None else self._state.power_on,
-            available_tracks=tuple(decoded.available_tracks)
-            if decoded.available_tracks
-            else self._state.available_tracks,
-            temperature_c=decoded.temperature_c
-            if decoded.temperature_c is not None
-            else self._state.temperature_c,
-            humidity_pct=decoded.humidity_pct
-            if decoded.humidity_pct is not None
-            else self._state.humidity_pct,
-            timezone_rule=decoded.timezone_rule
-            if decoded.timezone_rule is not None
-            else self._state.timezone_rule,
-        )
-        self._fire_event(SoundLightEventKind.STATE_UPDATE)
-        _LOGGER.debug(
-            "S&L state: brightness=%.2f volume=%.2f track=%s power=%s light=%s sound=%s temp=%.1f hum=%.1f",
-            self._state.brightness or 0,
-            self._state.volume or 0,
-            self._state.current_track,
-            self._state.power_on,
-            self._state.light_enabled,
-            self._state.sound_on,
-            self._state.temperature_c or 0,
-            self._state.humidity_pct or 0,
-        )
-
-    def _on_message(self, data: bytes) -> None:
-        """Handle a raw binary protobuf message from the S&L device.
-
-        Supports both local WebSocket framing (field 1 envelope) and
-        cloud relay framing (field 2 envelope with HTTP status).
+        Also pins each field (so a stale echo can't flap it back) and
+        snapshots the prior value (so a failed send can be rolled back).
         """
-        # Try cloud relay decoding first (field 2 envelope with status 200)
-        cloud_state = decode_cloud_relay(data)
-        if cloud_state is not None:
-            self._apply_state(cloud_state)
+        fields = _command_to_device_fields(kwargs)
+        expiry = asyncio.get_running_loop().time() + COMMAND_PIN_SECONDS
+
+        for key, value in fields.items():
+            if key not in self._pending_snapshot:
+                self._pending_snapshot[key] = self._device_view.get(key)
+            self._device_view[key] = value
+            # Pin the float32-rounded value so the device's echo (float32 on
+            # the wire) compares equal and releases the pin early.
+            self._pinned_fields[key] = (_proto_float32(value), expiry)
+
+        self._publish()
+
+    def _rollback_optimistic_state(self, snapshot: dict[str, Any]) -> None:
+        """Undo a failed batch's optimistic state so the UI doesn't lie.
+
+        Scoped to the batch: only its fields are restored and only their
+        pins released. A field a NEWER pending batch has since re-claimed
+        belongs to that batch now and is left alone. A field that had no
+        known value before the command is returned to unknown in the
+        published state too (the presence-based publish can't remove it).
+        """
+        if not snapshot:
             return
-
-        # Silently ignore cloud relay 403 Forbidden (periodic noise)
-        if is_cloud_relay_forbidden(data):
-            return
-
-        # Silently ignore other error responses (e.g. 400 "Failed to parse request")
-        if is_cloud_relay_error(data):
-            return
-
-        # Silently ignore cloud relay command acknowledgments (field 3 envelope)
-        if is_cloud_relay_ack(data):
-            return
-
-        # Try local protocol decoding
-        msg_type = classify_message(data)
-
-        if msg_type == 0:
-            decoded = decode_full_state(data)
-            if decoded is not None:
-                self._apply_state(decoded)
-
-        elif msg_type == 1:
-            decoded_sensors = decode_sensors(data)
-            if decoded_sensors is not None:
-                self._state = dataclasses.replace(
-                    self._state,
-                    temperature_c=decoded_sensors.temperature_c
-                    if decoded_sensors.temperature_c is not None
-                    else self._state.temperature_c,
-                    humidity_pct=decoded_sensors.humidity_pct
-                    if decoded_sensors.humidity_pct is not None
-                    else self._state.humidity_pct,
-                )
-                self._fire_event(SoundLightEventKind.SENSOR_UPDATE)
-
-        elif msg_type in (2, 3):
-            decoded_routines = decode_routines(data)
-            if decoded_routines:
-                new_routines = tuple(
-                    SoundLightRoutine(
-                        name=r.name,
-                        sound_name=r.sound_name,
-                        volume=r.volume,
-                        brightness=r.brightness,
-                    )
-                    for r in decoded_routines
-                )
-                existing = {r.name: r for r in self._state.routines}
-                for r in new_routines:
-                    existing[r.name] = r
-                self._state = dataclasses.replace(
-                    self._state,
-                    routines=tuple(existing.values()),
-                )
-                self._fire_event(SoundLightEventKind.ROUTINES_UPDATE)
-
-        elif msg_type == -1:
-            # Network info / device metadata — safe to ignore
-            pass
-
-        else:
-            _LOGGER.debug(
-                "S&L unknown message type (len=%d)",
-                len(data),
-            )
+        state_updates: dict[str, Any] = {}
+        for key, value in snapshot.items():
+            if key in self._pending_snapshot:
+                continue  # a newer batch owns this field now
+            self._pinned_fields.pop(key, None)
+            if value is None:
+                self._device_view.pop(key, None)
+                for model_field in _VIEW_TO_MODEL.get(key, ()):
+                    state_updates[model_field] = None
+            else:
+                self._device_view[key] = value
+        view = self._device_view
+        if ("is_on" not in view or "brightness" not in view) and any(
+            key in snapshot for key in ("is_on", "brightness", "no_color")
+        ):
+            # light_enabled derives from these; with an input back to
+            # unknown the derived value is unknown too.
+            state_updates["light_enabled"] = None
+        if state_updates:
+            self._state = dataclasses.replace(self._state, **state_updates)
+        self._publish()
+        _LOGGER.warning(
+            "Rolled back optimistic state for %s after a failed command",
+            self._speaker_uid,
+        )
 
     # ------------------------------------------------------------------
-    # Internal — poll and reconnect
+    # Internal: inbound state
+    # ------------------------------------------------------------------
+
+    def _merge_parsed_state(self, parsed: dict[str, Any]) -> None:
+        """Merge parsed device state into the view, honoring active pins.
+
+        A pinned field is suppressed only while the pin is active AND the
+        incoming value contradicts what we commanded. If the device confirms
+        our value (or the window lapses) the pin is released so normal
+        updates (and genuine external changes) flow again.
+        """
+        try:
+            now = asyncio.get_running_loop().time()
+        except RuntimeError:
+            now = float("inf")  # no loop (shutdown): let pins lapse
+        for key, value in parsed.items():
+            pin = self._pinned_fields.get(key)
+            if pin is not None:
+                pinned_value, expiry = pin
+                if now >= expiry or value == pinned_value:
+                    self._pinned_fields.pop(key, None)
+                else:
+                    continue  # stale/contradicting echo within window: suppress
+            self._device_view[key] = value
+
+    def _ingest_device_state(self) -> None:
+        """Pull the transport's parsed state, merge it, and publish."""
+        if self._stopped:
+            return
+        parsed = dict(self._api.get_device_state(self._speaker_uid))
+        if not parsed:
+            return
+
+        self._merge_parsed_state(parsed)
+
+        # Remember the last real color/track/brightness for the light-on
+        # color restore and sound-on track resume, read from the MERGED view
+        # (after pin filtering): the device's reported state lags a command
+        # by up to ~15s, and a stale pre-command echo must not poison the
+        # restore values while a pin is holding the commanded one.
+        view = self._device_view
+        if (
+            not view.get("no_color", False)
+            and view.get("hue") is not None
+            and view.get("saturation") is not None
+        ):
+            self._last_color = {
+                "hue": view["hue"],
+                "saturation": view["saturation"],
+                "brightness": view.get("brightness") or 1.0,
+            }
+        track = view.get("current_sound")
+        if track and track != _NO_SOUND:
+            self._last_track = track
+        if view.get("brightness"):
+            self._last_brightness = view["brightness"]
+
+        self._publish()
+
+    def _mapped_updates(self) -> dict[str, Any]:
+        """Map the merged device view onto SoundLightFullState field updates."""
+        view = self._device_view
+        updates: dict[str, Any] = {}
+        if "brightness" in view:
+            updates["brightness"] = view["brightness"]
+        if "volume" in view:
+            updates["volume"] = view["volume"]
+        if "is_on" in view:
+            updates["power_on"] = view["is_on"]
+        if "hue" in view:
+            updates["color_r"] = view["hue"]
+        if "saturation" in view:
+            updates["color_g"] = view["saturation"]
+        if "current_sound" in view:
+            current = view["current_sound"]
+            if current == _NO_SOUND:
+                updates["sound_on"] = False
+            elif current is not None:
+                updates["sound_on"] = True
+                updates["current_track"] = current
+        if "available_sounds" in view:
+            updates["available_tracks"] = tuple(
+                t for t in view["available_sounds"] if t != _NO_SOUND
+            )
+        if "temperature" in view:
+            updates["temperature_c"] = view["temperature"]
+        if "humidity" in view:
+            updates["humidity_pct"] = view["humidity"]
+        # The lamp emits iff isOn && brightness > 0 && !noColor (validated
+        # on-device). Only computed once power and brightness are both known,
+        # so a restored value isn't clobbered by a partial first frame.
+        if "is_on" in view and "brightness" in view:
+            updates["light_enabled"] = bool(
+                view["is_on"]
+                and (view["brightness"] or 0.0) > 0
+                and not view.get("no_color", False)
+            )
+        return updates
+
+    def _publish(self) -> None:
+        """Publish the merged view as SoundLightFullState and notify."""
+        updates = self._mapped_updates()
+        if not updates:
+            return
+        new_state = dataclasses.replace(self._state, **updates)
+        if new_state == self._state:
+            return
+        self._state = new_state
+        self._fire_event(SoundLightEventKind.STATE_UPDATE)
+
+    async def _on_push(self, _speaker_uid: str) -> None:
+        """Handle a real-time push (external change) from the transport."""
+        self._ingest_device_state()
+
+    def _on_connection_change(self, _speaker_uid: str) -> None:
+        """Re-derive connectivity and notify subscribers on a change."""
+        if self._stopped:
+            return  # async_stop fires the final CONNECTION_CHANGE itself
+        connected = self.connected
+        if connected == self._last_connected:
+            return
+        self._last_connected = connected
+        _LOGGER.debug(
+            "S&L %s connection changed: connected=%s (mode=%s)",
+            self._speaker_uid,
+            connected,
+            self.connection_mode,
+        )
+        self._fire_event(SoundLightEventKind.CONNECTION_CHANGE)
+
+    # ------------------------------------------------------------------
+    # Internal: poll
     # ------------------------------------------------------------------
 
     async def _poll_loop(self) -> None:
-        """Periodically reconnect to refresh state from the device.
+        """Light backup poll: nudge the device for state every 30s.
 
-        The local WebSocket sends a full state dump on each connect.
-        For cloud relay, state is pushed on changes and restored from
-        disk on startup — reconnecting keeps the connection healthy.
+        Real-time state arrives via push; this reconciles optimistic state,
+        keeps temperature/humidity fresh, and (via the transport) re-opens
+        dropped sockets. It does NOT tear the connection down.
         """
         try:
             while not self._stopped:
                 await asyncio.sleep(_POLL_INTERVAL)
                 if self._stopped:
                     return
-                _LOGGER.debug("S&L poll: reconnecting to refresh state")
                 try:
-                    await self._async_connect(silent=True)
+                    await self._api.send_ping_for_state(self._speaker_uid)
+                    await asyncio.sleep(_POLL_SETTLE)
+                    self._ingest_device_state()
+                    self._on_connection_change(self._speaker_uid)
                 except Exception as err:
-                    _LOGGER.debug("S&L poll reconnect failed: %s", err)
+                    _LOGGER.debug("S&L %s poll failed: %s", self._speaker_uid, err)
         except asyncio.CancelledError:
             return
-
-    async def _reconnect_loop(self) -> None:
-        """Exponential-backoff reconnect loop."""
-        if self._stopped:
-            return
-
-        import random
-
-        backoff = _INITIAL_BACKOFF
-        jitter = random.random() * _JITTER_MAX
-
-        while not self._stopped:
-            await self._async_close_ws()
-
-            wait_time = backoff + jitter
-            jitter = 0.0
-            _LOGGER.info("S&L reconnecting in %.1fs", wait_time)
-            await asyncio.sleep(wait_time)
-
-            if self._stopped:
-                return
-
-            try:
-                # Refresh device token before reconnecting
-                try:
-                    await self._async_fetch_device_token()
-                except Exception:
-                    _LOGGER.debug("Token refresh failed during reconnect, using cached")
-
-                await self._async_connect()
-                _LOGGER.info("S&L reconnected successfully")
-                return
-            except Exception as err:
-                _LOGGER.warning("S&L reconnect failed: %s", err)
-                self._connected = False
-                self._fire_event(SoundLightEventKind.CONNECTION_CHANGE)
-                backoff = min(backoff * _BACKOFF_FACTOR, _MAX_BACKOFF)

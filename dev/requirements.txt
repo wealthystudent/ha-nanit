@@ -1,5 +1,6 @@
 aiohttp>=3.13,<3.14
 aioresponses>=0.7,<0.8
+websockets>=13.0,<16
 homeassistant>=2026.5,<2026.7
 pytest-homeassistant-custom-component>=0.13.333,<0.14
 pytest-cov>=7,<8

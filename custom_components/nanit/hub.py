@@ -33,6 +33,7 @@ from .coordinator import (
     NanitSoundLightCoordinator,
 )
 from .sanitize import display_name
+from .sl_discovery import make_local_host_resolver
 
 if TYPE_CHECKING:
     from aionanit import NanitCamera, NanitClient
@@ -336,6 +337,10 @@ class NanitHub:
             rest_client=self._client.rest_client,
             session=self._client.session,
             device_ip=device_ip,
+            # LAN discovery via HA's zeroconf. The configured speaker IP
+            # (device_ip) takes precedence as a manual override; discovery
+            # covers everyone else, best-effort with cloud-relay fallback.
+            local_host_resolver=make_local_host_resolver(self._hass),
         )
         self._sound_lights[speaker_uid] = sl
         return sl

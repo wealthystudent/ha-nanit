@@ -13,10 +13,14 @@
     "http",
     "lovelace"
   ],
+  "after_dependencies": [
+    "zeroconf"
+  ],
   "iot_class": "cloud_push",
   "integration_type": "hub",
   "requirements": [
-    "aionanit>=1.8.8"
+    "aionanit>=1.8.8",
+    "websockets>=13.0,<16"
   ],
   "loggers": [
     "custom_components.nanit",

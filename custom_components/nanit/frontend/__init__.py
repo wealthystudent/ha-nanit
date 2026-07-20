@@ -6,6 +6,7 @@ Lovelace resource so the card appears in the card picker automatically.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -27,24 +28,9 @@ _CARD_URL = f"{_URL_BASE}/{_CARD_FILENAME}"
 _REGISTERED_KEY = "nanit_card_registered"
 
 
-def _card_resource_version() -> str:
-    manifest_version = "0"
-    try:
-        manifest: dict[str, Any] = json.loads(
-            (Path(__file__).parent.parent / "manifest.json").read_text()
-        )
-        manifest_version = str(manifest.get("version", "0"))
-    except (FileNotFoundError, json.JSONDecodeError, KeyError):
-        pass
-
-    try:
-        card_hash = hashlib.sha256((_CARD_DIR / _CARD_FILENAME).read_bytes()).hexdigest()[:12]
-    except FileNotFoundError:
-        return manifest_version
-
-    return f"{manifest_version}-{card_hash}"
-
-
+# Pre-compute at import time — these files are static (part of the installed
+# package) and never change until the next HACS update/reinstall.  Reading them
+# here avoids blocking I/O inside the async event loop.
 _MANIFEST_VERSION: str = "0"
 try:
     _manifest: dict[str, Any] = json.loads(
@@ -53,6 +39,14 @@ try:
     _MANIFEST_VERSION = str(_manifest.get("version", "0"))
 except (FileNotFoundError, json.JSONDecodeError, KeyError):
     pass
+
+_CARD_HASH: str = ""
+with contextlib.suppress(FileNotFoundError):
+    _CARD_HASH = hashlib.sha256((_CARD_DIR / _CARD_FILENAME).read_bytes()).hexdigest()[:12]
+
+_CARD_RESOURCE_VERSION: str = (
+    f"{_MANIFEST_VERSION}-{_CARD_HASH}" if _CARD_HASH else _MANIFEST_VERSION
+)
 
 
 async def async_register_card(hass: HomeAssistant) -> None:
@@ -81,7 +75,7 @@ async def async_register_card(hass: HomeAssistant) -> None:
         _LOGGER.debug("Lovelace in YAML mode — skipping automatic card resource registration")
         return
 
-    resource_url = f"{_CARD_URL}?v={_card_resource_version()}"
+    resource_url = f"{_CARD_URL}?v={_CARD_RESOURCE_VERSION}"
     resources = cast(ResourceStorageCollection, lovelace_data.resources)
 
     if not resources.loaded:

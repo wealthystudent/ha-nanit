@@ -65,6 +65,28 @@ def auto_enable_custom_integrations(enable_custom_integrations):
 
 
 @pytest.fixture(autouse=True)
+def block_nanit_network(monkeypatch):
+    """Fail any attempt to resolve a Nanit host. Tests must use in-process fakes.
+
+    A regression that accidentally opens a real socket fails loudly instead of
+    poking a real device (which lives in a nursery) or the Nanit cloud.
+    """
+    import socket
+
+    real_getaddrinfo = socket.getaddrinfo
+
+    def guarded_getaddrinfo(host, *args, **kwargs):
+        if isinstance(host, str) and "nanit.com" in host:
+            raise AssertionError(
+                f"Test tried to reach the real Nanit network ({host}). "
+                "Use a fake/in-process server instead."
+            )
+        return real_getaddrinfo(host, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", guarded_getaddrinfo)
+
+
+@pytest.fixture(autouse=True)
 def _mock_card_registration():
     """Skip frontend card registration in unit tests."""
     with patch("custom_components.nanit.async_register_card", AsyncMock()):

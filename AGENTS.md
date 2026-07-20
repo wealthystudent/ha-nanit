@@ -299,6 +299,43 @@ Follow [Home Assistant developer docs](https://developers.home-assistant.io/) (l
 - Background tasks: follow `_start_*` / `_cancel_*` pattern, wire into `async_start()` / `async_stop()` / `_async_reconnect()`.
 - Connection reliability details: [docs/CONNECTION_RELIABILITY.md](docs/CONNECTION_RELIABILITY.md).
 
+## aionanit_sl (Sound & Light) Invariants
+
+The S&L transport (`custom_components/nanit/aionanit_sl/`) was ported from
+[nanit-sound-light](https://github.com/com6056/nanit-sound-light), where each
+behavior below was reverse-engineered from the official app and validated
+against a real speaker. Several of them look like optimization opportunities
+or missing error handling. They are not. Undoing any of them re-introduces a
+failure that was observed on real hardware:
+
+- **One request in flight with await-ack, and NEVER re-send on a slow ack.**
+  A slow ack means the speaker is busy, not gone. Re-sending piles duplicate
+  commands onto it until it stops responding for ~30 seconds and then flushes
+  the whole backlog at once. The official app never retries either. Only a
+  socket drop or a non-2xx rejection fails a command.
+- **No command-level retry, no app-level keepalive frame.** The speaker keeps
+  its socket alive with WebSocket protocol ping (~20s) only. The camera path
+  has both retry and a keepalive message. The speaker must not.
+- **Combined `Settings` writes.** Multi-field commands coalesce into ONE
+  message (`NanitSoundLight` handles this). Do not go back to one message per
+  field: their out-of-order responses race and the device lands in the wrong
+  state after a scene.
+- **The backend readiness gate is sticky.** Wait for the relay's Connected
+  frame before sending, but never detach on the bare/Disconnected backend
+  frames the speaker emits periodically while fully usable. Only a socket
+  drop detaches.
+- **Light semantics (validated on speaker firmware 1.3.1):** the lamp emits
+  iff `isOn && brightness > 0 && !noColor`. Light OFF is `brightness: 0`,
+  which round-trips the stored color. The app's own `noColor` off relights in
+  white on a bare re-enable, so light ON must always send explicit
+  hue/saturation.
+- **One local client per speaker.** The device 403s a second local
+  WebSocket even with a fresh device token (verified on hardware). Don't
+  diagnose a persistent local 403 as a wedged device without checking
+  whether another client (a second HA, another integration) holds the slot.
+- `sound_light_pb2.py` / `.pyi` are generated from `sound_light.proto`
+  (protoc 29.5, enforced by the CI drift check). Never hand-edit them.
+
 ---
 
 ## CI

@@ -1008,6 +1008,37 @@ def test_sl_entity_not_available_when_update_failed() -> None:
     assert entity.available is False
 
 
+def test_sl_entity_not_available_when_disconnected() -> None:
+    """S&L entities go unavailable when the device is unreachable.
+
+    The coordinator's `connected` flag is grace-debounced, so this only
+    happens after a real outage, not a brief reconnect. The connectivity and
+    connection-mode sensors override this so they keep reporting.
+    """
+    coordinator = _sl_coordinator(SoundLightFullState())
+    coordinator.connected = False
+    entity = NanitSoundLightLight(coordinator)
+
+    assert entity.available is False
+
+
+def test_sl_diagnostic_sensors_stay_available_while_disconnected() -> None:
+    from custom_components.nanit.binary_sensor import NanitSLConnectivitySensor
+    from custom_components.nanit.sensor import NanitSLConnectionModeSensor
+
+    coordinator = _sl_coordinator(SoundLightFullState())
+    coordinator.connected = False
+    coordinator.sound_light.connection_mode = "unavailable"
+
+    connectivity = NanitSLConnectivitySensor(coordinator)
+    assert connectivity.available is True
+    assert connectivity.is_on is False
+
+    mode = NanitSLConnectionModeSensor(coordinator)
+    assert mode.available is True
+    assert mode.native_value == "unavailable"
+
+
 def test_sl_entity_device_info() -> None:
     coordinator = _sl_coordinator(SoundLightFullState())
     entity = NanitSoundLightLight(coordinator)

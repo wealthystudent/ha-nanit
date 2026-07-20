@@ -1,0 +1,160 @@
+// Nanit Sound + Light Device Protocol
+// Reverse engineered from APK v4.0.6
+
+syntax = "proto2";
+
+// Main message wrapper
+message Message {
+    optional Request request = 1;           // Request data
+    optional Response response = 2;         // Response data
+    optional Backend backend = 3;           // Backend readiness/connectivity
+}
+
+// Backend connectivity frame. On a fresh remote connect the device's first
+// frame is Message{backend}; the relay reports whether the physical device is
+// attached behind it. The official app treats the remote route as live ONLY
+// once device.status == Connected, and sends nothing before that; sending
+// into a Disconnected relay is what produced our command latency. Was
+// previously `bytes`; both bytes and an embedded message are wire type 2, so
+// this is wire-compatible.
+message Backend {
+    optional BackendDevice device = 1;      // Physical device behind the relay
+    // Features features = 2;               // (app-only; unused here)
+}
+
+// Named BackendDevice (not Device) to avoid colliding with the sensor Status.
+message BackendDevice {
+    optional DeviceStatus status = 1;       // Attachment state
+}
+
+enum DeviceStatus {
+    Disconnected = 0;                       // Relay up, device not yet attached
+    Connected = 1;                          // Device attached, safe to send
+}
+
+// Request message: contains essential message types
+message Request {
+    optional int32 id = 1;                  // Message ID
+    optional string sessionId = 200;        // Session ID
+    optional Network network = 2;           // Network query/control body
+    optional Firmware firmware = 3;         // Firmware query/control body
+    optional GetSettings getSettings = 5;   // Get settings request
+    optional Settings settings = 6;         // Device settings
+    optional Status status = 10;            // Status info
+    optional GetStatus getStatus = 11;      // Get status (battery/temp/humidity)
+}
+
+// Response message for parsing incoming data
+message Response {
+    optional int32 requestId = 1;           // Request ID
+    optional int32 statusCode = 2;          // Status code
+    optional string statusMessage = 3;      // Status message
+    optional Settings settings = 4;         // Settings response
+    optional FirmwareInfo firmware = 6;     // Firmware info readback (url, version)
+    optional NetworkStatus networkStatus = 8; // Current network readback
+    optional Status status = 9;             // Status response (tag 6 is firmware in the app)
+}
+
+// GetSettings request: only fields actually used by integration
+message GetSettings {
+    optional bool all = 1;                  // Get all configuration
+    optional bool savedSounds = 7;          // Get saved sounds
+    optional bool temperature = 8;          // Get temperature
+    optional bool humidity = 9;             // Get humidity
+}
+
+// Settings for device state and control commands
+message Settings {
+    optional float brightness = 1;          // Brightness control
+    optional Color color = 2;               // Color control
+    optional float volume = 3;              // Volume control
+    optional Sound sound = 4;               // Sound control
+    optional bool isOn = 5;                 // Power control
+    optional SoundList soundList = 6;       // Available sounds list
+    optional float temperature = 7;         // Temperature sensor
+    optional float humidity = 8;            // Humidity sensor
+}
+
+// Color control data: matches official APK structure exactly
+message Color {
+    optional bool noColor = 1;              // Disable color
+    optional float hue = 2;                 // Hue (0.0-1.0)
+    optional float saturation = 3;          // Saturation (0.0-1.0)
+    // Note: brightness is handled separately in Settings.brightness, not in Color
+}
+
+// Sound control data
+message Sound {
+    optional bool noSound = 1;              // Disable sound
+    optional string track = 2;              // Track name
+}
+
+// Sound list from device
+message SoundList {
+    repeated string tracks = 1;             // Available sound track names
+}
+
+// Status message for sensor data (also carries battery via GetStatus)
+message Status {
+    optional Battery battery = 1;           // Battery state (from GetStatus)
+    optional float temperature = 2;         // Temperature sensor
+    optional float humidity = 3;            // Humidity sensor
+}
+
+// ── Diagnostics: battery, wifi, firmware version ─────────────────────────────
+// All tags below verified against the app's kotlinx @ProtoNumber descriptors
+// (NOT element-index+1, which is off-by-one whenever @ProtoNumber is present).
+// Empty marker submessage: a present-but-empty field means "send me this".
+message Empty {}
+
+// GetStatus request body (Request.getStatus). Battery/temp/humidity ride the
+// Status response, NOT GetSettings; this is a separate request type.
+message GetStatus {
+    optional bool all = 1;                  // Get everything
+    optional bool battery = 2;              // Battery
+    optional bool temperature = 3;          // Temperature
+    optional bool humidity = 4;             // Humidity
+}
+
+message Battery {
+    optional StateOfCharge soc = 1;         // Coarse 5-bucket charge level
+    optional bool isCharging = 2;           // Charging indicator
+}
+
+enum StateOfCharge {
+    SoCLow = 0;                             // near-empty
+    SoC25 = 1;
+    SoC50 = 2;
+    SoC75 = 3;
+    SoC90 = 4;
+}
+
+// Firmware request body (Request.firmware): set `info` present to request the
+// FirmwareInfo readback. (Other app fields like update/status/etc. omitted.)
+message Firmware {
+    optional Empty info = 2;                // Marker: "send me FirmwareInfo"
+}
+
+// Firmware readback (Response.firmware is a bare Firmware.Info in the app).
+message FirmwareInfo {
+    optional string url = 1;                // Update URL
+    optional string version = 2;            // Installed version
+}
+
+// Network request body (Request.network): set `getStatus` present to request
+// the current-network readback. (Scan/pairing/etc. omitted.)
+message Network {
+    optional Empty getStatus = 8;           // Marker: "send me NetworkStatus"
+}
+
+// Current network readback (Response.networkStatus).
+message NetworkStatus {
+    optional AccessPointInfo currentAp = 4; // Currently-joined AP
+}
+
+message AccessPointInfo {
+    optional string ssid = 1;               // SSID
+    optional string bssid = 2;              // BSSID
+    optional int32 rssi = 5;                // Signal strength (dBm)
+    optional int32 primaryChannel = 6;      // WiFi channel
+}

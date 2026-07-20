@@ -4,6 +4,9 @@
 [tool.ruff]
 target-version = "py313"
 line-length = 100
+# Generated protobuf modules are protoc output; keep them byte-identical to
+# the generator (the drift check in CI diffs against a fresh protoc run).
+extend-exclude = ["**/*_pb2.py", "**/*_pb2.pyi"]
 
 [tool.ruff.lint]
 select = [
@@ -37,6 +40,7 @@ ignore = [
 "tools/**" = ["D", "T20", "SIM117"]
 "**/proto/*_pb2.py" = ["ALL"]
 "**/proto/*_pb2.pyi" = ["ALL"]
+"**/*_pb2.py" = ["ALL"]
 "packages/aionanit/**" = ["D", "N818", "BLE001", "SIM105", "SIM117", "E402", "RUF059", "C408"]
 "custom_components/nanit/config_flow.py" = ["BLE001"]
 "custom_components/nanit/aionanit_sl/**" = ["BLE001", "D", "SIM105"]
@@ -54,6 +58,12 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["aionanit.proto", "aionanit.proto.*"]
+ignore_errors = true
+
+# Same for the S&L generated module: its .pyi provides the names, but the
+# google.protobuf base types resolve as Any under strict mode.
+[[tool.mypy.overrides]]
+module = "nanit.aionanit_sl.sound_light_pb2"
 ignore_errors = true
 
 [[tool.mypy.overrides]]

@@ -9,10 +9,10 @@ import pytest
 from homeassistant.core import HomeAssistant
 
 from custom_components.nanit.frontend import (
+    _CARD_RESOURCE_VERSION,
     _CARD_URL,
     _MANIFEST_VERSION,
     _REGISTERED_KEY,
-    _card_resource_version,
     async_register_card,
 )
 
@@ -91,7 +91,7 @@ async def test_register_card_updates_existing_resource(hass: HomeAssistant) -> N
 async def test_register_card_skips_update_when_url_matches(hass: HomeAssistant) -> None:
     with patch(f"{_FRONTEND_MODULE}._CARD_DIR", Path(__file__).parent):
         with patch(f"{_FRONTEND_MODULE}._CARD_FILENAME", "conftest.py"):
-            current_url = f"{_CARD_URL}?v={_card_resource_version()}"
+            current_url = f"{_CARD_URL}?v={_CARD_RESOURCE_VERSION}"
             resources = _mock_resources([{"id": "res1", "url": current_url}])
             _setup_hass_for_card(hass, resources)
 
@@ -151,3 +151,32 @@ async def test_register_card_loads_resources_when_not_loaded(hass: HomeAssistant
 
     resources.async_load.assert_awaited_once()
     resources.async_create_item.assert_awaited_once()
+
+
+def test_card_resource_version_precomputed_at_import() -> None:
+    """Verify the version string is pre-computed and contains a content hash."""
+    assert _CARD_RESOURCE_VERSION, "version string must not be empty"
+    assert _MANIFEST_VERSION in _CARD_RESOURCE_VERSION
+    parts = _CARD_RESOURCE_VERSION.split("-", 1)
+    assert len(parts) == 2, "version must be '{manifest_version}-{hash}'"
+    assert len(parts[1]) == 12, "hash suffix must be 12 hex chars"
+
+
+async def test_register_card_no_blocking_io(hass: HomeAssistant) -> None:
+    """Ensure async_register_card performs no file reads (all pre-computed)."""
+    resources = _mock_resources()
+    _setup_hass_for_card(hass, resources)
+
+    def _fail_read_text(*args: object, **kwargs: object) -> str:
+        raise AssertionError("read_text called inside async path")
+
+    def _fail_read_bytes(*args: object, **kwargs: object) -> bytes:
+        raise AssertionError("read_bytes called inside async path")
+
+    with patch(f"{_FRONTEND_MODULE}._CARD_DIR", Path(__file__).parent):
+        with patch(f"{_FRONTEND_MODULE}._CARD_FILENAME", "conftest.py"):
+            with patch.object(Path, "read_text", _fail_read_text):
+                with patch.object(Path, "read_bytes", _fail_read_bytes):
+                    await async_register_card(hass)
+
+    assert hass.data[_REGISTERED_KEY] is True

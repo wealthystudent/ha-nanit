@@ -153,6 +153,26 @@ class WsTransport:
         if self._ws is not None and not self._ws.closed:
             await self._ws.close()
 
+    def schedule_reconnect(self) -> None:
+        """Ensure a background reconnect loop is running.
+
+        Idempotent: no-op when closed, never connected (no URL to retry),
+        already connected, or a reconnect loop is already active. Callers
+        use this to restore the invariant that a disconnected transport
+        always has a reconnect loop driving recovery.
+        """
+        if self._url is None or self.connected:
+            return
+        self._ensure_reconnect_task()
+
+    def _ensure_reconnect_task(self) -> None:
+        """Schedule exactly one reconnect loop for concurrent failure signals."""
+        if self._closed:
+            return
+        if self._reconnect_task is not None and not self._reconnect_task.done():
+            return
+        self._reconnect_task = asyncio.get_running_loop().create_task(self._reconnect_loop())
+
     # ------------------------------------------------------------------
     # Internal — connection lifecycle
     # ------------------------------------------------------------------
@@ -195,16 +215,21 @@ class WsTransport:
 
     async def _async_close_ws(self) -> None:
         """Close WebSocket and cancel background tasks."""
+        current_task = asyncio.current_task()
         for task in (self._recv_task, self._keepalive_task, self._reconnect_task):
-            if task is not None and not task.done():
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-        self._recv_task = None
-        self._keepalive_task = None
-        self._reconnect_task = None
+            if task is None or task.done() or task is current_task:
+                continue
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        if self._recv_task is not current_task:
+            self._recv_task = None
+        if self._keepalive_task is not current_task:
+            self._keepalive_task = None
+        if self._reconnect_task is not current_task:
+            self._reconnect_task = None
 
         if self._ws is not None and not self._ws.closed:
             await self._ws.close()
@@ -221,7 +246,12 @@ class WsTransport:
             async for msg in self._ws:
                 if msg.type == aiohttp.WSMsgType.BINARY:
                     self._last_received_at = asyncio.get_event_loop().time()
-                    self._on_message(msg.data)
+                    try:
+                        self._on_message(msg.data)
+                    except Exception:
+                        # A malformed/unexpected frame must not terminate the
+                        # receive loop and take down an otherwise healthy WS.
+                        _LOGGER.warning("Ignoring malformed Nanit WebSocket frame", exc_info=True)
                 elif msg.type in (
                     aiohttp.WSMsgType.CLOSE,
                     aiohttp.WSMsgType.CLOSING,
@@ -239,7 +269,7 @@ class WsTransport:
 
         # If we weren't explicitly closed, attempt to reconnect.
         if not self._closed:
-            self._reconnect_task = asyncio.get_running_loop().create_task(self._reconnect_loop())
+            self._ensure_reconnect_task()
 
     async def _keepalive_loop(self) -> None:
         """Send protobuf KEEPALIVE message every ``_KEEPALIVE_INTERVAL`` seconds."""
@@ -252,6 +282,9 @@ class WsTransport:
                     await self.async_send(build_keepalive())
                 except NanitTransportError:
                     _LOGGER.warning("Keepalive send failed, triggering reconnect")
+                    if self._ws is not None and not self._ws.closed:
+                        await self._ws.close()
+                    self._ensure_reconnect_task()
                     break
         except asyncio.CancelledError:
             return
@@ -264,15 +297,13 @@ class WsTransport:
         backoff = _INITIAL_BACKOFF
 
         while not self._closed:
+            # Bail out if this loop was superseded (an inline connect replaced
+            # or disowned it). Closing the WebSocket here would tear down a
+            # session another caller just established.
+            if self._reconnect_task is not asyncio.current_task():
+                return
             await self._async_close_ws()
             self._on_connection_change(ConnectionState.RECONNECTING, self._transport_kind, None)
-
-            wait_time = backoff + random.random() * _JITTER_MAX
-            _LOGGER.info("Reconnecting in %.1fs", wait_time)
-            await asyncio.sleep(wait_time)
-
-            if self._closed:
-                return
 
             try:
                 # Fetch fresh headers if callback is available.
@@ -291,6 +322,7 @@ class WsTransport:
                     max_msg_size=_MAX_MSG_SIZE,
                 )
                 loop = asyncio.get_running_loop()
+                self._last_received_at = loop.time()
                 self._recv_task = loop.create_task(self._recv_loop())
                 self._keepalive_task = loop.create_task(self._keepalive_loop())
                 self._on_connection_change(ConnectionState.CONNECTED, self._transport_kind, None)
@@ -299,3 +331,6 @@ class WsTransport:
             except Exception as err:
                 _LOGGER.warning("Reconnect failed: %s", err)
                 backoff = min(backoff * _BACKOFF_FACTOR, _MAX_BACKOFF)
+                wait_time = backoff + random.random() * _JITTER_MAX
+                _LOGGER.info("Reconnecting in %.1fs", wait_time)
+                await asyncio.sleep(wait_time)

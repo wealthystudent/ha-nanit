@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
-import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -85,6 +84,7 @@ _HEALTH_CHECK_INTERVAL: float = 270.0  # 4.5 min — periodic session liveness c
 _FRESH_CONNECTION_WINDOW: float = 10.0  # skip reconnect if connected within this
 _DEFAULT_SENSOR_POLL_INTERVAL: float = 120.0  # 2 min — poll sensors camera doesn't push
 _DEFAULT_PLAYBACK_POLL_INTERVAL: float = 30.0  # 30s — poll GET_PLAYBACK for external changes
+_STREAM_TOKEN_MIN_TTL: float = 3300.0  # Keep 45-minute HA sources inside JWT lifetime
 
 
 class NanitCamera:
@@ -134,6 +134,7 @@ class NanitCamera:
         self._playback_poll_task: asyncio.Task[None] | None = None
         self._token_refresh_task: asyncio.Task[None] | None = None
         self._reconnected_task: asyncio.Task[None] | None = None
+        self._inline_reconnect_task: asyncio.Task[None] | None = None
         self._reconnect_lock: asyncio.Lock = asyncio.Lock()
         self._stopped: bool = False
         self._connected_event: asyncio.Event = asyncio.Event()
@@ -230,6 +231,7 @@ class NanitCamera:
         self._cancel_sensor_poll()
         self._cancel_playback_poll()
         self._cancel_reconnected_task()
+        self._cancel_inline_reconnect()
         self._pending.cancel_all()
         await self._transport.async_close()
 
@@ -283,22 +285,26 @@ class NanitCamera:
         self._update_state(control=control, kind=CameraEventKind.CONTROL_UPDATE)
         return control
 
-    async def async_get_sensor_data(self) -> SensorState:
+    async def async_get_sensor_data(self, *, reconnect_on_failure: bool = True) -> SensorState:
         """GET_SENSOR_DATA request (all sensors)."""
         resp = cast(
             Any,
             await self._send_request(
                 RequestType.GET_SENSOR_DATA,
                 get_sensor_data=GetSensorData(all=True),
+                reconnect_on_failure=reconnect_on_failure,
             ),
         )
         sensors = _parse_sensor_data(resp.sensor_data, self._state.sensors)
         self._update_state(sensors=sensors, kind=CameraEventKind.SENSOR_UPDATE)
         return sensors
 
-    async def async_get_playback(self) -> PlaybackState:
+    async def async_get_playback(self, *, reconnect_on_failure: bool = True) -> PlaybackState:
         """GET_PLAYBACK request — query current sound machine state."""
-        resp = await self._send_request(RequestType.GET_PLAYBACK)
+        resp = await self._send_request(
+            RequestType.GET_PLAYBACK,
+            reconnect_on_failure=reconnect_on_failure,
+        )
         pb = _parse_playback(resp)
         # Preserve available_tracks from existing state — GET_PLAYBACK does
         # not include the track list; only GET_SOUNDTRACKS provides it.
@@ -471,8 +477,8 @@ class NanitCamera:
 
         Returns: rtmps://media-secured.nanit.com/nanit/{baby_uid}.{access_token}
         """
-        token = await self._token_manager.async_get_access_token()
-        token_ttl = self._token_manager._expires_at - time.monotonic()
+        token = await self._token_manager.async_get_access_token(min_ttl=_STREAM_TOKEN_MIN_TTL)
+        token_ttl = self._token_manager.expires_in
         _LOGGER.debug(
             "Built RTMPS stream URL for baby %s (token TTL: %.0fs)",
             self._baby_uid,
@@ -480,9 +486,22 @@ class NanitCamera:
         )
         return f"rtmps://media-secured.nanit.com/nanit/{self._baby_uid}.{token}"
 
-    async def async_start_streaming(self) -> None:
-        """Send PUT_STREAMING with status=STARTED to camera."""
-        rtmps_url = await self.async_get_stream_rtmps_url()
+    async def async_start_streaming(
+        self,
+        *,
+        rtmps_url: str | None = None,
+        reconnect_on_failure: bool = True,
+    ) -> None:
+        """Send PUT_STREAMING with status=STARTED to camera.
+
+        With ``reconnect_on_failure=False`` the send is best-effort: a late
+        or lost ACK raises instead of force-reconnecting the control
+        WebSocket. Background keepalives need this because a control-session
+        reconnect itself stops the camera's RTMPS push — the exact failure a
+        keepalive exists to prevent.
+        """
+        if rtmps_url is None:
+            rtmps_url = await self.async_get_stream_rtmps_url()
         streaming = Streaming(
             id=StreamIdentifier.MOBILE,
             status=StreamingStatus.STARTED,
@@ -497,6 +516,7 @@ class NanitCamera:
             await self._send_request(
                 RequestType.PUT_STREAMING,
                 streaming=streaming,
+                reconnect_on_failure=reconnect_on_failure,
             )
         except (NanitRequestTimeout, NanitTransportError, NanitCameraUnavailable) as err:
             _LOGGER.warning(
@@ -557,7 +577,7 @@ class NanitCamera:
         Called by WsTransport._reconnect_loop before each reconnect attempt
         so that stale tokens are replaced with freshly issued ones.
         """
-        token = await self._token_manager.async_get_access_token()
+        token = await self._token_manager.async_get_access_token(min_ttl=300.0)
         if self._transport.transport_kind == TransportKind.LOCAL:
             return {"Authorization": f"token {token}"}
         return {"Authorization": f"Bearer {token}"}
@@ -667,8 +687,13 @@ class NanitCamera:
         elif state in (ConnectionState.DISCONNECTED, ConnectionState.RECONNECTING):
             self._connected_event.clear()
 
-        if state == ConnectionState.DISCONNECTED:
-            self._pending.cancel_all(NanitTransportError("Connection lost"))
+        if state in (ConnectionState.DISCONNECTED, ConnectionState.RECONNECTING):
+            reason = (
+                "Connection reconnecting"
+                if state == ConnectionState.RECONNECTING
+                else "Connection lost"
+            )
+            self._pending.cancel_all(NanitTransportError(reason))
 
         self._notify_subscribers(CameraEventKind.CONNECTION_CHANGE)
 
@@ -738,6 +763,7 @@ class NanitCamera:
         self,
         request_type: int,
         timeout: float = _DEFAULT_REQUEST_TIMEOUT,
+        reconnect_on_failure: bool = True,
         **kwargs: Any,
     ) -> Any:
         """Send a protobuf request and await the correlated response.
@@ -746,6 +772,11 @@ class NanitCamera:
         retry after inline reconnect so that commands succeed even when the
         server-side session has silently expired.
         """
+        if self._stopped:
+            # Fail fast: late callers (leaked timers, in-flight tasks) must
+            # not wait out the connect timeout or trigger a reconnect.
+            raise NanitCameraUnavailable(f"Camera {self._uid} is stopped")
+
         if not self._transport.connected:
             try:
                 await asyncio.wait_for(self._connected_event.wait(), timeout=15.0)
@@ -784,24 +815,33 @@ class NanitCamera:
                 await self._transport.async_send(data)
             except NanitTransportError:
                 _ = self._pending.resolve(request_id, Response())
-                if attempt == 0:
+                if attempt == 0 and reconnect_on_failure:
                     _LOGGER.warning("Send failed, reconnecting and retrying")
-                    await self._async_reconnect()
+                    await self._async_reconnect(force=True)
                     continue
                 raise
 
             try:
                 return await asyncio.wait_for(future, timeout=timeout)
+            except NanitTransportError:
+                if attempt == 0 and reconnect_on_failure:
+                    _LOGGER.warning(
+                        "Request %s lost during transport drop, reconnecting and retrying",
+                        RequestType.Name(request_type),
+                    )
+                    await self._async_reconnect(force=True)
+                    continue
+                raise
             except TimeoutError:
                 _ = self._pending.resolve(request_id, Response())
-                if attempt == 0:
+                if attempt == 0 and reconnect_on_failure:
                     _LOGGER.warning(
                         "Request %s (id=%s) timed out after %.1fs, reconnecting and retrying",
                         RequestType.Name(request_type),
                         request_id,
                         timeout,
                     )
-                    await self._async_reconnect()
+                    await self._async_reconnect(force=True)
                     continue
                 raise NanitRequestTimeout(
                     RequestType.Name(request_type), request_id, timeout
@@ -884,14 +924,39 @@ class NanitCamera:
     # Internal — inline reconnect
     # ------------------------------------------------------------------
 
-    async def _async_reconnect(self) -> None:
+    async def _async_reconnect(self, *, force: bool = False) -> None:
+        """Await one shared inline reconnect for all concurrent callers."""
+        active = self._inline_reconnect_task
+        current = asyncio.current_task()
+        if active is not None and not active.done():
+            # Re-initialization can issue a request from inside the reconnect
+            # task. It must not await itself; outside callers await its result.
+            if active is current:
+                return
+            await asyncio.shield(active)
+            return
+
+        task = asyncio.create_task(
+            self._perform_reconnect(force=force),
+            name=f"nanit_inline_reconnect_{self._uid}",
+        )
+        self._inline_reconnect_task = task
+        try:
+            await asyncio.shield(task)
+        finally:
+            if self._inline_reconnect_task is task and task.done():
+                self._inline_reconnect_task = None
+
+    async def _perform_reconnect(self, *, force: bool = False) -> None:
         """Close and re-establish the WebSocket connection inline.
 
         Used by ``_send_request`` to transparently recover from stale or
         broken connections without surfacing errors to the caller.
 
         A lock prevents concurrent reconnects, and a freshness guard skips
-        the reconnect if another caller just completed one.
+        opportunistic reconnects if another caller just completed one. Request
+        failures pass ``force=True`` because a recent frame does not prove that
+        the timed-out request path is still usable.
 
         The ``locked()`` pre-check prevents a deadlock that occurs when
         ``_async_enable_sensor_push`` (called at the end of this method)
@@ -902,14 +967,26 @@ class NanitCamera:
         with the current connection and let the retry logic handle any
         remaining failures.
         """
+        if self._stopped:
+            # A stopped camera must stay stopped: reconnecting here would
+            # resurrect the WebSocket and background loops with nothing left
+            # to ever tear them down (e.g. a leaked keepalive firing after a
+            # config-entry reload).
+            _LOGGER.debug("Camera %s is stopped — skipping inline reconnect", self._uid)
+            return
+
         if self._reconnect_lock.locked():
             _LOGGER.debug("Reconnect already in progress, skipping")
             return
 
         async with self._reconnect_lock:
+            # Re-check: async_stop may have run while awaiting the lock.
+            if self._stopped:
+                return
             # Skip if another caller already reconnected.
             if (
-                self._transport.connected
+                not force
+                and self._transport.connected
                 and self._transport.idle_seconds < _FRESH_CONNECTION_WINDOW
             ):
                 _LOGGER.debug(
@@ -923,24 +1000,33 @@ class NanitCamera:
             self._cancel_token_refresh()
 
             connected = False
-            if self._prefer_local and self._local_ip:
-                try:
-                    token = await self._token_manager.async_get_access_token()
-                    await self._transport.async_connect_local(self._local_ip, token)
-                    connected = True
-                except (NanitConnectionError, NanitTransportError) as err:
-                    _LOGGER.info(
-                        "Local reconnect to %s failed (%s), trying cloud",
-                        self._local_ip,
-                        err,
-                    )
+            try:
+                if self._prefer_local and self._local_ip:
+                    try:
+                        token = await self._token_manager.async_get_access_token()
+                        await self._transport.async_connect_local(self._local_ip, token)
+                        connected = True
+                    except (NanitConnectionError, NanitTransportError) as err:
+                        _LOGGER.info(
+                            "Local reconnect to %s failed (%s), trying cloud",
+                            self._local_ip,
+                            err,
+                        )
 
-            if not connected:
-                try:
-                    token = await self._token_manager.async_get_access_token()
-                    await self._transport.async_connect_cloud(self._uid, token)
-                except (NanitConnectionError, NanitTransportError) as err:
-                    raise NanitCameraUnavailable(f"Cannot reach camera {self._uid}: {err}") from err
+                if not connected:
+                    try:
+                        token = await self._token_manager.async_get_access_token()
+                        await self._transport.async_connect_cloud(self._uid, token)
+                    except (NanitConnectionError, NanitTransportError) as err:
+                        raise NanitCameraUnavailable(
+                            f"Cannot reach camera {self._uid}: {err}"
+                        ) from err
+            except Exception:
+                # The inline connect attempt cancelled the transport's backoff
+                # reconnect loop; restore it so recovery continues in the
+                # background even though this caller fails.
+                self._transport.schedule_reconnect()
+                raise
 
             await self._async_enable_sensor_push()
 
@@ -969,13 +1055,23 @@ class NanitCamera:
             self._reconnected_task.cancel()
         self._reconnected_task = None
 
+    def _cancel_inline_reconnect(self) -> None:
+        task = self._inline_reconnect_task
+        if task is not None and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+        self._inline_reconnect_task = None
+
     async def _token_refresh_loop(self) -> None:
         try:
             while not self._stopped:
-                ttl = self._token_manager._expires_at - time.monotonic()
-                sleep_for = max(ttl - 300.0, 60.0)
+                sleep_for = max(self._token_manager.expires_in - 300.0, 60.0)
                 await asyncio.sleep(sleep_for)
                 if self._stopped or not self._transport.connected:
+                    continue
+                # Another path (e.g. a stream URL request) may have refreshed
+                # the token while we slept — skip the reconnect and re-derive
+                # the sleep from the fresh expiry.
+                if self._token_manager.expires_in > 330.0:
                     continue
                 _LOGGER.info("Pre-emptive token refresh: forcing reconnect before expiry")
                 try:
@@ -1012,7 +1108,13 @@ class NanitCamera:
         try:
             while not self._stopped:
                 await asyncio.sleep(_HEALTH_CHECK_INTERVAL)
-                if self._stopped or not self._transport.connected:
+                if self._stopped:
+                    continue
+                if not self._transport.connected:
+                    # Watchdog: if the transport is disconnected and no
+                    # reconnect loop is driving recovery (e.g. after a failed
+                    # inline reconnect), restore one. Idempotent.
+                    self._transport.schedule_reconnect()
                     continue
                 try:
                     await self.async_get_status()
@@ -1062,7 +1164,7 @@ class NanitCamera:
                 if self._stopped or not self._transport.connected:
                     continue
                 try:
-                    await self.async_get_sensor_data()
+                    await self.async_get_sensor_data(reconnect_on_failure=False)
                 except (
                     NanitRequestTimeout,
                     NanitTransportError,
@@ -1100,7 +1202,7 @@ class NanitCamera:
                 if self._stopped or not self._transport.connected:
                     continue
                 try:
-                    await self.async_get_playback()
+                    await self.async_get_playback(reconnect_on_failure=False)
                 except (
                     NanitRequestTimeout,
                     NanitTransportError,
@@ -1143,17 +1245,29 @@ class NanitCamera:
                             probe.async_connect_local(self._local_ip, token),
                             timeout=5.0,
                         )
-                        # Local is reachable — promote.
-                        await probe.async_close()
                     except (TimeoutError, NanitConnectionError, NanitTransportError):
                         _LOGGER.debug("Local probe failed, staying on cloud")
                         continue
+                    finally:
+                        await probe.async_close()
 
                     _LOGGER.info("Local camera reachable, promoting from cloud to local")
-                    # Close cloud, connect local.
-                    self._pending.cancel_all()
-                    await self._transport.async_close()
-                    await self._transport.async_connect_local(self._local_ip, token)
+                    # Fail (not cancel) in-flight requests: a bare cancel would
+                    # raise CancelledError inside the periodic poll loops and
+                    # terminate them permanently.
+                    self._pending.cancel_all(NanitTransportError("Switching to local transport"))
+                    try:
+                        await self._transport.async_connect_local(self._local_ip, token)
+                    except (NanitConnectionError, NanitTransportError) as err:
+                        _LOGGER.info(
+                            "Local promotion to %s failed (%s), restoring cloud",
+                            self._local_ip,
+                            err,
+                        )
+                        token = await self._token_manager.async_get_access_token()
+                        await self._transport.async_connect_cloud(self._uid, token)
+                        await self._async_enable_sensor_push()
+                        continue
                     await self._async_request_initial_state()
                     await self._async_enable_sensor_push()
                     return  # Stop probing — now on local.

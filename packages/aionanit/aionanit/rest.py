@@ -191,7 +191,15 @@ class NanitRestClient:
         if resp.status == 401:
             raise NanitAuthError("Access token invalid during refresh")
 
-        body = await resp.json()
+        # Server-side failures are transient — they must not be treated as
+        # auth errors, or a Nanit outage would force reauth in the caller.
+        if resp.status >= 500:
+            raise NanitConnectionError(f"Token refresh failed with HTTP {resp.status}")
+
+        try:
+            body = await resp.json()
+        except (aiohttp.ClientError, ValueError) as err:
+            raise NanitConnectionError(f"Invalid token refresh response: {err}") from err
 
         error_msg = _extract_error_message(body)
         if error_msg:
@@ -220,8 +228,14 @@ class NanitRestClient:
         if resp.status == 401:
             raise NanitAuthError("Access token invalid")
 
+        if resp.status >= 500:
+            raise NanitConnectionError(f"Babies fetch failed with HTTP {resp.status}")
+
         resp.raise_for_status()
-        body = await resp.json()
+        try:
+            body = await resp.json()
+        except (aiohttp.ClientError, ValueError) as err:
+            raise NanitConnectionError(f"Invalid babies response: {err}") from err
 
         return [
             Baby(

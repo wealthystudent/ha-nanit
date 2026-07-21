@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import time
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import aiohttp
@@ -15,7 +14,11 @@ from aionanit.camera import (
     RequestType,
     Response,
 )
-from aionanit.exceptions import NanitTransportError
+from aionanit.exceptions import (
+    NanitCameraUnavailable,
+    NanitConnectionError,
+    NanitTransportError,
+)
 from aionanit.models import TransportKind
 from aionanit.rest import NanitRestClient
 
@@ -40,7 +43,7 @@ def _make_camera() -> tuple[NanitCamera, MagicMock]:
 @pytest.mark.asyncio
 async def test_token_refresh_task_started_on_start() -> None:
     camera, token_manager = _make_camera()
-    token_manager._expires_at = time.monotonic() + 3600.0
+    token_manager.expires_in = 3600.0
 
     camera._transport = MagicMock()
     camera._transport.async_connect_cloud = AsyncMock()
@@ -66,7 +69,7 @@ async def test_token_refresh_task_started_on_start() -> None:
 @pytest.mark.asyncio
 async def test_token_refresh_task_cancelled_on_stop() -> None:
     camera, token_manager = _make_camera()
-    token_manager._expires_at = time.monotonic() + 3600.0
+    token_manager.expires_in = 3600.0
 
     camera._transport = MagicMock()
     camera._transport.async_close = AsyncMock()
@@ -86,7 +89,7 @@ async def test_token_refresh_task_cancelled_on_stop() -> None:
 async def test_token_refresh_forces_reconnect_before_expiry() -> None:
     camera, token_manager = _make_camera()
     camera._stopped = False
-    token_manager._expires_at = 1050.0
+    token_manager.expires_in = 50.0
 
     camera._transport = MagicMock()
     camera._transport.connected = True
@@ -96,13 +99,73 @@ async def test_token_refresh_forces_reconnect_before_expiry() -> None:
 
     camera._transport.async_force_reconnect = AsyncMock(side_effect=_force_and_stop)
 
-    with (
-        patch("aionanit.camera.time.monotonic", return_value=1000.0),
-        patch("aionanit.camera.asyncio.sleep", AsyncMock(return_value=None)),
-    ):
+    with patch("aionanit.camera.asyncio.sleep", AsyncMock(return_value=None)):
         await asyncio.wait_for(camera._token_refresh_loop(), timeout=0.1)
 
     camera._transport.async_force_reconnect.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_token_refresh_skips_reconnect_when_token_already_fresh() -> None:
+    """A token refreshed elsewhere while sleeping must not force a reconnect."""
+    camera, token_manager = _make_camera()
+    camera._stopped = False
+    token_manager.expires_in = 3600.0
+
+    camera._transport = MagicMock()
+    camera._transport.connected = True
+    camera._transport.async_force_reconnect = AsyncMock()
+
+    sleep_calls = 0
+
+    async def _sleep_then_stop(_delay: float) -> None:
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls >= 2:
+            camera._stopped = True
+
+    with patch("aionanit.camera.asyncio.sleep", AsyncMock(side_effect=_sleep_then_stop)):
+        await asyncio.wait_for(camera._token_refresh_loop(), timeout=0.1)
+
+    camera._transport.async_force_reconnect.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_failed_inline_reconnect_schedules_background_recovery() -> None:
+    """When the inline reconnect fails, a transport backoff loop must be
+    restored so the camera recovers once the network returns."""
+    camera, _ = _make_camera()
+    camera._stopped = False
+
+    transport = MagicMock()
+    transport.connected = False
+    transport.idle_seconds = 0.0
+    transport.transport_kind = TransportKind.CLOUD
+    transport.async_connect_cloud = AsyncMock(side_effect=NanitConnectionError("down"))
+    transport.schedule_reconnect = MagicMock()
+    camera._transport = transport
+
+    with pytest.raises(NanitCameraUnavailable):
+        await camera._async_reconnect(force=True)
+
+    transport.schedule_reconnect.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_health_check_schedules_recovery_when_disconnected() -> None:
+    """The health check acts as a watchdog for a stranded transport."""
+    camera, _ = _make_camera()
+    camera._stopped = False
+
+    transport = MagicMock()
+    transport.connected = False
+    transport.schedule_reconnect = MagicMock(side_effect=lambda: setattr(camera, "_stopped", True))
+    camera._transport = transport
+
+    with patch("aionanit.camera.asyncio.sleep", AsyncMock(return_value=None)):
+        await asyncio.wait_for(camera._health_check_loop(), timeout=0.1)
+
+    transport.schedule_reconnect.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -170,6 +233,48 @@ async def test_reconnect_skips_when_lock_already_held() -> None:
         await asyncio.wait_for(camera._async_reconnect(), timeout=1.0)
     finally:
         camera._reconnect_lock.release()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_reconnect_callers_await_one_shared_result() -> None:
+    """Concurrent recovery callers must not continue before reconnect completes."""
+    camera, token_manager = _make_camera()
+    camera._stopped = False
+    token_manager.expires_in = 3600.0
+    gate = asyncio.Event()
+
+    transport = MagicMock()
+    transport.connected = False
+    transport.idle_seconds = 999.0
+    transport.transport_kind = TransportKind.CLOUD
+
+    async def _wait_for_gate(*_args: object) -> None:
+        await gate.wait()
+
+    transport.async_connect_cloud = AsyncMock(side_effect=_wait_for_gate)
+    camera._transport = transport
+    camera._async_enable_sensor_push = AsyncMock()
+
+    first = asyncio.create_task(camera._async_reconnect(force=True))
+    await asyncio.sleep(0)
+    second = asyncio.create_task(camera._async_reconnect(force=True))
+    await asyncio.sleep(0)
+
+    first_was_waiting = not first.done()
+    second_was_waiting = not second.done()
+    connect_count_while_blocked = transport.async_connect_cloud.await_count
+
+    gate.set()
+    await asyncio.gather(first, second)
+
+    camera._cancel_token_refresh()
+    camera._cancel_sensor_poll()
+    camera._cancel_playback_poll()
+
+    assert first_was_waiting
+    assert second_was_waiting
+    assert connect_count_while_blocked == 1
+    assert transport.async_connect_cloud.await_count == 1
 
 
 @pytest.mark.asyncio

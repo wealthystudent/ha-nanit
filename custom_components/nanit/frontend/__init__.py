@@ -12,6 +12,7 @@ import json
 import logging
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import urlparse
 
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.components.lovelace import LovelaceData
@@ -28,8 +29,14 @@ _CARD_URL = f"{_URL_BASE}/{_CARD_FILENAME}"
 _REGISTERED_KEY = "nanit_card_registered"
 
 
+def _is_nanit_card_resource(url: str) -> bool:
+    """Return true if a Lovelace resource points at a Nanit card bundle."""
+    path = urlparse(url).path
+    return path == _CARD_URL or (path.endswith(f"/{_CARD_FILENAME}") and "nanit" in path.lower())
+
+
 # Pre-compute at import time — these files are static (part of the installed
-# package) and never change until the next HACS update/reinstall.  Reading them
+# package) and never change until the next HACS update/reinstall. Reading them
 # here avoids blocking I/O inside the async event loop.
 _MANIFEST_VERSION: str = "0"
 try:
@@ -58,37 +65,52 @@ async def async_register_card(hass: HomeAssistant) -> None:
     if hass.data.get(_REGISTERED_KEY):
         return
 
-    hass.data[_REGISTERED_KEY] = True
-
     card_path = _CARD_DIR / _CARD_FILENAME
-    if not card_path.is_file():
+    if not await hass.async_add_executor_job(card_path.is_file):
         _LOGGER.warning("Nanit card JS not found at %s — skipping card registration", card_path)
         hass.data[_REGISTERED_KEY] = False
         return
 
-    await hass.http.async_register_static_paths(
-        [StaticPathConfig(_URL_BASE, str(_CARD_DIR), cache_headers=False)]
-    )
+    try:
+        await hass.http.async_register_static_paths(
+            [StaticPathConfig(_URL_BASE, str(_CARD_DIR), cache_headers=True)]
+        )
 
-    lovelace_data: LovelaceData = hass.data["lovelace"]
-    if lovelace_data.resource_mode == "yaml":
-        _LOGGER.debug("Lovelace in YAML mode — skipping automatic card resource registration")
-        return
+        lovelace_data: LovelaceData = hass.data["lovelace"]
+        if lovelace_data.resource_mode == "yaml":
+            _LOGGER.debug("Lovelace in YAML mode — skipping automatic card resource registration")
+            hass.data[_REGISTERED_KEY] = True
+            return
 
-    resource_url = f"{_CARD_URL}?v={_CARD_RESOURCE_VERSION}"
-    resources = cast(ResourceStorageCollection, lovelace_data.resources)
+        resource_url = f"{_CARD_URL}?v={_CARD_RESOURCE_VERSION}"
+        resources = cast(ResourceStorageCollection, lovelace_data.resources)
 
-    if not resources.loaded:
-        await resources.async_load()
-        resources.loaded = True
+        if not resources.loaded:
+            await resources.async_load()
+            resources.loaded = True
 
-    existing = [r for r in resources.async_items() if _CARD_URL in r["url"]]
-    if existing:
-        for item in existing:
-            if item["url"] != resource_url:
-                await resources.async_update_item(item["id"], {"url": resource_url})
+        existing = [
+            item
+            for item in resources.async_items()
+            if _is_nanit_card_resource(str(item.get("url", "")))
+        ]
+        if existing:
+            primary = existing[0]
+            if primary.get("url") != resource_url:
+                await resources.async_update_item(primary["id"], {"url": resource_url})
                 _LOGGER.debug("Updated Nanit card resource URL to %s", resource_url)
-        return
+            if len(existing) > 1:
+                _LOGGER.warning(
+                    "Found %d Nanit card Lovelace resources; keeping %s and leaving duplicates unchanged",
+                    len(existing),
+                    primary.get("id"),
+                )
+            hass.data[_REGISTERED_KEY] = True
+            return
 
-    await resources.async_create_item({"res_type": "module", "url": resource_url})
-    _LOGGER.debug("Registered Nanit card as Lovelace resource: %s", resource_url)
+        await resources.async_create_item({"res_type": "module", "url": resource_url})
+        _LOGGER.debug("Registered Nanit card as Lovelace resource: %s", resource_url)
+        hass.data[_REGISTERED_KEY] = True
+    except Exception:
+        hass.data[_REGISTERED_KEY] = False
+        raise

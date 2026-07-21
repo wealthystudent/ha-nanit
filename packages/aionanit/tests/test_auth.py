@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from aionanit.auth import TokenManager
-from aionanit.exceptions import NanitAuthError
+from aionanit.exceptions import NanitAuthError, NanitConnectionError
+
+
+def _jwt_with_exp(exp: int) -> str:
+    payload = base64.urlsafe_b64encode(json.dumps({"exp": exp}).encode()).rstrip(b"=").decode()
+    return f"header.{payload}.sig"
 
 
 @pytest.fixture
@@ -111,6 +118,28 @@ class TestUpdateTokens:
         assert token_manager.access_token == "manual_access"
         assert token_manager.refresh_token == "manual_refresh"
 
+    async def test_update_tokens_uses_jwt_exp_when_present(self, mock_rest: MagicMock) -> None:
+        now = int(time.time())
+        token = _jwt_with_exp(now + 7200)
+        manager = TokenManager(mock_rest, "initial", "refresh", expires_in=3600.0)
+
+        await manager.update_tokens(token, "manual_refresh", 1800.0)
+
+        assert 7000 <= manager.expires_in <= 7200
+
+    async def test_refresh_uses_jwt_exp_when_present(self, mock_rest: MagicMock) -> None:
+        now = int(time.time())
+        token = _jwt_with_exp(now + 7200)
+        mock_rest.async_refresh_token.return_value = {
+            "access_token": token,
+            "refresh_token": "new_refresh",
+        }
+        manager = TokenManager(mock_rest, "initial", "refresh", expires_in=0.0)
+
+        await manager.async_get_access_token()
+
+        assert 7000 <= manager.expires_in <= 7200
+
 
 class TestCallbacks:
     async def test_callback_invoked_on_refresh(
@@ -168,6 +197,17 @@ class TestRefreshFailure:
         token_manager._expires_at = time.monotonic() - 1
 
         with pytest.raises(NanitAuthError, match="Token refresh failed"):
+            await token_manager.async_get_access_token()
+
+    async def test_connection_error_not_wrapped_in_auth_error(
+        self, token_manager: TokenManager, mock_rest: MagicMock
+    ) -> None:
+        """A network failure during refresh must not masquerade as an auth
+        failure — callers map NanitAuthError to a reauth flow."""
+        mock_rest.async_refresh_token.side_effect = NanitConnectionError("network down")
+        token_manager._expires_at = time.monotonic() - 1
+
+        with pytest.raises(NanitConnectionError, match="network down"):
             await token_manager.async_get_access_token()
 
     async def test_tokens_unchanged_after_failure(

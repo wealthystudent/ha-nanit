@@ -206,6 +206,27 @@ class TestRefreshToken:
             with pytest.raises(NanitAuthError, match="token revoked"):
                 await client.async_refresh_token("acc", "ref")
 
+    async def test_refresh_server_error_is_connection_error(self, client: NanitRestClient) -> None:
+        """A 5xx during refresh is transient — must not trigger reauth."""
+        with aioresponses() as m:
+            m.post(REFRESH_URL, status=502, body="<html>Bad Gateway</html>")
+
+            with pytest.raises(NanitConnectionError, match="HTTP 502"):
+                await client.async_refresh_token("acc", "ref")
+
+    async def test_refresh_invalid_body_is_connection_error(self, client: NanitRestClient) -> None:
+        """A non-JSON body on a 200 is transient — must not trigger reauth."""
+        with aioresponses() as m:
+            m.post(
+                REFRESH_URL,
+                status=200,
+                body="<html>gateway error</html>",
+                content_type="text/html",
+            )
+
+            with pytest.raises(NanitConnectionError, match="Invalid token refresh response"):
+                await client.async_refresh_token("acc", "ref")
+
 
 class TestGetBabies:
     async def test_get_babies_success(self, client: NanitRestClient) -> None:

@@ -102,15 +102,10 @@ jobs:
       - name: Run aionanit tests
         run: python -m pytest packages/aionanit/tests/ -v --tb=short
 
-  # PyPI publishing requires trusted-publishing rights on the aionanit
-  # project, which forks do not have. Releases are self-contained without it:
-  # attach-artifact serves the wheel from the GitHub release instead. Repos
-  # with PyPI rights opt in by setting the PYPI_PUBLISH repository variable
-  # to "true".
   publish-beta:
     name: Publish Beta to PyPI
     needs: resolve
-    if: needs.resolve.outputs.is_stable == 'false' && vars.PYPI_PUBLISH == 'true'
+    if: needs.resolve.outputs.is_stable == 'false'
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -147,7 +142,7 @@ jobs:
   publish-stable:
     name: Publish Stable to PyPI
     needs: [resolve, ci-gate]
-    if: needs.resolve.outputs.is_stable == 'true' && vars.PYPI_PUBLISH == 'true'
+    if: needs.resolve.outputs.is_stable == 'true'
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -194,32 +189,12 @@ jobs:
         with:
           ref: ${{ needs.resolve.outputs.tag }}
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
-        with:
-          python-version: "3.14"
-
-      - name: Build aionanit wheel
-        env:
-          PEP440: ${{ needs.resolve.outputs.pep440 }}
-        run: |
-          sed -i "s/^version = \".*\"/version = \"$PEP440\"/" packages/aionanit/pyproject.toml
-          pip install build
-          python -m build --wheel packages/aionanit
-
-      - name: Inject version and wheel requirement from tag
+      - name: Inject version from tag
         env:
           SEMVER: ${{ needs.resolve.outputs.semver }}
           PEP440: ${{ needs.resolve.outputs.pep440 }}
-          TAG: ${{ needs.resolve.outputs.tag }}
-          REPO: ${{ github.repository }}
         run: |
-          # Point the requirement at the wheel attached to this release. The
-          # "#aionanit==X" fragment gives Home Assistant normal version-pin
-          # semantics (install once, upgrade only when the pin changes) while
-          # pip installs from the URL — no PyPI involved.
-          wheel_name=$(basename packages/aionanit/dist/aionanit-*.whl)
-          req="https://github.com/${REPO}/releases/download/${TAG}/${wheel_name}#aionanit==${PEP440}"
-          jq --arg v "$SEMVER" --arg r "$req" \
+          jq --arg v "$SEMVER" --arg r "aionanit>=$PEP440" \
             '.version = $v | .requirements = [$r]' \
             custom_components/nanit/manifest.json > /tmp/manifest.json
           mv /tmp/manifest.json custom_components/nanit/manifest.json
@@ -227,12 +202,10 @@ jobs:
       - name: Create integration zip
         run: zip -r nanit.zip custom_components/nanit/
 
-      - name: Upload release assets
+      - name: Upload release asset
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release upload "${{ needs.resolve.outputs.tag }}" \
-            nanit.zip packages/aionanit/dist/aionanit-*.whl --clobber
+        run: gh release upload "${{ needs.resolve.outputs.tag }}" nanit.zip --clobber
 
   update-main-version:
     name: Update Main Branch Version
@@ -251,14 +224,8 @@ jobs:
         env:
           SEMVER: ${{ needs.resolve.outputs.semver }}
           PEP440: ${{ needs.resolve.outputs.pep440 }}
-          TAG: ${{ needs.resolve.outputs.tag }}
-          REPO: ${{ github.repository }}
         run: |
-          # Same wheel-URL requirement attach-artifact ships in the release
-          # zip, so installs that track the main branch (HACS without
-          # zip_release) resolve the library from the release asset too.
-          req="https://github.com/${REPO}/releases/download/${TAG}/aionanit-${PEP440}-py3-none-any.whl#aionanit==${PEP440}"
-          jq --arg v "$SEMVER" --arg r "$req" \
+          jq --arg v "$SEMVER" --arg r "aionanit>=$PEP440" \
             '.version = $v | .requirements = [$r]' \
             custom_components/nanit/manifest.json > /tmp/manifest.json
           mv /tmp/manifest.json custom_components/nanit/manifest.json

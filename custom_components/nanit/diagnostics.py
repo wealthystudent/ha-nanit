@@ -56,10 +56,7 @@ async def async_get_config_entry_diagnostics(
                 "data": ([asdict(e) for e in cloud.data] if cloud.data is not None else None),
             }
 
-        cameras_diag[f"camera_{len(cameras_diag) + 1}"] = {
-            "camera_uid": camera_uid,
-            **cam_diag,
-        }
+        cameras_diag[camera_uid] = cam_diag
 
     return {
         "config_entry_data": async_redact_data(dict(entry.data), TO_REDACT),

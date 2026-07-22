@@ -468,8 +468,8 @@ async def test_async_get_config_entry_diagnostics_returns_expected_structure() -
     assert "config_entry_data" in result
     assert "config_entry_options" in result
     assert "cameras" in result
-    assert "camera_1" in result["cameras"]
-    assert result["cameras"]["camera_1"]["push_coordinator"]["connected"] is True
+    assert "cam_1" in result["cameras"]
+    assert result["cameras"]["cam_1"]["push_coordinator"]["connected"] is True
 
 
 async def test_async_get_config_entry_diagnostics_redacts_sensitive_fields() -> None:
@@ -505,8 +505,7 @@ async def test_async_get_config_entry_diagnostics_redacts_sensitive_fields() -> 
     assert result["config_entry_options"]["camera_ips"] == REDACTED
     assert result["config_entry_options"]["speaker_ip"] == REDACTED
     assert result["config_entry_options"]["speaker_ips"] == REDACTED
-    assert result["cameras"]["camera_1"]["camera_uid"] == REDACTED
-    assert result["cameras"]["camera_1"]["baby_uid"] == REDACTED
+    assert result["cameras"]["cam_1"]["baby_uid"] == REDACTED
 
 
 async def test_async_get_config_entry_diagnostics_includes_cloud_data_when_present() -> None:
@@ -529,7 +528,7 @@ async def test_async_get_config_entry_diagnostics_includes_cloud_data_when_prese
 
     result = await async_get_config_entry_diagnostics(MagicMock(), entry)
 
-    cloud_diag = result["cameras"]["camera_1"]["cloud_coordinator"]
+    cloud_diag = result["cameras"]["cam_1"]["cloud_coordinator"]
     assert cloud_diag["last_update_success"] is False
     assert cloud_diag["last_exception"] == "cloud boom"
     assert cloud_diag["data"][0]["event_type"] == "MOTION"

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 from contextlib import suppress
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -378,3 +379,33 @@ async def test_failed_camera_uid_logs_cloud_status(
             await hub.async_setup()
 
     assert "cloud reports connected=False" in caplog.text
+
+
+async def test_failed_camera_logs_unknown_cloud_status_on_legacy_baby(
+    hass: HomeAssistant, mock_nanit_client, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A Baby from an aionanit wheel without camera_connected must not crash setup."""
+    legacy_baby = SimpleNamespace(
+        uid=MOCK_BABY_1.uid,
+        name=MOCK_BABY_1.name,
+        camera_uid=MOCK_BABY_1.camera_uid,
+    )
+    mock_nanit_client.async_get_babies.return_value = [legacy_baby]
+    mock_nanit_client.camera.side_effect = lambda **kw: _make_mock_camera(kw["uid"], kw["baby_uid"])
+
+    entry = _make_entry(hass)
+    hub = NanitHub(hass, MagicMock(), entry)
+
+    with (
+        patch("custom_components.nanit.hub.NanitPushCoordinator") as push_cls,
+        patch("custom_components.nanit.hub.NanitCloudCoordinator"),
+        patch("custom_components.nanit.hub.NanitNetworkCoordinator"),
+        caplog.at_level("WARNING", logger="custom_components.nanit.hub"),
+    ):
+        push_cls.return_value = MagicMock(
+            async_setup=AsyncMock(side_effect=NanitConnectionError("unreachable"))
+        )
+        with suppress(NanitConnectionError):
+            await hub.async_setup()
+
+    assert "cloud connected status unknown" in caplog.text

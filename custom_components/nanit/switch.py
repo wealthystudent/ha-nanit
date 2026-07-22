@@ -11,6 +11,7 @@ from typing import Any
 from homeassistant.components.switch import SwitchDeviceClass, SwitchEntity, SwitchEntityDescription
 from homeassistant.const import STATE_OFF, STATE_ON
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
@@ -227,6 +228,7 @@ class NanitSLPowerSwitch(NanitSoundLightEntity, SwitchEntity):
             await self.coordinator.sound_light.async_set_power(True)
         except NanitTransportError as err:
             _LOGGER.error("Failed to turn on S&L device: %s", err)
+            raise HomeAssistantError("Failed to turn on S&L device") from err
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the device off."""
@@ -234,6 +236,7 @@ class NanitSLPowerSwitch(NanitSoundLightEntity, SwitchEntity):
             await self.coordinator.sound_light.async_set_power(False)
         except NanitTransportError as err:
             _LOGGER.error("Failed to turn off S&L device: %s", err)
+            raise HomeAssistantError("Failed to turn off S&L device") from err
 
 
 class NanitSLSoundSwitch(NanitSoundLightEntity, SwitchEntity):
@@ -266,6 +269,7 @@ class NanitSLSoundSwitch(NanitSoundLightEntity, SwitchEntity):
             await self.coordinator.sound_light.async_set_sound_on(True)
         except NanitTransportError as err:
             _LOGGER.error("Failed to turn on S&L sound: %s", err)
+            raise HomeAssistantError("Failed to turn on S&L sound") from err
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn sound off."""
@@ -273,3 +277,4 @@ class NanitSLSoundSwitch(NanitSoundLightEntity, SwitchEntity):
             await self.coordinator.sound_light.async_set_sound_on(False)
         except NanitTransportError as err:
             _LOGGER.error("Failed to turn off S&L sound: %s", err)
+            raise HomeAssistantError("Failed to turn off S&L sound") from err

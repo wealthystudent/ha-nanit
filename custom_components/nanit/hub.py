@@ -153,7 +153,7 @@ class NanitHub:
                 self._entry,
                 data={**self._entry.data, "speaker_uid_map": speaker_uid_map},
             )
-            _LOGGER.info("Persisted speaker UID map: %s", speaker_uid_map)
+            _LOGGER.debug("Persisted speaker UID map for %d camera(s)", len(speaker_uid_map))
 
         # Per-camera IP configuration from options
         camera_ips: dict[str, str] = self._entry.options.get(CONF_CAMERA_IPS, {})
@@ -179,11 +179,13 @@ class NanitHub:
             if isinstance(result, NanitAuthError):
                 raise result
             if isinstance(result, NanitConnectionError | NanitCameraUnavailable | TimeoutError):
+                # getattr: published aionanit 1.8.7 wheels predate camera_connected.
+                cloud_connected = getattr(baby, "camera_connected", None)
                 cloud_status = (
                     "cloud reports connected=True (transient failure?)"
-                    if baby.camera_connected is True
+                    if cloud_connected is True
                     else "cloud reports connected=False (camera offline)"
-                    if baby.camera_connected is False
+                    if cloud_connected is False
                     else "cloud connected status unknown"
                 )
                 _LOGGER.warning(
@@ -371,12 +373,12 @@ class NanitHub:
             return {}
         access_token = await tm.async_get_access_token()
         rest = self._client.rest_client
-        resp = await rest.session.get(
+        async with rest.session.get(
             f"{rest.base_url}/babies",
             headers={"Authorization": access_token},
-        )
-        resp.raise_for_status()
-        body = await resp.json()
+        ) as resp:
+            resp.raise_for_status()
+            body = await resp.json()
 
         result: dict[str, str] = {}
         for baby in body.get("babies", []):

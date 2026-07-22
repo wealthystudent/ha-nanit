@@ -1,0 +1,7 @@
+reset_stream:
+  name: Reset stream
+  description: Discard the cached camera stream so a fresh stream is created.
+  target:
+    entity:
+      domain: camera
+      integration: nanit

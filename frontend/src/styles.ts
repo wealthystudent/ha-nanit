@@ -234,6 +234,7 @@ export const cardStyles = css`
     background: #000;
     border-radius: var(--nanit-radius);
     margin: 0 4px;
+    aspect-ratio: 16 / 9;
     min-height: 180px;
   }
 

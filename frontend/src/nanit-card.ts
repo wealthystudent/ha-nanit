@@ -1,17 +1,63 @@
 import { LitElement, html, nothing, type TemplateResult } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
+import { keyed } from "lit/directives/keyed.js";
 import type { HomeAssistant, NanitCardConfig, NanitEntities } from "./types";
 import { resolveEntities, isEntityAvailable, getDeviceName } from "./utils";
 import { cardStyles } from "./styles";
 import "./nanit-card-editor";
+
+const STREAM_WATCHDOG_INTERVAL_MS = 1000;
+const STREAM_STARTUP_RELOAD_TICKS = 15;
+const STREAM_VISUAL_STARTUP_RELOAD_TICKS = 30;
+const STREAM_STALL_TICKS = 8;
+const STREAM_MAX_RELOADS = 3;
+const STREAM_RELOAD_COOLDOWN_MS = 60000;
+const STREAM_HEALTHY_RESET_TICKS = 10;
+const STREAM_PROGRESS_EPSILON = 0.05;
+// A cold RTMPS→HLS pipeline through the Nanit cloud regularly needs >10s to
+// first frame; resetting the backend before that destroys the warmup and can
+// loop forever. Wait longer, and never fire two backend resets close together.
+const STREAM_BACKEND_RESET_FALLBACK_MS = 20000;
+const STREAM_BACKEND_RESET_MIN_SPACING_MS = 45000;
+// After the app/page resumes, the previous WebRTC session is usually dead.
+// Give the existing player a short window to prove it is alive, then reload
+// immediately instead of waiting out the full stall/startup budgets.
+const STREAM_RESUME_PROBE_TICKS = 3;
+const STREAM_RESUME_PROBE_WINDOW_MS = 6000;
+// Re-arm the resume probe after this long, so back-to-back app reopens each
+// get a fast verdict. Reload churn stays capped by the reload budget below.
+const STREAM_RESUME_PROBE_COOLDOWN_MS = 10000;
+const STREAM_VISUAL_READY_SELECTORS = "video, img, canvas, ha-hls-player, ha-web-rtc-player";
+// Hide the loader quickly when HA has mounted a stream/player element, while
+// the stricter liveness watchdog continues in the background for self-healing.
+const STREAM_LOADED_FAILOPEN_MS = 3500;
 
 @customElement("nanit-card")
 export class NanitCard extends LitElement {
   @property({ attribute: false }) hass!: HomeAssistant;
   @state() private _config!: NanitCardConfig;
   @state() private _streamLoaded = false;
+  private _streamHealthy = false;
+
   @state() private _showNetwork = false;
-  private _streamCheckTimer?: ReturnType<typeof setTimeout>;
+  @state() private _streamEpoch = 0;
+  private _streamWatchdog?: ReturnType<typeof setInterval>;
+  private _lastVideoTime = 0;
+  private _sawProgress = false;
+  private _stallStrikes = 0;
+  private _startupStrikes = 0;
+  private _healthyTicks = 0;
+  private _reloadCount = 0;
+  private _reloadWindowStart = 0;
+  private _cooldownUntil = 0;
+  private _streamMountedAt = 0;
+  private _watchedEpoch = -1;
+  private _recoveringStream = false;
+  private _resumeRecoverUntil = 0;
+  private _resumeProbeUntil = 0;
+  private _backendRecoveryFallback: number | undefined;
+  private _backendRecoveryInFlight = false;
+  private _lastBackendResetAt = 0;
 
   static styles = cardStyles;
 
@@ -42,7 +88,10 @@ export class NanitCard extends LitElement {
 
   private _isCameraOn(entities: NanitEntities): boolean {
     if (!entities.power) return true;
-    return this.hass.states[entities.power]?.state === "on";
+    // Unknown/unavailable control state is not an intentional power-off.
+    // Keep the stream mounted so a reconnect can recover it; only an explicit
+    // `off` state should collapse the card and show "Camera Off".
+    return this.hass.states[entities.power]?.state !== "off";
   }
 
   private _fireMoreInfo(entityId: string): void {
@@ -59,43 +108,288 @@ export class NanitCard extends LitElement {
     this.hass.callService(domain, service, { entity_id: entityId });
   }
 
+  connectedCallback(): void {
+    super.connectedCallback();
+    document.addEventListener("visibilitychange", this._recoverStreamOnResume);
+    window.addEventListener("pageshow", this._recoverStreamOnResume);
+  }
+
   disconnectedCallback(): void {
     super.disconnectedCallback();
-    this._clearStreamCheck();
+    document.removeEventListener("visibilitychange", this._recoverStreamOnResume);
+    window.removeEventListener("pageshow", this._recoverStreamOnResume);
+    this._clearStreamWatchdog();
+    this._clearBackendRecoveryFallback();
   }
 
   protected updated(changedProps: Map<string, unknown>): void {
     super.updated(changedProps);
-    if (!this._streamLoaded && !this._streamCheckTimer) {
-      const streamEl = this.renderRoot.querySelector("ha-camera-stream");
-      if (streamEl) this._scheduleStreamCheck();
-    }
-  }
-
-  private _scheduleStreamCheck(): void {
-    this._streamCheckTimer = setTimeout(() => {
-      this._streamCheckTimer = undefined;
-      const streamEl = this.renderRoot.querySelector("ha-camera-stream");
-      if (!streamEl) return;
-      const root = streamEl.shadowRoot;
-      if (root?.querySelector("video, img, canvas")) {
-        this._streamLoaded = true;
-      } else {
-        this._scheduleStreamCheck();
+    const streamEl = this.renderRoot.querySelector("ha-camera-stream");
+    if (streamEl) {
+      // A new <ha-camera-stream> mounted (first render or a reload) — restart the
+      // fail-open grace window for it.
+      if (this._watchedEpoch !== this._streamEpoch) {
+        this._watchedEpoch = this._streamEpoch;
+        this._streamMountedAt = Date.now();
       }
-    }, 500);
-  }
-
-  private _clearStreamCheck(): void {
-    if (this._streamCheckTimer) {
-      clearTimeout(this._streamCheckTimer);
-      this._streamCheckTimer = undefined;
+      if (!this._streamWatchdog) this._startStreamWatchdog();
+    } else {
+      this._clearStreamWatchdog();
     }
   }
 
-  private _onStreamLoad(): void {
-    this._streamLoaded = true;
-    this._clearStreamCheck();
+  private _startStreamWatchdog(): void {
+    this._streamWatchdog = setInterval(() => this._checkStreamLiveness(), STREAM_WATCHDOG_INTERVAL_MS);
+    this._checkStreamLiveness();
+  }
+
+  private _clearStreamWatchdog(): void {
+    if (this._streamWatchdog) {
+      clearInterval(this._streamWatchdog);
+      this._streamWatchdog = undefined;
+    }
+  }
+
+  private _hasVisualStreamElement(streamEl: Element): boolean {
+    const root = streamEl.shadowRoot;
+    if (!root) return false;
+    if (root.querySelector(STREAM_VISUAL_READY_SELECTORS)) return true;
+
+    for (const child of Array.from(root.querySelectorAll("*"))) {
+      if ((child as HTMLElement).shadowRoot?.querySelector(STREAM_VISUAL_READY_SELECTORS)) return true;
+    }
+
+    return false;
+  }
+
+  private _findStreamVideo(streamEl: Element): HTMLVideoElement | null {
+    const root = streamEl.shadowRoot;
+    if (!root) return null;
+
+    const direct = root.querySelector("video");
+    if (direct) return direct as HTMLVideoElement;
+
+    const player = root.querySelector("ha-hls-player, ha-web-rtc-player") as HTMLElement | null;
+    const known = player?.shadowRoot?.querySelector("video");
+    if (known) return known as HTMLVideoElement;
+
+    for (const child of Array.from(root.querySelectorAll("*"))) {
+      const video = (child as HTMLElement).shadowRoot?.querySelector("video");
+      if (video) return video as HTMLVideoElement;
+    }
+
+    return null;
+  }
+
+  // During the post-resume probe window a dead player gets a fast verdict;
+  // outside it, the normal (patient) budgets apply.
+  private _strikeThreshold(base: number): number {
+    return Date.now() < this._resumeProbeUntil
+      ? Math.min(base, STREAM_RESUME_PROBE_TICKS)
+      : base;
+  }
+
+  private _checkStreamLiveness(): void {
+    const streamEl = this.renderRoot.querySelector("ha-camera-stream");
+    if (!streamEl) return;
+
+
+    const hasVisualStream = this._hasVisualStreamElement(streamEl);
+    const video = this._findStreamVideo(streamEl);
+
+    // Fail open: after a grace window, hide the loader regardless — never let it
+    // permanently cover a stream that is actually playing (e.g. WebRTC, where
+    // currentTime is unreliable, or when the <video> can't be located).
+    if (
+      !this._streamLoaded &&
+      this._streamMountedAt > 0 &&
+      Date.now() - this._streamMountedAt > STREAM_LOADED_FAILOPEN_MS
+      && hasVisualStream
+    ) {
+      this._streamLoaded = true;
+    }
+
+    if (!video) {
+      this._startupStrikes += 1;
+      const threshold = hasVisualStream
+        ? STREAM_VISUAL_STARTUP_RELOAD_TICKS
+        : STREAM_STARTUP_RELOAD_TICKS;
+      if (this._startupStrikes >= this._strikeThreshold(threshold)) void this._recoverStream();
+      return;
+    }
+
+    // A decoded frame is available (readyState >= HAVE_CURRENT_DATA). This is the
+    // robust "there is a picture to show" signal for both HLS and WebRTC, where
+    // currentTime may never advance — so hide the loader immediately.
+    if (!this._streamLoaded && video.readyState >= 2) {
+      this._streamLoaded = true;
+    }
+
+    if (video.readyState < 2) {
+      this._startupStrikes += 1;
+      if (this._startupStrikes >= this._strikeThreshold(STREAM_STARTUP_RELOAD_TICKS)) {
+        void this._recoverStream();
+      }
+      return;
+    }
+
+    if (video.currentTime > this._lastVideoTime + STREAM_PROGRESS_EPSILON) {
+      this._lastVideoTime = video.currentTime;
+      this._sawProgress = true;
+      this._stallStrikes = 0;
+      this._startupStrikes = 0;
+      this._streamLoaded = true;
+      this._streamHealthy = true;
+      this._clearBackendRecoveryFallback();
+      // Refill the reload budget only after *sustained* playback, so a feed
+      // that flaps (one frame, then freeze) can't keep topping it up.
+      if (!video.paused && ++this._healthyTicks >= STREAM_HEALTHY_RESET_TICKS) {
+        this._reloadCount = 0;
+        this._cooldownUntil = 0;
+        this._reloadWindowStart = 0;
+      }
+      return;
+    }
+
+    this._healthyTicks = 0;
+    this._streamHealthy = false;
+
+    if (!this._sawProgress) {
+      this._startupStrikes += 1;
+      if (this._startupStrikes >= this._strikeThreshold(STREAM_STARTUP_RELOAD_TICKS)) {
+        void this._recoverStream();
+      }
+      return;
+    }
+
+    this._stallStrikes += 1;
+    if (this._stallStrikes >= this._strikeThreshold(STREAM_STALL_TICKS)) void this._recoverStream();
+  }
+
+  private _requestBackendStreamReset(): Promise<void> {
+    const entities = this._entities();
+    if (!entities.camera) return Promise.resolve();
+    return this.hass.callService("nanit", "reset_stream", {
+      entity_id: entities.camera,
+    });
+  }
+
+  private _clearBackendRecoveryFallback(): void {
+    if (this._backendRecoveryFallback !== undefined) {
+      window.clearTimeout(this._backendRecoveryFallback);
+      this._backendRecoveryFallback = undefined;
+    }
+  }
+
+  private _scheduleBackendRecoveryFallback(): void {
+    this._clearBackendRecoveryFallback();
+    this._backendRecoveryFallback = window.setTimeout(() => {
+      this._backendRecoveryFallback = undefined;
+      if (this._streamHealthy || this._backendRecoveryInFlight) return;
+      const now = Date.now();
+      if (now - this._lastBackendResetAt < STREAM_BACKEND_RESET_MIN_SPACING_MS) {
+        // The backend was reset moments ago — its replacement stream may
+        // still be warming up. Restart only the viewer; another backend
+        // reset here would destroy the warmup and loop forever.
+        this._reloadStream();
+        return;
+      }
+      this._lastBackendResetAt = now;
+      this._backendRecoveryInFlight = true;
+      void this._requestBackendStreamReset()
+        .catch(() => undefined)
+        .finally(() => {
+          this._backendRecoveryInFlight = false;
+          this._reloadStream();
+        });
+    }, STREAM_BACKEND_RESET_FALLBACK_MS);
+  }
+
+  private async _recoverStream(): Promise<void> {
+    if (this._recoveringStream) return;
+    this._recoveringStream = true;
+    try {
+      // First restart only the viewer. HA/go2rtc may still be warming up and
+      // resetting the backend cache here can turn a slow startup into a loop.
+      this._reloadStream();
+      this._scheduleBackendRecoveryFallback();
+    } finally {
+      this._recoveringStream = false;
+    }
+  }
+
+  private _recoverStreamOnResume = (): void => {
+    if (document.hidden) return;
+    const entities = this._entities();
+    if (!this._isCameraOn(entities)) return;
+    const streamEl = this.renderRoot.querySelector("ha-camera-stream");
+    if (!streamEl) return;
+
+    // A suspended tab often just pauses the <video>; resuming it in place is
+    // instant, while a remount takes seconds. Safe no-op when already playing.
+    const video = this._findStreamVideo(streamEl);
+    if (video?.paused) void video.play().catch(() => undefined);
+
+    const now = Date.now();
+    if (now < this._resumeRecoverUntil) return;
+    this._resumeRecoverUntil = now + STREAM_RESUME_PROBE_COOLDOWN_MS;
+    this._startupStrikes = 0;
+    this._stallStrikes = 0;
+    this._healthyTicks = 0;
+    // Judge progress from the current position — pre-suspend history must not
+    // count for or against the probe verdict.
+    if (video) this._lastVideoTime = video.currentTime;
+    this._resumeProbeUntil = now + STREAM_RESUME_PROBE_WINDOW_MS;
+    this._checkStreamLiveness();
+  };
+
+  private _reloadStream(): void {
+    const now = Date.now();
+    // Backing off after hitting the cap — don't remount.
+    if (now < this._cooldownUntil) {
+      this._stallStrikes = 0;
+      return;
+    }
+    // Start a fresh window once the previous one has fully elapsed.
+    if (now - this._reloadWindowStart > STREAM_RELOAD_COOLDOWN_MS) {
+      this._reloadWindowStart = now;
+      this._reloadCount = 0;
+    }
+
+    this._reloadCount += 1;
+    if (this._reloadCount >= STREAM_MAX_RELOADS) {
+      this._cooldownUntil = now + STREAM_RELOAD_COOLDOWN_MS;
+    }
+
+    this._streamEpoch += 1;
+    this._streamLoaded = false;
+    this._streamHealthy = false;
+    this._lastVideoTime = 0;
+    this._sawProgress = false;
+    this._stallStrikes = 0;
+    this._startupStrikes = 0;
+    this._healthyTicks = 0;
+    // The fresh player warms up under the normal startup budget — the fast
+    // probe only accelerates the verdict on the pre-resume player.
+    this._resumeProbeUntil = 0;
+  }
+
+
+  private _resetStreamState(): void {
+    this._streamLoaded = false;
+    this._streamHealthy = false;
+    this._clearStreamWatchdog();
+    this._clearBackendRecoveryFallback();
+    this._lastVideoTime = 0;
+    this._sawProgress = false;
+    this._stallStrikes = 0;
+    this._startupStrikes = 0;
+    this._healthyTicks = 0;
+    this._reloadWindowStart = 0;
+    this._resumeRecoverUntil = 0;
+    this._resumeProbeUntil = 0;
+    this._streamMountedAt = 0;
+    this._watchedEpoch = -1;
   }
 
   protected render(): TemplateResult {
@@ -105,9 +399,8 @@ export class NanitCard extends LitElement {
 
     const entities = this._entities();
     const cameraOn = this._isCameraOn(entities);
-    if (!cameraOn && this._streamLoaded) {
-      this._streamLoaded = false;
-      this._clearStreamCheck();
+    if (!cameraOn) {
+      this._resetStreamState();
     }
     const deviceName = entities.camera
       ? getDeviceName(this.hass, entities.camera)
@@ -254,12 +547,15 @@ export class NanitCard extends LitElement {
                 class="stream-click"
                 @click=${() => entities.camera && this._fireMoreInfo(entities.camera)}
               >
-                <ha-camera-stream
-                  muted
-                  .hass=${this.hass}
-                  .stateObj=${cameraState}
-                  @load=${this._onStreamLoad}
-                ></ha-camera-stream>
+                ${keyed(`${entities.camera}-${this._streamEpoch}`, html`
+                  <ha-camera-stream
+                    muted
+                    data-stream-epoch=${this._streamEpoch}
+                    .hass=${this.hass}
+                    .stateObj=${cameraState}
+
+                  ></ha-camera-stream>
+                `)}
               </div>
               <div class="stream-loader ${this._streamLoaded ? "hidden" : ""}">
                 <div class="loader-content">

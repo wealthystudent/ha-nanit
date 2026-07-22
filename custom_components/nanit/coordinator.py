@@ -35,6 +35,7 @@ from aionanit.models import Baby, CameraEvent, CameraState, CloudEvent, NetworkI
 from .aionanit_sl.models import SoundLightEvent, SoundLightEventKind, SoundLightFullState
 from .aionanit_sl.sound_light import NanitSoundLight
 from .const import CLOUD_POLL_INTERVAL, DOMAIN, NETWORK_POLL_INTERVAL
+from .sanitize import display_name
 
 if TYPE_CHECKING:
     from aionanit import NanitCamera
@@ -258,12 +259,28 @@ class NanitNetworkCoordinator(DataUpdateCoordinator[NetworkInfo | None]):
 
         # Check if any previously-failed camera has come back online.
         # camera_connected is sourced from the Nanit cloud's own "connected"
-        # field — no extra probe needed.
+        # field — no extra probe needed (getattr: published aionanit 1.8.7
+        # wheels predate the field).
         failed = self._hub.failed_camera_uids
         if failed:
-            recovered = [b for b in babies if b.camera_uid in failed and b.camera_connected is True]
+            # One reload attempt per camera per HA run: if setup still fails
+            # after the reload, the camera lands back in failed_camera_uids
+            # and retrying every poll would bounce the entry (and every
+            # healthy camera's stream) forever. Tracked in hass.data so the
+            # marker survives the reload itself.
+            attempted: set[str] = self.hass.data.setdefault(DOMAIN, {}).setdefault(
+                f"auto_reload_attempted_{self.config_entry.entry_id}", set()
+            )
+            recovered = [
+                b
+                for b in babies
+                if b.camera_uid in failed
+                and b.camera_uid not in attempted
+                and getattr(b, "camera_connected", None) is True
+            ]
             if recovered:
-                names = ", ".join(b.name for b in recovered)
+                attempted.update(b.camera_uid for b in recovered)
+                names = ", ".join(display_name(b.name, b.uid) for b in recovered)
                 _LOGGER.info(
                     "Previously offline camera(s) now connected per Nanit cloud: %s. "
                     "Reloading integration to register entities.",

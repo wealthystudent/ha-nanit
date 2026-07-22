@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import time
 from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
@@ -21,6 +20,7 @@ from aionanit.camera import (
     _parse_status_from_proto,
 )
 from aionanit.exceptions import (
+    NanitCameraUnavailable,
     NanitRequestTimeout,
     NanitTransportError,
 )
@@ -51,6 +51,9 @@ from aionanit.proto import (
     SettingsWifiBand,
     Status,
     StatusConnectionToServer,
+    StreamIdentifier,
+    Streaming,
+    StreamingStatus,
 )
 from aionanit.proto import (
     SensorType as ProtoSensorType,
@@ -75,7 +78,7 @@ def _make_camera(
     rest = MagicMock(spec=NanitRestClient)
     tm = MagicMock(spec=TokenManager)
     tm.async_get_access_token = AsyncMock(return_value="test_token")
-    tm._expires_at = time.monotonic() + 3600.0
+    tm.expires_in = 3600.0
 
     cam = NanitCamera(
         uid="cam_uid_1",
@@ -194,6 +197,10 @@ class TestConnectionChange:
         cam._on_connection_change(ConnectionState.RECONNECTING, TransportKind.CLOUD, "err")
         cam._on_connection_change(ConnectionState.CONNECTED, TransportKind.CLOUD, None)
         assert cam.state.connection.reconnect_attempts == 0
+        # CONNECTED after RECONNECTING spawns the re-init task, whose failed
+        # inline reconnect schedules a transport recovery loop — stop the
+        # camera so no background tasks outlive the test.
+        await cam.async_stop()
 
     async def test_disconnected_cancels_pending(self) -> None:
         cam, *_ = _make_camera()
@@ -903,6 +910,18 @@ class TestStreaming:
 
         url = await cam.async_get_stream_rtmps_url()
         assert url == "rtmps://media-secured.nanit.com/nanit/baby_uid_1.fresh_token"
+        tm.async_get_access_token.assert_awaited_once_with(min_ttl=3300.0)
+
+    async def test_start_streaming_reuses_provided_rtmps_url(self) -> None:
+        cam, tm, _ = _make_camera()
+        tm.async_get_access_token = AsyncMock(return_value="token_a")
+        cam._send_request = AsyncMock()
+
+        await cam.async_start_streaming(rtmps_url="rtmps://media/custom.token")
+
+        tm.async_get_access_token.assert_not_awaited()
+        sent_streaming = cam._send_request.await_args.kwargs["streaming"]
+        assert sent_streaming.rtmp_url == "rtmps://media/custom.token"
 
 
 # ---------------------------------------------------------------------------
@@ -970,6 +989,44 @@ class TestAsyncStop:
         assert future.done()
         cam._transport.async_close.assert_awaited_once()
 
+    async def test_send_request_fails_fast_after_stop(self) -> None:
+        """Late callers on a stopped camera must not wait or reconnect."""
+        cam, *_ = _make_camera()
+        cam._transport = MagicMock()
+        cam._transport.connected = False
+        cam._transport.async_close = AsyncMock()
+        cam._async_reconnect = AsyncMock()
+
+        await cam.async_stop()
+
+        with pytest.raises(NanitCameraUnavailable, match="stopped"):
+            await cam._send_request(
+                RequestType.GET_STATUS,
+                get_status=GetStatus(all=True),
+            )
+
+        cam._async_reconnect.assert_not_awaited()
+
+    async def test_perform_reconnect_is_noop_after_stop(self) -> None:
+        """A leaked timer firing after shutdown must not resurrect the transport.
+
+        Without this guard, a keepalive that outlives a config-entry reload
+        reconnects the stopped camera's WebSocket — with nothing left to ever
+        tear it down — and redirects the camera's RTMPS push to a stale URL.
+        """
+        cam, *_ = _make_camera()
+        cam._transport = MagicMock()
+        cam._transport.connected = False
+        cam._transport.async_close = AsyncMock()
+        cam._transport.async_connect_cloud = AsyncMock()
+        cam._transport.async_connect_local = AsyncMock()
+
+        await cam.async_stop()
+        await cam._perform_reconnect()
+
+        cam._transport.async_connect_cloud.assert_not_awaited()
+        cam._transport.async_connect_local.assert_not_awaited()
+
 
 # ---------------------------------------------------------------------------
 # Cloud headers for reconnect
@@ -1005,6 +1062,16 @@ class TestAsyncGetCloudHeaders:
 
 
 class TestOnReconnected:
+    async def test_reconnecting_fails_pending_requests_immediately(self) -> None:
+        """Requests on a discarded socket must not wait for their full timeout."""
+        cam, *_ = _make_camera()
+        future = cam._pending.track(42)
+
+        cam._on_connection_change(ConnectionState.RECONNECTING, TransportKind.CLOUD, None)
+
+        with pytest.raises(NanitTransportError, match="reconnecting"):
+            await future
+
     async def test_connected_after_reconnect_triggers_reinit(self) -> None:
         """CONNECTED after reconnect_attempts > 0 schedules _async_on_reconnected."""
         cam, *_ = _make_camera()
@@ -1050,6 +1117,72 @@ class TestOnReconnected:
 
 
 class TestTimeoutForceReconnect:
+    async def test_timeout_forces_reconnect_even_when_connection_looks_fresh(self) -> None:
+        """A timed-out request must not reuse the same superficially fresh socket."""
+        cam, *_ = _make_camera()
+
+        cam._transport = MagicMock()
+        cam._transport.connected = True
+        cam._transport.idle_seconds = 1.0
+        cam._transport.async_send = AsyncMock()
+        cam._async_reconnect = AsyncMock()
+
+        with pytest.raises(NanitRequestTimeout):
+            await cam._send_request(
+                RequestType.GET_STATUS,
+                timeout=0.01,
+                get_status=GetStatus(all=True),
+            )
+
+        cam._async_reconnect.assert_awaited_once_with(force=True)
+
+    async def test_best_effort_timeout_does_not_reconnect(self) -> None:
+        """reconnect_on_failure=False must never tear down the control session.
+
+        Keepalive PUT_STREAMING uses this: a forced reconnect stops the
+        camera's RTMPS push — the exact failure the keepalive exists to
+        prevent — so a late ACK must surface as a timeout, not trigger
+        reconnect-and-retry.
+        """
+        cam, *_ = _make_camera()
+
+        cam._transport = MagicMock()
+        cam._transport.connected = True
+        cam._transport.idle_seconds = 1.0
+        cam._transport.async_send = AsyncMock()
+        cam._async_reconnect = AsyncMock()
+
+        with pytest.raises(NanitRequestTimeout):
+            await cam._send_request(
+                RequestType.PUT_STREAMING,
+                timeout=0.01,
+                reconnect_on_failure=False,
+                streaming=Streaming(
+                    id=StreamIdentifier.MOBILE,
+                    status=StreamingStatus.STARTED,
+                    rtmp_url="rtmps://media-secured.nanit.com/nanit/baby.token",
+                ),
+            )
+
+        cam._async_reconnect.assert_not_awaited()
+        cam._transport.async_send.assert_awaited_once()
+
+    async def test_start_streaming_passes_reconnect_flag_through(self) -> None:
+        """async_start_streaming forwards reconnect_on_failure to _send_request."""
+        cam, *_ = _make_camera()
+        cam._send_request = AsyncMock()
+
+        await cam.async_start_streaming(
+            rtmps_url="rtmps://media-secured.nanit.com/nanit/baby.token",
+            reconnect_on_failure=False,
+        )
+        assert cam._send_request.await_args.kwargs["reconnect_on_failure"] is False
+
+        await cam.async_start_streaming(
+            rtmps_url="rtmps://media-secured.nanit.com/nanit/baby.token",
+        )
+        assert cam._send_request.await_args.kwargs["reconnect_on_failure"] is True
+
     async def test_timeout_calls_reconnect_before_retry(self) -> None:
         """Request timeout triggers _async_reconnect, then retries."""
         cam, *_ = _make_camera()
@@ -1337,7 +1470,7 @@ class TestSensorPollLifecycle:
 
         call_count = 0
 
-        async def _fail_then_succeed() -> SensorState:
+        async def _fail_then_succeed(**_: object) -> SensorState:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -1351,7 +1484,6 @@ class TestSensorPollLifecycle:
 
         # Should have retried after the first failure
         assert call_count >= 2
-
         cam._cancel_sensor_poll()
 
 

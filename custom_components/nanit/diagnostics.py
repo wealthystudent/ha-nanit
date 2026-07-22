@@ -21,6 +21,10 @@ TO_REDACT = {
     "camera_uid",
     "camera_ip",
     "camera_ips",
+    "speaker_ip",
+    "speaker_ips",
+    "speaker_uid",
+    "speaker_uid_map",
 }
 
 

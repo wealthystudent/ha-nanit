@@ -608,3 +608,75 @@ class TestReviewRegressions:
         await _flushed(sl)
 
         assert sl.state.brightness is None
+
+
+class TestDiagnostics:
+    async def test_diagnostics_map_onto_model(self) -> None:
+        sl = _make_sound_light()
+        api = _mock_transport(sl)
+        api.get_device_state.return_value = {
+            "battery_percent": 75,
+            "battery_charging": True,
+            "wifi_rssi": -52,
+            "wifi_ssid": "HomeWifi",
+            "wifi_bssid": "aa:bb:cc:dd:ee:ff",
+            "wifi_channel": 11,
+            "firmware_version": "1.3.1",
+        }
+        sl._ingest_device_state()
+
+        s = sl.state
+        assert s.battery_percent == 75
+        assert s.battery_charging is True
+        assert s.wifi_rssi == -52
+        assert s.wifi_ssid == "HomeWifi"
+        assert s.wifi_bssid == "aa:bb:cc:dd:ee:ff"
+        assert s.wifi_channel == 11
+        assert s.firmware_version == "1.3.1"
+
+    async def test_charging_false_flows_through(self) -> None:
+        """isCharging=False must land as False, not be dropped as falsy."""
+        sl = _make_sound_light()
+        api = _mock_transport(sl)
+        api.get_device_state.return_value = {"battery_charging": False}
+        sl._ingest_device_state()
+        assert sl.state.battery_charging is False
+
+    async def test_diagnostics_queries_fetch_firmware_only_until_known(self) -> None:
+        sl = _make_sound_light()
+        api = _mock_transport(sl)
+        api.send_status_request = AsyncMock()
+        api.send_network_request = AsyncMock()
+        api.send_firmware_request = AsyncMock()
+
+        await sl._send_diagnostics_queries()
+        assert api.send_status_request.await_count == 1
+        assert api.send_network_request.await_count == 1
+        assert api.send_firmware_request.await_count == 1
+
+        api.get_device_state.return_value = {"firmware_version": "1.3.1"}
+        sl._ingest_device_state()
+        await sl._send_diagnostics_queries()
+        # Battery + wifi refresh every cycle; firmware is static, fetched once
+        assert api.send_status_request.await_count == 2
+        assert api.send_network_request.await_count == 2
+        assert api.send_firmware_request.await_count == 1
+
+    async def test_poll_loop_issues_diagnostics_queries(self, monkeypatch) -> None:
+        monkeypatch.setattr(sound_light_mod, "_POLL_INTERVAL", 0.01)
+        monkeypatch.setattr(sound_light_mod, "_POLL_SETTLE", 0)
+        sl = _make_sound_light()
+        api = _mock_transport(sl)
+        api.send_ping_for_state = AsyncMock()
+        api.send_status_request = AsyncMock()
+        api.send_network_request = AsyncMock()
+        api.send_firmware_request = AsyncMock()
+
+        task = asyncio.get_running_loop().create_task(sl._poll_loop())
+        await asyncio.sleep(0.05)
+        sl._stopped = True
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+        assert api.send_status_request.await_count >= 1
+        assert api.send_network_request.await_count >= 1

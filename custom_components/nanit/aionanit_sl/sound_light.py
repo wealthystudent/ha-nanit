@@ -78,6 +78,18 @@ _INITIAL_STATE_INTERVAL = 0.5  # seconds
 
 _NO_SOUND = "No sound"
 
+# Transport device-view keys that pass straight through to the state's
+# diagnostics fields (parsed from GetStatus / Network / Firmware responses).
+_DIAGNOSTIC_FIELDS = (
+    "battery_percent",
+    "battery_charging",
+    "wifi_rssi",
+    "wifi_ssid",
+    "wifi_bssid",
+    "wifi_channel",
+    "firmware_version",
+)
+
 
 def _proto_float32(value: Any) -> Any:
     """Round a float through protobuf's float32 wire precision.
@@ -306,6 +318,9 @@ class NanitSoundLight:
         try:
             await self._api.send_saved_sounds_request(self._speaker_uid)
             await self._api.send_ping_for_state(self._speaker_uid)
+            # Prime the diagnostics too so battery/wifi/firmware sensors
+            # populate at startup instead of waiting for the first poll.
+            await self._send_diagnostics_queries()
             for _ in range(_INITIAL_STATE_ATTEMPTS):
                 if _has_usable_state(self._api.get_device_state(self._speaker_uid)):
                     break
@@ -674,6 +689,11 @@ class NanitSoundLight:
             updates["temperature_c"] = view["temperature"]
         if "humidity" in view:
             updates["humidity_pct"] = view["humidity"]
+        # Diagnostics parsed from the GetStatus / Network / Firmware
+        # responses; the transport already sanitizes the device strings.
+        for field in _DIAGNOSTIC_FIELDS:
+            if field in view:
+                updates[field] = view[field]
         # The lamp emits iff isOn && brightness > 0 && !noColor (validated
         # on-device). Only computed once power and brightness are both known,
         # so a restored value isn't clobbered by a partial first frame.
@@ -726,6 +746,12 @@ class NanitSoundLight:
         Real-time state arrives via push; this reconciles optimistic state,
         keeps temperature/humidity fresh, and (via the transport) re-opens
         dropped sockets. It does NOT tear the connection down.
+
+        Each cycle also refreshes the diagnostics: battery and wifi ride
+        their own query request types every poll, firmware only until a
+        version is known (it's static). The queries are fire-and-forget
+        inside the transport, so a device that ignores them can't stall
+        user commands.
         """
         try:
             while not self._stopped:
@@ -734,6 +760,7 @@ class NanitSoundLight:
                     return
                 try:
                     await self._api.send_ping_for_state(self._speaker_uid)
+                    await self._send_diagnostics_queries()
                     await asyncio.sleep(_POLL_SETTLE)
                     self._ingest_device_state()
                     self._on_connection_change(self._speaker_uid)
@@ -741,3 +768,10 @@ class NanitSoundLight:
                     _LOGGER.debug("S&L %s poll failed: %s", self._speaker_uid, err)
         except asyncio.CancelledError:
             return
+
+    async def _send_diagnostics_queries(self) -> None:
+        """Request battery + wifi (every cycle) and firmware (until known)."""
+        await self._api.send_status_request(self._speaker_uid)
+        await self._api.send_network_request(self._speaker_uid)
+        if self._state.firmware_version is None:
+            await self._api.send_firmware_request(self._speaker_uid)

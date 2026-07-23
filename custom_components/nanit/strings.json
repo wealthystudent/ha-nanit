@@ -44,16 +44,16 @@
       "already_configured": "This Nanit account is already configured",
       "reauth_successful": "Re-authentication successful",
       "reauth_email_mismatch": "The email address does not match the original account. Please use the same email.",
-      "no_cameras": "No cameras found on this Nanit account"
+      "no_cameras": "No devices found on this Nanit account"
     }
   },
   "options": {
     "step": {
       "init": {
         "title": "Nanit Options",
-        "description": "Select a camera to configure its local IP address.",
+        "description": "Select a device to configure its local IP addresses.",
         "data": {
-          "camera": "Camera"
+          "device": "Device"
         }
       },
       "camera_ip": {
@@ -85,11 +85,21 @@
   },
   "entity": {
     "sensor": {
-      "temperature": { "name": "Temperature" },
-      "humidity": { "name": "Humidity" },
-      "light": { "name": "Light Level" },
-      "sl_temperature": { "name": "Temperature" },
-      "sl_humidity": { "name": "Humidity" },
+      "temperature": {
+        "name": "Temperature"
+      },
+      "humidity": {
+        "name": "Humidity"
+      },
+      "light": {
+        "name": "Light Level"
+      },
+      "sl_temperature": {
+        "name": "Temperature"
+      },
+      "sl_humidity": {
+        "name": "Humidity"
+      },
       "sl_connection_mode": {
         "name": "Connection Mode",
         "state": {
@@ -98,36 +108,68 @@
           "unavailable": "Unavailable"
         }
       },
-      "wifi_ssid": { "name": "WiFi SSID" },
-      "wifi_signal": { "name": "WiFi Signal Strength" },
-      "wifi_frequency": { "name": "WiFi Frequency" }
+      "wifi_ssid": {
+        "name": "WiFi SSID"
+      },
+      "wifi_signal": {
+        "name": "WiFi Signal Strength"
+      },
+      "wifi_frequency": {
+        "name": "WiFi Frequency"
+      }
     },
     "binary_sensor": {
-      "motion": { "name": "Motion" },
-      "sound": { "name": "Sound" },
-      "connectivity": { "name": "Connectivity" },
-      "sl_connectivity": { "name": "Connectivity" }
+      "motion": {
+        "name": "Motion"
+      },
+      "sound": {
+        "name": "Sound"
+      },
+      "connectivity": {
+        "name": "Connectivity"
+      },
+      "sl_connectivity": {
+        "name": "Connectivity"
+      }
     },
     "switch": {
-      "camera_power": { "name": "Camera Power" },
-      "sound_machine_switch": { "name": "Power" },
-      "sl_sound_switch": { "name": "Sound" }
+      "camera_power": {
+        "name": "Camera Power"
+      },
+      "sound_machine_switch": {
+        "name": "Power"
+      },
+      "sl_sound_switch": {
+        "name": "Sound"
+      }
     },
     "number": {
-      "sound_machine_volume": { "name": "Volume" }
+      "sound_machine_volume": {
+        "name": "Volume"
+      }
     },
     "light": {
-      "night_light": { "name": "Night Light" },
-      "sound_light_light": { "name": "Light" }
+      "night_light": {
+        "name": "Night Light"
+      },
+      "sound_light_light": {
+        "name": "Light"
+      }
     },
     "select": {
-      "sound_machine_sound": { "name": "Sound Track" }
+      "sound_machine_sound": {
+        "name": "Sound Track"
+      }
     },
     "media_player": {
-      "sound_machine": { "name": "Sound Machine" }
+      "sound_machine": {
+        "name": "Sound Machine"
+      }
     },
     "camera": {
-      "camera": { "name": "Camera" }
+      "camera": {
+        "name": "Camera"
+      }
     }
   }
 }

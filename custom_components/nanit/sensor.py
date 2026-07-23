@@ -142,24 +142,23 @@ async def async_setup_entry(
     entry: NanitConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up Nanit sensors for all cameras on the account."""
+    """Set up Nanit sensors for all devices on the account."""
     entities: list[SensorEntity] = []
     for cam_data in entry.runtime_data.cameras.values():
         for description in SENSORS:
             entities.append(NanitSensor(cam_data.push_coordinator, description))
-
-        # Sound & Light Machine sensors (optional)
-        sl_coordinator = cam_data.sound_light_coordinator
-        if sl_coordinator is not None:
-            for sl_description in SL_SENSORS:
-                entities.append(NanitSLSensor(sl_coordinator, sl_description))
-            entities.append(NanitSLConnectionModeSensor(sl_coordinator))
 
         # Network diagnostic sensors (optional)
         net_coordinator = cam_data.network_coordinator
         if net_coordinator is not None:
             for net_description in NETWORK_SENSORS:
                 entities.append(NanitNetworkSensor(net_coordinator, net_description))
+
+    # Sound & Light Machine sensors
+    for speaker_data in entry.runtime_data.speakers.values():
+        for sl_description in SL_SENSORS:
+            entities.append(NanitSLSensor(speaker_data.coordinator, sl_description))
+        entities.append(NanitSLConnectionModeSensor(speaker_data.coordinator))
 
     async_add_entities(entities)
 
@@ -200,8 +199,7 @@ class NanitSLSensor(NanitSoundLightEntity, SensorEntity):
         """Initialize."""
         super().__init__(coordinator)
         self.entity_description = description
-        baby = coordinator.baby
-        self._attr_unique_id = f"{baby.camera_uid}_{description.key}"
+        self._attr_unique_id = f"{coordinator.sound_light.speaker_uid}_{description.key}"
 
     @property
     def native_value(self) -> float | int | None:
@@ -225,8 +223,7 @@ class NanitSLConnectionModeSensor(NanitSoundLightEntity, SensorEntity):
     ) -> None:
         """Initialize."""
         super().__init__(coordinator)
-        baby = coordinator.baby
-        self._attr_unique_id = f"{baby.camera_uid}_sl_connection_mode"
+        self._attr_unique_id = f"{coordinator.sound_light.speaker_uid}_sl_connection_mode"
 
     @property
     def available(self) -> bool:

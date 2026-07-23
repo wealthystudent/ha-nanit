@@ -25,13 +25,10 @@ async def async_setup_entry(
     entry: NanitConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up Nanit number entities for all cameras on the account."""
+    """Set up Nanit number entities for all devices on the account."""
     entities: list[NumberEntity] = []
-    for cam_data in entry.runtime_data.cameras.values():
-        # Sound & Light Machine volume (optional)
-        sl_coordinator = cam_data.sound_light_coordinator
-        if sl_coordinator is not None:
-            entities.append(NanitSoundMachineVolume(sl_coordinator))
+    for speaker_data in entry.runtime_data.speakers.values():
+        entities.append(NanitSoundMachineVolume(speaker_data.coordinator))
 
     async_add_entities(entities)
 
@@ -53,8 +50,7 @@ class NanitSoundMachineVolume(NanitSoundLightEntity, NumberEntity):
     ) -> None:
         """Initialize."""
         super().__init__(coordinator)
-        baby = coordinator.baby
-        self._attr_unique_id = f"{baby.camera_uid}_sound_machine_volume"
+        self._attr_unique_id = f"{coordinator.sound_light.speaker_uid}_sound_machine_volume"
 
     @property
     def native_value(self) -> float | None:

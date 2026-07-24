@@ -6,7 +6,7 @@ target-version = "py313"
 line-length = 100
 # Generated protobuf modules are protoc output; keep them byte-identical to
 # the generator (the drift check in CI diffs against a fresh protoc run).
-extend-exclude = ["**/*_pb2.py", "**/*_pb2.pyi"]
+extend-exclude = ["**/*_pb2.py", "**/*_pb2.pyi", "*.md"]
 
 [tool.ruff.lint]
 select = [

@@ -143,7 +143,7 @@ class NanitHub:
         if not speaker_uid_map:
             try:
                 speaker_uid_map = await self._discover_speaker_uids()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 _LOGGER.debug("Speaker UID discovery from raw API failed", exc_info=True)
 
         # Persist discovered speaker UIDs so they survive restarts
@@ -270,7 +270,7 @@ class NanitHub:
                 await sound_light_coordinator.async_setup()
             except NanitAuthError:
                 raise
-            except Exception:  # noqa: BLE001
+            except Exception:
                 _LOGGER.warning(
                     "Sound & Light Machine coordinator for %s failed to start; "
                     "sound/light entities disabled",

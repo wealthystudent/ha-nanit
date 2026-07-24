@@ -191,7 +191,7 @@ class NanitCameraEntity(NanitEntity, Camera):
                 "Timed out after %.0fs stopping discarded Nanit stream",
                 _STREAM_STOP_TIMEOUT,
             )
-        except Exception:  # noqa: BLE001
+        except Exception:
             _LOGGER.debug("Failed to stop discarded Nanit stream", exc_info=True)
 
     def _invalidate_stream_if_expired(self) -> None:
@@ -242,7 +242,7 @@ class NanitCameraEntity(NanitEntity, Camera):
         ):
             try:
                 source = await self._camera.async_get_stream_rtmps_url()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 _LOGGER.warning("Failed to build RTMPS stream URL", exc_info=True)
                 return None
 
@@ -397,7 +397,7 @@ class NanitCameraEntity(NanitEntity, Camera):
         if self.is_on and stream is not None and stream.outputs():
             try:
                 source = await self._camera.async_get_stream_rtmps_url()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 # Leave the running stream alone — playing until the token
                 # actually dies beats killing it because renewal failed.
                 _LOGGER.warning("Failed to renew RTMPS stream URL", exc_info=True)
@@ -440,7 +440,7 @@ class NanitCameraEntity(NanitEntity, Camera):
             try:
                 await self._async_send_put_streaming(rtmps_url, reconnect_on_failure)
                 return True
-            except Exception:  # noqa: BLE001
+            except Exception:
                 if attempt < _STREAM_START_ATTEMPTS:
                     _LOGGER.debug(
                         "PUT_STREAMING attempt %d/%d failed for camera %s, retrying in %.0fs",
@@ -556,6 +556,6 @@ class NanitCameraEntity(NanitEntity, Camera):
         self._invalidate_stream()
         try:
             await self._camera.async_stop_streaming()
-        except Exception:  # noqa: BLE001
+        except Exception:
             _LOGGER.debug("Failed to stop streaming before sleep", exc_info=True)
         await self._camera.async_set_settings(sleep_mode=True)

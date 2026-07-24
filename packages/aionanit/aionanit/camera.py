@@ -13,6 +13,7 @@ import aiohttp
 
 from .auth import TokenManager
 from .exceptions import (
+    NanitAuthError,
     NanitCameraUnavailable,
     NanitConnectionError,
     NanitRequestTimeout,
@@ -82,6 +83,7 @@ _MAX_LOCAL_FAILURES_BEFORE_CLOUD: int = 3
 _STALE_CONNECTION_THRESHOLD: float = 300.0  # 5 min — reconnect before send
 _HEALTH_CHECK_INTERVAL: float = 270.0  # 4.5 min — periodic session liveness check
 _FRESH_CONNECTION_WINDOW: float = 10.0  # skip reconnect if connected within this
+_TOKEN_REFRESH_MIN_TTL: float = 360.0  # pre-emptive refresh threshold (> the 330s loop gate)
 _DEFAULT_SENSOR_POLL_INTERVAL: float = 120.0  # 2 min — poll sensors camera doesn't push
 _DEFAULT_PLAYBACK_POLL_INTERVAL: float = 30.0  # 30s — poll GET_PLAYBACK for external changes
 _STREAM_TOKEN_MIN_TTL: float = 3300.0  # Keep 45-minute HA sources inside JWT lifetime
@@ -1073,7 +1075,28 @@ class NanitCamera:
                 # the sleep from the fresh expiry.
                 if self._token_manager.expires_in > 330.0:
                     continue
-                _LOGGER.info("Pre-emptive token refresh: forcing reconnect before expiry")
+                # Refresh FIRST (with enough headroom to actually trigger a
+                # refresh), then reconnect once so the new socket carries the
+                # fresh token. Relying on the reconnect's own token fetch
+                # (min_ttl=60) reconnected with the OLD token here, churning
+                # one reconnect per minute until the final minute before
+                # expiry — which also meant the real refresh always ran with
+                # zero retry runway, so one transient failure at that moment
+                # cascaded into a spurious reauth.
+                _LOGGER.info("Pre-emptive token refresh before expiry")
+                try:
+                    await self._token_manager.async_get_access_token(min_ttl=_TOKEN_REFRESH_MIN_TTL)
+                except NanitConnectionError as err:
+                    # Transient — the current token is still valid for a few
+                    # minutes. Retry shortly instead of bouncing the socket.
+                    _LOGGER.warning("Pre-emptive token refresh failed, retrying soon: %s", err)
+                    await asyncio.sleep(60.0)
+                    continue
+                except NanitAuthError as err:
+                    # Genuine rejection: nothing this loop can do. The next
+                    # consumer-facing token fetch surfaces the reauth.
+                    _LOGGER.error("Token refresh rejected, reauthentication required: %s", err)
+                    return
                 try:
                     await self._transport.async_force_reconnect()
                 except Exception:

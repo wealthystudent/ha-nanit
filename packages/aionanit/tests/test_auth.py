@@ -190,13 +190,37 @@ class TestRefreshFailure:
         with pytest.raises(NanitAuthError, match="Refresh token expired"):
             await token_manager.async_get_access_token()
 
-    async def test_unexpected_error_wrapped_in_auth_error(
+    async def test_unexpected_error_wrapped_in_connection_error(
         self, token_manager: TokenManager, mock_rest: MagicMock
     ) -> None:
+        """Unexpected refresh errors are transient, never a credential rejection.
+
+        Wrapping them as NanitAuthError forced users into reauth with a
+        perfectly valid refresh token (observed live: a refresh timeout
+        during a DNS outage produced a spurious reauth prompt).
+        """
         mock_rest.async_refresh_token.side_effect = RuntimeError("network down")
         token_manager._expires_at = time.monotonic() - 1
 
-        with pytest.raises(NanitAuthError, match="Token refresh failed"):
+        with pytest.raises(NanitConnectionError, match="Token refresh failed"):
+            await token_manager.async_get_access_token()
+
+    async def test_refresh_timeout_wrapped_in_connection_error(
+        self, token_manager: TokenManager, mock_rest: MagicMock
+    ) -> None:
+        mock_rest.async_refresh_token.side_effect = TimeoutError()
+        token_manager._expires_at = time.monotonic() - 1
+
+        with pytest.raises(NanitConnectionError):
+            await token_manager.async_get_access_token()
+
+    async def test_connection_error_propagated(
+        self, token_manager: TokenManager, mock_rest: MagicMock
+    ) -> None:
+        mock_rest.async_refresh_token.side_effect = NanitConnectionError("dns down")
+        token_manager._expires_at = time.monotonic() - 1
+
+        with pytest.raises(NanitConnectionError, match="dns down"):
             await token_manager.async_get_access_token()
 
     async def test_connection_error_not_wrapped_in_auth_error(
@@ -221,3 +245,22 @@ class TestRefreshFailure:
 
         assert token_manager.access_token == "initial_access"
         assert token_manager.refresh_token == "initial_refresh"
+
+
+class TestProactiveBuffer:
+    async def test_refreshes_inside_five_minute_buffer(
+        self, token_manager: TokenManager, mock_rest: MagicMock
+    ) -> None:
+        """The default buffer refreshes with retry headroom, not last-minute."""
+        token_manager._expires_at = time.monotonic() + 200.0
+        token = await token_manager.async_get_access_token()
+        assert token == "new_access"
+        mock_rest.async_refresh_token.assert_called_once()
+
+    async def test_no_refresh_outside_buffer(
+        self, token_manager: TokenManager, mock_rest: MagicMock
+    ) -> None:
+        token_manager._expires_at = time.monotonic() + 400.0
+        token = await token_manager.async_get_access_token()
+        assert token == "initial_access"
+        mock_rest.async_refresh_token.assert_not_called()

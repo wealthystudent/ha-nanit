@@ -164,6 +164,25 @@ class TestRefreshToken:
             "refresh_token": "new_ref",
         }
 
+    async def test_refresh_timeout_is_connection_error(self, client: NanitRestClient) -> None:
+        """aiohttp's total timeout raises builtin TimeoutError, not ClientError.
+
+        It must map to NanitConnectionError: a hung refresh is transient and
+        must never read as an auth failure (which triggers reauth upstream).
+        """
+        with aioresponses() as m:
+            m.post(REFRESH_URL, exception=TimeoutError())
+
+            with pytest.raises(NanitConnectionError):
+                await client.async_refresh_token("acc", "ref")
+
+    async def test_refresh_rate_limit_is_connection_error(self, client: NanitRestClient) -> None:
+        with aioresponses() as m:
+            m.post(REFRESH_URL, status=429, payload={"error": "too many requests"})
+
+            with pytest.raises(NanitConnectionError):
+                await client.async_refresh_token("acc", "ref")
+
     async def test_refresh_token_expired(self, client: NanitRestClient) -> None:
         with aioresponses() as m:
             m.post(REFRESH_URL, status=404)

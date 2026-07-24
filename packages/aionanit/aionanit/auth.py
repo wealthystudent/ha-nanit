@@ -73,7 +73,13 @@ class TokenManager:
             self._refresh_token = refresh_token
             self._expires_at = _expires_at_from_jwt(access_token, expires_in)
 
-    async def async_get_access_token(self, min_ttl: float = 60.0) -> str:
+    async def async_get_access_token(self, min_ttl: float = 300.0) -> str:
+        """Return a valid access token, refreshing when inside min_ttl.
+
+        The default buffer is five minutes so a transient refresh failure
+        leaves headroom for retries (callers naturally retry on their poll
+        cadence) instead of racing the token's hard expiry.
+        """
         callbacks_to_fire: list[Callable[[str, str], None]] = []
         async with self._lock:
             if time.monotonic() + min_ttl >= self._expires_at:
@@ -98,7 +104,14 @@ class TokenManager:
         except (NanitAuthError, NanitConnectionError):
             raise
         except Exception as err:
-            raise NanitAuthError(f"Token refresh failed: {err}") from err
+            # Anything unexpected here is a transport or parsing hiccup, not
+            # a credential rejection: NanitAuthError must stay reserved for
+            # the explicit rejections the REST layer raises, because callers
+            # translate it into a reauth prompt. Wrapping a transient error
+            # (e.g. a timeout that escaped aiohttp's ClientError hierarchy)
+            # as an auth failure forced users into reauth with a perfectly
+            # valid refresh token.
+            raise NanitConnectionError(f"Token refresh failed: {err}") from err
 
         self._access_token = tokens["access_token"]
         self._refresh_token = tokens["refresh_token"]

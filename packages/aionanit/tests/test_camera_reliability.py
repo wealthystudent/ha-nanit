@@ -315,3 +315,85 @@ async def test_reconnect_completes_with_unresponsive_camera() -> None:
     camera._cancel_sensor_poll()
     camera._cancel_playback_poll()
     camera._cancel_local_probe()
+
+
+@pytest.mark.asyncio
+async def test_token_refresh_refreshes_with_headroom_then_reconnects_once() -> None:
+    """The pre-emptive loop refreshes the token FIRST, then reconnects once.
+
+    Relying on the reconnect's own token fetch (min_ttl=60) reconnected with
+    the old token, churning a reconnect per minute and pushing the real
+    refresh into the final minute before expiry.
+    """
+    camera, token_manager = _make_camera()
+    camera._stopped = False
+    token_manager.expires_in = 50.0
+    camera._transport = MagicMock()
+    camera._transport.connected = True
+
+    order: list[str] = []
+
+    async def _record_refresh(min_ttl: float = 60.0) -> str:
+        order.append(f"refresh:{min_ttl}")
+        return "tok"
+
+    token_manager.async_get_access_token = AsyncMock(side_effect=_record_refresh)
+
+    async def _force_and_stop() -> None:
+        order.append("reconnect")
+        camera._stopped = True
+
+    camera._transport.async_force_reconnect = AsyncMock(side_effect=_force_and_stop)
+
+    with patch("aionanit.camera.asyncio.sleep", AsyncMock(return_value=None)):
+        await asyncio.wait_for(camera._token_refresh_loop(), timeout=0.1)
+
+    assert order == ["refresh:360.0", "reconnect"]
+
+
+@pytest.mark.asyncio
+async def test_token_refresh_transient_failure_retries_without_reconnect() -> None:
+    """A transient refresh failure retries shortly and never bounces the socket."""
+    camera, token_manager = _make_camera()
+    camera._stopped = False
+    token_manager.expires_in = 50.0
+    camera._transport = MagicMock()
+    camera._transport.connected = True
+    camera._transport.async_force_reconnect = AsyncMock()
+
+    calls = 0
+
+    async def _fail_then_stop(min_ttl: float = 60.0) -> str:
+        nonlocal calls
+        calls += 1
+        if calls >= 2:
+            camera._stopped = True
+        raise NanitConnectionError("dns down")
+
+    token_manager.async_get_access_token = AsyncMock(side_effect=_fail_then_stop)
+
+    with patch("aionanit.camera.asyncio.sleep", AsyncMock(return_value=None)):
+        await asyncio.wait_for(camera._token_refresh_loop(), timeout=0.1)
+
+    camera._transport.async_force_reconnect.assert_not_awaited()
+    assert calls >= 2
+
+
+@pytest.mark.asyncio
+async def test_token_refresh_auth_rejection_stops_loop() -> None:
+    """A genuine rejection ends the loop; consumer paths surface the reauth."""
+    from aionanit.exceptions import NanitAuthError
+
+    camera, token_manager = _make_camera()
+    camera._stopped = False
+    token_manager.expires_in = 50.0
+    camera._transport = MagicMock()
+    camera._transport.connected = True
+    camera._transport.async_force_reconnect = AsyncMock()
+
+    token_manager.async_get_access_token = AsyncMock(side_effect=NanitAuthError("rejected"))
+
+    with patch("aionanit.camera.asyncio.sleep", AsyncMock(return_value=None)):
+        await asyncio.wait_for(camera._token_refresh_loop(), timeout=0.1)
+
+    camera._transport.async_force_reconnect.assert_not_awaited()

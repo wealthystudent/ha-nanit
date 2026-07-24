@@ -182,7 +182,10 @@ class NanitRestClient:
                 headers={**NANIT_API_HEADERS, "Authorization": access_token},
                 timeout=_DEFAULT_TIMEOUT,
             )
-        except aiohttp.ClientError as err:
+        except (TimeoutError, aiohttp.ClientError) as err:
+            # TimeoutError: aiohttp's total timeout raises the builtin, not
+            # a ClientError subclass. A hung refresh (observed with flaky
+            # DNS) is transient and must never read as an auth failure.
             raise NanitConnectionError(str(err)) from err
 
         if resp.status == 404:
@@ -191,9 +194,10 @@ class NanitRestClient:
         if resp.status == 401:
             raise NanitAuthError("Access token invalid during refresh")
 
-        # Server-side failures are transient — they must not be treated as
-        # auth errors, or a Nanit outage would force reauth in the caller.
-        if resp.status >= 500:
+        # Server-side failures and throttling are transient — they must not
+        # be treated as auth errors, or a Nanit outage (or a rate limit)
+        # would force reauth in the caller.
+        if resp.status == 429 or resp.status >= 500:
             raise NanitConnectionError(f"Token refresh failed with HTTP {resp.status}")
 
         try:

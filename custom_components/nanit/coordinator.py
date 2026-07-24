@@ -440,7 +440,7 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator[SoundLightFullState]):
                 if isinstance(tracks, list) and all(isinstance(t, str) for t in tracks):
                     kwargs["available_tracks"] = tuple(tracks)
             return SoundLightFullState(**kwargs)
-        except Exception:  # noqa: BLE001
+        except Exception:
             _LOGGER.debug("Failed to restore S&L state", exc_info=True)
             return None
 
@@ -457,7 +457,7 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator[SoundLightFullState]):
                 data["available_tracks"] = list(state.available_tracks)
             if data:
                 await self._store.async_save(data)
-        except Exception:  # noqa: BLE001
+        except Exception:
             _LOGGER.debug("Failed to save S&L state", exc_info=True)
 
     @callback

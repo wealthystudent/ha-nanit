@@ -16,6 +16,10 @@ All notable changes to the Nanit Home Assistant integration are documented in th
 - Protobuf schema (`sound_light.proto`) with generated code and a CI drift check, replacing the hand-rolled S&L wire parser.
 - `websockets` (>= 13) as an integration requirement, used by the S&L transport.
 
+### Fixed
+
+- Transient network failures during token refresh (DNS blips, timeouts, rate limits) no longer trigger a spurious reauthentication prompt. The token refresh loop now refreshes the token before reconnecting, giving retries five minutes of headroom instead of racing hard expiry in the final minute.
+
 ## [1.8.0] – Unreleased
 
 ### Added

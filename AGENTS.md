@@ -292,6 +292,7 @@ Follow [Home Assistant developer docs](https://developers.home-assistant.io/) (l
 ## aionanit Patterns
 
 - All I/O: async (`aiohttp`, `asyncio`). Use the shared `aiohttp.ClientSession` — do not create your own.
+- **aiohttp timeout caveat**: Always catch `(TimeoutError, aiohttp.ClientError)` together. aiohttp's `total` timeout raises the builtin `TimeoutError`, not a `ClientError` subclass — catching only `ClientError` lets timeouts escape and misclassify (see PR #112).
 - Protobuf: generated from `proto/nanit.proto` via `scripts/generate_proto.py`.
 - WebSocket keepalive: ping every 25s, read deadline 60s.
 - Token lifetime: 3600s. Pre-emptive refresh at ~3300s (5 min before expiry).

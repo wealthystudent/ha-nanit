@@ -41,7 +41,7 @@ Copy `custom_components/nanit/` into your HA `config/custom_components/` directo
 1. Go to **Settings → Devices & Services → Add Integration → Nanit**.
 2. Enter your Nanit email and password.
 3. Enter the MFA code sent to your device (use the latest code — they expire quickly).
-4. Done — all cameras on your account are discovered automatically.
+4. Done — all devices on your account (cameras and Sound & Light Machines) are discovered automatically.
 
 > [!TIP]
 > Enable **Store credentials** during setup so re-authentication can happen without re-entering your password.
@@ -55,10 +55,13 @@ Copy `custom_components/nanit/` into your HA `config/custom_components/` directo
 - 💡 Night light switch
 - 🔌 Camera power switch
 
-**Sound & Light Machine** (if linked):
+**Sound & Light Machine** (works standalone or paired with a camera):
 - Power, sound, and light switches
 - Sound track selector, volume & brightness controls
 - Temperature & humidity sensors
+- Battery level & charging status
+- Firmware version (diagnostic)
+- WiFi signal strength (diagnostic, disabled by default)
 
 Some entities are disabled by default. Enable them in **Settings → Devices & Services → Nanit → Entities**.
 
@@ -100,7 +103,7 @@ humidity_entity_id: sensor.nursery_humidity
 
 For faster response times, you can connect directly to your camera over LAN:
 
-**Settings → Devices & Services → Nanit → Configure** → select camera → enter its local IP address.
+**Settings → Devices & Services → Nanit → Configure** → select device → enter its local IP address.
 
 The integration will use your local network for sensors and controls, falling back to cloud for auth and events.
 

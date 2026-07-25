@@ -79,7 +79,7 @@ async def async_setup_entry(
     entry: NanitConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up Nanit binary sensors for all cameras on the account."""
+    """Set up Nanit binary sensors for all devices on the account."""
     entities: list[BinarySensorEntity] = []
 
     for cam_data in entry.runtime_data.cameras.values():
@@ -90,10 +90,9 @@ async def async_setup_entry(
             for cloud_desc in CLOUD_BINARY_SENSORS:
                 entities.append(NanitCloudBinarySensor(cam_data.cloud_coordinator, cloud_desc))
 
-        # Sound & Light connectivity sensor (optional)
-        sl_coordinator = cam_data.sound_light_coordinator
-        if sl_coordinator is not None:
-            entities.append(NanitSLConnectivitySensor(sl_coordinator))
+    # Sound & Light connectivity sensor
+    for speaker_data in entry.runtime_data.speakers.values():
+        entities.append(NanitSLConnectivitySensor(speaker_data.coordinator))
 
     async_add_entities(entities)
 
@@ -197,8 +196,7 @@ class NanitSLConnectivitySensor(NanitSoundLightEntity, BinarySensorEntity):
     ) -> None:
         """Initialize."""
         super().__init__(coordinator)
-        baby = coordinator.baby
-        self._attr_unique_id = f"{baby.camera_uid}_sl_connectivity"
+        self._attr_unique_id = f"{coordinator.sound_light.speaker_uid}_sl_connectivity"
 
     @property
     def available(self) -> bool:

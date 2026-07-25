@@ -154,13 +154,17 @@ def _cloud_coordinator() -> MagicMock:
     return coordinator
 
 
-def _sl_coordinator() -> MagicMock:
+def _sl_coordinator(baby: Baby | None = None, via_camera_uid: str | None = "cam_1") -> MagicMock:
     coordinator = MagicMock()
     coordinator.data = SoundLightFullState()
-    coordinator.baby = Baby(uid="baby_1", name="Nursery", camera_uid="cam_1")
+    coordinator.baby = baby or Baby(
+        uid="baby_1", name="Nursery", camera_uid="cam_1", speaker_uid="speaker_1"
+    )
     coordinator.last_update_success = True
     coordinator.connected = True
+    coordinator.via_camera_uid = via_camera_uid
     coordinator.sound_light = MagicMock()
+    coordinator.sound_light.speaker_uid = "speaker_1"
     coordinator.sound_light.async_set_light_enabled = AsyncMock()
     coordinator.sound_light.async_set_brightness = AsyncMock()
     coordinator.sound_light.async_set_color = AsyncMock()
@@ -185,32 +189,42 @@ def _network_coordinator() -> MagicMock:
 # ---------------------------------------------------------------------------
 
 
-def _baseline_cam_data() -> MagicMock:
+def _baseline_scenario() -> tuple[dict[str, Any], dict[str, Any]]:
     """Camera with push coordinator only (no S&L, no cloud, no network)."""
     push = _push_coordinator()
     cam_data = MagicMock()
     cam_data.push_coordinator = push
     cam_data.camera = push.camera
     cam_data.cloud_coordinator = None
-    cam_data.sound_light_coordinator = None
     cam_data.network_coordinator = None
-    return cam_data
+    return {"cam_1": cam_data}, {}
 
 
-def _full_cam_data() -> MagicMock:
-    """Camera with all optional coordinators enabled."""
+def _full_scenario() -> tuple[dict[str, Any], dict[str, Any]]:
+    """Camera with all optional coordinators plus a paired S&L speaker."""
     push = _push_coordinator()
     cam_data = MagicMock()
     cam_data.push_coordinator = push
     cam_data.camera = push.camera
     cam_data.cloud_coordinator = _cloud_coordinator()
-    cam_data.sound_light_coordinator = _sl_coordinator()
     cam_data.network_coordinator = _network_coordinator()
-    return cam_data
+    speaker_data = MagicMock()
+    speaker_data.coordinator = _sl_coordinator()
+    speaker_data.speaker_uid = "speaker_1"
+    return {"cam_1": cam_data}, {"speaker_1": speaker_data}
 
 
-def _mock_entry(cam_data: MagicMock) -> MagicMock:
-    return MagicMock(runtime_data=MagicMock(cameras={"cam_1": cam_data}))
+def _speaker_only_scenario() -> tuple[dict[str, Any], dict[str, Any]]:
+    """Standalone S&L speaker on an account with no camera."""
+    baby = Baby(uid="baby_1", name="Nursery", camera_uid="", speaker_uid="speaker_1")
+    speaker_data = MagicMock()
+    speaker_data.coordinator = _sl_coordinator(baby=baby, via_camera_uid=None)
+    speaker_data.speaker_uid = "speaker_1"
+    return {}, {"speaker_1": speaker_data}
+
+
+def _mock_entry(cameras: dict[str, Any], speakers: dict[str, Any]) -> MagicMock:
+    return MagicMock(runtime_data=MagicMock(cameras=cameras, speakers=speakers))
 
 
 # ---------------------------------------------------------------------------
@@ -220,10 +234,10 @@ def _mock_entry(cam_data: MagicMock) -> MagicMock:
 
 async def _setup_and_capture(
     platform_module: Any,
-    cam_data: MagicMock,
+    scenario: tuple[dict[str, Any], dict[str, Any]],
 ) -> list[Any]:
     """Call a platform's async_setup_entry and return the captured entities."""
-    entry = _mock_entry(cam_data)
+    entry = _mock_entry(*scenario)
     async_add_entities = MagicMock()
     await platform_module.async_setup_entry(MagicMock(), entry, async_add_entities)
     assert async_add_entities.call_count == 1, "async_add_entities should be called exactly once"
@@ -236,83 +250,86 @@ async def _setup_and_capture(
 
 
 @pytest.mark.parametrize(
-    ("scenario_name", "cam_data_factory"),
+    ("scenario_name", "scenario_factory"),
     [
-        ("baseline", _baseline_cam_data),
-        ("full", _full_cam_data),
+        ("baseline", _baseline_scenario),
+        ("full", _full_scenario),
+        ("speaker_only", _speaker_only_scenario),
     ],
-    ids=["baseline", "full"],
+    ids=["baseline", "full", "speaker_only"],
 )
 class TestEntityRegistration:
     async def test_camera(
         self,
         scenario_name: str,
-        cam_data_factory: Any,
+        scenario_factory: Any,
         snapshot: SnapshotAssertion,
     ) -> None:
-        entities = await _setup_and_capture(camera_platform, cam_data_factory())
+        entities = await _setup_and_capture(camera_platform, scenario_factory())
         assert _serialize_entities(entities) == snapshot
 
     async def test_sensor(
         self,
         scenario_name: str,
-        cam_data_factory: Any,
+        scenario_factory: Any,
         snapshot: SnapshotAssertion,
     ) -> None:
-        entities = await _setup_and_capture(sensor_platform, cam_data_factory())
+        entities = await _setup_and_capture(sensor_platform, scenario_factory())
         assert _serialize_entities(entities) == snapshot
 
     async def test_binary_sensor(
         self,
         scenario_name: str,
-        cam_data_factory: Any,
+        scenario_factory: Any,
         snapshot: SnapshotAssertion,
     ) -> None:
-        entities = await _setup_and_capture(binary_sensor_platform, cam_data_factory())
+        entities = await _setup_and_capture(binary_sensor_platform, scenario_factory())
         assert _serialize_entities(entities) == snapshot
 
     async def test_switch(
         self,
         scenario_name: str,
-        cam_data_factory: Any,
+        scenario_factory: Any,
         snapshot: SnapshotAssertion,
     ) -> None:
-        entities = await _setup_and_capture(switch_platform, cam_data_factory())
+        entities = await _setup_and_capture(switch_platform, scenario_factory())
         assert _serialize_entities(entities) == snapshot
 
     async def test_number(
         self,
         scenario_name: str,
-        cam_data_factory: Any,
+        scenario_factory: Any,
         snapshot: SnapshotAssertion,
     ) -> None:
-        entities = await _setup_and_capture(number_platform, cam_data_factory())
+        entities = await _setup_and_capture(number_platform, scenario_factory())
         assert _serialize_entities(entities) == snapshot
 
     async def test_light(
         self,
         scenario_name: str,
-        cam_data_factory: Any,
+        scenario_factory: Any,
         snapshot: SnapshotAssertion,
     ) -> None:
-        entities = await _setup_and_capture(light_platform, cam_data_factory())
+        entities = await _setup_and_capture(light_platform, scenario_factory())
         assert _serialize_entities(entities) == snapshot
 
     async def test_select(
         self,
         scenario_name: str,
-        cam_data_factory: Any,
+        scenario_factory: Any,
         snapshot: SnapshotAssertion,
     ) -> None:
-        entities = await _setup_and_capture(select_platform, cam_data_factory())
+        entities = await _setup_and_capture(select_platform, scenario_factory())
         assert _serialize_entities(entities) == snapshot
 
     async def test_media_player(
         self,
         scenario_name: str,
-        cam_data_factory: Any,
+        scenario_factory: Any,
         snapshot: SnapshotAssertion,
     ) -> None:
-        entities = await _setup_and_capture(media_player_platform, cam_data_factory())
+        scenario = scenario_factory()
+        entities = await _setup_and_capture(media_player_platform, scenario)
         assert _serialize_entities(entities) == snapshot
-        assert len(entities) == 1
+        # One media player per camera (it wraps the camera's sound machine)
+        assert len(entities) == len(scenario[0])

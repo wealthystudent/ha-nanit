@@ -63,17 +63,16 @@ async def async_setup_entry(
     entry: NanitConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up Nanit switches for all cameras on the account."""
+    """Set up Nanit switches for all devices on the account."""
     entities: list[SwitchEntity] = []
     for cam_data in entry.runtime_data.cameras.values():
         for description in SWITCHES:
             entities.append(NanitSwitch(cam_data.push_coordinator, cam_data.camera, description))
 
-        # Sound & Light Machine switches (optional)
-        sl_coordinator = cam_data.sound_light_coordinator
-        if sl_coordinator is not None:
-            entities.append(NanitSLPowerSwitch(sl_coordinator))
-            entities.append(NanitSLSoundSwitch(sl_coordinator))
+    # Sound & Light Machine switches
+    for speaker_data in entry.runtime_data.speakers.values():
+        entities.append(NanitSLPowerSwitch(speaker_data.coordinator))
+        entities.append(NanitSLSoundSwitch(speaker_data.coordinator))
 
     async_add_entities(entities)
 
@@ -211,8 +210,7 @@ class NanitSLPowerSwitch(NanitSoundLightEntity, SwitchEntity):
     ) -> None:
         """Initialize."""
         super().__init__(coordinator)
-        baby = coordinator.baby
-        self._attr_unique_id = f"{baby.camera_uid}_sound_machine_switch"
+        self._attr_unique_id = f"{coordinator.sound_light.speaker_uid}_sound_machine_switch"
 
     @property
     def is_on(self) -> bool | None:
@@ -252,8 +250,7 @@ class NanitSLSoundSwitch(NanitSoundLightEntity, SwitchEntity):
     ) -> None:
         """Initialize."""
         super().__init__(coordinator)
-        baby = coordinator.baby
-        self._attr_unique_id = f"{baby.camera_uid}_sl_sound_switch"
+        self._attr_unique_id = f"{coordinator.sound_light.speaker_uid}_sl_sound_switch"
 
     @property
     def is_on(self) -> bool | None:

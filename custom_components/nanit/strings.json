@@ -116,6 +116,12 @@
       },
       "wifi_frequency": {
         "name": "WiFi Frequency"
+      },
+      "sl_wifi_signal": {
+        "name": "WiFi Signal Strength"
+      },
+      "sl_firmware": {
+        "name": "Firmware"
       }
     },
     "binary_sensor": {

@@ -25,12 +25,10 @@ async def async_setup_entry(
     entry: NanitConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up Nanit select entities for all cameras on the account."""
+    """Set up Nanit select entities for all devices on the account."""
     entities: list[SelectEntity] = []
-    for cam_data in entry.runtime_data.cameras.values():
-        sl_coordinator = cam_data.sound_light_coordinator
-        if sl_coordinator is not None:
-            entities.append(NanitSoundSelect(sl_coordinator))
+    for speaker_data in entry.runtime_data.speakers.values():
+        entities.append(NanitSoundSelect(speaker_data.coordinator))
     async_add_entities(entities)
 
 
@@ -46,8 +44,7 @@ class NanitSoundSelect(NanitSoundLightEntity, SelectEntity):
     ) -> None:
         """Initialize."""
         super().__init__(coordinator)
-        baby = coordinator.baby
-        self._attr_unique_id = f"{baby.camera_uid}_sound_machine_sound"
+        self._attr_unique_id = f"{coordinator.sound_light.speaker_uid}_sound_machine_sound"
 
     @property
     def options(self) -> list[str]:

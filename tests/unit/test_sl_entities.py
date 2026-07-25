@@ -55,7 +55,9 @@ def _sl_coordinator(
     coordinator.baby = Baby(uid="baby_1", name="Nursery", camera_uid="cam_1")
     coordinator.last_update_success = last_update_success
     coordinator.connected = True
+    coordinator.via_camera_uid = "cam_1"
     coordinator.sound_light = MagicMock()
+    coordinator.sound_light.speaker_uid = "speaker_1"
     coordinator.sound_light.async_set_light_enabled = AsyncMock()
     coordinator.sound_light.async_set_brightness = AsyncMock()
     coordinator.sound_light.async_set_color = AsyncMock()
@@ -376,18 +378,20 @@ async def test_sl_sound_switch_handles_transport_error_gracefully(
 
 async def test_light_async_setup_entry_adds_entities_for_sound_light_coordinators() -> None:
     sl_coordinator = _sl_coordinator(SoundLightFullState())
-    cam_with_sl = MagicMock(
+    cam_1 = MagicMock(
         push_coordinator=MagicMock(data=None),
         camera=MagicMock(uid="cam_1"),
-        sound_light_coordinator=sl_coordinator,
     )
-    cam_without_sl = MagicMock(
+    cam_2 = MagicMock(
         push_coordinator=MagicMock(data=None),
         camera=MagicMock(uid="cam_2"),
-        sound_light_coordinator=None,
     )
+    speaker = MagicMock(coordinator=sl_coordinator)
     entry = MagicMock(
-        runtime_data=MagicMock(cameras={"cam_1": cam_with_sl, "cam_2": cam_without_sl})
+        runtime_data=MagicMock(
+            cameras={"cam_1": cam_1, "cam_2": cam_2},
+            speakers={"speaker_1": speaker},
+        )
     )
     async_add_entities = MagicMock()
 
@@ -402,19 +406,8 @@ async def test_light_async_setup_entry_adds_entities_for_sound_light_coordinator
 
 async def test_select_async_setup_entry_adds_entities_for_sound_light_coordinators() -> None:
     sl_coordinator = _sl_coordinator(SoundLightFullState())
-    cam_with_sl = MagicMock(
-        push_coordinator=MagicMock(data=None),
-        camera=MagicMock(uid="cam_1"),
-        sound_light_coordinator=sl_coordinator,
-    )
-    cam_without_sl = MagicMock(
-        push_coordinator=MagicMock(data=None),
-        camera=MagicMock(uid="cam_2"),
-        sound_light_coordinator=None,
-    )
-    entry = MagicMock(
-        runtime_data=MagicMock(cameras={"cam_1": cam_with_sl, "cam_2": cam_without_sl})
-    )
+    speaker = MagicMock(coordinator=sl_coordinator)
+    entry = MagicMock(runtime_data=MagicMock(cameras={}, speakers={"speaker_1": speaker}))
     async_add_entities = MagicMock()
 
     await select_platform.async_setup_entry(MagicMock(), entry, async_add_entities)
@@ -426,18 +419,20 @@ async def test_select_async_setup_entry_adds_entities_for_sound_light_coordinato
 
 async def test_switch_async_setup_entry_adds_camera_and_sound_light_switches() -> None:
     sl_coordinator = _sl_coordinator(SoundLightFullState())
-    cam_with_sl = MagicMock(
+    cam_1 = MagicMock(
         push_coordinator=MagicMock(),
         camera=MagicMock(uid="cam_1"),
-        sound_light_coordinator=sl_coordinator,
     )
-    cam_without_sl = MagicMock(
+    cam_2 = MagicMock(
         push_coordinator=MagicMock(),
         camera=MagicMock(uid="cam_2"),
-        sound_light_coordinator=None,
     )
+    speaker = MagicMock(coordinator=sl_coordinator)
     entry = MagicMock(
-        runtime_data=MagicMock(cameras={"cam_1": cam_with_sl, "cam_2": cam_without_sl})
+        runtime_data=MagicMock(
+            cameras={"cam_1": cam_1, "cam_2": cam_2},
+            speakers={"speaker_1": speaker},
+        )
     )
     async_add_entities = MagicMock()
 
@@ -468,8 +463,8 @@ async def test_async_get_config_entry_diagnostics_returns_expected_structure() -
     assert "config_entry_data" in result
     assert "config_entry_options" in result
     assert "cameras" in result
-    assert "cam_1" in result["cameras"]
-    assert result["cameras"]["cam_1"]["push_coordinator"]["connected"] is True
+    assert "camera_0" in result["cameras"]
+    assert result["cameras"]["camera_0"]["push_coordinator"]["connected"] is True
 
 
 async def test_async_get_config_entry_diagnostics_redacts_sensitive_fields() -> None:
@@ -505,7 +500,8 @@ async def test_async_get_config_entry_diagnostics_redacts_sensitive_fields() -> 
     assert result["config_entry_options"]["camera_ips"] == REDACTED
     assert result["config_entry_options"]["speaker_ip"] == REDACTED
     assert result["config_entry_options"]["speaker_ips"] == REDACTED
-    assert result["cameras"]["cam_1"]["baby_uid"] == REDACTED
+    assert result["cameras"]["camera_0"]["baby_uid"] == REDACTED
+    assert result["cameras"]["camera_0"]["baby_name"] == REDACTED
 
 
 async def test_async_get_config_entry_diagnostics_includes_cloud_data_when_present() -> None:
@@ -528,7 +524,7 @@ async def test_async_get_config_entry_diagnostics_includes_cloud_data_when_prese
 
     result = await async_get_config_entry_diagnostics(MagicMock(), entry)
 
-    cloud_diag = result["cameras"]["cam_1"]["cloud_coordinator"]
+    cloud_diag = result["cameras"]["camera_0"]["cloud_coordinator"]
     assert cloud_diag["last_update_success"] is False
     assert cloud_diag["last_exception"] == "cloud boom"
     assert cloud_diag["data"][0]["event_type"] == "MOTION"
@@ -807,7 +803,7 @@ def test_sl_sensor_temperature() -> None:
     entity = NanitSLSensor(coordinator, desc)
 
     assert entity.native_value == pytest.approx(23.46)
-    assert entity.unique_id == "cam_1_sl_temperature"
+    assert entity.unique_id == "speaker_1_sl_temperature"
 
 
 def test_sl_sensor_humidity() -> None:
@@ -855,7 +851,7 @@ def test_sl_connection_mode_sensor() -> None:
     entity = NanitSLConnectionModeSensor(coordinator)
 
     assert entity.native_value == "cloud"
-    assert entity.unique_id == "cam_1_sl_connection_mode"
+    assert entity.unique_id == "speaker_1_sl_connection_mode"
 
 
 def test_sl_connection_mode_sensor_available_with_data() -> None:
@@ -889,7 +885,7 @@ def test_sl_volume_native_value() -> None:
     entity = NanitSoundMachineVolume(coordinator)
 
     assert entity.native_value == 50.0
-    assert entity.unique_id == "cam_1_sound_machine_volume"
+    assert entity.unique_id == "speaker_1_sound_machine_volume"
 
 
 def test_sl_volume_returns_none_when_no_data() -> None:
@@ -947,10 +943,12 @@ async def test_sensor_async_setup_entry_creates_sl_sensors() -> None:
     sl_coordinator = _sl_coordinator(SoundLightFullState())
     cam_data = MagicMock(
         push_coordinator=_push_coordinator(_camera_state()),
-        sound_light_coordinator=sl_coordinator,
         network_coordinator=None,
     )
-    entry = MagicMock(runtime_data=MagicMock(cameras={"cam_1": cam_data}))
+    speaker = MagicMock(coordinator=sl_coordinator)
+    entry = MagicMock(
+        runtime_data=MagicMock(cameras={"cam_1": cam_data}, speakers={"speaker_1": speaker})
+    )
     async_add_entities = MagicMock()
 
     await sensor_platform.async_setup_entry(MagicMock(), entry, async_add_entities)
@@ -964,12 +962,8 @@ async def test_number_async_setup_entry_creates_sl_volume() -> None:
     from custom_components.nanit import number as number_platform
 
     sl_coordinator = _sl_coordinator(SoundLightFullState())
-    cam_data = MagicMock(
-        push_coordinator=_push_coordinator(_camera_state()),
-        camera=MagicMock(uid="cam_1"),
-        sound_light_coordinator=sl_coordinator,
-    )
-    entry = MagicMock(runtime_data=MagicMock(cameras={"cam_1": cam_data}))
+    speaker = MagicMock(coordinator=sl_coordinator)
+    entry = MagicMock(runtime_data=MagicMock(cameras={}, speakers={"speaker_1": speaker}))
     async_add_entities = MagicMock()
 
     await number_platform.async_setup_entry(MagicMock(), entry, async_add_entities)
@@ -987,9 +981,11 @@ async def test_binary_sensor_async_setup_entry_creates_sl_connectivity() -> None
     cam_data = MagicMock(
         push_coordinator=_push_coordinator(_camera_state()),
         cloud_coordinator=cloud_coordinator,
-        sound_light_coordinator=sl_coordinator,
     )
-    entry = MagicMock(runtime_data=MagicMock(cameras={"cam_1": cam_data}))
+    speaker = MagicMock(coordinator=sl_coordinator)
+    entry = MagicMock(
+        runtime_data=MagicMock(cameras={"cam_1": cam_data}, speakers={"speaker_1": speaker})
+    )
     async_add_entities = MagicMock()
 
     await binary_sensor_platform.async_setup_entry(MagicMock(), entry, async_add_entities)
@@ -1061,9 +1057,20 @@ def test_sl_entity_device_info() -> None:
     entity = NanitSoundLightLight(coordinator)
     info = entity.device_info
 
-    assert ("nanit", "cam_1_sound_light") in info["identifiers"]
+    assert ("nanit", "speaker_1") in info["identifiers"]
     assert info["name"] == "Nursery Sound & Light"
     assert info["manufacturer"] == "Nanit"
+    assert info["via_device"] == ("nanit", "cam_1")
+
+
+def test_sl_entity_device_info_standalone_has_no_via_device() -> None:
+    coordinator = _sl_coordinator(SoundLightFullState())
+    coordinator.via_camera_uid = None
+    entity = NanitSoundLightLight(coordinator)
+    info = entity.device_info
+
+    assert ("nanit", "speaker_1") in info["identifiers"]
+    assert "via_device" not in info
 
 
 # ---------------------------------------------------------------------------

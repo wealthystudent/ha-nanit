@@ -65,15 +65,21 @@ class NanitSoundLightEntity(CoordinatorEntity[NanitSoundLightCoordinator]):
 
     @property
     def device_info(self) -> DeviceInfo:
-        """Return device info — separate device from the camera."""
+        """Return device info — its own device, keyed by the speaker's uid.
+
+        Linked to the baby's camera via via_device only when a camera
+        exists on the account (standalone speakers have none).
+        """
         baby = self.coordinator.baby
-        return DeviceInfo(
-            identifiers={(DOMAIN, f"{baby.camera_uid}_sound_light")},
+        info = DeviceInfo(
+            identifiers={(DOMAIN, self.coordinator.sound_light.speaker_uid)},
             name=f"{display_name(baby.name, baby.uid)} Sound & Light",
             manufacturer="Nanit",
             model="Sound & Light Machine",
-            via_device=(DOMAIN, baby.camera_uid),
         )
+        if self.coordinator.via_camera_uid:
+            info["via_device"] = (DOMAIN, self.coordinator.via_camera_uid)
+        return info
 
     @property
     def available(self) -> bool:

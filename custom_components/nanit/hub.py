@@ -457,7 +457,7 @@ class NanitHub:
         if not speaker_uid_map:
             try:
                 speaker_uid_map = await self._discover_speaker_uids()
-            except Exception:  # noqa: BLE001 — intentional catch-all; discovery is best-effort
+            except Exception:
                 _LOGGER.debug("Speaker UID discovery from raw API failed", exc_info=True)
             else:
                 self._live_speaker_uids |= set(speaker_uid_map.values())
@@ -591,7 +591,7 @@ class NanitHub:
         for sl in list(self._sound_lights.values()):
             try:
                 await sl.async_stop()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 _LOGGER.debug("Error stopping S&L during close")
         self._sound_lights.clear()
 

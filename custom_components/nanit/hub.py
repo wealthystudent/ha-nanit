@@ -377,7 +377,7 @@ class NanitHub:
                     raise NanitAuthError("Access token invalid")
                 resp.raise_for_status()
                 body = await resp.json()
-        except aiohttp.ClientError as err:
+        except (TimeoutError, aiohttp.ClientError) as err:
             raise NanitConnectionError(str(err)) from err
 
         rows = body.get("babies", []) if isinstance(body, dict) else []
@@ -457,7 +457,7 @@ class NanitHub:
         if not speaker_uid_map:
             try:
                 speaker_uid_map = await self._discover_speaker_uids()
-            except Exception:
+            except Exception:  # noqa: BLE001 — intentional catch-all; discovery is best-effort
                 _LOGGER.debug("Speaker UID discovery from raw API failed", exc_info=True)
             else:
                 self._live_speaker_uids |= set(speaker_uid_map.values())

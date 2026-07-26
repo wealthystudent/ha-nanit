@@ -888,3 +888,192 @@ async def test_options_flow_unresolved_speaker_keeps_legacy_ip(
     result_data = _as_dict(result)
     assert result_data.get("type") is FlowResultType.CREATE_ENTRY
     assert result_data["data"][CONF_SPEAKER_IPS] == {"cam_1": "192.168.1.90"}
+
+
+async def test_credentials_duplicate_email_different_case_aborts(
+    hass: HomeAssistant,
+    mock_config_flow_client,
+) -> None:
+    """Re-adding the account with different email casing must not duplicate."""
+    hass = await _resolve_hass(hass)
+    existing = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_ACCESS_TOKEN: MOCK_ACCESS_TOKEN,
+            CONF_REFRESH_TOKEN: MOCK_REFRESH_TOKEN,
+            CONF_EMAIL: MOCK_EMAIL,
+        },
+        unique_id=MOCK_EMAIL,
+    )
+    existing.add_to_hass(hass)
+
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {CONF_EMAIL: "  Test@Example.COM ", CONF_PASSWORD: MOCK_PASSWORD},
+    )
+
+    result_data = _as_dict(result)
+    assert result_data.get("type") is FlowResultType.ABORT
+    assert result_data.get("reason") == "already_configured"
+
+
+async def test_credentials_duplicate_of_legacy_mixed_case_unique_id_aborts(
+    hass: HomeAssistant,
+    mock_config_flow_client,
+) -> None:
+    """Entries created before normalization keep mixed-case unique_ids."""
+    hass = await _resolve_hass(hass)
+    existing = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_ACCESS_TOKEN: MOCK_ACCESS_TOKEN,
+            CONF_REFRESH_TOKEN: MOCK_REFRESH_TOKEN,
+            CONF_EMAIL: "Test@Example.com",
+        },
+        unique_id="Test@Example.com",
+    )
+    existing.add_to_hass(hass)
+
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {CONF_EMAIL: MOCK_EMAIL, CONF_PASSWORD: MOCK_PASSWORD},
+    )
+
+    result_data = _as_dict(result)
+    assert result_data.get("type") is FlowResultType.ABORT
+    assert result_data.get("reason") == "already_configured"
+
+
+async def test_mfa_rechallenge_adopts_fresh_token(
+    hass: HomeAssistant,
+    mock_config_flow_client,
+) -> None:
+    """A server re-challenge mid-MFA swaps in the fresh token for the retry.
+
+    NanitMfaRequiredError subclasses NanitAuthError; before the fix the MFA
+    handler swallowed the re-challenge as invalid_mfa_code and every retry
+    verified against the stale token forever.
+    """
+    hass = await _resolve_hass(hass)
+    mock_config_flow_client.async_login.side_effect = nanit_config_flow.NanitMfaRequiredError(
+        mfa_token=MOCK_MFA_TOKEN
+    )
+    mock_config_flow_client.async_verify_mfa.side_effect = [
+        nanit_config_flow.NanitMfaRequiredError(mfa_token="fresh_mfa_token"),
+        {"access_token": MOCK_ACCESS_TOKEN, "refresh_token": MOCK_REFRESH_TOKEN},
+    ]
+
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {CONF_EMAIL: MOCK_EMAIL, CONF_PASSWORD: MOCK_PASSWORD},
+    )
+    assert result.get("step_id") == "mfa"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {CONF_MFA_CODE: "111111"},
+    )
+    result_data = _as_dict(result)
+    assert result_data.get("type") is FlowResultType.FORM
+    assert _as_dict(result_data.get("errors")).get("base") == "invalid_mfa_code"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {CONF_MFA_CODE: "222222"},
+    )
+    result_data = _as_dict(result)
+    assert result_data.get("type") is FlowResultType.CREATE_ENTRY
+
+    second_call = mock_config_flow_client.async_verify_mfa.call_args_list[1]
+    assert second_call.args[2] == "fresh_mfa_token"
+
+
+async def test_reauth_entry_without_stored_email_succeeds_and_adopts(
+    hass: HomeAssistant,
+    mock_config_flow_client,
+) -> None:
+    """Reauth on an entry with no stored email must not KeyError."""
+    hass = await _resolve_hass(hass)
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_ACCESS_TOKEN: "old_access",
+            CONF_REFRESH_TOKEN: "old_refresh",
+        },
+        unique_id="cam_legacy",
+    )
+    entry.add_to_hass(hass)
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": "reauth", "entry_id": entry.entry_id},
+        data=entry.data,
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {CONF_EMAIL: MOCK_EMAIL, CONF_PASSWORD: MOCK_PASSWORD},
+    )
+
+    assert result.get("type") is FlowResultType.ABORT
+    assert result.get("reason") == "reauth_successful"
+    assert entry.data[CONF_EMAIL] == MOCK_EMAIL
+    assert entry.data[CONF_ACCESS_TOKEN] == MOCK_ACCESS_TOKEN
+
+
+async def test_options_flow_preserves_unrelated_options(hass: HomeAssistant) -> None:
+    """An IP edit must merge into existing options, not replace them."""
+    hass = await _resolve_hass(hass)
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        options={CONF_CAMERA_IPS: {}, "future_option": "keep-me"},
+    )
+    entry.runtime_data = SimpleNamespace(
+        hub=SimpleNamespace(babies=[MOCK_BABY_1], speaker_uid_map={})
+    )
+    entry.add_to_hass(hass)
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {CONF_CAMERA_IP: "192.168.1.42"},
+    )
+
+    result_data = _as_dict(result)
+    assert result_data.get("type") is FlowResultType.CREATE_ENTRY
+    assert result_data["data"]["future_option"] == "keep-me"
+    assert result_data["data"][CONF_CAMERA_IPS] == {MOCK_BABY_1.camera_uid: "192.168.1.42"}
+
+
+async def test_credentials_duplicate_of_legacy_camera_uid_entry_aborts(
+    hass: HomeAssistant,
+    mock_config_flow_client,
+) -> None:
+    """A migrated v1 entry can still carry a camera uid as its unique_id.
+
+    Neither unique_id comparison can see it, so the guard must also match
+    the entry's stored email.
+    """
+    hass = await _resolve_hass(hass)
+    existing = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_ACCESS_TOKEN: MOCK_ACCESS_TOKEN,
+            CONF_REFRESH_TOKEN: MOCK_REFRESH_TOKEN,
+            CONF_EMAIL: "Test@Example.com",
+        },
+        unique_id="cam_legacy_uid",
+    )
+    existing.add_to_hass(hass)
+
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {CONF_EMAIL: MOCK_EMAIL, CONF_PASSWORD: MOCK_PASSWORD},
+    )
+
+    result_data = _as_dict(result)
+    assert result_data.get("type") is FlowResultType.ABORT
+    assert result_data.get("reason") == "already_configured"

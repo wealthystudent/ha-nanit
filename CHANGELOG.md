@@ -27,6 +27,7 @@ All notable changes to the Nanit Home Assistant integration are documented in th
 ### Fixed
 
 - Transient network failures during token refresh (DNS blips, timeouts, rate limits) no longer trigger a spurious reauthentication prompt. The token refresh loop now refreshes the token before reconnecting, giving retries five minutes of headroom instead of racing hard expiry in the final minute.
+- Config flow robustness: re-adding the account with different email casing no longer creates a duplicate entry (emails are treated case-insensitively, matching Nanit), the MFA step recovers when the server re-issues a fresh challenge instead of dead-ending on a stale token, re-authentication works on entries that never stored an email, and saving device IPs no longer wipes options the IP form does not manage.
 
 ### Removed
 

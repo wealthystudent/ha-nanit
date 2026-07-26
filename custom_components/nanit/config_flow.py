@@ -42,12 +42,13 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
     """
 
     VERSION = 2
+    # 2.2 drops password persistence (the stored password was never read).
+    MINOR_VERSION = 2
 
     def __init__(self) -> None:
         """Initialize."""
         self._email: str = ""
         self._password: str = ""
-        self._store_credentials: bool = False
         self._mfa_token: str = ""
         self._access_token: str = ""
         self._refresh_token: str = ""
@@ -65,7 +66,6 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             self._email = user_input[CONF_EMAIL]
             self._password = user_input[CONF_PASSWORD]
-            self._store_credentials = user_input.get(CONF_STORE_CREDENTIALS, False)
             result = await self._async_attempt_login(
                 email=self._email,
                 password=self._password,
@@ -83,7 +83,6 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
                 {
                     vol.Required(CONF_EMAIL): cv.string,
                     vol.Required(CONF_PASSWORD): cv.string,
-                    vol.Optional(CONF_STORE_CREDENTIALS, default=False): cv.boolean,
                 }
             ),
             errors=errors,
@@ -210,12 +209,8 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
         data: dict[str, Any] = {
             CONF_ACCESS_TOKEN: self._access_token,
             CONF_REFRESH_TOKEN: self._refresh_token,
-            CONF_STORE_CREDENTIALS: self._store_credentials,
             CONF_EMAIL: self._email,
         }
-
-        if self._store_credentials:
-            data[CONF_PASSWORD] = self._password
 
         return self.async_create_entry(title=title, data=data)
 
@@ -246,7 +241,6 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
                     access_token=access_token,
                     refresh_token=refresh_token,
                     email=email,
-                    password=password,
                 ),
             )
             if result is not None:
@@ -279,7 +273,6 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
         access_token: str,
         refresh_token: str,
         email: str | None = None,
-        password: str | None = None,
     ) -> ConfigFlowResult:
         """Update the reauth entry with fresh credentials/tokens."""
         reauth_entry = self._get_reauth_entry()
@@ -292,8 +285,10 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
         new_data = {**reauth_entry.data}
         new_data[CONF_ACCESS_TOKEN] = access_token
         new_data[CONF_REFRESH_TOKEN] = refresh_token
-        if reauth_entry.data.get(CONF_STORE_CREDENTIALS):
-            new_data[CONF_PASSWORD] = password or self._password
+        # Scrub any password persisted by older versions. It was never read
+        # by anything (reauth always prompts), so it was pure liability.
+        new_data.pop(CONF_PASSWORD, None)
+        new_data.pop(CONF_STORE_CREDENTIALS, None)
         return self.async_update_reload_and_abort(reauth_entry, data=new_data)
 
     # ------------------------------------------------------------------

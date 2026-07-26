@@ -6,8 +6,7 @@
         "description": "Enter your Nanit account credentials. All cameras on this account will be added automatically.",
         "data": {
           "email": "Email",
-          "password": "Password",
-          "store_credentials": "Store email and password (enables easier re-authentication)"
+          "password": "Password"
         }
       },
       "mfa": {

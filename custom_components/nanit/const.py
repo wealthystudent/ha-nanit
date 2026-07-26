@@ -30,6 +30,8 @@ NETWORK_POLL_INTERVAL = 300
 # Config Keys
 CONF_MFA_CODE = "mfa_code"
 CONF_MFA_TOKEN = "mfa_token"
+# Legacy (dropped in config entry v2.2): referenced only to scrub the key
+# from entries created by older versions.
 CONF_STORE_CREDENTIALS = "store_credentials"
 CONF_REFRESH_TOKEN = "refresh_token"
 CONF_BABY_UID = "baby_uid"

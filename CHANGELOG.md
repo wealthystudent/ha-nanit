@@ -31,6 +31,10 @@ All notable changes to the Nanit Home Assistant integration are documented in th
 - Accounts mixing a camera baby with a camera-less baby (a standalone Sound & Light for one child, a camera for another) no longer fail setup in an endless retry loop. The babies parser tolerates rows without a camera_uid, and the optional cloud and network coordinators now degrade to disabled sensors when their first refresh fails instead of blocking the whole entry.
 - A camera that fails or times out during setup is now stopped instead of left half-connected: previously its sockets and token refresh loops kept running for the entry's lifetime with no entities attached. Session re-initialization after a reconnect is also contained: a failure inside it now logs and defers to the next health check instead of dying as an unretrieved task exception.
 
+### Removed
+
+- **The "Store email and password" option.** The stored password was never read by anything (re-authentication always prompts for it), so it was a plaintext credential sitting in Home Assistant's storage and every backup for no benefit. Existing entries are scrubbed automatically on upgrade (a disabled entry: when it is next enabled), and completing a re-authentication also clears it.
+
 ## [1.8.0] – Unreleased
 
 ### Added

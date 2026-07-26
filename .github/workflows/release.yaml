@@ -38,7 +38,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag="${{ env.TAG }}"
+          tag="$TAG"
           version="${tag#v}"
 
           if [[ "$version" == *-beta.* ]]; then
@@ -77,9 +77,8 @@ jobs:
           python-version: "3.14"
 
       - name: Install dependencies
-        run: |
-          pip install ruff
-          pip install -r dev/requirements.txt
+        # dev/requirements.txt carries the pinned ruff range.
+        run: pip install -r dev/requirements.txt
 
       - name: Ruff check
         run: ruff check .
@@ -180,7 +179,10 @@ jobs:
 
   attach-artifact:
     name: Attach Release Artifact
-    needs: [resolve]
+    needs: [resolve, ci-gate]
+    # Betas skip ci-gate (result "skipped"); stable assets require it green
+    # so a release can never ship an artifact off a red gate.
+    if: ${{ !cancelled() && needs.resolve.result == 'success' && (needs.resolve.outputs.is_stable == 'false' || needs.ci-gate.result == 'success') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -209,7 +211,8 @@ jobs:
       - name: Upload release asset
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ needs.resolve.outputs.tag }}" nanit.zip --clobber
+          TAG_REF: ${{ needs.resolve.outputs.tag }}
+        run: gh release upload "$TAG_REF" nanit.zip --clobber
 
   update-main-version:
     name: Update Main Branch Version

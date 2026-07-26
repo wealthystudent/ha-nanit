@@ -200,7 +200,11 @@ jobs:
           mv /tmp/manifest.json custom_components/nanit/manifest.json
 
       - name: Create integration zip
-        run: zip -r nanit.zip custom_components/nanit/
+        # HACS zip_release expects the integration files at the zip root,
+        # not nested under custom_components/nanit/.
+        run: |
+          cd custom_components/nanit
+          zip -r ../../nanit.zip .
 
       - name: Upload release asset
         env:

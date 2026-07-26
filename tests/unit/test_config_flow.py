@@ -98,7 +98,6 @@ async def test_credentials_valid_login_creates_entry(
         {
             CONF_EMAIL: MOCK_EMAIL,
             CONF_PASSWORD: MOCK_PASSWORD,
-            CONF_STORE_CREDENTIALS: True,
         },
     )
 
@@ -107,7 +106,8 @@ async def test_credentials_valid_login_creates_entry(
     assert result_data["result"].version == 2
     assert result_data["result"].unique_id == MOCK_EMAIL
     assert result_data["data"][CONF_EMAIL] == MOCK_EMAIL
-    assert result_data["data"][CONF_PASSWORD] == MOCK_PASSWORD
+    assert CONF_PASSWORD not in result_data["data"]
+    assert CONF_STORE_CREDENTIALS not in result_data["data"]
 
 
 async def test_credentials_mfa_required_goes_to_mfa(
@@ -128,7 +128,6 @@ async def test_credentials_mfa_required_goes_to_mfa(
         {
             CONF_EMAIL: MOCK_EMAIL,
             CONF_PASSWORD: MOCK_PASSWORD,
-            CONF_STORE_CREDENTIALS: False,
         },
     )
 
@@ -154,7 +153,6 @@ async def test_credentials_invalid_auth_shows_error(
         {
             CONF_EMAIL: MOCK_EMAIL,
             CONF_PASSWORD: MOCK_PASSWORD,
-            CONF_STORE_CREDENTIALS: False,
         },
     )
 
@@ -182,7 +180,6 @@ async def test_credentials_connection_error_shows_error(
         {
             CONF_EMAIL: MOCK_EMAIL,
             CONF_PASSWORD: MOCK_PASSWORD,
-            CONF_STORE_CREDENTIALS: False,
         },
     )
 
@@ -208,7 +205,6 @@ async def test_credentials_unknown_error_shows_error(
         {
             CONF_EMAIL: MOCK_EMAIL,
             CONF_PASSWORD: MOCK_PASSWORD,
-            CONF_STORE_CREDENTIALS: False,
         },
     )
 
@@ -236,7 +232,6 @@ async def test_mfa_valid_code_creates_entry(
         {
             CONF_EMAIL: MOCK_EMAIL,
             CONF_PASSWORD: MOCK_PASSWORD,
-            CONF_STORE_CREDENTIALS: True,
         },
     )
     assert result.get("step_id") == "mfa"
@@ -272,7 +267,6 @@ async def test_mfa_invalid_code_shows_error(
         {
             CONF_EMAIL: MOCK_EMAIL,
             CONF_PASSWORD: MOCK_PASSWORD,
-            CONF_STORE_CREDENTIALS: False,
         },
     )
     result = await hass.config_entries.flow.async_configure(
@@ -307,7 +301,6 @@ async def test_mfa_connection_error_shows_error(
         {
             CONF_EMAIL: MOCK_EMAIL,
             CONF_PASSWORD: MOCK_PASSWORD,
-            CONF_STORE_CREDENTIALS: False,
         },
     )
     result = await hass.config_entries.flow.async_configure(
@@ -340,7 +333,6 @@ async def test_mfa_unknown_error_shows_error(
         {
             CONF_EMAIL: MOCK_EMAIL,
             CONF_PASSWORD: MOCK_PASSWORD,
-            CONF_STORE_CREDENTIALS: False,
         },
     )
     result = await hass.config_entries.flow.async_configure(
@@ -371,7 +363,6 @@ async def test_duplicate_email_aborts(
         {
             CONF_EMAIL: MOCK_EMAIL,
             CONF_PASSWORD: MOCK_PASSWORD,
-            CONF_STORE_CREDENTIALS: False,
         },
     )
 
@@ -417,7 +408,8 @@ async def test_reauth_valid_login_success_updates_entry(
     assert entry.data[CONF_ACCESS_TOKEN] == MOCK_ACCESS_TOKEN
     assert entry.data[CONF_REFRESH_TOKEN] == MOCK_REFRESH_TOKEN
     assert entry.data[CONF_EMAIL] == MOCK_EMAIL
-    assert entry.data[CONF_PASSWORD] == MOCK_PASSWORD
+    assert CONF_PASSWORD not in entry.data
+    assert CONF_STORE_CREDENTIALS not in entry.data
 
 
 async def test_reauth_mfa_success_updates_entry(
@@ -465,6 +457,7 @@ async def test_reauth_mfa_success_updates_entry(
     assert entry.data[CONF_REFRESH_TOKEN] == MOCK_REFRESH_TOKEN
     assert entry.data[CONF_EMAIL] == MOCK_EMAIL
     assert CONF_PASSWORD not in entry.data
+    assert CONF_STORE_CREDENTIALS not in entry.data
 
 
 async def test_reauth_invalid_auth_shows_error(

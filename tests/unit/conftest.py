@@ -32,15 +32,20 @@ MOCK_BABY_3 = Baby(uid="baby_3", name="Playroom", camera_uid="cam_3")
 
 def mock_entry_data_v2(
     *,
-    store_credentials: bool = True,
+    legacy_stored_password: bool = False,
 ) -> dict:
+    """Entry data in the current (v2.2) shape.
+
+    legacy_stored_password=True produces the pre-2.2 shape with the
+    store_credentials flag and a plaintext password, for migration tests.
+    """
     data = {
         CONF_ACCESS_TOKEN: MOCK_ACCESS_TOKEN,
         CONF_REFRESH_TOKEN: MOCK_REFRESH_TOKEN,
-        CONF_STORE_CREDENTIALS: store_credentials,
         CONF_EMAIL: MOCK_EMAIL,
     }
-    if store_credentials:
+    if legacy_stored_password:
+        data[CONF_STORE_CREDENTIALS] = True
         data[CONF_PASSWORD] = MOCK_PASSWORD
     return data
 

@@ -4,6 +4,7 @@ import importlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from homeassistant.const import CONF_ACCESS_TOKEN
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -348,6 +349,53 @@ async def test_migrate_version_gt_2_returns_false(hass: HomeAssistant) -> None:
     entry.add_to_hass(hass)
 
     assert not await async_migrate_entry(hass, entry)
+
+
+async def test_migrate_v2_2_scrubs_stored_password(hass: HomeAssistant) -> None:
+    """Entries created with the old store-credentials option lose the password."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=mock_entry_data_v2(legacy_stored_password=True),
+        version=2,
+        minor_version=1,
+        unique_id=MOCK_EMAIL,
+    )
+    entry.add_to_hass(hass)
+
+    assert await async_migrate_entry(hass, entry)
+    assert entry.version == 2
+    assert entry.minor_version == 2
+    assert "password" not in entry.data
+    assert "store_credentials" not in entry.data
+    assert entry.data[CONF_ACCESS_TOKEN] == mock_entry_data_v2()[CONF_ACCESS_TOKEN]
+
+
+async def test_migrate_v2_2_clean_entry_only_bumps_minor(hass: HomeAssistant) -> None:
+    """An entry without stored credentials migrates to 2.2 unchanged."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=mock_entry_data_v2(),
+        version=2,
+        minor_version=1,
+        unique_id=MOCK_EMAIL,
+    )
+    entry.add_to_hass(hass)
+
+    assert await async_migrate_entry(hass, entry)
+    assert entry.minor_version == 2
+    assert dict(entry.data) == mock_entry_data_v2()
+
+
+async def test_migrate_v1_also_scrubs_stored_password(hass: HomeAssistant) -> None:
+    """A v1 entry runs both migrations in one pass and ends clean at 2.2."""
+    entry = MockConfigEntry(domain=DOMAIN, data=mock_entry_data_v1(), version=1, unique_id="cam_1")
+    entry.add_to_hass(hass)
+
+    assert await async_migrate_entry(hass, entry)
+    assert entry.version == 2
+    assert entry.minor_version == 2
+    assert "password" not in entry.data
+    assert "store_credentials" not in entry.data
 
 
 # ---------------------------------------------------------------------------

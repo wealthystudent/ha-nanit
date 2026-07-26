@@ -28,6 +28,10 @@ All notable changes to the Nanit Home Assistant integration are documented in th
 
 - Transient network failures during token refresh (DNS blips, timeouts, rate limits) no longer trigger a spurious reauthentication prompt. The token refresh loop now refreshes the token before reconnecting, giving retries five minutes of headroom instead of racing hard expiry in the final minute.
 
+### Removed
+
+- **The "Store email and password" option.** The stored password was never read by anything (re-authentication always prompts for it), so it was a plaintext credential sitting in Home Assistant's storage and every backup for no benefit. Existing entries are scrubbed automatically on upgrade (a disabled entry: when it is next enabled), and completing a re-authentication also clears it.
+
 ## [1.8.0] – Unreleased
 
 ### Added

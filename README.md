@@ -43,9 +43,6 @@ Copy `custom_components/nanit/` into your HA `config/custom_components/` directo
 3. Enter the MFA code sent to your device (use the latest code — they expire quickly).
 4. Done — all devices on your account (cameras and Sound & Light Machines) are discovered automatically.
 
-> [!TIP]
-> Enable **Store credentials** during setup so re-authentication can happen without re-entering your password.
-
 ## What you get
 
 **Per camera:**

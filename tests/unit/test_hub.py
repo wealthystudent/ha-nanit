@@ -9,9 +9,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from homeassistant.const import CONF_ACCESS_TOKEN
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from aionanit.models import Baby, NetworkInfo
 from custom_components.nanit.const import CONF_CAMERA_IPS, CONF_REFRESH_TOKEN, DOMAIN
+from custom_components.nanit.coordinator import NanitNetworkCoordinator
 from custom_components.nanit.hub import NanitHub
 
 from .conftest import (
@@ -415,8 +418,6 @@ async def test_failed_camera_logs_unknown_cloud_status_on_legacy_baby(
 # Standalone speaker setup (camera optional)
 # ---------------------------------------------------------------------------
 
-Baby = importlib.import_module("aionanit.models").Baby
-
 MOCK_BABY_BOTH = Baby(uid="baby_4", name="Nursery", camera_uid="cam_4", speaker_uid="spk_4")
 MOCK_BABY_SPEAKER_ONLY = Baby(uid="baby_5", name="Den", camera_uid="", speaker_uid="spk_5")
 
@@ -716,3 +717,99 @@ async def test_via_device_cleared_when_camera_fails(hass: HomeAssistant, mock_na
         await hub.async_setup()
 
     assert hub.speaker_data["spk_4"].coordinator.via_camera_uid is None
+
+
+async def test_cloud_coordinator_failure_degrades_not_blocks(
+    hass: HomeAssistant, mock_nanit_client
+) -> None:
+    """A failing optional cloud coordinator disables its sensors, not the entry.
+
+    first_refresh surfaces failure as ConfigEntryNotReady; letting it escape
+    _setup_camera would retry-loop the whole entry forever (regression test
+    for the mixed-account setup loop).
+    """
+    entry = _make_entry(hass)
+    hub = NanitHub(hass, MagicMock(), entry)
+
+    with (
+        patch("custom_components.nanit.hub.NanitPushCoordinator") as push_cls,
+        patch("custom_components.nanit.hub.NanitCloudCoordinator") as cloud_cls,
+        patch("custom_components.nanit.hub.NanitNetworkCoordinator") as net_cls,
+    ):
+        push_cls.return_value = MagicMock(async_setup=AsyncMock())
+        cloud_cls.return_value = MagicMock(
+            async_config_entry_first_refresh=AsyncMock(side_effect=ConfigEntryNotReady())
+        )
+        net_cls.return_value = MagicMock(async_config_entry_first_refresh=AsyncMock())
+        await hub.async_setup()
+
+    data = hub.camera_data[MOCK_BABY_1.camera_uid]
+    assert data.cloud_coordinator is None
+    assert data.network_coordinator is not None
+
+
+async def test_network_coordinator_failure_degrades_not_blocks(
+    hass: HomeAssistant, mock_nanit_client
+) -> None:
+    """A failing optional network coordinator disables its sensors, not the entry."""
+    entry = _make_entry(hass)
+    hub = NanitHub(hass, MagicMock(), entry)
+
+    with (
+        patch("custom_components.nanit.hub.NanitPushCoordinator") as push_cls,
+        patch("custom_components.nanit.hub.NanitCloudCoordinator") as cloud_cls,
+        patch("custom_components.nanit.hub.NanitNetworkCoordinator") as net_cls,
+    ):
+        push_cls.return_value = MagicMock(async_setup=AsyncMock())
+        cloud_cls.return_value = MagicMock(async_config_entry_first_refresh=AsyncMock())
+        net_cls.return_value = MagicMock(
+            async_config_entry_first_refresh=AsyncMock(side_effect=ConfigEntryNotReady())
+        )
+        await hub.async_setup()
+
+    data = hub.camera_data[MOCK_BABY_1.camera_uid]
+    assert data.cloud_coordinator is not None
+    assert data.network_coordinator is None
+
+
+async def test_first_refresh_auth_failure_propagates(
+    hass: HomeAssistant, mock_nanit_client
+) -> None:
+    """ConfigEntryAuthFailed from a coordinator must still reach HA setup."""
+    entry = _make_entry(hass)
+    hub = NanitHub(hass, MagicMock(), entry)
+
+    with (
+        patch("custom_components.nanit.hub.NanitPushCoordinator") as push_cls,
+        patch("custom_components.nanit.hub.NanitCloudCoordinator") as cloud_cls,
+        patch("custom_components.nanit.hub.NanitNetworkCoordinator") as net_cls,
+    ):
+        push_cls.return_value = MagicMock(async_setup=AsyncMock())
+        cloud_cls.return_value = MagicMock(
+            async_config_entry_first_refresh=AsyncMock(side_effect=ConfigEntryAuthFailed())
+        )
+        net_cls.return_value = MagicMock(async_config_entry_first_refresh=AsyncMock())
+        with pytest.raises(ConfigEntryAuthFailed):
+            await hub.async_setup()
+
+
+async def test_network_coordinator_survives_camera_less_row(
+    hass: HomeAssistant, mock_nanit_client
+) -> None:
+    """The network coordinator polls via the hub's tolerant fetch.
+
+    A camera-less baby row on a mixed account must not blow up the poll
+    (regression test for the mixed-account setup loop: the coordinator
+    previously used aionanit's strict parser, which raised KeyError).
+    """
+    net = NetworkInfo(ssid="wifi", frequency_mhz=5200, signal_dbm=-50)
+    cam_baby = Baby(uid="baby_1", name="Nursery", camera_uid="cam_1", network=net)
+    speaker_baby = Baby(uid="baby_9", name="Mae", camera_uid="", speaker_uid="spk_9")
+
+    hub = MagicMock()
+    hub.async_get_babies_tolerant = AsyncMock(return_value=[cam_baby, speaker_baby])
+    hub.failed_camera_uids = set()
+    entry = _make_entry(hass)
+
+    coordinator = NanitNetworkCoordinator(hass, entry, hub, cam_baby)
+    assert await coordinator._async_update_data() is net

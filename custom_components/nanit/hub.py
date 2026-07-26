@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 import aiohttp
 from homeassistant.const import CONF_ACCESS_TOKEN
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import issue_registry as ir
 
 from aionanit.exceptions import (
@@ -197,7 +198,7 @@ class NanitHub:
             self._unsubscribe_tokens = tm.on_tokens_refreshed(self._on_tokens_refreshed)
 
         # Fetch babies (also validates tokens)
-        babies = await self._async_get_babies_tolerant()
+        babies = await self.async_get_babies_tolerant()
 
         self._babies = list(babies)
 
@@ -327,14 +328,15 @@ class NanitHub:
                 ", ".join(failed_cameras),
             )
 
-    async def _async_get_babies_tolerant(self) -> list[Baby]:
+    async def async_get_babies_tolerant(self) -> list[Baby]:
         """Fetch babies, tolerating rows without a camera.
 
-        aionanit's Baby model requires camera_uid and its parser raises
-        KeyError on an account whose baby has no camera paired. Until the
-        library makes the field optional, fall back to parsing the raw
-        /babies response with camera_uid defaulted to "" (treated as
-        "no camera" throughout the hub).
+        aionanit's parser now defaults camera_uid to "" on camera-less
+        rows, but published wheels up to 1.10.0 raise KeyError on them.
+        Keep the raw-parse fallback until the fixed library release is
+        the required minimum (camera_uid "" means "no camera" throughout
+        the hub). Also used by NanitNetworkCoordinator so its polling
+        survives mixed accounts on old wheels.
         """
         try:
             return await self._client.async_get_babies()
@@ -484,12 +486,17 @@ class NanitHub:
         try:
             cloud_coordinator = NanitCloudCoordinator(self._hass, self._entry, self, baby)
             await cloud_coordinator.async_config_entry_first_refresh()
-        except NanitAuthError:
+        except ConfigEntryAuthFailed:
             raise
-        except NanitConnectionError:
+        except ConfigEntryNotReady as err:
+            # first_refresh surfaces every non-auth failure as
+            # ConfigEntryNotReady. This coordinator is optional: degrade to
+            # disabled cloud sensors instead of letting one transient cloud
+            # failure retry-loop the whole entry.
             _LOGGER.warning(
-                "Cloud coordinator for %s failed to start; cloud sensors disabled",
+                "Cloud coordinator for %s failed to start; cloud sensors disabled (%s)",
                 baby.name,
+                err,
             )
             cloud_coordinator = None
 
@@ -500,12 +507,13 @@ class NanitHub:
         try:
             network_coordinator = NanitNetworkCoordinator(self._hass, self._entry, self, baby)
             await network_coordinator.async_config_entry_first_refresh()
-        except NanitAuthError:
+        except ConfigEntryAuthFailed:
             raise
-        except NanitConnectionError:
-            _LOGGER.debug(
-                "Network coordinator for %s failed to start; network sensors disabled",
+        except ConfigEntryNotReady as err:
+            _LOGGER.warning(
+                "Network coordinator for %s failed to start; network sensors disabled (%s)",
                 baby.name,
+                err,
             )
             network_coordinator = None
 

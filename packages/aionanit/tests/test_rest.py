@@ -427,6 +427,42 @@ class TestGetBabies:
             with pytest.raises(NanitConnectionError):
                 await client.async_get_babies("token123")
 
+    async def test_get_babies_camera_less_row(self, client: NanitRestClient) -> None:
+        """A speaker-only baby has no camera_uid; mixed accounts must parse."""
+        with aioresponses() as m:
+            m.get(
+                BABIES_URL,
+                payload={
+                    "babies": [
+                        {"uid": "baby1", "name": "Ezra", "camera_uid": "cam1"},
+                        {
+                            "uid": "baby2",
+                            "name": "Mae",
+                            "speaker": {"speaker": {"uid": "spk9"}},
+                        },
+                    ]
+                },
+            )
+            babies = await client.async_get_babies("token123")
+
+        assert babies[0].camera_uid == "cam1"
+        assert babies[1].camera_uid == ""
+        assert babies[1].speaker_uid == "spk9"
+
+    async def test_get_babies_null_camera_uid_and_missing_name(
+        self, client: NanitRestClient
+    ) -> None:
+        """Explicit null camera_uid and an absent name both parse defensively."""
+        with aioresponses() as m:
+            m.get(
+                BABIES_URL,
+                payload={"babies": [{"uid": "baby3", "camera_uid": None}]},
+            )
+            babies = await client.async_get_babies("token123")
+
+        assert babies[0].camera_uid == ""
+        assert babies[0].name == ""
+
 
 class TestGetEvents:
     async def test_get_events_success(self, client: NanitRestClient) -> None:

@@ -31,8 +31,7 @@ def _make_entry(hass: HomeAssistant) -> MockConfigEntry:
 def _make_hub(babies: list[object], failed: set[str]) -> MagicMock:
     hub = MagicMock()
     hub.failed_camera_uids = failed
-    hub.client.token_manager.async_get_access_token = AsyncMock(return_value="token")
-    hub.client.rest_client.async_get_babies = AsyncMock(return_value=babies)
+    hub.async_get_babies_tolerant = AsyncMock(return_value=babies)
     return hub
 
 

@@ -40,7 +40,7 @@ def _extract_error_message(body: dict[str, Any]) -> str | None:
 
 
 def _sanitize_name(raw: str | None) -> str:
-    if not raw:
+    if not raw or not isinstance(raw, str):
         return ""
     stripped = _HTML_TAG_RE.sub("", raw)
     return "".join(ch for ch in stripped if unicodedata.category(ch)[0] != "C").strip()
@@ -244,11 +244,14 @@ class NanitRestClient:
         except (TimeoutError, aiohttp.ClientError, ValueError) as err:
             raise NanitConnectionError(f"Invalid babies response: {err}") from err
 
+        # A baby without a camera (standalone Sound & Light) has no
+        # camera_uid in its row — default it to "" so mixed accounts parse
+        # instead of raising KeyError on the camera-less row.
         return [
             Baby(
                 uid=baby["uid"],
-                name=_sanitize_name(baby["name"]),
-                camera_uid=baby["camera_uid"],
+                name=_sanitize_name(baby.get("name")),
+                camera_uid=baby.get("camera_uid") or "",
                 speaker_uid=((baby.get("speaker") or {}).get("speaker") or {}).get("uid"),
                 network=_parse_network(baby),
                 camera_connected=_parse_camera_connected(baby),

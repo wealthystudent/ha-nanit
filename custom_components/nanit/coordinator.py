@@ -240,10 +240,10 @@ class NanitNetworkCoordinator(DataUpdateCoordinator[NetworkInfo | None]):
         reload so HA re-runs setup and registers the camera's entities.
         """
         try:
-            client = self._hub.client
-            assert client.token_manager is not None
-            token = await client.token_manager.async_get_access_token()
-            babies = await client.rest_client.async_get_babies(token)
+            # The hub's tolerant fetch parses camera-less baby rows (mixed
+            # accounts), including on published aionanit wheels whose strict
+            # parser raises KeyError on them.
+            babies = await self._hub.async_get_babies_tolerant()
         except NanitAuthError as err:
             raise ConfigEntryAuthFailed(
                 translation_domain=DOMAIN,

@@ -27,6 +27,7 @@ All notable changes to the Nanit Home Assistant integration are documented in th
 ### Fixed
 
 - Transient network failures during token refresh (DNS blips, timeouts, rate limits) no longer trigger a spurious reauthentication prompt. The token refresh loop now refreshes the token before reconnecting, giving retries five minutes of headroom instead of racing hard expiry in the final minute.
+- All REST calls now classify a hung request or response read (the builtin `TimeoutError` aiohttp raises on its total timeout) as a connection error, matching the token refresh fix above, and connection error messages fall back to the exception type name instead of showing up blank. The Sound & Light device token request also gained the standard 15 second timeout it was missing (#113).
 
 ## [1.8.0] – Unreleased
 

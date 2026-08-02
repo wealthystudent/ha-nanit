@@ -37,6 +37,24 @@ from aionanit.rest import NANIT_API_HEADERS
 SESSION_FILE = Path(__file__).resolve().parents[1] / ".nanit-session"
 BASE_URL = "https://api.nanit.com"
 
+# Keys whose values are presigned S3 URLs (contain X-Amz-Security-Token).
+_SENSITIVE_URL_KEYS = {"video_url", "thumbnail_url", "image_url"}
+
+
+def _redact_sensitive(obj: Any) -> Any:
+    """Recursively redact presigned S3 URLs from a response body."""
+    if isinstance(obj, dict):
+        return {
+            k: "[REDACTED — presigned S3 URL]"
+            if k in _SENSITIVE_URL_KEYS and isinstance(v, str)
+            else _redact_sensitive(v)
+            for k, v in obj.items()
+        }
+    if isinstance(obj, list):
+        return [_redact_sensitive(item) for item in obj]
+    return obj
+
+
 # Speculative endpoints to probe, based on Nanit URL patterns.
 # Format: (name, method, path_template, params, description)
 ENDPOINTS: list[tuple[str, str, str, dict[str, Any], str]] = [
@@ -292,7 +310,9 @@ Interpretation:
                     print(f"  Response keys: {result['keys']}")
 
                 if args.verbose and result.get("body"):
-                    print(f"  Body: {json.dumps(result['body'], indent=2)[:2000]}")
+                    print(
+                        f"  Body: {json.dumps(_redact_sensitive(result['body']), indent=2)[:2000]}"
+                    )
                 elif args.verbose and result.get("body_text"):
                     print(f"  Body: {result['body_text']}")
 
@@ -362,7 +382,9 @@ Interpretation:
             print("  Insights plan should run this script to confirm they get data.")
         elif found:
             print("  Working endpoints found! Run with --verbose to see full data.")
-            print("  Share the output in the GitHub issue.")
+            print("  Share the SUMMARY block in the GitHub issue.")
+            print("  Do NOT share verbose output publicly — it may contain")
+            print("  time-limited video URLs granting access to your recordings.")
         else:
             print("  No activity endpoints found with these guesses.")
             print("  A tester with Insights should use mitmproxy to capture the")

@@ -9,7 +9,7 @@ import pytest
 
 from aionanit.client import NanitClient
 from aionanit.exceptions import NanitAuthError, NanitMfaRequiredError
-from aionanit.models import Baby
+from aionanit.models import Baby, CloudEvent
 
 
 def _make_client() -> tuple[NanitClient, MagicMock]:
@@ -242,3 +242,106 @@ class TestAsyncClose:
         # Should not raise when no cameras exist
         await client.async_close()
         await client.async_close()
+
+
+def _make_authenticated_client() -> NanitClient:
+    """Create a NanitClient with a mocked session and a non-expired token."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    client = NanitClient(session)
+    # Use the internal TokenManager constructor directly so the token is
+    # not immediately expired (restore_tokens sets expires_in=0).
+    from aionanit.auth import TokenManager
+
+    client._token_manager = TokenManager(client.rest_client, "at", "rt", expires_in=3600.0)
+    return client
+
+
+class TestRetryOn401:
+    async def test_get_babies_retries_on_401(self) -> None:
+        client = _make_authenticated_client()
+        expected = [Baby(uid="b1", name="B", camera_uid="c1")]
+        with (
+            patch.object(
+                client.rest_client,
+                "async_get_babies",
+                new_callable=AsyncMock,
+                side_effect=[NanitAuthError("Access token invalid"), expected],
+            ),
+            patch.object(
+                client.rest_client,
+                "async_refresh_token",
+                new_callable=AsyncMock,
+                return_value={"access_token": "fresh_at", "refresh_token": "fresh_rt"},
+            ) as mock_refresh,
+        ):
+            result = await client.async_get_babies()
+
+        assert result == expected
+        mock_refresh.assert_awaited_once()
+
+    async def test_get_events_retries_on_401(self) -> None:
+        client = _make_authenticated_client()
+        expected = [CloudEvent(event_type="MOTION", timestamp=1.0, baby_uid="b1")]
+        with (
+            patch.object(
+                client.rest_client,
+                "async_get_events",
+                new_callable=AsyncMock,
+                side_effect=[NanitAuthError("Access token invalid"), expected],
+            ),
+            patch.object(
+                client.rest_client,
+                "async_refresh_token",
+                new_callable=AsyncMock,
+                return_value={"access_token": "fresh_at", "refresh_token": "fresh_rt"},
+            ) as mock_refresh,
+        ):
+            result = await client.async_get_events("b1")
+
+        assert result == expected
+        mock_refresh.assert_awaited_once()
+
+    async def test_get_device_token_retries_on_401(self) -> None:
+        client = _make_authenticated_client()
+        with (
+            patch.object(
+                client.rest_client,
+                "async_get_device_token",
+                new_callable=AsyncMock,
+                side_effect=[NanitAuthError("Access token invalid"), "device_jwt"],
+            ),
+            patch.object(
+                client.rest_client,
+                "async_refresh_token",
+                new_callable=AsyncMock,
+                return_value={"access_token": "fresh_at", "refresh_token": "fresh_rt"},
+            ) as mock_refresh,
+        ):
+            result = await client.async_get_device_token("spk1")
+
+        assert result == "device_jwt"
+        mock_refresh.assert_awaited_once()
+
+    async def test_retry_propagates_if_second_attempt_also_401(self) -> None:
+        client = _make_authenticated_client()
+        with (
+            patch.object(
+                client.rest_client,
+                "async_get_babies",
+                new_callable=AsyncMock,
+                side_effect=NanitAuthError("Access token invalid"),
+            ),
+            patch.object(
+                client.rest_client,
+                "async_refresh_token",
+                new_callable=AsyncMock,
+                return_value={"access_token": "fresh_at", "refresh_token": "fresh_rt"},
+            ),
+            pytest.raises(NanitAuthError),
+        ):
+            await client.async_get_babies()
+
+    async def test_no_retry_when_not_authenticated(self) -> None:
+        client, _ = _make_client()
+        with pytest.raises(NanitAuthError, match="Not authenticated"):
+            await client.async_get_events("b1")

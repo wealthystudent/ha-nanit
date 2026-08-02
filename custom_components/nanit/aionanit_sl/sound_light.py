@@ -38,6 +38,7 @@ from typing import Any
 import aiohttp
 
 from aionanit.auth import TokenManager
+from aionanit.exceptions import NanitAuthError
 from aionanit.rest import NanitRestClient
 
 from .exceptions import NanitTransportError
@@ -210,7 +211,12 @@ class NanitSoundLight:
 
         async def _device_token(uid: str) -> str:
             access = await token_manager.async_get_access_token()
-            return await rest_client.async_get_device_token(access, uid)
+            try:
+                return await rest_client.async_get_device_token(access, uid)
+            except NanitAuthError:
+                await token_manager.async_force_refresh()
+                access = token_manager.access_token
+                return await rest_client.async_get_device_token(access, uid)
 
         self._api = SoundLightTransport(
             access_token_provider=_access_token,

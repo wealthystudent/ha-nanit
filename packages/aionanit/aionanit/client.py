@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
+from typing import TypeVar
 
 import aiohttp
 
 from .auth import TokenManager
 from .camera import NanitCamera
 from .exceptions import NanitAuthError
-from .models import Baby
+from .models import Baby, CloudEvent
 from .rest import NanitRestClient
 
 _LOGGER = logging.getLogger(__name__)
+_T = TypeVar("_T")
 
 
 class NanitClient:
@@ -119,15 +122,54 @@ class NanitClient:
     async def async_get_babies(self) -> list[Baby]:
         """Fetch babies from the Nanit cloud API.
 
+        Retries once on a mid-token-life 401 by refreshing the token.
+
         Raises:
-            NanitAuthError: If not authenticated or token is invalid.
+            NanitAuthError: If not authenticated or token is invalid after retry.
             NanitConnectionError: If the API is unreachable.
 
+        """
+        return await self._async_with_retry(
+            lambda token: self._rest.async_get_babies(token),
+        )
+
+    async def async_get_events(self, baby_uid: str, limit: int = 20) -> list[CloudEvent]:
+        """Fetch cloud events for a baby.
+
+        Retries once on a mid-token-life 401 by refreshing the token.
+        """
+        return await self._async_with_retry(
+            lambda token: self._rest.async_get_events(token, baby_uid, limit),
+        )
+
+    async def async_get_device_token(self, speaker_uid: str) -> str:
+        """Get a local device token for a Sound & Light speaker.
+
+        Retries once on a mid-token-life 401 by refreshing the token.
+        """
+        return await self._async_with_retry(
+            lambda token: self._rest.async_get_device_token(token, speaker_uid),
+        )
+
+    async def _async_with_retry(
+        self,
+        call: Callable[[str], Awaitable[_T]],
+    ) -> _T:
+        """Get a token, run a data call, and retry once on 401.
+
+        Standard OAuth practice: a mid-token-life server-side revocation
+        should trigger one refresh+retry before surfacing NanitAuthError.
         """
         if self._token_manager is None:
             raise NanitAuthError("Not authenticated — call async_login first")
         token = await self._token_manager.async_get_access_token()
-        return await self._rest.async_get_babies(token)
+        try:
+            return await call(token)
+        except NanitAuthError:
+            _LOGGER.debug("Data call got 401; refreshing token and retrying once")
+            await self._token_manager.async_force_refresh()
+            token = self._token_manager.access_token
+            return await call(token)
 
     # ------------------------------------------------------------------
     # Camera management

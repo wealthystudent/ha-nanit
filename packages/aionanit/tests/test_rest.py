@@ -56,6 +56,24 @@ class TestLogin:
             with pytest.raises(NanitAuthError, match="Invalid credentials"):
                 await client.async_login("user@test.com", "wrong")
 
+    async def test_login_timeout_is_connection_error(self, client: NanitRestClient) -> None:
+        """aiohttp's total timeout raises builtin TimeoutError, not ClientError."""
+        with aioresponses() as m:
+            m.post(LOGIN_URL, exception=TimeoutError())
+
+            with pytest.raises(NanitConnectionError):
+                await client.async_login("user@test.com", "pass123")
+
+    async def test_login_non_json_response_is_connection_error(
+        self, client: NanitRestClient
+    ) -> None:
+        """A non-JSON body (e.g. an HTML error page) is transient, not auth."""
+        with aioresponses() as m:
+            m.post(LOGIN_URL, status=200, body="<html>oops</html>", content_type="text/html")
+
+            with pytest.raises(NanitConnectionError, match="Invalid login response"):
+                await client.async_login("user@test.com", "pass123")
+
     async def test_login_mfa_required(self, client: NanitRestClient) -> None:
         with aioresponses() as m:
             m.post(
@@ -401,6 +419,14 @@ class TestGetBabies:
         assert babies[0].camera_connected is None
         assert babies[0].camera_last_seen is None
 
+    async def test_get_babies_timeout_is_connection_error(self, client: NanitRestClient) -> None:
+        """aiohttp's total timeout raises builtin TimeoutError, not ClientError."""
+        with aioresponses() as m:
+            m.get(BABIES_URL, exception=TimeoutError())
+
+            with pytest.raises(NanitConnectionError):
+                await client.async_get_babies("token123")
+
 
 class TestGetEvents:
     async def test_get_events_success(self, client: NanitRestClient) -> None:
@@ -445,6 +471,23 @@ class TestGetEvents:
             with pytest.raises(NanitConnectionError):
                 await client.async_get_events("token123", "baby123")
 
+    async def test_get_events_timeout_is_connection_error(self, client: NanitRestClient) -> None:
+        """aiohttp's total timeout raises builtin TimeoutError, not ClientError."""
+        with aioresponses() as m:
+            m.get(EVENTS_URL, exception=TimeoutError())
+
+            with pytest.raises(NanitConnectionError):
+                await client.async_get_events("token123", "baby123")
+
+    async def test_get_events_non_json_response_is_connection_error(
+        self, client: NanitRestClient
+    ) -> None:
+        with aioresponses() as m:
+            m.get(EVENTS_URL, status=200, body="<html>oops</html>", content_type="text/html")
+
+            with pytest.raises(NanitConnectionError, match="Invalid events response"):
+                await client.async_get_events("token123", "baby123")
+
 
 class TestGetDeviceToken:
     async def test_get_device_token_success(self, client: NanitRestClient) -> None:
@@ -476,4 +519,23 @@ class TestGetDeviceToken:
             m.get(DEVICE_TOKEN_URL, payload={"user_device_token": {}})
 
             with pytest.raises(NanitConnectionError, match="No token"):
+                await client.async_get_device_token("acc123", "spk001")
+
+    async def test_get_device_token_timeout_is_connection_error(
+        self, client: NanitRestClient
+    ) -> None:
+        """aiohttp's total timeout raises builtin TimeoutError, not ClientError."""
+        with aioresponses() as m:
+            m.get(DEVICE_TOKEN_URL, exception=TimeoutError())
+
+            with pytest.raises(NanitConnectionError):
+                await client.async_get_device_token("acc123", "spk001")
+
+    async def test_get_device_token_malformed_body_is_connection_error(
+        self, client: NanitRestClient
+    ) -> None:
+        with aioresponses() as m:
+            m.get(DEVICE_TOKEN_URL, status=200, body="not json", content_type="text/html")
+
+            with pytest.raises(NanitConnectionError, match="Invalid udtokens response"):
                 await client.async_get_device_token("acc123", "spk001")

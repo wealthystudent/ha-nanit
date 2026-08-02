@@ -145,8 +145,8 @@ class NanitRestClient:
                 headers=NANIT_API_HEADERS,
                 timeout=_DEFAULT_TIMEOUT,
             )
-        except aiohttp.ClientError as err:
-            raise NanitConnectionError(str(err)) from err
+        except (TimeoutError, aiohttp.ClientError) as err:
+            raise NanitConnectionError(str(err) or type(err).__name__) from err
 
         if resp.status == 401:
             raise NanitAuthError("Invalid credentials")
@@ -154,7 +154,10 @@ class NanitRestClient:
         # Nanit returns HTTP 482 when MFA is required. Parse the body
         # before raise_for_status() since 482 is non-standard and aiohttp
         # would raise ClientResponseError for it.
-        body = await resp.json()
+        try:
+            body = await resp.json()
+        except (TimeoutError, aiohttp.ClientError, ValueError) as err:
+            raise NanitConnectionError(f"Invalid login response: {err}") from err
 
         if "mfa_token" in body:
             raise NanitMfaRequiredError(body["mfa_token"])
@@ -186,7 +189,7 @@ class NanitRestClient:
             # TimeoutError: aiohttp's total timeout raises the builtin, not
             # a ClientError subclass. A hung refresh (observed with flaky
             # DNS) is transient and must never read as an auth failure.
-            raise NanitConnectionError(str(err)) from err
+            raise NanitConnectionError(str(err) or type(err).__name__) from err
 
         if resp.status == 404:
             raise NanitAuthError("Refresh token expired")
@@ -202,7 +205,7 @@ class NanitRestClient:
 
         try:
             body = await resp.json()
-        except (aiohttp.ClientError, ValueError) as err:
+        except (TimeoutError, aiohttp.ClientError, ValueError) as err:
             raise NanitConnectionError(f"Invalid token refresh response: {err}") from err
 
         error_msg = _extract_error_message(body)
@@ -226,8 +229,8 @@ class NanitRestClient:
                 headers={**NANIT_API_HEADERS, "Authorization": access_token},
                 timeout=_DEFAULT_TIMEOUT,
             )
-        except aiohttp.ClientError as err:
-            raise NanitConnectionError(str(err)) from err
+        except (TimeoutError, aiohttp.ClientError) as err:
+            raise NanitConnectionError(str(err) or type(err).__name__) from err
 
         if resp.status == 401:
             raise NanitAuthError("Access token invalid")
@@ -238,7 +241,7 @@ class NanitRestClient:
         resp.raise_for_status()
         try:
             body = await resp.json()
-        except (aiohttp.ClientError, ValueError) as err:
+        except (TimeoutError, aiohttp.ClientError, ValueError) as err:
             raise NanitConnectionError(f"Invalid babies response: {err}") from err
 
         return [
@@ -279,15 +282,19 @@ class NanitRestClient:
             resp = await self._session.get(
                 f"{self._base_url}/speakers/{speaker_uid}/udtokens",
                 headers=headers,
+                timeout=_DEFAULT_TIMEOUT,
             )
-        except aiohttp.ClientError as err:
-            raise NanitConnectionError(str(err)) from err
+        except (TimeoutError, aiohttp.ClientError) as err:
+            raise NanitConnectionError(str(err) or type(err).__name__) from err
 
         if resp.status == 401:
             raise NanitAuthError("Access token invalid")
 
         resp.raise_for_status()
-        body = await resp.json(content_type=None)
+        try:
+            body = await resp.json(content_type=None)
+        except (TimeoutError, aiohttp.ClientError, ValueError) as err:
+            raise NanitConnectionError(f"Invalid udtokens response: {err}") from err
         token: str | None = body.get("user_device_token", {}).get("token")
         if not token:
             raise NanitConnectionError(f"No token in udtokens response for speaker {speaker_uid}")
@@ -306,14 +313,17 @@ class NanitRestClient:
                 headers={**NANIT_API_HEADERS, "Authorization": access_token},
                 timeout=_DEFAULT_TIMEOUT,
             )
-        except aiohttp.ClientError as err:
-            raise NanitConnectionError(str(err)) from err
+        except (TimeoutError, aiohttp.ClientError) as err:
+            raise NanitConnectionError(str(err) or type(err).__name__) from err
 
         if resp.status == 401:
             raise NanitAuthError("Access token invalid")
 
         resp.raise_for_status()
-        body = await resp.json()
+        try:
+            body = await resp.json()
+        except (TimeoutError, aiohttp.ClientError, ValueError) as err:
+            raise NanitConnectionError(f"Invalid events response: {err}") from err
 
         return [
             CloudEvent(

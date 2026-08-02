@@ -138,7 +138,7 @@ class NetworkInfo:
 class Baby:
     uid: str
     name: str
-    camera_uid: str
+    camera_uid: str  # "" = no camera paired (standalone Sound & Light baby)
     speaker_uid: str | None = None
     network: NetworkInfo | None = None
     camera_connected: bool | None = None  # True = camera online per Nanit cloud

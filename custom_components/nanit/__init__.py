@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_EMAIL
+from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import device_registry as dr
@@ -23,6 +23,7 @@ from .const import (
     CONF_CAMERA_IPS,
     CONF_CAMERA_UID,
     CONF_SPEAKER_IPS,
+    CONF_STORE_CREDENTIALS,
     DOMAIN,
     LOGGER,
     PLATFORMS,
@@ -96,11 +97,13 @@ async def async_unload_entry(hass: HomeAssistant, entry: NanitConfigEntry) -> bo
 
 
 async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
-    """Migrate config entry from v1 (single-camera) to v2 (multi-camera per account).
+    """Migrate config entries to the current version.
 
     v1 stored baby/camera info in entry.data and had unique_id = camera_uid.
     v2 stores only auth info in entry.data, camera IPs in options, and uses
     unique_id = email (account-level).
+    v2.2 drops password persistence: any stored password is scrubbed from
+    entry.data (it was never read by anything — reauth always prompts).
     """
     LOGGER.debug("Migrating Nanit config entry from version %s", config_entry.version)
 
@@ -137,6 +140,13 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
         )
 
         LOGGER.info("Migrated Nanit config entry to version 2 (multi-camera support)")
+
+    if config_entry.version == 2 and config_entry.minor_version < 2:
+        new_data = {**config_entry.data}
+        new_data.pop(CONF_PASSWORD, None)
+        new_data.pop(CONF_STORE_CREDENTIALS, None)
+        hass.config_entries.async_update_entry(config_entry, data=new_data, minor_version=2)
+        LOGGER.info("Migrated Nanit config entry to version 2.2 (stored password removed)")
 
     return True
 

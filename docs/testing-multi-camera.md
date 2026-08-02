@@ -36,10 +36,9 @@ If this is your first time, you'll go through the HA onboarding wizard (create u
 2. Click **Add Integration** (bottom right)
 3. Search for **Nanit**
 4. Enter your Nanit **email** and **password**
-5. Check **Store email and password** (makes testing easier)
-6. Click **Submit**
-7. If prompted, enter the **MFA code** sent to your phone
-8. The integration is now added. Your camera should appear as a device.
+5. Click **Submit**
+6. If prompted, enter the **MFA code** sent to your phone
+7. The integration is now added. Your camera should appear as a device.
 
 **Verify:**
 - [ ] Go to **Settings → Devices & Services → Nanit** — you see one device

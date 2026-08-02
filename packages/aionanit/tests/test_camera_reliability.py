@@ -397,3 +397,22 @@ async def test_token_refresh_auth_rejection_stops_loop() -> None:
         await asyncio.wait_for(camera._token_refresh_loop(), timeout=0.1)
 
     camera._transport.async_force_reconnect.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_reinit_failure_is_contained() -> None:
+    """_async_on_reconnected must not leak exceptions out of its task.
+
+    A request inside re-init can trigger a failed nested reconnect and
+    raise NanitCameraUnavailable; before the fix that escaped the task as
+    an "exception was never retrieved" traceback and aborted the re-init.
+    """
+    camera, _ = _make_camera()
+    camera._async_request_initial_state = AsyncMock(
+        side_effect=NanitCameraUnavailable("camera stopped")
+    )
+    camera._async_enable_sensor_push = AsyncMock()
+
+    await camera._async_on_reconnected()
+
+    camera._async_enable_sensor_push.assert_not_awaited()

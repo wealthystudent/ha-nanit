@@ -29,6 +29,7 @@ All notable changes to the Nanit Home Assistant integration are documented in th
 - Transient network failures during token refresh (DNS blips, timeouts, rate limits) no longer trigger a spurious reauthentication prompt. The token refresh loop now refreshes the token before reconnecting, giving retries five minutes of headroom instead of racing hard expiry in the final minute.
 - All REST calls now classify a hung request or response read (the builtin `TimeoutError` aiohttp raises on its total timeout) as a connection error, matching the token refresh fix above, and connection error messages fall back to the exception type name instead of showing up blank. The Sound & Light device token request also gained the standard 15 second timeout it was missing (#113).
 - Accounts mixing a camera baby with a camera-less baby (a standalone Sound & Light for one child, a camera for another) no longer fail setup in an endless retry loop. The babies parser tolerates rows without a camera_uid, and the optional cloud and network coordinators now degrade to disabled sensors when their first refresh fails instead of blocking the whole entry.
+- A camera that fails or times out during setup is now stopped instead of left half-connected: previously its sockets and token refresh loops kept running for the entry's lifetime with no entities attached. Session re-initialization after a reconnect is also contained: a failure inside it now logs and defers to the next health check instead of dying as an unretrieved task exception.
 
 ## [1.8.0] – Unreleased
 

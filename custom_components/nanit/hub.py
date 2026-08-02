@@ -9,6 +9,7 @@ setup handles every combination, including speaker-only accounts.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import re
 from collections.abc import Callable, Coroutine
@@ -479,6 +480,20 @@ class NanitHub:
             local_ip=camera_ip,
         )
 
+        try:
+            await self._async_setup_camera_coordinators(camera, baby)
+        except BaseException:
+            # Setup failed or was cancelled (the wait_for timeout): stop the
+            # half-started camera, or its sockets and refresh loops keep
+            # running for the entry's lifetime with no entities attached.
+            # Shield the cleanup so the cancellation that brought us here
+            # can't abort it midway.
+            with contextlib.suppress(Exception):
+                await asyncio.shield(camera.async_stop())
+            raise
+
+    async def _async_setup_camera_coordinators(self, camera: NanitCamera, baby: Baby) -> None:
+        """Start the coordinators for a created camera and register its data."""
         push_coordinator = NanitPushCoordinator(self._hass, self._entry, camera, baby)
         await push_coordinator.async_setup()
 

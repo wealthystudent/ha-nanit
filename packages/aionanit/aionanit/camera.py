@@ -713,8 +713,20 @@ class NanitCamera:
         so that push-based data resumes after a connection drop.
         """
         _LOGGER.info("Re-initializing session after reconnect")
-        await self._async_request_initial_state()
-        await self._async_enable_sensor_push()
+        try:
+            await self._async_request_initial_state()
+            await self._async_enable_sensor_push()
+        except Exception:
+            # This runs as a fire-and-forget task: anything escaping is an
+            # "exception was never retrieved" log and an aborted re-init.
+            # A request that triggers a failed nested reconnect raises
+            # NanitCameraUnavailable (or auth/connection errors) past the
+            # narrow excepts inside the helpers, so contain everything and
+            # let the health check drive the next recovery attempt.
+            _LOGGER.warning(
+                "Session re-init after reconnect failed; retrying on next health check",
+                exc_info=True,
+            )
 
     # ------------------------------------------------------------------
     # Internal — state management

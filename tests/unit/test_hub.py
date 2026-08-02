@@ -813,3 +813,90 @@ async def test_network_coordinator_survives_camera_less_row(
 
     coordinator = NanitNetworkCoordinator(hass, entry, hub, cam_baby)
     assert await coordinator._async_update_data() is net
+
+
+async def test_camera_stopped_when_setup_times_out(hass: HomeAssistant, mock_nanit_client) -> None:
+    """A camera whose setup times out must be stopped, not left running.
+
+    Before the fix, the wait_for cancellation orphaned the half-started
+    camera: its sockets and refresh loops ran for the entry's lifetime
+    with no entities attached.
+    """
+    cams: dict[str, MagicMock] = {}
+
+    def _factory(**kw):
+        cam = _make_mock_camera(kw["uid"], kw["baby_uid"])
+        cams[kw["uid"]] = cam
+        return cam
+
+    mock_nanit_client.async_get_babies.return_value = [MOCK_BABY_1, MOCK_BABY_2]
+    mock_nanit_client.camera.side_effect = _factory
+
+    entry = _make_entry(hass)
+    hub = NanitHub(hass, MagicMock(), entry)
+
+    with (
+        patch("custom_components.nanit.hub.NanitPushCoordinator") as push_cls,
+        patch("custom_components.nanit.hub.NanitCloudCoordinator") as cloud_cls,
+        patch("custom_components.nanit.hub.NanitNetworkCoordinator") as net_cls,
+        patch("custom_components.nanit.hub._CAMERA_SETUP_TIMEOUT", 0.01),
+    ):
+
+        async def _hang_forever():
+            await asyncio.sleep(3600)
+
+        def push_factory(_hass, _entry, camera, _baby):
+            mock = MagicMock()
+            if camera.uid == MOCK_BABY_1.camera_uid:
+                mock.async_setup = _hang_forever
+            else:
+                mock.async_setup = AsyncMock()
+            return mock
+
+        push_cls.side_effect = push_factory
+        cloud_cls.return_value = MagicMock(async_config_entry_first_refresh=AsyncMock())
+        net_cls.return_value = MagicMock(async_config_entry_first_refresh=AsyncMock())
+        await hub.async_setup()
+
+    cams[MOCK_BABY_1.camera_uid].async_stop.assert_awaited_once()
+    cams[MOCK_BABY_2.camera_uid].async_stop.assert_not_awaited()
+    assert MOCK_BABY_2.camera_uid in hub.camera_data
+
+
+async def test_camera_stopped_when_setup_fails(hass: HomeAssistant, mock_nanit_client) -> None:
+    """A camera whose coordinator setup fails must be stopped too."""
+    cams: dict[str, MagicMock] = {}
+
+    def _factory(**kw):
+        cam = _make_mock_camera(kw["uid"], kw["baby_uid"])
+        cams[kw["uid"]] = cam
+        return cam
+
+    mock_nanit_client.async_get_babies.return_value = [MOCK_BABY_1, MOCK_BABY_2]
+    mock_nanit_client.camera.side_effect = _factory
+
+    entry = _make_entry(hass)
+    hub = NanitHub(hass, MagicMock(), entry)
+
+    with (
+        patch("custom_components.nanit.hub.NanitPushCoordinator") as push_cls,
+        patch("custom_components.nanit.hub.NanitCloudCoordinator") as cloud_cls,
+        patch("custom_components.nanit.hub.NanitNetworkCoordinator") as net_cls,
+    ):
+
+        def push_factory(_hass, _entry, camera, _baby):
+            mock = MagicMock()
+            if camera.uid == MOCK_BABY_1.camera_uid:
+                mock.async_setup = AsyncMock(side_effect=NanitConnectionError("unreachable"))
+            else:
+                mock.async_setup = AsyncMock()
+            return mock
+
+        push_cls.side_effect = push_factory
+        cloud_cls.return_value = MagicMock(async_config_entry_first_refresh=AsyncMock())
+        net_cls.return_value = MagicMock(async_config_entry_first_refresh=AsyncMock())
+        await hub.async_setup()
+
+    cams[MOCK_BABY_1.camera_uid].async_stop.assert_awaited_once()
+    assert MOCK_BABY_1.camera_uid in hub.failed_camera_uids
+    assert MOCK_BABY_2.camera_uid in hub.camera_data

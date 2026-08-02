@@ -167,7 +167,7 @@ class NanitClient:
             return await call(token)
         except NanitAuthError:
             _LOGGER.debug("Data call got 401; refreshing token and retrying once")
-            await self._token_manager.async_force_refresh()
+            await self._token_manager.async_force_refresh(failed_token=token)
             token = self._token_manager.access_token
             return await call(token)
 

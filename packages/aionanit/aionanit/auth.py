@@ -91,8 +91,23 @@ class TokenManager:
 
         return self._access_token
 
-    async def async_force_refresh(self) -> None:
+    async def async_force_refresh(self, failed_token: str | None = None) -> None:
+        """Refresh the token pair, coalescing concurrent callers.
+
+        ``failed_token`` is the access token the caller just saw rejected.
+        When several data calls hit a 401 on the same token at once, the
+        first caller through the lock performs the refresh; the rest find
+        the stored token already differs from the one that failed and skip
+        their redundant rotation (without this, N concurrent 401s queue N
+        sequential rotations). Callbacks fire only for the caller that
+        actually refreshed — the skipped callers' tokens were already
+        published by the winner.
+
+        Passing ``None`` refreshes unconditionally.
+        """
         async with self._lock:
+            if failed_token is not None and self._access_token != failed_token:
+                return
             await self._async_refresh()
 
         for callback in self._callbacks:

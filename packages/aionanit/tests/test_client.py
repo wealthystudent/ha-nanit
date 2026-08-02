@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import aiohttp
 import pytest
 
 from aionanit.client import NanitClient
-from aionanit.exceptions import NanitAuthError, NanitMfaRequiredError
+from aionanit.exceptions import NanitAuthError, NanitConnectionError, NanitMfaRequiredError
 from aionanit.models import Baby, CloudEvent
 
 
@@ -345,3 +346,114 @@ class TestRetryOn401:
         client, _ = _make_client()
         with pytest.raises(NanitAuthError, match="Not authenticated"):
             await client.async_get_events("b1")
+
+    async def test_retry_call_uses_fresh_token(self) -> None:
+        """The retry must send the refreshed token, not re-send the failed one."""
+        client = _make_authenticated_client()
+        expected = [Baby(uid="b1", name="B", camera_uid="c1")]
+        with (
+            patch.object(
+                client.rest_client,
+                "async_get_babies",
+                new_callable=AsyncMock,
+                side_effect=[NanitAuthError("Access token invalid"), expected],
+            ) as mock_get_babies,
+            patch.object(
+                client.rest_client,
+                "async_refresh_token",
+                new_callable=AsyncMock,
+                return_value={"access_token": "fresh_at", "refresh_token": "fresh_rt"},
+            ),
+        ):
+            result = await client.async_get_babies()
+
+        assert result == expected
+        assert mock_get_babies.await_args_list == [call("at"), call("fresh_at")]
+
+    async def test_refresh_connection_error_surfaces_as_connection_error(self) -> None:
+        """A transient refresh failure during the retry is NOT an auth failure.
+
+        Callers map NanitAuthError to a reauth flow, so a DNS blip or
+        timeout during the refresh must surface as NanitConnectionError
+        (retried on the next poll), never force a spurious reauth.
+        """
+        client = _make_authenticated_client()
+        with (
+            patch.object(
+                client.rest_client,
+                "async_get_babies",
+                new_callable=AsyncMock,
+                side_effect=NanitAuthError("Access token invalid"),
+            ),
+            patch.object(
+                client.rest_client,
+                "async_refresh_token",
+                new_callable=AsyncMock,
+                side_effect=NanitConnectionError("dns down"),
+            ),
+            pytest.raises(NanitConnectionError, match="dns down"),
+        ):
+            await client.async_get_babies()
+
+    async def test_refresh_rejection_propagates_auth_error(self) -> None:
+        """An explicit refresh rejection is a genuine auth failure and surfaces."""
+        client = _make_authenticated_client()
+        with (
+            patch.object(
+                client.rest_client,
+                "async_get_babies",
+                new_callable=AsyncMock,
+                side_effect=NanitAuthError("Access token invalid"),
+            ),
+            patch.object(
+                client.rest_client,
+                "async_refresh_token",
+                new_callable=AsyncMock,
+                side_effect=NanitAuthError("Refresh token revoked"),
+            ),
+            pytest.raises(NanitAuthError, match="Refresh token revoked"),
+        ):
+            await client.async_get_babies()
+
+    async def test_concurrent_401s_refresh_once(self) -> None:
+        """N data calls that 401 on the same token trigger exactly one rotation."""
+        client = _make_authenticated_client()
+        expected = [Baby(uid="b1", name="B", camera_uid="c1")]
+
+        async def fake_get_babies(token: str) -> list[Baby]:
+            # Yield first so every concurrent caller fetches the stale
+            # token before the first 401 triggers the refresh.
+            await asyncio.sleep(0)
+            if token == "at":
+                raise NanitAuthError("Access token invalid")
+            return expected
+
+        async def slow_refresh(*args: object, **kwargs: object) -> dict[str, str]:
+            # Yield while holding the refresh lock so the other callers
+            # genuinely contend on it, instead of all arriving after the
+            # rotation already completed.
+            await asyncio.sleep(0)
+            return {"access_token": "fresh_at", "refresh_token": "fresh_rt"}
+
+        with (
+            patch.object(
+                client.rest_client,
+                "async_get_babies",
+                new_callable=AsyncMock,
+                side_effect=fake_get_babies,
+            ),
+            patch.object(
+                client.rest_client,
+                "async_refresh_token",
+                new_callable=AsyncMock,
+                side_effect=slow_refresh,
+            ) as mock_refresh,
+        ):
+            results = await asyncio.gather(
+                client.async_get_babies(),
+                client.async_get_babies(),
+                client.async_get_babies(),
+            )
+
+        assert all(r == expected for r in results)
+        mock_refresh.assert_awaited_once()

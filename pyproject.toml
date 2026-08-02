@@ -71,15 +71,5 @@ ignore_errors = true
 module = "aionanit.camera"
 disable_error_code = ["attr-defined"]
 
-[[tool.mypy.overrides]]
-module = "tests.*"
-disallow_untyped_defs = false
-disallow_untyped_decorators = false
-
-[[tool.mypy.overrides]]
-module = "custom_components.nanit.*"
-disallow_subclassing_any = false
-disallow_untyped_decorators = false
-
 [tool.coverage.run]
 omit = ["custom_components/nanit/aionanit_sl/*"]

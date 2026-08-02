@@ -1,10 +1,9 @@
 {
   "domain": "nanit",
   "name": "Nanit",
-  "version": "1.10.0",
-  "homeassistant": "2026.5.0",
-  "documentation": "https://github.com/wealthystudent/ha-nanit",
-  "issue_tracker": "https://github.com/wealthystudent/ha-nanit/issues",
+  "after_dependencies": [
+    "zeroconf"
+  ],
   "codeowners": [
     "@wealthystudent"
   ],
@@ -13,16 +12,16 @@
     "http",
     "lovelace"
   ],
-  "after_dependencies": [
-    "zeroconf"
-  ],
-  "iot_class": "cloud_push",
+  "documentation": "https://github.com/wealthystudent/ha-nanit",
   "integration_type": "hub",
-  "requirements": [
-    "aionanit>=1.10.0"
-  ],
+  "iot_class": "cloud_push",
+  "issue_tracker": "https://github.com/wealthystudent/ha-nanit/issues",
   "loggers": [
     "custom_components.nanit",
     "aionanit"
-  ]
+  ],
+  "requirements": [
+    "aionanit>=1.10.0"
+  ],
+  "version": "1.10.0"
 }

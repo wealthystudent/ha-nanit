@@ -3,12 +3,16 @@ name: CI
 on:
   push:
     branches: [main]
+  # No base-branch filter: stacked PRs (base = another PR's branch) must
+  # run CI too, or they merge into their base unvalidated.
   pull_request:
-    branches: [main]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   lint:
@@ -22,7 +26,9 @@ jobs:
           python-version: "3.14"
 
       - name: Install ruff
-        run: pip install ruff
+        # Same pinned range devs use, so a new ruff minor can't redden CI
+        # without a repo change.
+        run: pip install "$(grep -m1 -E '^ruff[<>=~]' dev/requirements.txt)"
 
       - name: Ruff check
         run: ruff check .
@@ -116,3 +122,27 @@ jobs:
 
       - name: Run mypy on integration
         run: mypy custom_components/nanit --config-file pyproject.toml --python-version 3.14
+
+  hassfest:
+    name: Hassfest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Deliberately unpinned: hassfest validates against current Home
+      # Assistant rules, and freezing it would freeze the rule set.
+      - uses: home-assistant/actions/hassfest@master
+
+  hacs-validation:
+    name: HACS Validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Deliberately unpinned, same reasoning as hassfest.
+      - uses: hacs/action@main
+        with:
+          category: integration
+          # topics: repository topics are a GitHub setting (maintainer).
+          # brands passes: the committed brand/ assets satisfy it.
+          ignore: topics

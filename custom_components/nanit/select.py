@@ -11,7 +11,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import NanitConfigEntry
 from .aionanit_sl.exceptions import NanitTransportError
-from .const import DEFAULT_SOUND_MACHINE_SOUNDS
+from .const import DEFAULT_SOUND_MACHINE_SOUNDS, DOMAIN
 from .coordinator import NanitSoundLightCoordinator
 from .entity import NanitSoundLightEntity
 
@@ -67,4 +67,8 @@ class NanitSoundSelect(NanitSoundLightEntity, SelectEntity):
             await self.coordinator.sound_light.async_set_track(option)
         except NanitTransportError as err:
             _LOGGER.error("Failed to set sound to %s: %s", option, err)
-            raise HomeAssistantError(f"Failed to set sound to {option}") from err
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="sl_track_failed",
+                translation_placeholders={"option": option},
+            ) from err

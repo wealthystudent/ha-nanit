@@ -214,9 +214,10 @@ async def test_light_turn_on_handles_transport_error_gracefully(
     entity = NanitSoundLightLight(coordinator)
     _disable_state_writes(entity)
 
-    with pytest.raises(HomeAssistantError):
+    with pytest.raises(HomeAssistantError) as excinfo:
         await entity.async_turn_on()
 
+    assert excinfo.value.translation_key == "sl_light_control_failed"
     assert "Failed to control Sound & Light light" in caplog.text
 
 
@@ -228,9 +229,10 @@ async def test_light_turn_off_handles_transport_error_gracefully(
     entity = NanitSoundLightLight(coordinator)
     _disable_state_writes(entity)
 
-    with pytest.raises(HomeAssistantError):
+    with pytest.raises(HomeAssistantError) as excinfo:
         await entity.async_turn_off()
 
+    assert excinfo.value.translation_key == "sl_light_off_failed"
     assert "Failed to turn off Sound & Light light" in caplog.text
 
 
@@ -278,9 +280,11 @@ async def test_select_select_option_handles_transport_error_gracefully(
     entity = NanitSoundSelect(coordinator)
     _disable_state_writes(entity)
 
-    with pytest.raises(HomeAssistantError):
+    with pytest.raises(HomeAssistantError) as excinfo:
         await entity.async_select_option("rain")
 
+    assert excinfo.value.translation_key == "sl_track_failed"
+    assert excinfo.value.translation_placeholders == {"option": "rain"}
     assert "Failed to set sound to rain" in caplog.text
 
 
@@ -324,11 +328,13 @@ async def test_sl_power_switch_handles_transport_error_gracefully(
     entity = NanitSLPowerSwitch(coordinator)
     _disable_state_writes(entity)
 
-    with pytest.raises(HomeAssistantError):
+    with pytest.raises(HomeAssistantError) as excinfo_on:
         await entity.async_turn_on()
-    with pytest.raises(HomeAssistantError):
+    with pytest.raises(HomeAssistantError) as excinfo_off:
         await entity.async_turn_off()
 
+    assert excinfo_on.value.translation_key == "sl_power_on_failed"
+    assert excinfo_off.value.translation_key == "sl_power_off_failed"
     assert "Failed to turn on S&L device" in caplog.text
     assert "Failed to turn off S&L device" in caplog.text
 
@@ -367,11 +373,13 @@ async def test_sl_sound_switch_handles_transport_error_gracefully(
     entity = NanitSLSoundSwitch(coordinator)
     _disable_state_writes(entity)
 
-    with pytest.raises(HomeAssistantError):
+    with pytest.raises(HomeAssistantError) as excinfo_on:
         await entity.async_turn_on()
-    with pytest.raises(HomeAssistantError):
+    with pytest.raises(HomeAssistantError) as excinfo_off:
         await entity.async_turn_off()
 
+    assert excinfo_on.value.translation_key == "sl_sound_on_failed"
+    assert excinfo_off.value.translation_key == "sl_sound_off_failed"
     assert "Failed to turn on S&L sound" in caplog.text
     assert "Failed to turn off S&L sound" in caplog.text
 
@@ -928,8 +936,10 @@ async def test_sl_volume_set_value_handles_transport_error() -> None:
     entity = NanitSoundMachineVolume(coordinator)
     _disable_state_writes(entity)
 
-    with pytest.raises(HomeAssistantError):
+    with pytest.raises(HomeAssistantError) as excinfo:
         await entity.async_set_native_value(75.0)
+
+    assert excinfo.value.translation_key == "sl_volume_failed"
 
 
 # ---------------------------------------------------------------------------

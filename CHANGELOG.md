@@ -10,6 +10,7 @@ All notable changes to the Nanit Home Assistant integration are documented in th
 - **The speaker's LAN address is now discovered automatically** via mDNS and preferred for sends, with the cloud relay as fallback. Both connections stay open at once. A manually configured speaker IP still works and takes precedence over discovery.
 - **Turning the S&L light off now dims it to zero instead of writing the `noColor` flag**, so the stored color survives and turning the light back on restores it. Previously the light came back white unless a color was re-picked. Turning the light on always re-sends the last color explicitly (the device does not restore color on its own) and, when the device was fully off, keeps sound at "No sound" so the light can't unexpectedly resume audio.
 - **S&L entities now go unavailable when the speaker is unreachable**, matching the camera entities and HA guidance, debounced by a 30 second grace period so brief reconnects don't flash "Unavailable". The connectivity and connection type sensors keep reporting while disconnected.
+- Sound & Light command failures (light, power, sound, track, volume) now surface as translated Home Assistant errors instead of hardcoded English strings.
 
 ### Added
 

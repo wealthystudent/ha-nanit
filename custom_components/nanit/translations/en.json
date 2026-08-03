@@ -74,6 +74,30 @@
     },
     "cloud_fetch_failed": {
       "message": "Failed to fetch cloud events: {error}"
+    },
+    "sl_light_control_failed": {
+      "message": "Failed to control the Sound & Light light"
+    },
+    "sl_light_off_failed": {
+      "message": "Failed to turn off the Sound & Light light"
+    },
+    "sl_volume_failed": {
+      "message": "Failed to set the sound machine volume"
+    },
+    "sl_power_on_failed": {
+      "message": "Failed to turn on the Sound & Light Machine"
+    },
+    "sl_power_off_failed": {
+      "message": "Failed to turn off the Sound & Light Machine"
+    },
+    "sl_sound_on_failed": {
+      "message": "Failed to turn on the sound"
+    },
+    "sl_sound_off_failed": {
+      "message": "Failed to turn off the sound"
+    },
+    "sl_track_failed": {
+      "message": "Failed to set the sound to {option}"
     }
   },
   "issues": {

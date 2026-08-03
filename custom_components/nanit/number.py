@@ -12,6 +12,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import NanitConfigEntry
 from .aionanit_sl.exceptions import NanitTransportError
+from .const import DOMAIN
 from .coordinator import NanitSoundLightCoordinator
 from .entity import NanitSoundLightEntity
 
@@ -68,4 +69,7 @@ class NanitSoundMachineVolume(NanitSoundLightEntity, NumberEntity):
             await self.coordinator.sound_light.async_set_volume(value / 100.0)
         except NanitTransportError as err:
             _LOGGER.error("Failed to set sound machine volume: %s", err)
-            raise HomeAssistantError("Failed to set sound machine volume") from err
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="sl_volume_failed",
+            ) from err

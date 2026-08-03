@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from typing import Any
@@ -44,6 +46,17 @@ class NanitData:
 type NanitConfigEntry = ConfigEntry[NanitData]
 
 
+async def _async_shutdown_hub(hub: NanitHub) -> None:
+    """Close the hub without letting the close mask why setup failed.
+
+    Shielded so a cancellation arriving mid-close cannot abort the
+    cleanup, and suppressed so a close-time error cannot replace the
+    exception that brought us here.
+    """
+    with contextlib.suppress(Exception):
+        await asyncio.shield(hub.async_close())
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: NanitConfigEntry) -> bool:
     """Set up Nanit from a config entry."""
     session = async_get_clientsession(hass)
@@ -52,21 +65,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: NanitConfigEntry) -> boo
     try:
         await hub.async_setup()
     except NanitAuthError as err:
-        await hub.async_close()
+        await _async_shutdown_hub(hub)
         raise ConfigEntryAuthFailed(
             translation_domain=DOMAIN,
             translation_key="auth_failed",
             translation_placeholders={"error": str(err)},
         ) from err
     except NanitConnectionError as err:
-        await hub.async_close()
+        await _async_shutdown_hub(hub)
         raise ConfigEntryNotReady(
             translation_domain=DOMAIN,
             translation_key="connection_failed",
             translation_placeholders={"error": str(err)},
         ) from err
-    except Exception:
-        await hub.async_close()
+    except BaseException:
+        # BaseException also covers CancelledError (HA cancelling setup at
+        # shutdown or during a racing reload), which except Exception missed:
+        # any camera or speaker the hub already started must still be
+        # stopped, or its sockets and refresh loops leak past the cancelled
+        # setup.
+        await _async_shutdown_hub(hub)
         raise
 
     entry.runtime_data = NanitData(hub=hub, cameras=hub.camera_data, speakers=hub.speaker_data)

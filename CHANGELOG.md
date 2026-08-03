@@ -35,6 +35,8 @@ All notable changes to the Nanit Home Assistant integration are documented in th
 - Concurrent 401s now share one token rotation: when several data calls fail on the same access token at once, the first caller refreshes and the rest reuse its result instead of queueing a redundant rotation each. The retry also always sends the freshly rotated token.
 - The camera volume parsed from the protobuf stream is clamped to 0-100 like the night light brightness already was, so a malformed device report can no longer push the media player above 100% volume. Outgoing volume and brightness writes clamp before sending, and the optimistic state now always matches the clamped wire value.
 - Cloud snapshots are checked for image magic bytes (JPEG or PNG) before being returned, so an error page served with HTTP 200 can no longer be published as a camera still.
+- Setup cancelled by Home Assistant partway through (shutdown during startup, a racing reload) now stops any camera and speaker connections the hub had already opened, instead of leaking them for the rest of the process lifetime.
+- HTTP statuses the REST layer does not explicitly handle are now classified as retryable connection errors instead of escaping as raw aiohttp exceptions. A stray 4xx during setup used to hard-fail the entry with no retry, and one during the events poll dumped tracebacks into the log. Deliberately not mapped to auth: the explicit checks already cover every real credential rejection, and Nanit uses 403 for subscription gating, where a reauth prompt could never succeed.
 
 ### Removed
 

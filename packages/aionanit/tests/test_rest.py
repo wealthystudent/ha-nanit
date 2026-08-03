@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from aiohttp import ClientConnectionError, ClientSession
+from aiohttp import ClientConnectionError, ClientResponseError, ClientSession
 from aioresponses import aioresponses
 
 from aionanit.exceptions import (
@@ -575,3 +575,88 @@ class TestGetDeviceToken:
 
             with pytest.raises(NanitConnectionError, match="Invalid udtokens response"):
                 await client.async_get_device_token("acc123", "spk001")
+
+
+class TestHttpErrorClassification:
+    """Statuses the explicit checks don't catch must still classify.
+
+    Everything maps to NanitConnectionError: the explicit checks that run
+    first already cover every real credential rejection, and Nanit uses
+    403 for subscription gating (per the probe tooling), not credentials,
+    so auth mapping here would raise a reauth prompt that can never
+    succeed. Nothing may escape as a raw aiohttp exception: an
+    unclassified 4xx used to hard-fail setup with no retry (or spam
+    tracebacks from the events poll).
+    """
+
+    async def test_login_forbidden_is_connection_error(self, client: NanitRestClient) -> None:
+        with aioresponses() as m:
+            m.post(LOGIN_URL, status=403, payload={})
+            with pytest.raises(NanitConnectionError, match="HTTP 403"):
+                await client.async_login("user@test.com", "pass123")
+
+    async def test_login_unexpected_4xx_is_connection_error(self, client: NanitRestClient) -> None:
+        with aioresponses() as m:
+            m.post(LOGIN_URL, status=418, payload={})
+            with pytest.raises(NanitConnectionError, match="HTTP 418"):
+                await client.async_login("user@test.com", "pass123")
+
+    async def test_refresh_forbidden_is_connection_error(self, client: NanitRestClient) -> None:
+        with aioresponses() as m:
+            m.post(REFRESH_URL, status=403, payload={})
+            with pytest.raises(NanitConnectionError, match="HTTP 403"):
+                await client.async_refresh_token("acc", "ref")
+
+    async def test_refresh_unexpected_4xx_is_connection_error(
+        self, client: NanitRestClient
+    ) -> None:
+        with aioresponses() as m:
+            m.post(REFRESH_URL, status=400, payload={})
+            with pytest.raises(NanitConnectionError, match="HTTP 400"):
+                await client.async_refresh_token("acc", "ref")
+
+    async def test_get_babies_forbidden_is_connection_error(self, client: NanitRestClient) -> None:
+        with aioresponses() as m:
+            m.get(BABIES_URL, status=403)
+            with pytest.raises(NanitConnectionError, match="HTTP 403"):
+                await client.async_get_babies("token")
+
+    async def test_get_babies_unexpected_4xx_is_connection_error(
+        self, client: NanitRestClient
+    ) -> None:
+        with aioresponses() as m:
+            m.get(BABIES_URL, status=404)
+            with pytest.raises(NanitConnectionError, match="HTTP 404") as excinfo:
+                await client.async_get_babies("token")
+
+        assert isinstance(excinfo.value.__cause__, ClientResponseError)
+
+    async def test_get_events_forbidden_is_connection_error(self, client: NanitRestClient) -> None:
+        with aioresponses() as m:
+            m.get(EVENTS_URL, status=403)
+            with pytest.raises(NanitConnectionError, match="HTTP 403"):
+                await client.async_get_events("token", "baby123")
+
+    async def test_get_events_unexpected_4xx_is_connection_error(
+        self, client: NanitRestClient
+    ) -> None:
+        with aioresponses() as m:
+            m.get(EVENTS_URL, status=404)
+            with pytest.raises(NanitConnectionError, match="HTTP 404"):
+                await client.async_get_events("token", "baby123")
+
+    async def test_get_device_token_forbidden_is_connection_error(
+        self, client: NanitRestClient
+    ) -> None:
+        with aioresponses() as m:
+            m.get(DEVICE_TOKEN_URL, status=403)
+            with pytest.raises(NanitConnectionError, match="HTTP 403"):
+                await client.async_get_device_token("token", "spk001")
+
+    async def test_get_device_token_unexpected_4xx_is_connection_error(
+        self, client: NanitRestClient
+    ) -> None:
+        with aioresponses() as m:
+            m.get(DEVICE_TOKEN_URL, status=404)
+            with pytest.raises(NanitConnectionError, match="HTTP 404"):
+                await client.async_get_device_token("token", "spk001")

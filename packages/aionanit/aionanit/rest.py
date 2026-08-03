@@ -18,6 +18,27 @@ from .models import Baby, CloudEvent, NetworkInfo
 DEFAULT_BASE_URL = "https://api.nanit.com"
 _DEFAULT_TIMEOUT = aiohttp.ClientTimeout(total=15)
 
+
+def _classify_http_error(resp: aiohttp.ClientResponse, what: str) -> None:
+    """Raise NanitConnectionError for a non-2xx response.
+
+    Every credential rejection the API expresses is already handled by
+    the explicit checks that run before this (401, the refresh 404,
+    error bodies). What reaches here is unexpected: server-side
+    failures, WAF or CDN interference, and Nanit's subscription-gated
+    403s (the probe tooling documents 403 as endpoint-exists-but-
+    subscription-gated, not a credential problem). None of those are
+    fixable by reauthenticating, so everything classifies as a
+    retryable connection error. Mapping any of them to NanitAuthError
+    would stop the coordinator and raise a reauth prompt that can
+    never succeed.
+    """
+    try:
+        resp.raise_for_status()
+    except aiohttp.ClientResponseError as err:
+        raise NanitConnectionError(f"{what} failed with HTTP {err.status}") from err
+
+
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 
 
@@ -166,7 +187,7 @@ class NanitRestClient:
         if error_msg:
             raise NanitAuthError(error_msg)
 
-        resp.raise_for_status()
+        _classify_http_error(resp, "Login")
 
         return {
             "access_token": body["access_token"],
@@ -212,7 +233,7 @@ class NanitRestClient:
         if error_msg:
             raise NanitAuthError(error_msg)
 
-        resp.raise_for_status()
+        _classify_http_error(resp, "Token refresh")
 
         return {
             "access_token": body["access_token"],
@@ -238,7 +259,7 @@ class NanitRestClient:
         if resp.status >= 500:
             raise NanitConnectionError(f"Babies fetch failed with HTTP {resp.status}")
 
-        resp.raise_for_status()
+        _classify_http_error(resp, "Babies fetch")
         try:
             body = await resp.json()
         except (TimeoutError, aiohttp.ClientError, ValueError) as err:
@@ -293,7 +314,7 @@ class NanitRestClient:
         if resp.status == 401:
             raise NanitAuthError("Access token invalid")
 
-        resp.raise_for_status()
+        _classify_http_error(resp, "Device token fetch")
         try:
             body = await resp.json(content_type=None)
         except (TimeoutError, aiohttp.ClientError, ValueError) as err:
@@ -322,7 +343,7 @@ class NanitRestClient:
         if resp.status == 401:
             raise NanitAuthError("Access token invalid")
 
-        resp.raise_for_status()
+        _classify_http_error(resp, "Events fetch")
         try:
             body = await resp.json()
         except (TimeoutError, aiohttp.ClientError, ValueError) as err:

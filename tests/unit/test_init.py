@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -86,6 +87,52 @@ async def test_async_setup_entry_connection_error_raises(
     entry.add_to_hass(hass)
 
     with pytest.raises(ConfigEntryNotReady):
+        await async_setup_entry(hass, entry)
+
+
+async def test_async_setup_entry_cancelled_still_closes_hub(
+    hass: HomeAssistant,
+    mock_nanit_client,
+) -> None:
+    """HA cancelling setup must still stop whatever the hub already started.
+
+    CancelledError is not an Exception, so the generic cleanup handler used
+    to miss it and leak live camera and speaker connections past the
+    cancelled setup.
+    """
+    mock_nanit_client.async_get_babies.side_effect = asyncio.CancelledError()
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=mock_entry_data_v2(),
+        version=2,
+        unique_id=MOCK_EMAIL,
+    )
+    entry.add_to_hass(hass)
+
+    with pytest.raises(asyncio.CancelledError):
+        await async_setup_entry(hass, entry)
+
+    mock_nanit_client.async_close.assert_awaited_once()
+
+
+async def test_close_failure_does_not_mask_setup_error(
+    hass: HomeAssistant,
+    mock_nanit_client,
+) -> None:
+    """A close-time error must not replace the exception setup failed with."""
+    mock_nanit_client.async_get_babies.side_effect = NanitAuthError("token expired")
+    mock_nanit_client.async_close.side_effect = RuntimeError("close boom")
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=mock_entry_data_v2(),
+        version=2,
+        unique_id=MOCK_EMAIL,
+    )
+    entry.add_to_hass(hass)
+
+    with pytest.raises(ConfigEntryAuthFailed):
         await async_setup_entry(hass, entry)
 
 

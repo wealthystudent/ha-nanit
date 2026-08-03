@@ -96,6 +96,28 @@ humidity_entity_id: sensor.nursery_humidity
 >     type: module
 > ```
 
+## Actions
+
+The integration provides one action:
+
+**`nanit.reset_stream`** targets a Nanit camera entity and discards Home Assistant's cached camera stream, so the next viewer gets a freshly negotiated stream from the Nanit cloud. The bundled dashboard card calls it from its recovery button, and it is useful in automations or scripts when a stream shows a stale or frozen picture. It has no parameters beyond the target.
+
+```yaml
+action: nanit.reset_stream
+target:
+  entity_id: camera.nursery
+```
+
+## Data updates
+
+How each piece of data reaches Home Assistant:
+
+- **Camera sensors** (temperature, humidity, night light, connectivity) arrive as push updates over the camera's WebSocket, so they update in real time.
+- **Motion and sound events** come from the Nanit cloud API, polled every 30 seconds.
+- **Network diagnostics** (WiFi details) are polled every 5 minutes.
+- **Sound & Light state** (power, sound, light, volume) arrives as push updates over the speaker's WebSocket, local or relay. A light 30 second poll reconciles state and refreshes battery and WiFi diagnostics. The firmware version is fetched once per start.
+- **Video** streams on demand over RTMPS when a viewer opens the camera.
+
 ## Local connection (optional)
 
 For faster response times, you can connect directly to your camera over LAN:
@@ -112,6 +134,7 @@ The Sound & Light Machine needs no configuration for this: it is discovered on t
 |---------|----------|
 | MFA code rejected | Codes expire fast — use the latest one. |
 | Stream not playing | Verify HA can reach `rtmps://media-secured.nanit.com` and the Stream integration is enabled. |
+| Stream frozen or stale | Run the `nanit.reset_stream` action on the camera entity (the dashboard card's recovery button does the same). |
 | Sensors unavailable | WebSocket reconnects automatically. Try reloading the integration if it persists. |
 | Local connection failing | Confirm the camera IP is correct and port 442 is reachable from HA. |
 | Re-authentication required | Session expired — click the notification to re-enter credentials. |
@@ -122,6 +145,13 @@ The Sound & Light Machine needs no configuration for this: it is discovered on t
 - Authentication, motion/sound events, and streaming always require the Nanit cloud — no fully offline mode.
 - Motion and sound detection is polled every 30 seconds (up to ~30s delay).
 - Live video requires your HA instance to reach `rtmps://media-secured.nanit.com`.
+
+## Removing the integration
+
+1. Go to **Settings → Devices & Services → Nanit**, open the three dot menu on the entry, and choose **Delete**. This removes all Nanit devices and entities and deletes the stored account tokens.
+2. If you installed through HACS, also remove the repository there: **HACS → Nanit → three dot menu → Remove**, then restart Home Assistant.
+
+The integration keeps no other state on disk. If you use the bundled dashboard card in YAML mode, remove its resource entry as well.
 
 ## Contributing
 

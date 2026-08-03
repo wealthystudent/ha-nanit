@@ -62,6 +62,8 @@ Copy `custom_components/nanit/` into your HA `config/custom_components/` directo
 
 Some entities are disabled by default. Enable them in **Settings → Devices & Services → Nanit → Entities**.
 
+> Coming from [nanit-sound-light](https://github.com/com6056/nanit-sound-light)? That integration has merged into this one. Its [migration guide](https://github.com/com6056/nanit-sound-light/blob/main/MIGRATION.md) maps every entity id.
+
 ## Dashboard Card
 
 A companion Lovelace card is **bundled with the integration** — no HACS frontend dependencies or manual JS installation required. After setup, the card appears in your card picker automatically.
@@ -127,6 +129,8 @@ For faster response times, you can connect directly to your camera over LAN:
 The integration will use your local network for sensors and controls, falling back to cloud for auth and events.
 
 The Sound & Light Machine needs no configuration for this: it is discovered on the LAN automatically (mDNS) and the local connection is preferred whenever the speaker is reachable, with the cloud relay as fallback. A manually configured speaker IP takes precedence over discovery.
+
+One thing worth knowing: the speaker accepts a single local client at a time. If the Nanit phone app on the same network holds the local slot, the integration uses the cloud relay and takes the local slot back automatically when it frees up.
 
 ## Troubleshooting
 

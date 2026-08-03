@@ -111,7 +111,7 @@ def _parse_settings_from_proto(settings: object) -> SettingsState:
 
     return SettingsState(
         night_vision=settings.night_vision if settings.HasField("night_vision") else None,
-        volume=settings.volume if settings.HasField("volume") else None,
+        volume=max(0, min(100, settings.volume)) if settings.HasField("volume") else None,
         sleep_mode=settings.sleep_mode if settings.HasField("sleep_mode") else None,
         status_light_on=settings.status_light_on if settings.HasField("status_light_on") else None,
         mic_mute_on=settings.mic_mute_on if settings.HasField("mic_mute_on") else None,

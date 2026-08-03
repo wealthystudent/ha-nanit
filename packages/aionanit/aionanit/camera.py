@@ -341,6 +341,13 @@ class NanitCamera:
         night_light_brightness: int | None = None,
     ) -> SettingsState:
         """PUT_SETTINGS request. Only provided fields are sent."""
+        # Clamp percentage fields once, up front, so the wire value and the
+        # optimistic merge below can never disagree.
+        if volume is not None:
+            volume = max(0, min(100, volume))
+        if night_light_brightness is not None:
+            night_light_brightness = max(0, min(100, night_light_brightness))
+
         proto_settings = Settings()
         if night_vision is not None:
             proto_settings.night_vision = night_vision
@@ -353,7 +360,7 @@ class NanitCamera:
         if mic_mute_on is not None:
             proto_settings.mic_mute_on = mic_mute_on
         if night_light_brightness is not None:
-            proto_settings.night_light_brightness = max(0, min(100, night_light_brightness))
+            proto_settings.night_light_brightness = night_light_brightness
 
         resp = cast(
             Any,
@@ -559,7 +566,16 @@ class NanitCamera:
                 timeout=aiohttp.ClientTimeout(total=15),
             )
             if resp.status == 200:
-                return await resp.read()
+                data = await resp.read()
+                if data.startswith((b"\xff\xd8\xff", b"\x89PNG\r\n\x1a\n")):
+                    return data
+                _LOGGER.debug(
+                    "Snapshot endpoint returned a non-image payload (%s, %d bytes) for baby %s",
+                    resp.headers.get("Content-Type", "unknown"),
+                    len(data),
+                    self._baby_uid,
+                )
+                return None
             _LOGGER.debug(
                 "Snapshot endpoint returned %s for baby %s",
                 resp.status,

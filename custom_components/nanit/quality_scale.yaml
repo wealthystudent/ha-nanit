@@ -11,8 +11,9 @@ rules:
   brands:
     status: done
     comment: >-
-      Served from the in-repo brand/ assets, which HACS treats as a
-      first-class alternative to a home-assistant/brands submission.
+      Brand assets ship in-repo (custom_components/nanit/brand/), which HA
+      core serves for custom integrations without a home-assistant/brands
+      submission.
   common-modules: done
   config-flow-test-coverage: done
   config-flow: done
@@ -65,11 +66,17 @@ rules:
       the LAN. The Sound & Light does advertise via mDNS, but only its local
       transport address is discoverable; an account cannot be set up from it,
       so discovery cannot initiate a config flow.
+  docs-conditions:
+    status: exempt
+    comment: The integration provides no custom conditions.
   docs-data-update: done
   docs-examples: done
   docs-known-limitations: done
   docs-supported-devices: done
   docs-supported-functions: done
+  docs-triggers:
+    status: exempt
+    comment: The integration provides no custom triggers.
   docs-troubleshooting: done
   docs-use-cases: done
   dynamic-devices:

@@ -102,7 +102,7 @@ humidity_entity_id: sensor.nursery_humidity
 
 The integration provides one action:
 
-**`nanit.reset_stream`** targets a Nanit camera entity and discards Home Assistant's cached camera stream, so the next viewer gets a freshly negotiated stream from the Nanit cloud. The bundled dashboard card calls it from its recovery button, and it is useful in automations or scripts when a stream shows a stale or frozen picture. It has no parameters beyond the target.
+**`nanit.reset_stream`** targets a Nanit camera entity and discards Home Assistant's cached camera stream, so the next viewer gets a freshly negotiated stream from the Nanit cloud. The bundled dashboard card calls it automatically when it detects a stalled stream, and it is useful in automations or scripts when a stream shows a stale or frozen picture. It has no parameters beyond the target.
 
 ```yaml
 action: nanit.reset_stream
@@ -117,7 +117,7 @@ How each piece of data reaches Home Assistant:
 - **Camera sensors** (temperature, humidity, night light, connectivity) arrive as push updates over the camera's WebSocket, so they update in real time.
 - **Motion and sound events** come from the Nanit cloud API, polled every 30 seconds.
 - **Network diagnostics** (WiFi details) are polled every 5 minutes.
-- **Sound & Light state** (power, sound, light, volume) arrives as push updates over the speaker's WebSocket, local or relay. A light 30 second poll reconciles state and refreshes battery and WiFi diagnostics. The firmware version is fetched once per start.
+- **Sound & Light state** (power, sound, light, volume) arrives as push updates over the speaker's WebSocket, local or relay. A light 30 second poll reconciles state and refreshes battery and WiFi diagnostics. The firmware version is requested with the poll until known, then left alone.
 - **Video** streams on demand over RTMPS when a viewer opens the camera.
 
 ## Local connection (optional)
@@ -138,7 +138,7 @@ One thing worth knowing: the speaker accepts a single local client at a time. If
 |---------|----------|
 | MFA code rejected | Codes expire fast — use the latest one. |
 | Stream not playing | Verify HA can reach `rtmps://media-secured.nanit.com` and the Stream integration is enabled. |
-| Stream frozen or stale | Run the `nanit.reset_stream` action on the camera entity (the dashboard card's recovery button does the same). |
+| Stream frozen or stale | Run the `nanit.reset_stream` action on the camera entity (the dashboard card does this automatically when it detects a stall). |
 | Sensors unavailable | WebSocket reconnects automatically. Try reloading the integration if it persists. |
 | Local connection failing | Confirm the camera IP is correct and port 442 is reachable from HA. |
 | Re-authentication required | Session expired — click the notification to re-enter credentials. |

@@ -63,6 +63,23 @@ from .ws.transport import WsTransport
 
 _LOGGER = logging.getLogger(__name__)
 
+# Magic prefixes for the still-image formats the snapshot endpoint could
+# plausibly serve. WebP needs a slice check: the RIFF header carries a
+# 4-byte size between "RIFF" and "WEBP", so startswith cannot match it.
+_IMAGE_MAGIC_PREFIXES = (
+    b"\xff\xd8\xff",  # JPEG
+    b"\x89PNG\r\n\x1a\n",  # PNG
+    b"GIF87a",  # GIF
+    b"GIF89a",  # GIF
+)
+
+
+def _looks_like_image(data: bytes) -> bool:
+    if data.startswith(_IMAGE_MAGIC_PREFIXES):
+        return True
+    return data[:4] == b"RIFF" and data[8:12] == b"WEBP"
+
+
 Control = proto.Control
 GetControl = proto.GetControl
 GetSensorData = proto.GetSensorData
@@ -554,9 +571,12 @@ class NanitCamera:
     # ------------------------------------------------------------------
 
     async def async_get_snapshot(self) -> bytes | None:
-        """Get a JPEG snapshot from the cloud REST endpoint.
+        """Get a still image snapshot from the cloud REST endpoint.
 
-        Returns None if the endpoint is unavailable or returns an error.
+        The endpoint has served JPEG; common still formats (PNG, WebP,
+        GIF) are accepted too in case that ever changes server-side.
+        Returns None if the endpoint is unavailable, returns an error,
+        or serves something that is not an image.
         """
         try:
             token = await self._token_manager.async_get_access_token()
@@ -567,7 +587,7 @@ class NanitCamera:
             )
             if resp.status == 200:
                 data = await resp.read()
-                if data.startswith((b"\xff\xd8\xff", b"\x89PNG\r\n\x1a\n")):
+                if _looks_like_image(data):
                     return data
                 _LOGGER.debug(
                     "Snapshot endpoint returned a non-image payload (%s, %d bytes) for baby %s",

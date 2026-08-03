@@ -1024,6 +1024,20 @@ class TestSnapshot:
         result = await cam.async_get_snapshot()
         assert result == png
 
+    async def test_snapshot_accepts_webp(self) -> None:
+        """WebP magic is RIFF....WEBP with a size between, not a prefix."""
+        cam, tm, session = _make_camera()
+        tm.async_get_access_token = AsyncMock(return_value="snap_token")
+
+        webp = b"RIFF\x24\x00\x00\x00WEBPVP8 fake"
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.read = AsyncMock(return_value=webp)
+        session.get = AsyncMock(return_value=mock_resp)
+
+        result = await cam.async_get_snapshot()
+        assert result == webp
+
     async def test_snapshot_returns_none_on_exception(self) -> None:
         cam, tm, session = _make_camera()
         tm.async_get_access_token = AsyncMock(side_effect=aiohttp.ClientError("network error"))

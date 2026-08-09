@@ -32,6 +32,7 @@ All notable changes to the Nanit Home Assistant integration are documented in th
 - A camera that fails or times out during setup is now stopped instead of left half-connected: previously its sockets and token refresh loops kept running for the entry's lifetime with no entities attached. Session re-initialization after a reconnect is also contained: a failure inside it now logs and defers to the next health check instead of dying as an unretrieved task exception.
 - Data calls (babies, events, device token) now retry once on a mid-token-life 401 by refreshing the access token before surfacing the error (#114).
 - Config flow robustness: re-adding the account with different email casing no longer creates a duplicate entry (emails are treated case-insensitively, matching Nanit), the MFA step recovers when the server re-issues a fresh challenge instead of dead-ending on a stale token, re-authentication works on entries that never stored an email, and saving device IPs no longer wipes options the IP form does not manage.
+- Concurrent 401s now share one token rotation: when several data calls fail on the same access token at once, the first caller refreshes and the rest reuse its result instead of queueing a redundant rotation each. The retry also always sends the freshly rotated token.
 
 ### Removed
 

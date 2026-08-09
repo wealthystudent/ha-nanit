@@ -11,10 +11,11 @@ suites against in-process fake servers.
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
+from aionanit.exceptions import NanitAuthError
 from custom_components.nanit.aionanit_sl import sound_light as sound_light_mod
 from custom_components.nanit.aionanit_sl.exceptions import NanitTransportError
 from custom_components.nanit.aionanit_sl.models import (
@@ -72,6 +73,40 @@ async def _flushed(sl: NanitSoundLight) -> None:
 @pytest.fixture(autouse=True)
 def _fast_coalesce(monkeypatch):
     monkeypatch.setattr(sound_light_mod, "COMMAND_COALESCE_DELAY", 0.01)
+
+
+class TestDeviceTokenFetcher:
+    """The device-token fetcher the facade wires into the transport."""
+
+    async def test_retry_passes_failed_token_and_uses_fresh_one(self) -> None:
+        """On a 401 the fetcher hands the failed token to the refresh and
+        retries with the freshly rotated one."""
+        token_manager = MagicMock()
+        token_manager.async_get_access_token = AsyncMock(return_value="stale_access")
+        token_manager.async_force_refresh = AsyncMock()
+        token_manager.access_token = "fresh_access"
+
+        rest_client = MagicMock()
+        rest_client.base_url = "https://api.nanit.com"
+        rest_client.async_get_device_token = AsyncMock(
+            side_effect=[NanitAuthError("Access token invalid"), "device_jwt"]
+        )
+
+        sl = NanitSoundLight(
+            speaker_uid="L101TEST",
+            token_manager=token_manager,
+            rest_client=rest_client,
+            session=MagicMock(),
+        )
+
+        token = await sl._api._device_token_fetcher("L101TEST")
+
+        assert token == "device_jwt"
+        token_manager.async_force_refresh.assert_awaited_once_with(failed_token="stale_access")
+        assert rest_client.async_get_device_token.await_args_list == [
+            call("stale_access", "L101TEST"),
+            call("fresh_access", "L101TEST"),
+        ]
 
 
 class TestProperties:

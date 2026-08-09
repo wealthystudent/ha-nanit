@@ -214,7 +214,7 @@ class NanitSoundLight:
             try:
                 return await rest_client.async_get_device_token(access, uid)
             except NanitAuthError:
-                await token_manager.async_force_refresh()
+                await token_manager.async_force_refresh(failed_token=access)
                 access = token_manager.access_token
                 return await rest_client.async_get_device_token(access, uid)
 

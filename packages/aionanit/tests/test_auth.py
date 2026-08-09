@@ -111,6 +111,81 @@ class TestForceRefresh:
         assert token_manager.refresh_token == "new_refresh"
         mock_rest.async_refresh_token.assert_called_once()
 
+    async def test_force_refresh_with_matching_failed_token_refreshes(
+        self, token_manager: TokenManager, mock_rest: MagicMock
+    ) -> None:
+        callback = MagicMock()
+        token_manager.on_tokens_refreshed(callback)
+
+        await token_manager.async_force_refresh(failed_token="initial_access")
+
+        assert token_manager.access_token == "new_access"
+        mock_rest.async_refresh_token.assert_called_once()
+        # The winner MUST publish the fresh pair — callers persist tokens
+        # from this callback, and a silently dropped rotation leaves a dead
+        # refresh token in storage for the next restart.
+        callback.assert_called_once_with("new_access", "new_refresh")
+
+    async def test_force_refresh_skips_when_token_already_rotated(
+        self, token_manager: TokenManager, mock_rest: MagicMock
+    ) -> None:
+        """A caller whose failed token was already replaced must not rotate again.
+
+        The skipped caller also must not re-fire callbacks — the caller
+        that performed the refresh already published the fresh pair.
+        """
+        callback = MagicMock()
+        token_manager.on_tokens_refreshed(callback)
+
+        await token_manager.async_force_refresh(failed_token="stale_access")
+
+        assert token_manager.access_token == "initial_access"
+        assert token_manager.refresh_token == "initial_refresh"
+        mock_rest.async_refresh_token.assert_not_called()
+        callback.assert_not_called()
+
+    async def test_concurrent_force_refresh_rotates_once(
+        self, token_manager: TokenManager, mock_rest: MagicMock
+    ) -> None:
+        """N callers that all saw the same token fail produce ONE rotation."""
+
+        async def slow_refresh(*args, **kwargs):
+            await asyncio.sleep(0.05)
+            return {"access_token": "new_access", "refresh_token": "new_refresh"}
+
+        mock_rest.async_refresh_token.side_effect = slow_refresh
+
+        await asyncio.gather(
+            token_manager.async_force_refresh(failed_token="initial_access"),
+            token_manager.async_force_refresh(failed_token="initial_access"),
+            token_manager.async_force_refresh(failed_token="initial_access"),
+        )
+
+        assert token_manager.access_token == "new_access"
+        assert mock_rest.async_refresh_token.call_count == 1
+
+    async def test_failed_refresh_leaves_next_caller_to_retry(
+        self, token_manager: TokenManager, mock_rest: MagicMock
+    ) -> None:
+        """A winner whose refresh fails must not make later callers skip.
+
+        The failed refresh leaves the token unchanged, so a queued caller
+        holding the same failed token performs its own refresh. Coalescing
+        suppresses redundant successes, never legitimate retries.
+        """
+        mock_rest.async_refresh_token.side_effect = [
+            NanitConnectionError("dns down"),
+            {"access_token": "new_access", "refresh_token": "new_refresh"},
+        ]
+
+        with pytest.raises(NanitConnectionError):
+            await token_manager.async_force_refresh(failed_token="initial_access")
+
+        await token_manager.async_force_refresh(failed_token="initial_access")
+
+        assert token_manager.access_token == "new_access"
+        assert mock_rest.async_refresh_token.call_count == 2
+
 
 class TestUpdateTokens:
     async def test_update_tokens_sets_new_values(self, token_manager: TokenManager) -> None:

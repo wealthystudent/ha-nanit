@@ -64,7 +64,7 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            self._email = user_input[CONF_EMAIL]
+            self._email = user_input[CONF_EMAIL].strip()
             self._password = user_input[CONF_PASSWORD]
             result = await self._async_attempt_login(
                 email=self._email,
@@ -121,7 +121,8 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
             return step_result
         except NanitAuthError:
             errors["base"] = "invalid_auth"
-        except NanitConnectionError:
+        except NanitConnectionError as err:
+            LOGGER.debug("Login connection error: %s", err)
             errors["base"] = "cannot_connect"
         except Exception:
             LOGGER.exception(unknown_error_log)
@@ -154,9 +155,17 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
                 result = await client.async_verify_mfa(
                     self._email, self._password, self._mfa_token, mfa_code
                 )
+            except NanitMfaRequiredError as err:
+                # The server re-challenged with a fresh mfa_token (the held
+                # one went stale). Adopt it so the user's retry verifies
+                # against the new token instead of dead-ending forever.
+                # Must precede NanitAuthError: it is a subclass of it.
+                self._mfa_token = err.mfa_token
+                errors["base"] = "invalid_mfa_code"
             except NanitAuthError:
                 errors["base"] = "invalid_mfa_code"
-            except NanitConnectionError:
+            except NanitConnectionError as err:
+                LOGGER.debug("MFA verification connection error: %s", err)
                 errors["base"] = "cannot_connect"
             except Exception:
                 LOGGER.exception(unknown_error_log)
@@ -189,8 +198,22 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
         One entry per account — unique_id is the email address.
         All cameras on the account are auto-discovered during setup.
         """
-        await self.async_set_unique_id(self._email)
+        # Nanit treats emails case-insensitively, so the unique_id must
+        # too, or re-adding the account with different casing creates a
+        # duplicate entry with two hubs fighting over the same devices.
+        normalized_email = self._email.lower()
+        await self.async_set_unique_id(normalized_email)
         self._abort_if_unique_id_configured()
+        # Entries created before normalization may carry a mixed-case
+        # unique_id, and a migrated v1 entry may still carry a camera uid
+        # as its unique_id — match the stored email too so neither can be
+        # added a second time.
+        for entry in self._async_current_entries(include_ignore=False):
+            entry_email = (entry.data.get(CONF_EMAIL) or "").strip().lower()
+            if entry_email == normalized_email or (
+                entry.unique_id and entry.unique_id.lower() == normalized_email
+            ):
+                return self.async_abort(reason="already_configured")
 
         # Determine a friendly title (try to fetch baby names)
         title = "Nanit"
@@ -209,7 +232,7 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
         data: dict[str, Any] = {
             CONF_ACCESS_TOKEN: self._access_token,
             CONF_REFRESH_TOKEN: self._refresh_token,
-            CONF_EMAIL: self._email,
+            CONF_EMAIL: normalized_email,
         }
 
         return self.async_create_entry(title=title, data=data)
@@ -229,7 +252,7 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            email = user_input[CONF_EMAIL]
+            email = user_input[CONF_EMAIL].strip()
             password = user_input[CONF_PASSWORD]
             result = await self._async_attempt_login(
                 email=email,
@@ -276,15 +299,21 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Update the reauth entry with fresh credentials/tokens."""
         reauth_entry = self._get_reauth_entry()
-        provided_email = email or self._email
+        provided_email = (email or self._email).strip()
 
         # Prevent credential swap: the reauth email must match the original.
-        if provided_email.lower() != reauth_entry.data[CONF_EMAIL].lower():
+        # An entry with no stored email (possible for a migrated v1 entry
+        # that never stored one) has nothing to compare against — accept
+        # and adopt the provided email below instead of crashing.
+        stored_email = reauth_entry.data.get(CONF_EMAIL, "")
+        if stored_email and provided_email.lower() != stored_email.strip().lower():
             return self.async_abort(reason="reauth_email_mismatch")
 
         new_data = {**reauth_entry.data}
         new_data[CONF_ACCESS_TOKEN] = access_token
         new_data[CONF_REFRESH_TOKEN] = refresh_token
+        if not stored_email:
+            new_data[CONF_EMAIL] = provided_email
         # Scrub any password persisted by older versions. It was never read
         # by anything (reauth always prompts), so it was pure liability.
         new_data.pop(CONF_PASSWORD, None)
@@ -406,9 +435,13 @@ class NanitOptionsFlow(OptionsFlow):
                     else:
                         current_speaker_ips.pop(speaker_uid, None)
 
+                # Merge over the existing options rather than replacing
+                # them wholesale, so any option added elsewhere in the
+                # future survives an IP edit.
                 return self.async_create_entry(
                     title="",
                     data={
+                        **self.config_entry.options,
                         CONF_CAMERA_IPS: current_ips,
                         CONF_SPEAKER_IPS: current_speaker_ips,
                     },

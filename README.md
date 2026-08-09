@@ -62,6 +62,8 @@ Copy `custom_components/nanit/` into your HA `config/custom_components/` directo
 
 Some entities are disabled by default. Enable them in **Settings → Devices & Services → Nanit → Entities**.
 
+> Coming from [nanit-sound-light](https://github.com/com6056/nanit-sound-light)? That integration has merged into this one. Its [migration guide](https://github.com/com6056/nanit-sound-light/blob/main/MIGRATION.md) maps every entity id.
+
 ## Dashboard Card
 
 A companion Lovelace card is **bundled with the integration** — no HACS frontend dependencies or manual JS installation required. After setup, the card appears in your card picker automatically.
@@ -96,6 +98,28 @@ humidity_entity_id: sensor.nursery_humidity
 >     type: module
 > ```
 
+## Actions
+
+The integration provides one action:
+
+**`nanit.reset_stream`** targets a Nanit camera entity and discards Home Assistant's cached camera stream, so the next viewer gets a freshly negotiated stream from the Nanit cloud. The bundled dashboard card calls it automatically when it detects a stalled stream, and it is useful in automations or scripts when a stream shows a stale or frozen picture. It has no parameters beyond the target.
+
+```yaml
+action: nanit.reset_stream
+target:
+  entity_id: camera.nursery
+```
+
+## Data updates
+
+How each piece of data reaches Home Assistant:
+
+- **Camera sensors** (temperature, humidity, night light, connectivity) arrive as push updates over the camera's WebSocket, so they update in real time.
+- **Motion and sound events** come from the Nanit cloud API, polled every 30 seconds.
+- **Network diagnostics** (WiFi details) are polled every 5 minutes.
+- **Sound & Light state** (power, sound, light, volume) arrives as push updates over the speaker's WebSocket, local or relay. A light 30 second poll reconciles state and refreshes battery and WiFi diagnostics. The firmware version is requested with the poll until known, then left alone.
+- **Video** streams on demand over RTMPS when a viewer opens the camera.
+
 ## Local connection (optional)
 
 For faster response times, you can connect directly to your camera over LAN:
@@ -106,12 +130,15 @@ The integration will use your local network for sensors and controls, falling ba
 
 The Sound & Light Machine needs no configuration for this: it is discovered on the LAN automatically (mDNS) and the local connection is preferred whenever the speaker is reachable, with the cloud relay as fallback. A manually configured speaker IP takes precedence over discovery.
 
+One thing worth knowing: the speaker accepts a single local client at a time. If the Nanit phone app on the same network holds the local slot, the integration uses the cloud relay and takes the local slot back automatically when it frees up.
+
 ## Troubleshooting
 
 | Problem | Solution |
 |---------|----------|
 | MFA code rejected | Codes expire fast — use the latest one. |
 | Stream not playing | Verify HA can reach `rtmps://media-secured.nanit.com` and the Stream integration is enabled. |
+| Stream frozen or stale | Run the `nanit.reset_stream` action on the camera entity (the dashboard card does this automatically when it detects a stall). |
 | Sensors unavailable | WebSocket reconnects automatically. Try reloading the integration if it persists. |
 | Local connection failing | Confirm the camera IP is correct and port 442 is reachable from HA. |
 | Re-authentication required | Session expired — click the notification to re-enter credentials. |
@@ -122,6 +149,13 @@ The Sound & Light Machine needs no configuration for this: it is discovered on t
 - Authentication, motion/sound events, and streaming always require the Nanit cloud — no fully offline mode.
 - Motion and sound detection is polled every 30 seconds (up to ~30s delay).
 - Live video requires your HA instance to reach `rtmps://media-secured.nanit.com`.
+
+## Removing the integration
+
+1. Go to **Settings → Devices & Services → Nanit**, open the three dot menu on the entry, and choose **Delete**. This removes all Nanit devices and entities and deletes the stored account tokens.
+2. If you installed through HACS, also remove the repository there: **HACS → Nanit → three dot menu → Remove**, then restart Home Assistant.
+
+The integration keeps no other state on disk. If you use the bundled dashboard card in YAML mode, remove its resource entry as well.
 
 ## Contributing
 

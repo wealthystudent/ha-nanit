@@ -27,6 +27,7 @@ from aionanit.models import CameraState, NightLightState
 
 from . import NanitConfigEntry
 from .aionanit_sl.exceptions import NanitTransportError
+from .const import DOMAIN
 from .coordinator import NanitPushCoordinator, NanitSoundLightCoordinator
 from .entity import NanitEntity, NanitSoundLightEntity
 
@@ -283,7 +284,10 @@ class NanitSoundLightLight(NanitSoundLightEntity, LightEntity):
 
         except NanitTransportError as err:
             _LOGGER.error("Failed to control Sound & Light light: %s", err)
-            raise HomeAssistantError("Failed to control Sound & Light light") from err
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="sl_light_control_failed",
+            ) from err
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn off the light."""
@@ -291,4 +295,7 @@ class NanitSoundLightLight(NanitSoundLightEntity, LightEntity):
             await self.coordinator.sound_light.async_set_light_enabled(False)
         except NanitTransportError as err:
             _LOGGER.error("Failed to turn off Sound & Light light: %s", err)
-            raise HomeAssistantError("Failed to turn off Sound & Light light") from err
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="sl_light_off_failed",
+            ) from err

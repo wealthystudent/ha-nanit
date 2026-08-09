@@ -20,6 +20,7 @@ from aionanit.models import CameraState
 
 from . import NanitConfigEntry
 from .aionanit_sl.exceptions import NanitTransportError
+from .const import DOMAIN
 from .coordinator import NanitPushCoordinator, NanitSoundLightCoordinator
 from .entity import NanitEntity, NanitSoundLightEntity
 
@@ -226,7 +227,10 @@ class NanitSLPowerSwitch(NanitSoundLightEntity, SwitchEntity):
             await self.coordinator.sound_light.async_set_power(True)
         except NanitTransportError as err:
             _LOGGER.error("Failed to turn on S&L device: %s", err)
-            raise HomeAssistantError("Failed to turn on S&L device") from err
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="sl_power_on_failed",
+            ) from err
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the device off."""
@@ -234,7 +238,10 @@ class NanitSLPowerSwitch(NanitSoundLightEntity, SwitchEntity):
             await self.coordinator.sound_light.async_set_power(False)
         except NanitTransportError as err:
             _LOGGER.error("Failed to turn off S&L device: %s", err)
-            raise HomeAssistantError("Failed to turn off S&L device") from err
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="sl_power_off_failed",
+            ) from err
 
 
 class NanitSLSoundSwitch(NanitSoundLightEntity, SwitchEntity):
@@ -266,7 +273,10 @@ class NanitSLSoundSwitch(NanitSoundLightEntity, SwitchEntity):
             await self.coordinator.sound_light.async_set_sound_on(True)
         except NanitTransportError as err:
             _LOGGER.error("Failed to turn on S&L sound: %s", err)
-            raise HomeAssistantError("Failed to turn on S&L sound") from err
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="sl_sound_on_failed",
+            ) from err
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn sound off."""
@@ -274,4 +284,7 @@ class NanitSLSoundSwitch(NanitSoundLightEntity, SwitchEntity):
             await self.coordinator.sound_light.async_set_sound_on(False)
         except NanitTransportError as err:
             _LOGGER.error("Failed to turn off S&L sound: %s", err)
-            raise HomeAssistantError("Failed to turn off S&L sound") from err
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="sl_sound_off_failed",
+            ) from err

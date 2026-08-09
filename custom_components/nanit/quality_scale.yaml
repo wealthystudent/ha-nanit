@@ -3,16 +3,22 @@ rules:
   # Bronze
   action-setup:
     status: exempt
-    comment: This integration does not register any actions.
+    comment: >-
+      The only registered action is the reset_stream entity service, which
+      has to be registered by the camera platform (entity services cannot
+      be registered in async_setup).
   appropriate-polling: done
-  brands: done
+  brands:
+    status: done
+    comment: >-
+      Brand assets ship in-repo (custom_components/nanit/brand/), which HA
+      core serves for custom integrations without a home-assistant/brands
+      submission.
   common-modules: done
   config-flow-test-coverage: done
   config-flow: done
   dependency-transparency: done
-  docs-actions:
-    status: exempt
-    comment: This integration does not register any actions.
+  docs-actions: done
   docs-high-level-description: done
   docs-installation-instructions: done
   docs-removal-instructions: done
@@ -28,8 +34,10 @@ rules:
 
   # Silver
   action-exceptions:
-    status: exempt
-    comment: This integration does not register any actions.
+    status: done
+    comment: >-
+      reset_stream is best-effort cache invalidation with no failure mode to
+      surface. Entity command failures raise translated HomeAssistantError.
   config-entry-unloading: done
   docs-configuration-parameters: done
   docs-installation-parameters: done
@@ -38,25 +46,44 @@ rules:
   log-when-unavailable: done
   parallel-updates: done
   reauthentication-flow: done
-  test-coverage: done
+  test-coverage:
+    status: todo
+    comment: The suite sits at ~87% with the CI gate at 80; the rule wants above 95.
 
   # Gold
   devices: done
   diagnostics: done
   discovery-update-info:
     status: exempt
-    comment: Nanit cameras do not advertise via mDNS/SSDP/DHCP; cloud authentication required.
+    comment: >-
+      Setup is cloud-account based, not host based. The Sound & Light local
+      address is re-resolved via mDNS at runtime by the transport itself,
+      so there is no discovery-sourced config entry data to refresh.
   discovery:
     status: exempt
-    comment: Nanit cameras are cloud-authenticated and do not support local network discovery.
+    comment: >-
+      Setup requires Nanit cloud credentials and cameras do not advertise on
+      the LAN. The Sound & Light does advertise via mDNS, but only its local
+      transport address is discoverable; an account cannot be set up from it,
+      so discovery cannot initiate a config flow.
+  docs-conditions:
+    status: exempt
+    comment: The integration provides no custom conditions.
   docs-data-update: done
   docs-examples: done
   docs-known-limitations: done
   docs-supported-devices: done
   docs-supported-functions: done
+  docs-triggers:
+    status: exempt
+    comment: The integration provides no custom triggers.
   docs-troubleshooting: done
   docs-use-cases: done
-  dynamic-devices: done
+  dynamic-devices:
+    status: todo
+    comment: >-
+      Devices are discovered per baby at setup only; hardware added to the
+      account mid-run needs an integration reload to appear.
   entity-category: done
   entity-device-class: done
   entity-disabled-by-default: done

@@ -218,7 +218,7 @@ All dev and test dependency versions are pinned to minor-version ranges to preve
 - `dev/requirements.txt` — integration dev/test/CI tooling (`>=x.y,<x.(y+1)` ranges)
 - `packages/aionanit/pyproject.toml` `[project.optional-dependencies] dev` — library test deps (`>=x.y,<x.(y+1)` ranges)
 
-**CI Python version**: CI runs Python 3.13. `homeassistant` must stay below `2026.3` (HA 2026.3.0+ requires Python 3.14.2+). The `aiohttp` dev pin must stay below `3.14` (aioresponses 0.7.x incompatible with aiohttp 3.14+).
+**CI Python version**: CI runs Python 3.14, matching current Home Assistant (the `homeassistant` dev pin sits at `>=2026.5,<2026.7`). The `aiohttp` dev pin must stay below `3.14` (aioresponses 0.7.x incompatible with aiohttp 3.14+).
 
 **Runtime dependencies** (`aiohttp`, `protobuf` in `[project] dependencies`) use broader range constraints (e.g., `>=3.9.0,<4`) since exact pins would conflict with Home Assistant's own dependency resolution.
 

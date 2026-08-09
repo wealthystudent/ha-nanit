@@ -59,6 +59,7 @@ from aionanit.proto import (
     SensorType as ProtoSensorType,
 )
 from aionanit.rest import NanitRestClient
+from aionanit.ws.protocol import decode_message
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -420,6 +421,16 @@ class TestParseSettings:
         proto_settings = Settings(night_light_brightness=-5)
         result = _parse_settings_from_proto(proto_settings)
         assert result.night_light_brightness == 0
+
+    def test_volume_clamped_above_100(self) -> None:
+        proto_settings = Settings(volume=200)
+        result = _parse_settings_from_proto(proto_settings)
+        assert result.volume == 100
+
+    def test_volume_clamped_below_0(self) -> None:
+        proto_settings = Settings(volume=-5)
+        result = _parse_settings_from_proto(proto_settings)
+        assert result.volume == 0
 
 
 class TestParseControl:
@@ -827,6 +838,33 @@ class TestSetSettings:
         assert result.volume == 50  # preserved
         assert cam.state.settings.night_light_brightness == 75
 
+    async def test_set_settings_clamps_out_of_range_values(self) -> None:
+        """Out-of-range percentages are clamped on the wire AND in the
+        optimistic merge, so published state can never disagree with what
+        was actually sent."""
+        cam, *_ = _make_camera()
+        cam._transport = MagicMock()
+        cam._transport.connected = True
+        cam._transport.idle_seconds = 0.0
+
+        resp = Response(status_code=200)
+        sent_frames: list[bytes] = []
+
+        async def _fake_send(data: bytes) -> None:
+            sent_frames.append(data)
+            cam._pending.resolve(1, resp)
+
+        cam._transport.async_send = AsyncMock(side_effect=_fake_send)
+
+        result = await cam.async_set_settings(volume=250, night_light_brightness=-10)
+
+        assert result.volume == 100
+        assert result.night_light_brightness == 0
+        msg = decode_message(sent_frames[0])
+        sent = msg.request.settings
+        assert sent.volume == 100
+        assert sent.night_light_brightness == 0
+
 
 class TestSetControl:
     async def test_updates_state_when_response_has_control(self) -> None:
@@ -936,11 +974,11 @@ class TestSnapshot:
 
         mock_resp = AsyncMock()
         mock_resp.status = 200
-        mock_resp.read = AsyncMock(return_value=b"\xff\xd8fake_jpeg")
+        mock_resp.read = AsyncMock(return_value=b"\xff\xd8\xff\xe0fake_jpeg")
         session.get = AsyncMock(return_value=mock_resp)
 
         result = await cam.async_get_snapshot()
-        assert result == b"\xff\xd8fake_jpeg"
+        assert result == b"\xff\xd8\xff\xe0fake_jpeg"
 
         session.get.assert_called_once_with(
             "https://api.nanit.com/babies/baby_uid_1/snapshot",
@@ -958,6 +996,47 @@ class TestSnapshot:
 
         result = await cam.async_get_snapshot()
         assert result is None
+
+    async def test_snapshot_returns_none_on_non_image_payload(self) -> None:
+        """A 200 carrying an error page must not be published as an image."""
+        cam, tm, session = _make_camera()
+        tm.async_get_access_token = AsyncMock(return_value="snap_token")
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.headers = {"Content-Type": "text/html"}
+        mock_resp.read = AsyncMock(return_value=b"<html>maintenance page</html>")
+        session.get = AsyncMock(return_value=mock_resp)
+
+        result = await cam.async_get_snapshot()
+        assert result is None
+
+    async def test_snapshot_accepts_png(self) -> None:
+        cam, tm, session = _make_camera()
+        tm.async_get_access_token = AsyncMock(return_value="snap_token")
+
+        png = b"\x89PNG\r\n\x1a\nfake_png"
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.read = AsyncMock(return_value=png)
+        session.get = AsyncMock(return_value=mock_resp)
+
+        result = await cam.async_get_snapshot()
+        assert result == png
+
+    async def test_snapshot_accepts_webp(self) -> None:
+        """WebP magic is RIFF....WEBP with a size between, not a prefix."""
+        cam, tm, session = _make_camera()
+        tm.async_get_access_token = AsyncMock(return_value="snap_token")
+
+        webp = b"RIFF\x24\x00\x00\x00WEBPVP8 fake"
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.read = AsyncMock(return_value=webp)
+        session.get = AsyncMock(return_value=mock_resp)
+
+        result = await cam.async_get_snapshot()
+        assert result == webp
 
     async def test_snapshot_returns_none_on_exception(self) -> None:
         cam, tm, session = _make_camera()

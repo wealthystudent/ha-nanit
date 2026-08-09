@@ -436,7 +436,7 @@ Run through the full checklist against all changes since the last release tag.
 - [ ] Publishing only triggered from protected branches
 - [ ] Build artifacts not influenced by PR content
 
-**ha-nanit specific**: `.github/workflows/ci.yaml` and `publish-aionanit.yaml` — verify action pins and secret handling.
+**ha-nanit specific**: `.github/workflows/ci.yaml`, `release.yaml` (aionanit publishes to PyPI from here via OIDC trusted publishing), and `auto-beta.yaml` — verify action pins and secret handling.
 
 ---
 

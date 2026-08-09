@@ -63,6 +63,23 @@ from .ws.transport import WsTransport
 
 _LOGGER = logging.getLogger(__name__)
 
+# Magic prefixes for the still-image formats the snapshot endpoint could
+# plausibly serve. WebP needs a slice check: the RIFF header carries a
+# 4-byte size between "RIFF" and "WEBP", so startswith cannot match it.
+_IMAGE_MAGIC_PREFIXES = (
+    b"\xff\xd8\xff",  # JPEG
+    b"\x89PNG\r\n\x1a\n",  # PNG
+    b"GIF87a",  # GIF
+    b"GIF89a",  # GIF
+)
+
+
+def _looks_like_image(data: bytes) -> bool:
+    if data.startswith(_IMAGE_MAGIC_PREFIXES):
+        return True
+    return data[:4] == b"RIFF" and data[8:12] == b"WEBP"
+
+
 Control = proto.Control
 GetControl = proto.GetControl
 GetSensorData = proto.GetSensorData
@@ -341,6 +358,13 @@ class NanitCamera:
         night_light_brightness: int | None = None,
     ) -> SettingsState:
         """PUT_SETTINGS request. Only provided fields are sent."""
+        # Clamp percentage fields once, up front, so the wire value and the
+        # optimistic merge below can never disagree.
+        if volume is not None:
+            volume = max(0, min(100, volume))
+        if night_light_brightness is not None:
+            night_light_brightness = max(0, min(100, night_light_brightness))
+
         proto_settings = Settings()
         if night_vision is not None:
             proto_settings.night_vision = night_vision
@@ -353,7 +377,7 @@ class NanitCamera:
         if mic_mute_on is not None:
             proto_settings.mic_mute_on = mic_mute_on
         if night_light_brightness is not None:
-            proto_settings.night_light_brightness = max(0, min(100, night_light_brightness))
+            proto_settings.night_light_brightness = night_light_brightness
 
         resp = cast(
             Any,
@@ -547,9 +571,12 @@ class NanitCamera:
     # ------------------------------------------------------------------
 
     async def async_get_snapshot(self) -> bytes | None:
-        """Get a JPEG snapshot from the cloud REST endpoint.
+        """Get a still image snapshot from the cloud REST endpoint.
 
-        Returns None if the endpoint is unavailable or returns an error.
+        The endpoint has served JPEG; common still formats (PNG, WebP,
+        GIF) are accepted too in case that ever changes server-side.
+        Returns None if the endpoint is unavailable, returns an error,
+        or serves something that is not an image.
         """
         try:
             token = await self._token_manager.async_get_access_token()
@@ -559,7 +586,16 @@ class NanitCamera:
                 timeout=aiohttp.ClientTimeout(total=15),
             )
             if resp.status == 200:
-                return await resp.read()
+                data = await resp.read()
+                if _looks_like_image(data):
+                    return data
+                _LOGGER.debug(
+                    "Snapshot endpoint returned a non-image payload (%s, %d bytes) for baby %s",
+                    resp.headers.get("Content-Type", "unknown"),
+                    len(data),
+                    self._baby_uid,
+                )
+                return None
             _LOGGER.debug(
                 "Snapshot endpoint returned %s for baby %s",
                 resp.status,

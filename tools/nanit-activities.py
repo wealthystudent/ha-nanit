@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -41,8 +42,17 @@ BASE_URL = "https://api.nanit.com"
 _SENSITIVE_URL_KEYS = {"video_url", "thumbnail_url", "image_url"}
 
 
+# Presigned-URL query material (X-Amz-Security-Token, signatures, ...).
+_XAMZ_RE = re.compile(r"X-Amz-[A-Za-z-]+=[^&\s\"'<>]*")
+
+
 def _redact_sensitive(obj: Any) -> Any:
-    """Recursively redact presigned S3 URLs from a response body."""
+    """Recursively redact presigned S3 URLs from a response body.
+
+    Redacts by value (any string carrying X-Amz- query material), not
+    only by key name: this tool probes unknown endpoints, so a new field
+    name must not be able to leak a signed URL.
+    """
     if isinstance(obj, dict):
         return {
             k: "[REDACTED — presigned S3 URL]"
@@ -52,6 +62,8 @@ def _redact_sensitive(obj: Any) -> Any:
         }
     if isinstance(obj, list):
         return [_redact_sensitive(item) for item in obj]
+    if isinstance(obj, str) and "X-Amz-" in obj:
+        return "[REDACTED — presigned S3 URL]"
     return obj
 
 
@@ -225,15 +237,19 @@ async def _probe_endpoint(
         if "json" in content_type or resp.status in (200, 403):
             try:
                 body = await resp.json(content_type=None)
-                result["body"] = body
+                # Redact at the source so every output path (--verbose,
+                # --json, and the summary) is covered.
+                result["body"] = _redact_sensitive(body)
                 if isinstance(body, dict):
                     result["keys"] = list(body.keys())
             except (json.JSONDecodeError, aiohttp.ContentTypeError):
                 text = await resp.text()
-                result["body_text"] = text[:500] if text else "(empty)"
+                result["body_text"] = (
+                    _XAMZ_RE.sub("X-Amz-REDACTED", text[:500]) if text else "(empty)"
+                )
         else:
             text = await resp.text()
-            result["body_text"] = text[:200] if text else "(empty)"
+            result["body_text"] = _XAMZ_RE.sub("X-Amz-REDACTED", text[:200]) if text else "(empty)"
 
     except aiohttp.ClientError as err:
         result["error"] = str(err)
@@ -310,9 +326,7 @@ Interpretation:
                     print(f"  Response keys: {result['keys']}")
 
                 if args.verbose and result.get("body"):
-                    print(
-                        f"  Body: {json.dumps(_redact_sensitive(result['body']), indent=2)[:2000]}"
-                    )
+                    print(f"  Body: {json.dumps(result['body'], indent=2)[:2000]}")
                 elif args.verbose and result.get("body_text"):
                     print(f"  Body: {result['body_text']}")
 

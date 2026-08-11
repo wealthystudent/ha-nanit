@@ -66,6 +66,14 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             self._email = user_input[CONF_EMAIL].strip()
             self._password = user_input[CONF_PASSWORD]
+            # Abort on an already-configured account BEFORE attempting
+            # login: the attempt costs a real authentication round trip
+            # and, on MFA accounts, sends the user a code for a flow that
+            # can only end in already_configured.
+            await self.async_set_unique_id(self._email.lower())
+            self._abort_if_unique_id_configured()
+            if self._existing_entry_for_email(self._email):
+                return self.async_abort(reason="already_configured")
             result = await self._async_attempt_login(
                 email=self._email,
                 password=self._password,
@@ -96,6 +104,23 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
             unknown_error_log="Unexpected error during MFA verification",
             on_success=self._async_finish_login,
         )
+
+    def _existing_entry_for_email(self, email: str) -> bool:
+        """Return True if an entry for this account already exists.
+
+        Matches the stored email and the unique_id case-insensitively so
+        legacy entries are caught too: pre-normalization entries may carry
+        a mixed-case unique_id, and a migrated v1 entry may still carry a
+        camera uid as its unique_id with only the email to match on.
+        """
+        normalized = email.strip().lower()
+        for entry in self._async_current_entries(include_ignore=False):
+            entry_email = (entry.data.get(CONF_EMAIL) or "").strip().lower()
+            if entry_email == normalized or (
+                entry.unique_id and entry.unique_id.lower() == normalized
+            ):
+                return True
+        return False
 
     async def _async_attempt_login(
         self,
@@ -204,16 +229,10 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
         normalized_email = self._email.lower()
         await self.async_set_unique_id(normalized_email)
         self._abort_if_unique_id_configured()
-        # Entries created before normalization may carry a mixed-case
-        # unique_id, and a migrated v1 entry may still carry a camera uid
-        # as its unique_id — match the stored email too so neither can be
-        # added a second time.
-        for entry in self._async_current_entries(include_ignore=False):
-            entry_email = (entry.data.get(CONF_EMAIL) or "").strip().lower()
-            if entry_email == normalized_email or (
-                entry.unique_id and entry.unique_id.lower() == normalized_email
-            ):
-                return self.async_abort(reason="already_configured")
+        # Re-checked here (not only pre-login) so a second flow finishing
+        # in parallel still cannot create a duplicate.
+        if self._existing_entry_for_email(self._email):
+            return self.async_abort(reason="already_configured")
 
         # Determine a friendly title (try to fetch baby names)
         title = "Nanit"

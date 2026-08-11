@@ -149,6 +149,7 @@ class NanitCamera:
         self._subscribers: list[Callable[[CameraEvent], None]] = []
         self._local_probe_task: asyncio.Task[None] | None = None
         self._health_check_task: asyncio.Task[None] | None = None
+        self._session_init_pending: bool = False
         self._sensor_poll_task: asyncio.Task[None] | None = None
         self._playback_poll_task: asyncio.Task[None] | None = None
         self._token_refresh_task: asyncio.Task[None] | None = None
@@ -749,6 +750,7 @@ class NanitCamera:
         so that push-based data resumes after a connection drop.
         """
         _LOGGER.info("Re-initializing session after reconnect")
+        self._session_init_pending = True
         try:
             await self._async_request_initial_state()
             await self._async_enable_sensor_push()
@@ -763,6 +765,8 @@ class NanitCamera:
                 "Session re-init after reconnect failed; retrying on next health check",
                 exc_info=True,
             )
+        else:
+            self._session_init_pending = False
 
     # ------------------------------------------------------------------
     # Internal — state management
@@ -1175,6 +1179,11 @@ class NanitCamera:
         (via the staleness gate or timeout-retry) and reconnect
         transparently.  This keeps the session warm so that user-initiated
         commands succeed immediately even after long idle periods.
+
+        A tick also finishes a session re-init that failed while the
+        socket stayed up (running it in place of the probe), so a failed
+        ``_async_on_reconnected`` is retried here rather than waiting for
+        the next actual drop.
         """
         try:
             while not self._stopped:
@@ -1186,6 +1195,16 @@ class NanitCamera:
                     # reconnect loop is driving recovery (e.g. after a failed
                     # inline reconnect), restore one. Idempotent.
                     self._transport.schedule_reconnect()
+                    continue
+                if self._session_init_pending and (
+                    self._reconnected_task is None or self._reconnected_task.done()
+                ):
+                    # A post-reconnect re-init failed while the socket stayed
+                    # up. Nothing else retries it in that case (the log above
+                    # promises this loop will), and without it sensor push
+                    # stays disabled: motion and sound degrade to the slow
+                    # poll until the next actual drop. Finish it here.
+                    await self._async_on_reconnected()
                     continue
                 try:
                     await self.async_get_status()

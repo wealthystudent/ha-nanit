@@ -229,8 +229,15 @@ class NanitCameraEntity(NanitEntity, Camera):
         video for viewers. To keep the source stable, the URL is cached and
         reused for repeat calls (card reloads, extra viewers, WebRTC
         renegotiation) until the existing expiry window lapses.
+
+        The entry log matters for support: when HA never asks for a source
+        at all (the frontend silently falls back to still images if the
+        ``stream`` integration is missing), the only way to tell that apart
+        from a failed stream is the absence of this line.
         """
+        _LOGGER.debug("Stream source requested for camera %s", self._camera.uid)
         if not self.is_on:
+            _LOGGER.debug("Camera %s is powered off — no stream source", self._camera.uid)
             return None
 
         source = self._cached_stream_source

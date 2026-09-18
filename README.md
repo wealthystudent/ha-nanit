@@ -137,7 +137,7 @@ One thing worth knowing: the speaker accepts a single local client at a time. If
 | Problem | Solution |
 |---------|----------|
 | MFA code rejected | Codes expire fast — use the latest one. |
-| Stream not playing | Verify HA can reach `rtmps://media-secured.nanit.com` and the Stream integration is enabled. |
+| Stream not playing | Verify HA can reach `rtmps://media-secured.nanit.com`. The Stream integration is pulled in automatically; on installs without `default_config:` an older version left it out, and the picture silently fell back to still images. |
 | Stream frozen or stale | Run the `nanit.reset_stream` action on the camera entity (the dashboard card does this automatically when it detects a stall). |
 | Sensors unavailable | WebSocket reconnects automatically. Try reloading the integration if it persists. |
 | Local connection failing | Confirm the camera IP is correct and port 442 is reachable from HA. |

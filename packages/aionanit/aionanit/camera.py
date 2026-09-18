@@ -51,7 +51,7 @@ from .proto import (
     StreamingStatus,
 )
 from .proto import nanit_pb2 as proto
-from .rest import NanitRestClient
+from .rest import NANIT_API_HEADERS, NanitRestClient
 from .ws.pending import PendingRequests
 from .ws.protocol import (
     build_request,
@@ -577,30 +577,34 @@ class NanitCamera:
         GIF) are accepted too in case that ever changes server-side.
         Returns None if the endpoint is unavailable, returns an error,
         or serves something that is not an image.
+
+        Sends ``NANIT_API_HEADERS`` like every other api.nanit.com call —
+        the API is version- and User-Agent-sensitive and answers 404 to
+        requests that omit them.
         """
         try:
             token = await self._token_manager.async_get_access_token()
-            resp = await self._session.get(
+            async with self._session.get(
                 f"https://api.nanit.com/babies/{self._baby_uid}/snapshot",
-                headers={"Authorization": token},
+                headers={**NANIT_API_HEADERS, "Authorization": token},
                 timeout=aiohttp.ClientTimeout(total=15),
-            )
-            if resp.status == 200:
-                data = await resp.read()
-                if _looks_like_image(data):
-                    return data
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.read()
+                    if _looks_like_image(data):
+                        return data
+                    _LOGGER.debug(
+                        "Snapshot endpoint returned a non-image payload (%s, %d bytes) for baby %s",
+                        resp.headers.get("Content-Type", "unknown"),
+                        len(data),
+                        self._baby_uid,
+                    )
+                    return None
                 _LOGGER.debug(
-                    "Snapshot endpoint returned a non-image payload (%s, %d bytes) for baby %s",
-                    resp.headers.get("Content-Type", "unknown"),
-                    len(data),
+                    "Snapshot endpoint returned %s for baby %s",
+                    resp.status,
                     self._baby_uid,
                 )
-                return None
-            _LOGGER.debug(
-                "Snapshot endpoint returned %s for baby %s",
-                resp.status,
-                self._baby_uid,
-            )
         except Exception as err:
             _LOGGER.debug("Snapshot fetch failed: %s", err)
         return None

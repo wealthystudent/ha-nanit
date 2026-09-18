@@ -708,3 +708,19 @@ async def test_sl_migration_ip_rekey_prefers_speaker_keyed_entry(hass: HomeAssis
     await _async_migrate_sl_identities(hass, entry, _migration_hub())
 
     assert entry.options[CONF_SPEAKER_IPS] == {"spk_4": "192.168.1.81"}
+
+
+def test_manifest_depends_on_stream() -> None:
+    """The frontend renders still images and never asks for a stream source
+    unless the ``stream`` integration is loaded, so the dependency must be
+    declared rather than inherited from ``default_config`` (issue #145).
+    """
+    import json
+    from pathlib import Path
+
+    manifest = json.loads(
+        (
+            Path(__file__).resolve().parents[2] / "custom_components" / "nanit" / "manifest.json"
+        ).read_text()
+    )
+    assert "stream" in manifest["dependencies"]

@@ -38,6 +38,9 @@ All notable changes to the Nanit Home Assistant integration are documented in th
 - Cloud snapshots are checked for image magic bytes (JPEG or PNG) before being returned, so an error page served with HTTP 200 can no longer be published as a camera still.
 - Setup cancelled by Home Assistant partway through (shutdown during startup, a racing reload) now stops any camera and speaker connections the hub had already opened, instead of leaking them for the rest of the process lifetime.
 - HTTP statuses the REST layer does not explicitly handle are now classified as retryable connection errors instead of escaping as raw aiohttp exceptions. A stray 4xx during setup used to hard-fail the entry with no retry, and one during the events poll dumped tracebacks into the log. Deliberately not mapped to auth: the explicit checks already cover every real credential rejection, and Nanit uses 403 for subscription gating, where a reauth prompt could never succeed.
+- **Live video on installs without `default_config:`** (#145). The integration never declared the `stream` integration as a dependency, so on a configuration that does not load `default_config` it was simply absent. The frontend does not report that: it silently renders still images and never asks the camera for a stream source, so pressing play did nothing and the log showed no error. `stream` is now a declared dependency, and Home Assistant sets it up with the integration.
+- Cloud snapshots now send the same `nanit-api-version` and mobile User-Agent headers as every other api.nanit.com call. Without them the API can answer 404, leaving the camera with no still image. The response is also released properly on a non-200, which previously held a connection out of the pool on every failed poll.
+- `stream_source()` now logs when Home Assistant asks for a source and when it declines because the camera is powered off, so a stream that is never requested can be told apart from one that fails.
 
 ### Removed
 

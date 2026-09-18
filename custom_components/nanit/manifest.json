@@ -10,7 +10,8 @@
   "config_flow": true,
   "dependencies": [
     "http",
-    "lovelace"
+    "lovelace",
+    "stream"
   ],
   "documentation": "https://github.com/wealthystudent/ha-nanit",
   "integration_type": "hub",

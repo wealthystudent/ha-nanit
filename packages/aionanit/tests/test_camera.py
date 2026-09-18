@@ -58,7 +58,7 @@ from aionanit.proto import (
 from aionanit.proto import (
     SensorType as ProtoSensorType,
 )
-from aionanit.rest import NanitRestClient
+from aionanit.rest import NANIT_API_HEADERS, NanitRestClient
 from aionanit.ws.protocol import decode_message
 
 # ---------------------------------------------------------------------------
@@ -967,32 +967,71 @@ class TestStreaming:
 # ---------------------------------------------------------------------------
 
 
+def _mock_snapshot_response(session: MagicMock, **attrs: object) -> AsyncMock:
+    """Wire session.get to yield a response from an async context manager."""
+    resp = AsyncMock()
+    for name, value in attrs.items():
+        setattr(resp, name, value)
+    resp_cm = MagicMock()
+    resp_cm.__aenter__ = AsyncMock(return_value=resp)
+    resp_cm.__aexit__ = AsyncMock(return_value=False)
+    session.get = MagicMock(return_value=resp_cm)
+    return resp
+
+
 class TestSnapshot:
     async def test_snapshot_success(self) -> None:
         cam, tm, session = _make_camera()
         tm.async_get_access_token = AsyncMock(return_value="snap_token")
 
-        mock_resp = AsyncMock()
-        mock_resp.status = 200
-        mock_resp.read = AsyncMock(return_value=b"\xff\xd8\xff\xe0fake_jpeg")
-        session.get = AsyncMock(return_value=mock_resp)
+        _mock_snapshot_response(
+            session,
+            status=200,
+            read=AsyncMock(return_value=b"\xff\xd8\xff\xe0fake_jpeg"),
+        )
 
         result = await cam.async_get_snapshot()
         assert result == b"\xff\xd8\xff\xe0fake_jpeg"
 
         session.get.assert_called_once_with(
             "https://api.nanit.com/babies/baby_uid_1/snapshot",
-            headers={"Authorization": "snap_token"},
+            headers={**NANIT_API_HEADERS, "Authorization": "snap_token"},
             timeout=aiohttp.ClientTimeout(total=15),
         )
+
+    async def test_snapshot_sends_api_version_and_mobile_user_agent(self) -> None:
+        """Nanit answers 404 to api.nanit.com calls that omit these headers."""
+        cam, tm, session = _make_camera()
+        tm.async_get_access_token = AsyncMock(return_value="snap_token")
+
+        _mock_snapshot_response(
+            session,
+            status=200,
+            read=AsyncMock(return_value=b"\xff\xd8\xff\xe0fake_jpeg"),
+        )
+
+        await cam.async_get_snapshot()
+
+        headers = session.get.call_args.kwargs["headers"]
+        assert headers["nanit-api-version"] == "1"
+        assert headers["User-Agent"].startswith("Nanit/")
+
+    async def test_snapshot_releases_the_connection_on_error_status(self) -> None:
+        """A non-200 must leave the context manager so the connection returns to the pool."""
+        cam, tm, session = _make_camera()
+        tm.async_get_access_token = AsyncMock(return_value="snap_token")
+
+        _mock_snapshot_response(session, status=404)
+
+        result = await cam.async_get_snapshot()
+        assert result is None
+        session.get.return_value.__aexit__.assert_awaited_once()
 
     async def test_snapshot_returns_none_on_404(self) -> None:
         cam, tm, session = _make_camera()
         tm.async_get_access_token = AsyncMock(return_value="snap_token")
 
-        mock_resp = AsyncMock()
-        mock_resp.status = 404
-        session.get = AsyncMock(return_value=mock_resp)
+        _mock_snapshot_response(session, status=404)
 
         result = await cam.async_get_snapshot()
         assert result is None
@@ -1002,11 +1041,12 @@ class TestSnapshot:
         cam, tm, session = _make_camera()
         tm.async_get_access_token = AsyncMock(return_value="snap_token")
 
-        mock_resp = AsyncMock()
-        mock_resp.status = 200
-        mock_resp.headers = {"Content-Type": "text/html"}
-        mock_resp.read = AsyncMock(return_value=b"<html>maintenance page</html>")
-        session.get = AsyncMock(return_value=mock_resp)
+        _mock_snapshot_response(
+            session,
+            status=200,
+            headers={"Content-Type": "text/html"},
+            read=AsyncMock(return_value=b"<html>maintenance page</html>"),
+        )
 
         result = await cam.async_get_snapshot()
         assert result is None
@@ -1016,10 +1056,7 @@ class TestSnapshot:
         tm.async_get_access_token = AsyncMock(return_value="snap_token")
 
         png = b"\x89PNG\r\n\x1a\nfake_png"
-        mock_resp = AsyncMock()
-        mock_resp.status = 200
-        mock_resp.read = AsyncMock(return_value=png)
-        session.get = AsyncMock(return_value=mock_resp)
+        _mock_snapshot_response(session, status=200, read=AsyncMock(return_value=png))
 
         result = await cam.async_get_snapshot()
         assert result == png
@@ -1030,10 +1067,7 @@ class TestSnapshot:
         tm.async_get_access_token = AsyncMock(return_value="snap_token")
 
         webp = b"RIFF\x24\x00\x00\x00WEBPVP8 fake"
-        mock_resp = AsyncMock()
-        mock_resp.status = 200
-        mock_resp.read = AsyncMock(return_value=webp)
-        session.get = AsyncMock(return_value=mock_resp)
+        _mock_snapshot_response(session, status=200, read=AsyncMock(return_value=webp))
 
         result = await cam.async_get_snapshot()
         assert result == webp

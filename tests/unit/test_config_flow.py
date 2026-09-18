@@ -370,6 +370,63 @@ async def test_duplicate_email_aborts(
     assert result.get("reason") == "already_configured"
 
 
+async def test_duplicate_email_aborts_before_login(
+    hass: HomeAssistant,
+    mock_config_flow_client,
+) -> None:
+    """A duplicate add must not burn a login attempt (or an MFA code)."""
+    hass = await _resolve_hass(hass)
+    existing = MockConfigEntry(domain=DOMAIN, unique_id=MOCK_EMAIL)
+    existing.add_to_hass(hass)
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": "user"},
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            CONF_EMAIL: MOCK_EMAIL,
+            CONF_PASSWORD: MOCK_PASSWORD,
+        },
+    )
+
+    assert result.get("type") is FlowResultType.ABORT
+    assert result.get("reason") == "already_configured"
+    mock_config_flow_client.async_login.assert_not_called()
+
+
+async def test_duplicate_legacy_entry_aborts_before_login(
+    hass: HomeAssistant,
+    mock_config_flow_client,
+) -> None:
+    """A migrated v1 entry with a camera uid as unique_id still blocks
+    the duplicate before login, matched via its stored email."""
+    hass = await _resolve_hass(hass)
+    existing = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="N123LEGACYCAM",
+        data={CONF_EMAIL: MOCK_EMAIL},
+    )
+    existing.add_to_hass(hass)
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": "user"},
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            CONF_EMAIL: MOCK_EMAIL,
+            CONF_PASSWORD: MOCK_PASSWORD,
+        },
+    )
+
+    assert result.get("type") is FlowResultType.ABORT
+    assert result.get("reason") == "already_configured"
+    mock_config_flow_client.async_login.assert_not_called()
+
+
 async def test_reauth_valid_login_success_updates_entry(
     hass: HomeAssistant,
     mock_config_flow_client,

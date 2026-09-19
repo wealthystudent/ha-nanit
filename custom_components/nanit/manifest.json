@@ -22,7 +22,7 @@
     "aionanit"
   ],
   "requirements": [
-    "aionanit>=1.12.1"
+    "aionanit>=1.12.2"
   ],
-  "version": "1.12.1"
+  "version": "1.12.2"
 }

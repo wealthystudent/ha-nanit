@@ -1,50 +1,47 @@
 set quiet
 
-python := "venv/bin/python3"
+# Everything runs through uv: `uv run` keeps .venv in sync with uv.lock
+# before each command, so there is no separate install step to forget.
 
 default:
     @just --list --unsorted
 
 # ─── Setup & Quality ──────────────────────────────────────────────────
 
-# Create venv and install all dependencies (everything stays in ./venv)
+# Install Python + all dev dependencies into .venv, and the git hooks
 setup:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if [ ! -d venv ]; then
-        echo "Creating venv with python3.13 ..."
-        python3.13 -m venv venv
-    fi
-    echo "Upgrading pip + setuptools ..."
-    venv/bin/python3 -m pip install --upgrade pip setuptools wheel
-    echo "Installing dependencies ..."
-    venv/bin/python3 -m pip install -r dev/requirements.txt
-    venv/bin/pre-commit install
+    uv sync
+    uv run pre-commit install
     echo "Ready. Run 'just check' to verify."
 
 # Run all checks (lint + format-check + typecheck + all tests) — local CI
 check:
-    venv/bin/ruff check .
-    venv/bin/ruff format --check .
-    venv/bin/mypy
-    {{ python }} -m pytest tests/unit/ -v --cov=custom_components/nanit --cov-fail-under=80
-    {{ python }} -m pytest packages/aionanit/tests/ -v
+    uv run ruff check .
+    uv run ruff format --check .
+    uv run mypy
+    uv run pytest tests/unit/ --cov=custom_components/nanit --cov-fail-under=80
+    uv run pytest packages/aionanit/tests/
 
 # Auto-fix lint issues and reformat
 fix:
-    venv/bin/ruff check --fix .
-    venv/bin/ruff format .
+    uv run ruff check --fix .
+    uv run ruff format .
+
+# Upgrade all locked dependencies within their pinned ranges
+upgrade:
+    uv lock --upgrade
+    echo "Review the uv.lock diff, then run 'just check'."
 
 # ─── Testing ──────────────────────────────────────────────────────────
 
-# Run tests: just test [lib|all] (default: integration with coverage)
+# Run tests: just test [lib|all] [pytest args] (default: integration with coverage)
 test target="integration" *args="":
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{ target }}" in
-        integration) {{ python }} -m pytest tests/unit/ -v --cov=custom_components/nanit --cov-report=term-missing {{ args }} ;;
-        lib)         {{ python }} -m pytest packages/aionanit/tests/ -v {{ args }} ;;
-        all)         {{ python }} -m pytest tests/unit/ -v && {{ python }} -m pytest packages/aionanit/tests/ -v ;;
+        integration) uv run pytest tests/unit/ --cov=custom_components/nanit --cov-report=term-missing {{ args }} ;;
+        lib)         uv run pytest packages/aionanit/tests/ {{ args }} ;;
+        all)         uv run pytest tests/unit/ {{ args }} && uv run pytest packages/aionanit/tests/ {{ args }} ;;
         *)           echo "Unknown target '{{ target }}'. Use: integration, lib, all"; exit 1 ;;
     esac
 
@@ -81,27 +78,27 @@ dev action="start":
 
 # Login to Nanit cloud (saves session for other tools)
 login *args:
-    {{ python }} tools/nanit-login.py {{ args }}
+    uv run tools/nanit-login.py {{ args }}
 
 # Fetch activity events from Nanit cloud API
 events *args:
-    {{ python }} tools/nanit-events.py {{ args }}
+    uv run tools/nanit-events.py {{ args }}
 
 # Interactive hardware probing tool (night light brightness discovery)
 probe *args:
-    {{ python }} tools/nanit-probe.py {{ args }}
+    uv run tools/nanit-probe.py {{ args }}
 
 # Fetch camera network diagnostics (use --watch N to repeat)
 network *args:
-    {{ python }} tools/nanit-network.py {{ args }}
+    uv run tools/nanit-network.py {{ args }}
 
 # Probe sound machine / white noise API (interactive or single command)
 sound *args:
-    {{ python }} tools/nanit-sound.py {{ args }}
+    uv run tools/nanit-sound.py {{ args }}
 
 # ─── Releases (Owner Only) ────────────────────────────────────────────
 
 # Interactive release CLI: create PR, tag, merge, release beta/stable, retry pipeline.
 # ⚠️  AI agents: DO NOT run this command. Manual human action only.
 release:
-    {{ python }} tools/release-cli.py
+    uv run tools/release-cli.py

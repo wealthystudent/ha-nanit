@@ -5,16 +5,17 @@ For code standards, architecture details, and security requirements, see [AGENTS
 
 ## Prerequisites
 
-- Python 3.12+
-- Home Assistant 2025.12+
-- A Nanit account (for integration testing)
+- [uv](https://docs.astral.sh/uv/) (installs the right Python and all dependencies)
+- [just](https://just.systems/) (task runner)
+- Docker (optional, for the dev Home Assistant instance)
+- A Nanit account (for testing against real hardware)
 
 ## Setup
 
 ```bash
 git clone https://github.com/wealthystudent/ha-nanit.git
 cd ha-nanit
-just setup   # Installs deps, tooling, pre-commit hooks
+just setup   # uv sync into .venv + pre-commit hooks
 ```
 
 ## Development
@@ -22,9 +23,10 @@ just setup   # Installs deps, tooling, pre-commit hooks
 ### Running tests
 
 ```bash
-just test          # Integration tests (config flow, migration, hub)
-just test-lib      # aionanit library tests (protocol, REST, auth, transport)
-just test-all      # Both
+just test          # Integration tests with coverage
+just test lib      # aionanit library tests
+just test all      # Both
+just check         # Everything CI runs on Python code (lint, format, types, tests)
 ```
 
 ### Dev HA instance

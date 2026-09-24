@@ -62,7 +62,7 @@ docs/                      ← Security checklist, connection reliability, testi
 
 ## Code Standards
 
-- **Python**: 3.12+ target. Fully async — no blocking I/O in the event loop.
+- **Python**: 3.14 (Home Assistant's floor, pinned in `.python-version`). aionanit itself supports 3.12+. Fully async — no blocking I/O in the event loop.
 - **Linter**: Ruff (rules: B, BLE, C4, D, E, F, I, ICN, N, PGH, PIE, RUF, SIM, T20, UP, W). Line length: 100.
 - **Type checking**: mypy strict mode. All functions must have type hints.
 - **Formatting**: Ruff formatter (enforced via pre-commit).
@@ -74,7 +74,7 @@ docs/                      ← Security checklist, connection reliability, testi
 ### Commands
 
 ```bash
-just setup            # Install deps, tooling, pre-commit hooks
+just setup            # uv sync into .venv + pre-commit hooks
 just check            # Run ALL checks (lint + format + typecheck + tests) — use before any PR
 just fix              # Auto-fix lint issues and reformat
 just test             # Integration tests with coverage (custom_components)
@@ -133,8 +133,8 @@ Rules:
 
 ### Pre-commit hooks
 
-`just setup` installs pre-commit hooks that run on every commit:
-- `ruff check` — lint
+`just setup` installs pre-commit hooks that run on every commit, using the locked ruff from `uv.lock`:
+- `ruff check --fix` — lint
 - `ruff format` — formatting
 
 **Bypassing hooks (`--no-verify`) is forbidden.** Fix lint/format errors before committing.
@@ -213,20 +213,18 @@ Version files on `main` contain the **last stable release version** (not the cur
 
 ### Pinned dependencies
 
-All dev and test dependency versions are pinned to minor-version ranges to prevent supply-chain attacks while allowing patch updates:
+Dev and test dependencies are declared with minor-version ranges and locked exactly, with hashes, in `uv.lock`:
 
-- `dev/requirements.txt` — integration dev/test/CI tooling (`>=x.y,<x.(y+1)` ranges)
-- `packages/aionanit/pyproject.toml` `[project.optional-dependencies] dev` — library test deps (`>=x.y,<x.(y+1)` ranges)
+- Root `pyproject.toml` `[dependency-groups] dev` — integration dev/test/CI tooling (`>=x.y,<x.(y+1)` ranges)
+- `packages/aionanit/pyproject.toml` `[project.optional-dependencies] dev` — library test deps
 
-**CI Python version**: CI runs Python 3.14, matching current Home Assistant (the `homeassistant` dev pin sits at `>=2026.5,<2026.7`). The `aiohttp` dev pin must stay below `3.14` (aioresponses 0.7.x incompatible with aiohttp 3.14+).
+Local, pre-commit and CI all install from the same lock, so versions never drift between them. CI fails if `uv.lock` is out of date with the pyproject files (`uv sync --locked`).
+
+**Python**: `.python-version` (3.14) matches current Home Assistant (the `homeassistant` dev pin sits at `>=2026.5,<2026.7`). The `aiohttp` dev pin must stay below `3.14` (aioresponses 0.7.x incompatible with aiohttp 3.14+).
 
 **Runtime dependencies** (`aiohttp`, `protobuf` in `[project] dependencies`) use broader range constraints (e.g., `>=3.9.0,<4`) since exact pins would conflict with Home Assistant's own dependency resolution.
 
-**Before every release**, review and update pinned versions:
-1. Run `pip install --upgrade` for each pinned package (or recreate venv with `just setup`).
-2. Run `just check` to verify compatibility.
-3. Update the pinned versions in both `dev/requirements.txt` and `packages/aionanit/pyproject.toml` to match.
-4. Commit version bumps as a separate `chore: update pinned dev dependencies` commit.
+**Updating**: Dependabot opens a grouped monthly PR for `uv.lock` and pinned actions. To update by hand: `just upgrade`, review the lock diff, `just check`, and commit as `chore: update locked dev dependencies`.
 
 ---
 

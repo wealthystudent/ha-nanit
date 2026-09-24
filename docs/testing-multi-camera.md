@@ -73,7 +73,7 @@ Save the file.
 ### 4.2 — Restart HA
 
 ```bash
-just dev-restart
+just dev restart
 ```
 
 Wait ~15 seconds for HA to restart.
@@ -134,7 +134,7 @@ Verify that the two cameras operate independently.
 ### 6.1 — Restart HA
 
 ```bash
-just dev-restart
+just dev restart
 ```
 
 - [ ] Both cameras reconnect after restart
@@ -169,7 +169,7 @@ Save the file.
 ### 7.2 — Restart and verify
 
 ```bash
-just dev-restart
+just dev restart
 ```
 
 1. Go to **Settings → Devices & Services → Nanit**
@@ -207,11 +207,11 @@ This should show **no output** (file matches the committed version).
 When you're done testing:
 
 ```bash
-just dev-stop
+just dev stop
 ```
 
 To wipe all state for a completely fresh test next time:
 
 ```bash
-just dev-reset
+just dev reset
 ```

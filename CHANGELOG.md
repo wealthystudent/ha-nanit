@@ -2,7 +2,7 @@
 
 All notable changes to the Nanit Home Assistant integration are documented here.
 
-From 1.12.3 on, release notes are published on [GitHub Releases](https://github.com/wealthystudent/ha-nanit/releases),
+For releases after 1.12.2, release notes are published on [GitHub Releases](https://github.com/wealthystudent/ha-nanit/releases),
 assembled from the Changelog section of each merged PR. This file is kept as the history up to 1.12.2.
 
 ## [1.12.2] – 2026-09-19

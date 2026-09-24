@@ -156,10 +156,14 @@ async def fetch_state() -> State:
     """Fetch all release state in one parallel batch."""
     state = State()
 
-    branch = await sh("git", "branch", "--show-current")
+    # Fetch first: the ahead count and tag list below read these refs.
+    branch, _ = await asyncio.gather(
+        sh("git", "branch", "--show-current"),
+        sh("git", "fetch", "origin", "--tags", "--quiet"),
+    )
 
-    # All network + git calls fire in parallel
-    ahead, tags_raw, releases_json, pr_json, repo_json, _ = await asyncio.gather(
+    # All remaining network + git calls fire in parallel
+    ahead, tags_raw, releases_json, pr_json, repo_json = await asyncio.gather(
         sh("git", "rev-list", "--count", f"origin/{MAIN_BRANCH}..HEAD"),
         sh(
             "git",
@@ -193,7 +197,6 @@ async def fetch_state() -> State:
         if branch
         else sh("true"),
         sh("gh", "repo", "view", "--json", "nameWithOwner,viewerPermission"),
-        sh("git", "fetch", "origin", "--tags", "--quiet"),
     )
 
     state.branch = branch or "detached"
@@ -512,9 +515,9 @@ async def action_merge_pr(state: State) -> None:
     console.print(f"\n  Merging PR [bold]#{state.pr['number']}[/]: {state.pr['title']}")
 
     if state.pr_has_release_label:
-        console.print(f"  Label: [green]{state.pr_release_label}[/] → auto-beta will tag on merge")
+        console.print(f"  Label: [green]{state.pr_release_label}[/] → publishes a beta on merge")
     else:
-        console.print("  [yellow]No release label — no beta tag will be created[/]")
+        console.print("  [yellow]No release label — ships with the next beta or stable[/]")
 
     if not Confirm.ask("\n  Squash-merge?"):
         return
@@ -528,7 +531,7 @@ async def action_merge_pr(state: State) -> None:
         console.print("  [green]✓[/] PR merged")
         if state.pr_has_release_label:
             console.print(
-                "  [dim]auto-beta.yaml will tag shortly. Refresh to see new beta tags.[/]"
+                "  [dim]auto-beta.yaml tags and publishes shortly. Refresh to see the beta.[/]"
             )
     else:
         console.print("  [red]✗ Failed to merge. Check CI status and approvals.[/]")
@@ -618,7 +621,11 @@ async def _approve_stable(state: State, tag: str) -> None:
                 )
                 or "[]"
             )
-            run = next((r for r in runs if r["displayTitle"] == title), None)
+            # Skip finished runs of the same tag (earlier attempts or retries).
+            run = next(
+                (r for r in runs if r["displayTitle"] == title and r["status"] != "completed"),
+                None,
+            )
             if not run:
                 continue
             pending = json.loads(
@@ -677,7 +684,7 @@ async def action_view_releases(state: State) -> None:
         table.add_row(b.tag, "[yellow]beta[/]", "[yellow]released[/]", b.date)
 
     for b in state.unreleased_betas:
-        table.add_row(b.tag, "[cyan]tag[/]", "[dim]pending[/]", b.date)
+        table.add_row(b.tag, "[cyan]tag[/]", "[dim]unpublished[/]", b.date)
 
     if not state.stables and not state.betas:
         console.print("\n  [dim]No releases yet.[/]")

@@ -70,7 +70,7 @@ dev action="start":
         stop)    docker compose -f dev/docker-compose.yml down ;;
         restart) docker compose -f dev/docker-compose.yml restart homeassistant ;;
         logs)    docker compose -f dev/docker-compose.yml logs -f homeassistant ;;
-        reset)   docker compose -f dev/docker-compose.yml down && rm -rf dev/ha-config/.storage dev/ha-config/home-assistant_v2.db* && echo "Dev state wiped. Run 'just dev' to start fresh." ;;
+        reset)   docker compose -f dev/docker-compose.yml down --volumes && echo "Dev state wiped. Run 'just dev' to start fresh." ;;
         *)       echo "Unknown action '{{ action }}'. Use: start, stop, restart, logs, reset"; exit 1 ;;
     esac
 

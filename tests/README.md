@@ -1,40 +1,28 @@
 # Testing
 
-## Directory structure
+## Layout
 
-```
-tests/
-├── README.md              ← you are here
-└── unit/                  # Automated pytest tests
-    ├── conftest.py        #   Shared fixtures and mock data
-    ├── test_config_flow.py
-    ├── test_init.py
-    └── test_hub.py
-```
+| Path | Covers |
+|------|--------|
+| `tests/unit/` | Integration tests (config flow, setup/migration, hub, entities, card registration, S&L, network recovery), plus `tools/release_notes.py`. Snapshots in `snapshots/`. 80% coverage gate. |
+| `packages/aionanit/tests/` | aionanit library tests (auth, REST, protocol, transport, camera). Run without Home Assistant installed in CI. |
 
-## Unit tests (no hardware needed)
+## Running tests (no hardware needed)
 
 ```bash
 just test          # Integration tests with coverage
 just test lib      # aionanit library tests
 just test all      # Both
+just test lib -k transport   # Extra args go to pytest
 ```
 
 First time setup: `just setup`
-
-### What the unit tests cover
-
-| File | # | Covers |
-|------|---|--------|
-| `test_config_flow.py` | 12 | Login, MFA, duplicate email abort, options flow (per-camera IP) |
-| `test_init.py` | 9 | Setup/unload, auth/connection errors, v1→v2 migration (5 cases) |
-| `test_hub.py` | 9 | Multi-baby discovery (1/3/0 babies), partial failure, token refresh |
 
 ## Dev HA instance (Docker)
 
 ```bash
 just dev           # Start → http://localhost:8123
-just dev logs      # Tail logs (debug logging for all custom_components)
+just dev logs      # Follow logs
 just dev restart   # Restart after code changes
 just dev stop      # Stop
 just dev reset     # Wipe all state for a fresh start
@@ -42,7 +30,7 @@ just dev reset     # Wipe all state for a fresh start
 
 The entire `custom_components/` directory is mounted read-only — any custom component you put there is available in the dev HA. Edit source files normally, then `just dev restart`.
 
-State lives in `dev/ha-config/` (gitignored except `configuration.yaml`).
+State lives in the `ha-config` Docker volume; `just dev reset` deletes it.
 
 ## Manual test guides
 

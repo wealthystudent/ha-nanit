@@ -50,9 +50,11 @@ jobs:
             pep440="$version"
           fi
 
-          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
-          echo "semver=${version}" >> "$GITHUB_OUTPUT"
-          echo "pep440=${pep440}" >> "$GITHUB_OUTPUT"
+          {
+            echo "tag=${tag}"
+            echo "semver=${version}"
+            echo "pep440=${pep440}"
+          } >> "$GITHUB_OUTPUT"
 
           is_pre=$(gh release view "${tag}" --json isPrerelease -q .isPrerelease)
           if [ "${is_pre}" = "false" ] && [[ "${tag}" == v* ]]; then

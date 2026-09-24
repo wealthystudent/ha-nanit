@@ -28,8 +28,8 @@
     ],
     "deny": [
       "Bash(just release *)",
-      Bash(uv run tools/release-cli.py*),
-      Bash(python* tools/release-cli.py*),
+      "Bash(uv run tools/release-cli.py*)",
+      "Bash(python* tools/release-cli.py*)",
       "Bash(gh release *)",
       "Bash(gh workflow run *)",
       "Bash(gh pr merge *--admin*)",

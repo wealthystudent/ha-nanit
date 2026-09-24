@@ -32,6 +32,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ env.TAG }}
+          persist-credentials: false
 
       - name: Resolve release metadata
         id: meta
@@ -64,42 +65,12 @@ jobs:
     name: CI Gate
     needs: resolve
     if: needs.resolve.outputs.is_stable == 'true'
-    runs-on: ubuntu-latest
     permissions:
       contents: read
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          ref: ${{ needs.resolve.outputs.tag }}
-
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
-        with:
-          python-version: "3.14"
-
-      - name: Install dependencies
-        # dev/requirements.txt carries the pinned ruff range.
-        run: pip install -r dev/requirements.txt
-
-      - name: Ruff check
-        run: ruff check .
-
-      - name: Ruff format check
-        run: ruff format --check .
-
-      - name: Run integration tests with coverage
-        run: python -m pytest tests/unit/ -v --tb=short --cov=custom_components/nanit --cov-fail-under=80
-
-      - name: Run mypy on aionanit (strict)
-        run: mypy packages/aionanit/aionanit --strict --ignore-missing-imports
-
-      - name: Run mypy on integration
-        run: mypy custom_components/nanit --config-file pyproject.toml --python-version 3.14
-
-      - name: Install aionanit test dependencies
-        run: pip install -e "packages/aionanit[dev]"
-
-      - name: Run aionanit tests
-        run: python -m pytest packages/aionanit/tests/ -v --tb=short
+    # The exact checks a PR runs, against the tagged commit.
+    uses: ./.github/workflows/ci.yaml
+    with:
+      ref: ${{ needs.resolve.outputs.tag }}
 
   publish-beta:
     name: Publish Beta to PyPI
@@ -116,6 +87,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ needs.resolve.outputs.tag }}
+          persist-credentials: false
 
       - name: Inject version from tag
         env:
@@ -153,6 +125,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ needs.resolve.outputs.tag }}
+          persist-credentials: false
 
       - name: Inject version from tag
         env:
@@ -190,6 +163,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ needs.resolve.outputs.tag }}
+          persist-credentials: false
 
       - name: Inject version from tag
         env:
@@ -223,7 +197,8 @@ jobs:
       contents: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      # Credentials persist on purpose: this job pushes the bump branch.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2 # zizmor: ignore[artipacked]
         with:
           ref: main
 

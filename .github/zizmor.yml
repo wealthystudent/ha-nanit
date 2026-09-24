@@ -1,0 +1,13 @@
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        # Deliberately unpinned: both validate against the current upstream
+        # rule set, and pinning would freeze those rules (see ci.yaml).
+        home-assistant/actions/*: any
+        hacs/action: any
+        "*": hash-pin
+  # `./.github/workflows/...` is the documented local reusable-workflow form
+  # and what actionlint understands; keep it.
+  self-repository:
+    disable: true

@@ -26,7 +26,7 @@ setup:
 check:
     venv/bin/ruff check .
     venv/bin/ruff format --check .
-    venv/bin/mypy custom_components/nanit packages/aionanit/aionanit --config-file pyproject.toml
+    venv/bin/mypy
     {{ python }} -m pytest tests/unit/ -v --cov=custom_components/nanit --cov-fail-under=80
     {{ python }} -m pytest packages/aionanit/tests/ -v
 
@@ -46,6 +46,20 @@ test target="integration" *args="":
         lib)         {{ python }} -m pytest packages/aionanit/tests/ -v {{ args }} ;;
         all)         {{ python }} -m pytest tests/unit/ -v && {{ python }} -m pytest packages/aionanit/tests/ -v ;;
         *)           echo "Unknown target '{{ target }}'. Use: integration, lib, all"; exit 1 ;;
+    esac
+
+# ─── Frontend ─────────────────────────────────────────────────────────
+
+# Build the Lovelace card bundle (commit the result): just card [watch]
+card action="build":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd frontend
+    [ -d node_modules ] || npm ci --ignore-scripts
+    case "{{ action }}" in
+        build) npm run build ;;
+        watch) npm run watch ;;
+        *)     echo "Unknown action '{{ action }}'. Use: build, watch"; exit 1 ;;
     esac
 
 # ─── Dev HA Instance ──────────────────────────────────────────────────

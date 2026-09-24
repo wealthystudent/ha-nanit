@@ -1,5 +1,13 @@
 name: Auto Beta Release
 
+# Merging a PR labelled release:patch|minor|major publishes a beta: this tags
+# the merge commit and dispatches release.yaml, which gates, publishes to
+# PyPI and creates the GitHub pre-release that HACS beta users get.
+#
+# One beta train: the next version is the latest stable bumped by the label,
+# but never lower than a beta already in flight. A patch merged while
+# v1.13.0-beta.2 exists becomes v1.13.0-beta.3, not v1.12.3-beta.1.
+
 on:
   pull_request:
     branches: [main]
@@ -8,6 +16,8 @@ on:
 concurrency:
   group: auto-beta
   cancel-in-progress: false
+
+permissions: {}
 
 jobs:
   beta-release:
@@ -20,12 +30,13 @@ jobs:
       )
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write # create the tag
+      actions: write # dispatch release.yaml
     steps:
-      # Credentials persist on purpose: this job pushes the beta tag.
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2 # zizmor: ignore[artipacked]
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Determine bump type from PR labels
         id: bump
@@ -60,23 +71,15 @@ jobs:
           esac
           new="${major}.${minor}.${patch}"
 
-          # If a higher version beta already exists, use that version instead
-          highest_beta_version=""
+          # Join the beta train already in flight for a higher version
+          # (betas of versions that already went stable don't count).
           for t in $(git tag -l 'v*-beta.*'); do
             base="${t#v}"
             base="${base%-beta.*}"
-            if [ -n "$highest_beta_version" ]; then
-              higher=$(printf '%s\n%s\n' "$base" "$highest_beta_version" | sort -V | tail -1)
-              highest_beta_version="$higher"
-            else
-              highest_beta_version="$base"
+            if [ "$(printf '%s\n%s\n' "$base" "$latest_stable" | sort -V | tail -1)" != "$latest_stable" ]; then
+              new=$(printf '%s\n%s\n' "$new" "$base" | sort -V | tail -1)
             fi
           done
-
-          if [ -n "$highest_beta_version" ]; then
-            final=$(printf '%s\n%s\n' "$new" "$highest_beta_version" | sort -V | tail -1)
-            new="$final"
-          fi
 
           beta_num=1
           for t in $(git tag -l "v${new}-beta.*"); do
@@ -90,17 +93,17 @@ jobs:
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "Computed: ${tag}"
 
-      - name: Create and push tag
+      - name: Tag merge commit
         env:
+          GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
-        run: |
-          git tag "${TAG}"
-          git push origin "${TAG}"
+          SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: gh api "repos/${GITHUB_REPOSITORY}/git/refs" -f "ref=refs/tags/${TAG}" -f "sha=${SHA}"
 
-      - name: Summary
+      - name: Publish beta
         env:
+          GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
         run: |
-          echo "✅ Tagged ${TAG} on merge commit $(git rev-parse --short HEAD)."
-          echo "Version injection happens at build time in the release workflow."
-          echo "Run 'just release' → Release beta to publish the pre-release."
+          gh workflow run release.yaml --repo "${GITHUB_REPOSITORY}" --ref main -f "tag_name=${TAG}"
+          echo "Tagged ${TAG} and dispatched release.yaml."

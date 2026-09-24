@@ -1,8 +1,20 @@
 name: Release
+# `just release` finds its run by this name to approve the stable gate.
+run-name: Release ${{ inputs.tag_name }}
+
+# Publishes one release tag end to end: CI gate, aionanit to PyPI, then the
+# GitHub release with nanit.zip and generated notes. The GitHub release is
+# created last, so HACS never sees a release whose zip or PyPI package is
+# missing.
+#
+# Started by workflow_dispatch only, always from main's copy of this file:
+#   betas  - auto-beta.yaml dispatches after tagging a merged PR
+#   stable - `just release` (owner) pushes the tag and dispatches
+#   retry  - `just release` → Retry, or the Actions tab
+# Retrying after a pipeline fix therefore uses the fixed workflow while
+# building from the original tag.
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       tag_name:
@@ -11,11 +23,10 @@ on:
         type: string
 
 concurrency:
-  group: release-${{ inputs.tag_name || github.event.release.tag_name }}
+  group: release-${{ inputs.tag_name }}
   cancel-in-progress: false
 
-env:
-  TAG: ${{ inputs.tag_name || github.event.release.tag_name }}
+permissions: {}
 
 jobs:
   resolve:
@@ -31,40 +42,64 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ env.TAG }}
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Resolve release metadata
         id: meta
         env:
-          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag_name }}
         run: |
-          tag="$TAG"
-          version="${tag#v}"
-
-          if [[ "$version" == *-beta.* ]]; then
-            base="${version%-beta.*}"
-            beta_num="${version##*-beta.}"
-            pep440="${base}b${beta_num}"
+          if [[ "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            is_stable=true
+            semver="${BASH_REMATCH[1]}"
+            pep440="$semver"
+          elif [[ "$TAG" =~ ^v(([0-9]+\.[0-9]+\.[0-9]+)-beta\.([0-9]+))$ ]]; then
+            is_stable=false
+            semver="${BASH_REMATCH[1]}"
+            pep440="${BASH_REMATCH[2]}b${BASH_REMATCH[3]}"
           else
-            pep440="$version"
+            echo "::error::'$TAG' is not vX.Y.Z or vX.Y.Z-beta.N"
+            exit 1
           fi
 
-          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
-          echo "semver=${version}" >> "$GITHUB_OUTPUT"
-          echo "pep440=${pep440}" >> "$GITHUB_OUTPUT"
-
-          is_pre=$(gh release view "${tag}" --json isPrerelease -q .isPrerelease)
-          if [ "${is_pre}" = "false" ] && [[ "${tag}" == v* ]]; then
-            echo "is_stable=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "is_stable=false" >> "$GITHUB_OUTPUT"
+          if ! git rev-parse -q --verify "refs/tags/$TAG" > /dev/null; then
+            echo "::error::Tag $TAG does not exist"
+            exit 1
           fi
+          # Only reviewed code ships: the tag must point into main's history.
+          if ! git merge-base --is-ancestor "$TAG" origin/main; then
+            echo "::error::Tag $TAG is not on main"
+            exit 1
+          fi
+
+          {
+            echo "tag=$TAG"
+            echo "is_stable=$is_stable"
+            echo "semver=$semver"
+            echo "pep440=$pep440"
+          } >> "$GITHUB_OUTPUT"
+
+  approve-stable:
+    # Stable releases wait here for the owner's approval (the release-stable
+    # environment's required reviewer). `just release` approves it for you.
+    name: Approve Stable Release
+    needs: resolve
+    if: needs.resolve.outputs.is_stable == 'true'
+    runs-on: ubuntu-latest
+    environment: release-stable
+    permissions: {}
+    steps:
+      - name: Approved
+        env:
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: echo "Stable release ${TAG} approved."
 
   ci-gate:
     name: CI Gate
-    needs: resolve
-    if: needs.resolve.outputs.is_stable == 'true'
+    needs: [resolve, approve-stable]
+    # Runs for betas (approval skipped) and approved stables.
+    if: ${{ !cancelled() && needs.resolve.result == 'success' && needs.approve-stable.result != 'failure' }}
     permissions:
       contents: read
     # The exact checks a PR runs, against the tagged commit.
@@ -72,16 +107,12 @@ jobs:
     with:
       ref: ${{ needs.resolve.outputs.tag }}
 
-  publish-beta:
-    name: Publish Beta to PyPI
-    needs: resolve
-    if: needs.resolve.outputs.is_stable == 'false'
+  build:
+    name: Build
+    needs: [resolve, ci-gate]
+    if: ${{ !cancelled() && needs.ci-gate.result == 'success' }}
     runs-on: ubuntu-latest
-    environment:
-      name: pypi
-      url: https://pypi.org/project/aionanit/
     permissions:
-      id-token: write
       contents: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -89,146 +120,102 @@ jobs:
           ref: ${{ needs.resolve.outputs.tag }}
           persist-credentials: false
 
-      - name: Inject version from tag
-        env:
-          PEP440: ${{ needs.resolve.outputs.pep440 }}
-        run: |
-          sed -i "s/^version = \".*\"/version = \"$PEP440\"/" packages/aionanit/pyproject.toml
-
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
-        with:
-          python-version: "3.14"
-
-      - name: Build aionanit package
-        run: |
-          pip install build
-          python -m build packages/aionanit
-
-      - name: Publish beta to PyPI
-        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
-        with:
-          packages-dir: packages/aionanit/dist/
-          skip-existing: true
-
-  publish-stable:
-    name: Publish Stable to PyPI
-    needs: [resolve, ci-gate]
-    if: needs.resolve.outputs.is_stable == 'true'
-    runs-on: ubuntu-latest
-    environment:
-      name: pypi
-      url: https://pypi.org/project/aionanit/
-    permissions:
-      id-token: write
-      contents: read
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          ref: ${{ needs.resolve.outputs.tag }}
-          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
 
       - name: Inject version from tag
-        env:
-          PEP440: ${{ needs.resolve.outputs.pep440 }}
-        run: |
-          sed -i "s/^version = \".*\"/version = \"$PEP440\"/" packages/aionanit/pyproject.toml
-
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
-        with:
-          python-version: "3.14"
-
-      - name: Install build
-        run: pip install build
-
-      - name: Build package
-        working-directory: packages/aionanit
-        run: python -m build
-
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
-        with:
-          packages-dir: packages/aionanit/dist/
-          skip-existing: true
-
-  attach-artifact:
-    name: Attach Release Artifact
-    needs: [resolve, ci-gate]
-    # Betas skip ci-gate (result "skipped"); stable assets require it green
-    # so a release can never ship an artifact off a red gate.
-    if: ${{ !cancelled() && needs.resolve.result == 'success' && (needs.resolve.outputs.is_stable == 'false' || needs.ci-gate.result == 'success') }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          ref: ${{ needs.resolve.outputs.tag }}
-          persist-credentials: false
-
-      - name: Inject version from tag
+        # Version files on main hold a 0.0.0 placeholder; the tag is the
+        # only source of truth. The integration pins the exact aionanit it
+        # was released with.
         env:
           SEMVER: ${{ needs.resolve.outputs.semver }}
           PEP440: ${{ needs.resolve.outputs.pep440 }}
         run: |
-          jq --arg v "$SEMVER" --arg r "aionanit>=$PEP440" \
-            '.version = $v | .requirements = [$r]' \
-            custom_components/nanit/manifest.json > /tmp/manifest.json
-          mv /tmp/manifest.json custom_components/nanit/manifest.json
+          sed -i "s/^version = \".*\"/version = \"$PEP440\"/" packages/aionanit/pyproject.toml
+          jq --arg v "$SEMVER" --arg r "aionanit==$PEP440" \
+            '.version = $v | .requirements |= map(if startswith("aionanit") then $r else . end)' \
+            custom_components/nanit/manifest.json > manifest.json.tmp
+          mv manifest.json.tmp custom_components/nanit/manifest.json
+          grep -q "^version = \"$PEP440\"" packages/aionanit/pyproject.toml
+          jq -e --arg r "aionanit==$PEP440" '.requirements | index($r)' \
+            custom_components/nanit/manifest.json > /dev/null
 
-      - name: Create integration zip
+      - name: Build aionanit
+        run: uv build --package aionanit --out-dir dist/
+
+      - name: Build integration zip
         # HACS zip_release expects the integration files at the zip root,
         # not nested under custom_components/nanit/.
         run: |
           cd custom_components/nanit
-          zip -r ../../nanit.zip .
+          zip -qr ../../nanit.zip . -x '__pycache__/*' '*/__pycache__/*'
 
-      - name: Upload release asset
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG_REF: ${{ needs.resolve.outputs.tag }}
-        run: gh release upload "$TAG_REF" nanit.zip --clobber
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release
+          path: |
+            dist/
+            nanit.zip
+          if-no-files-found: error
 
-  update-main-version:
-    name: Update Main Branch Version
-    needs: resolve
-    if: needs.resolve.outputs.is_stable == 'true'
+  publish-pypi:
+    name: Publish aionanit to PyPI
+    needs: [resolve, build]
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/aionanit/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
+        with:
+          packages-dir: dist/
+          # Idempotent retries: an already-uploaded version is skipped.
+          skip-existing: true
+
+  github-release:
+    name: GitHub Release
+    needs: [resolve, publish-pypi]
+    if: ${{ !cancelled() && needs.publish-pypi.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      pull-requests: write
+      pull-requests: read
     steps:
-      # Credentials persist on purpose: this job pushes the bump branch.
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2 # zizmor: ignore[artipacked]
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: main
+          fetch-depth: 0
+          persist-credentials: false
 
-      - name: Inject stable version into manifest and pyproject
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release
+
+      - name: Generate notes
         env:
-          SEMVER: ${{ needs.resolve.outputs.semver }}
-          PEP440: ${{ needs.resolve.outputs.pep440 }}
-        run: |
-          jq --arg v "$SEMVER" --arg r "aionanit>=$PEP440" \
-            '.version = $v | .requirements = [$r]' \
-            custom_components/nanit/manifest.json > /tmp/manifest.json
-          mv /tmp/manifest.json custom_components/nanit/manifest.json
-
-          sed -i "s/^version = \".*\"/version = \"$PEP440\"/" packages/aionanit/pyproject.toml
-
-      - name: Create version bump PR
-        env:
-          SEMVER: ${{ needs.resolve.outputs.semver }}
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: python3 tools/release_notes.py "$TAG" > notes.md
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          IS_STABLE: ${{ needs.resolve.outputs.is_stable }}
         run: |
-          branch="chore/bump-version-v${SEMVER}"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git push origin --delete "$branch" 2>/dev/null || true
-          git checkout -b "$branch"
-          git add custom_components/nanit/manifest.json packages/aionanit/pyproject.toml
-          git commit -m "chore: bump version to v${SEMVER} [skip ci]"
-          git push origin "$branch"
-          gh pr create \
-            --title "chore: bump version to v${SEMVER}" \
-            --body "Automated version bump after stable release v${SEMVER}." \
-            --base main \
-            --head "$branch"
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" nanit.zip --clobber
+            gh release edit "$TAG" --notes-file notes.md
+          elif [ "$IS_STABLE" = "true" ]; then
+            gh release create "$TAG" nanit.zip --verify-tag --title "$TAG" \
+              --notes-file notes.md --latest
+          else
+            gh release create "$TAG" nanit.zip --verify-tag --title "$TAG" \
+              --notes-file notes.md --prerelease --latest=false
+          fi

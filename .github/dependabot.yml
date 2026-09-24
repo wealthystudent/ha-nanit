@@ -4,6 +4,9 @@ updates:
     directory: /
     schedule:
       interval: monthly
+    commit-message:
+      prefix: chore
+      include: scope
     groups:
       actions:
         patterns: ["*"]
@@ -12,6 +15,9 @@ updates:
     directory: /
     schedule:
       interval: monthly
+    commit-message:
+      prefix: chore
+      include: scope
     groups:
       python:
         patterns: ["*"]

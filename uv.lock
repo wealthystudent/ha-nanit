@@ -167,7 +167,7 @@ wheels = [
 
 [[package]]
 name = "aionanit"
-version = "1.12.2"
+version = "0.0.0"
 source = { editable = "packages/aionanit" }
 dependencies = [
     { name = "aiohttp" },

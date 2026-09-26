@@ -40,6 +40,7 @@ console = Console()
 REPO_NAME = "ha-nanit"
 RELEASE_WORKFLOW = "release.yaml"
 RELEASE_RUN_NAME = "Release {tag}"  # run-name in release.yaml
+STABLE_ENVIRONMENT = "release-stable"
 MAIN_BRANCH = "main"
 
 # ─── Data model ──────────────────────────────────────────────────────
@@ -572,6 +573,27 @@ async def action_release_stable(state: State) -> None:
 
     console.print(f"\n  [bold]{beta.tag} → v{ver}[/]")
     console.print(f"  Commit: [dim]{sha[:7]}[/]")
+
+    # Preflight the checks release.yaml would fail on, before the tag exists:
+    # a stable tag can't be deleted or moved, so one refused after pushing is
+    # stranded and burns the version. The workflow checks stay as backstop.
+    if not await sh_ok("git", "cat-file", "-e", f"{sha}:uv.lock"):
+        console.print("  [red]✗ That commit predates the uv pipeline and can't be released.[/]")
+        return
+    reviewers = await sh(
+        "gh",
+        "api",
+        f"repos/{state.repo}/environments/{STABLE_ENVIRONMENT}",
+        "--jq",
+        '[.protection_rules[] | select(.type == "required_reviewers")] | length',
+    )
+    if not reviewers.isdigit() or int(reviewers) < 1:
+        console.print(
+            f"  [red]✗ The {STABLE_ENVIRONMENT} environment has no required reviewer, "
+            "so release.yaml would refuse this tag (see docs/RELEASING.md).[/]"
+        )
+        return
+
     if not Confirm.ask("\n  Confirm release?"):
         return
 

@@ -10,7 +10,11 @@ version = "0.0.0"
 requires-python = ">=3.14.2"  # Home Assistant's floor
 
 [dependency-groups]
+# Just ruff: the pre-commit hooks and the Claude Code format hook run with
+# `--only-group lint`, so they never pull in Home Assistant on a fresh clone.
+lint = ["ruff>=0.16,<0.17"]
 dev = [
+    { include-group = "lint" },
     "aionanit",
     "aiohttp>=3.13,<3.14",  # aioresponses 0.7.x is incompatible with aiohttp 3.14+
     "aioresponses>=0.7,<0.8",
@@ -23,7 +27,6 @@ dev = [
     "pytest-cov>=7,<8",
     "pytest-homeassistant-custom-component>=0.13.333,<0.14",
     "rich>=15,<16",
-    "ruff>=0.16,<0.17",
     "syrupy>=5,<6",
     "websockets>=13.0,<16",
 ]

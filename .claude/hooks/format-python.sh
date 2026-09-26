@@ -11,4 +11,4 @@ case "$file" in
 esac
 
 cd "${CLAUDE_PROJECT_DIR:-.}"
-uv run --frozen ruff format --quiet --force-exclude "$file" || true
+uv run --frozen --only-group lint ruff format --quiet --force-exclude "$file" || true

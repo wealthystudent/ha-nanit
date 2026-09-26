@@ -157,8 +157,9 @@ Full checklist: [`docs/SECURITY_AUDIT_CHECKLIST.md`](docs/SECURITY_AUDIT_CHECKLI
 - Introduce blocking I/O in async code paths.
 - Log or store credentials, tokens, or URLs containing tokens.
 - Add dependencies without full supply chain review (Section 10 of security checklist).
+- Pin aionanit's runtime dependencies (`aiohttp`, `protobuf` in `[project] dependencies`) exactly. They stay broad ranges (e.g. `>=3.9.0,<4`) because exact pins fight Home Assistant's own dependency resolution. Exact pins belong in `uv.lock` only.
 - Commit directly to `main` — always use a PR.
-- Push unsigned commits, or bypass pre-commit hooks with `--no-verify`.
+- Disable or reconfigure the host's commit signing, or bypass pre-commit hooks with `--no-verify`. (Signing isn't required for PR commits, since squash merges are signed by GitHub, but agents never turn it off where it is set up.)
 - Merge with `--admin`, or force-push to a branch you did not create.
 - **Release anything**: never run `just release`, create or edit tags and GitHub releases, or dispatch workflows. Releases are human actions.
 - **Edit `AGENTS.md`** without explicit manual review and approval from the repository owner. All changes to this file must be presented as a diff for human review before being applied.
@@ -166,7 +167,7 @@ Full checklist: [`docs/SECURITY_AUDIT_CHECKLIST.md`](docs/SECURITY_AUDIT_CHECKLI
 
 ### Enforcement (Claude Code)
 
-`.claude/settings.json` (checked in, applies only to Claude Code users) turns the rules above into permission rules: releases, workflow dispatch, `--admin` merges, force pushes and `--no-verify` are denied; pushes, merges and `AGENTS.md` edits ask first. A hook formats edited Python files with the locked ruff. Personal overrides go in `.claude/settings.local.json` (gitignored). Other agents: follow the rules as written.
+`.claude/settings.json` is checked in and applies to anyone running Claude Code in this repo. Its permission rules guard against the common forms of the actions above (releases, tag creation, workflow dispatch and reruns, `--admin` merges, force pushes, `--no-verify`) and ask before pushes, merges and `AGENTS.md` edits. They match command text, so they are accident guards, not a security boundary: an unusual spelling of the same command slips past, and the rules above still apply as written. A hook formats edited Python files with the locked ruff (it installs only ruff, not the full environment). Personal overrides go in `.claude/settings.local.json` (gitignored). Other agents: follow the rules as written.
 
 ---
 

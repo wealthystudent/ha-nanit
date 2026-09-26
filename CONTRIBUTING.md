@@ -27,6 +27,11 @@ pre-commit hooks and CI all run the same versions. `uv run` (and every `just`
 recipe) re-syncs `.venv` when the lock changes, so there is no separate
 install step to forget.
 
+uv uses its own managed Python (`python-preference = "only-managed"`), so a
+system Python never leaks in. If `uv sync` fails to replace `.venv` with
+"Directory not empty" on macOS, a Finder window on the repo is recreating
+`.DS_Store` files: close it, `rm -rf .venv`, and sync again.
+
 ## Development loop
 
 ```bash
@@ -61,11 +66,28 @@ for the probing tools (`just events`, `just probe`, `just network`,
 5. Open a **pull request** against `main` and fill in the template:
    - **Title**: conventional commit, e.g. `fix: handle token refresh during reconnect`. It becomes the commit on `main`.
    - **Changelog**: what users will notice, in plain sentences. It becomes the release notes. Write `none` if users won't notice (refactors, tests, CI).
-6. If the change should ship, add a label: `release:patch` (fixes), `release:minor` (features) or `release:major` (breaking). Merging a labelled PR publishes a beta automatically.
+6. If the change should ship, it needs a label: `release:patch` (fixes), `release:minor` (features) or `release:major` (breaking). Maintainers add it themselves; from a fork, suggest one in the description and a maintainer adds it. Merging a labelled PR publishes a beta automatically.
 7. CI must pass: `CI OK` (lint, types, tests, drift checks, hassfest) and `PR Metadata` (title and changelog). Fix in the same branch and push.
 8. A maintainer reviews and squash-merges. The branch is deleted automatically.
 
 `just release` → Create PR does steps 5 and 6 interactively.
+
+### Stacked PRs
+
+A PR can target another PR's branch when it builds on it. CI runs on it all
+the same. When the parent is squash-merged, `main` gets a new commit the child
+doesn't contain, so move the child over before merging it:
+
+```bash
+git fetch origin
+git rebase --onto origin/main <parent's last head sha> <child branch>
+git push --force-with-lease=<child branch>:<child sha you last saw>
+```
+
+Then retarget the child to `main` and, after it merges, check that
+`git diff --stat origin/main <child branch>` lists only files `main` changed
+on its own. A stacked PR merged into its parent's branch instead of `main`
+never reaches `main`.
 
 ### Commit messages
 
@@ -116,14 +138,17 @@ type-checking authority; the editor only gives fast feedback.
 - **VS Code**: the Python, Pylance and Ruff extensions, with `.venv` as the
   interpreter.
 
-## AI assistants (optional)
+## AI assistants
 
 - [AGENTS.md](AGENTS.md) is the tool-neutral brief every agent should read.
-- **Claude Code** picks up `.claude/settings.json` automatically: releases,
-  workflow dispatch, force pushes, `--admin` merges and `--no-verify` are
-  blocked, pushes and merges ask first, and edited Python is formatted with
-  the locked ruff. The `review-prs` skill reviews open PRs. Personal settings
-  go in `.claude/settings.local.json` (gitignored).
+- **Claude Code** applies `.claude/settings.json` to anyone using it in this
+  repo. Its rules catch the usual forms of releases, tag creation, workflow
+  dispatch, force pushes, `--admin` merges and `--no-verify` (accident guards
+  that match command text, not a security boundary), ask before pushes and
+  merges, and format edited Python with the locked ruff. The format hook
+  installs only ruff, so it stays light on a fresh clone. The `review-prs`
+  skill reviews open PRs. Personal settings go in
+  `.claude/settings.local.json` (gitignored).
 - Keep personal tool config (MCP server URLs, tokens) out of the repo: use
   your user-level config or `.git/info/exclude`.
 - Point agents that talk to Home Assistant at the dev instance, not your home.

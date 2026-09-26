@@ -49,13 +49,18 @@ approval per PR.** Offer to post requested changes as a review comment.
 
 Order: smallest and foundational first, broad docs last. For each:
 
-1. If behind main or conflicting: `gh pr update-branch <n>` (merges main into
+1. Check the base: `gh pr view <n> --json baseRefName`. Only merge PRs whose
+   base is `main`. A stacked PR merged into its parent's branch never reaches
+   `main`; wait for the parent, then move the child over (CONTRIBUTING.md,
+   "Stacked PRs") and ask the author or owner to retarget it.
+2. If behind main or conflicting: `gh pr update-branch <n>` (merges main into
    the PR server side). If that conflicts, ask the author to rebase. Never
    force-push to someone else's branch.
-2. Wait for checks: `gh pr checks <n> --watch --fail-fast`. All required
+3. Wait for checks: `gh pr checks <n> --watch --fail-fast`. All required
    checks (`CI OK`, `PR Metadata`) must pass. Never merge with `--admin`.
-3. Merge: `gh pr merge <n> --squash --delete-branch`. The PR title and body
-   become the commit on main.
+4. Merge: `gh pr merge <n> --squash --delete-branch`. The PR title and body
+   become the commit on main. Afterwards, `git diff --stat origin/main
+   <merged branch>` should list only files `main` changed on its own.
 
 A merged PR with a `release:*` label publishes a beta automatically. Verify:
 `gh run list --workflow auto-beta.yaml --limit 3` then

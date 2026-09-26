@@ -105,10 +105,14 @@ class State:
 # ─── Shell helpers ───────────────────────────────────────────────────
 
 
-async def sh(cmd: str) -> str:
-    """Run shell command, return stdout or empty string on failure."""
-    proc = await asyncio.create_subprocess_shell(
-        cmd,
+# Commands run without a shell: arguments such as PR titles and commit
+# subjects come from contributors and must never be parsed by a shell.
+
+
+async def sh(*args: str) -> str:
+    """Run a command, return stdout or empty string on failure."""
+    proc = await asyncio.create_subprocess_exec(
+        *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -116,10 +120,10 @@ async def sh(cmd: str) -> str:
     return stdout.decode().strip() if proc.returncode == 0 else ""
 
 
-async def sh_ok(cmd: str) -> bool:
-    """Run shell command, return True if exit code 0."""
-    proc = await asyncio.create_subprocess_shell(
-        cmd,
+async def sh_ok(*args: str) -> bool:
+    """Run a command, return True if exit code 0."""
+    proc = await asyncio.create_subprocess_exec(
+        *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -134,21 +138,43 @@ async def fetch_state() -> State:
     """Fetch all release state in one parallel batch."""
     state = State()
 
+    branch = await sh("git", "branch", "--show-current")
+
     # All network + git calls fire in parallel
-    branch, ahead, tags_raw, releases_json, pr_json, _ = await asyncio.gather(
-        sh("git branch --show-current"),
-        sh("git rev-list --count main..HEAD 2>/dev/null"),
+    ahead, tags_raw, releases_json, pr_json, _ = await asyncio.gather(
+        sh("git", "rev-list", "--count", f"origin/{MAIN_BRANCH}..HEAD"),
         sh(
-            "git for-each-ref --sort=version:refname "
-            "--format='%(refname:short) %(creatordate:short)' 'refs/tags/v*'"
+            "git",
+            "for-each-ref",
+            "--sort=version:refname",
+            "--format=%(refname:short) %(creatordate:short)",
+            "refs/tags/v*",
         ),
-        sh("gh release list --limit 100 --json tagName,isPrerelease,isDraft,publishedAt"),
         sh(
-            "gh pr list --state open "
-            '--head "$(git branch --show-current)" '
-            "--json number,labels,title,url --limit 1"
+            "gh",
+            "release",
+            "list",
+            "--limit",
+            "100",
+            "--json",
+            "tagName,isPrerelease,isDraft,publishedAt",
         ),
-        sh("git fetch origin --tags --quiet"),
+        sh(
+            "gh",
+            "pr",
+            "list",
+            "--state",
+            "open",
+            "--head",
+            branch,
+            "--json",
+            "number,labels,title,url",
+            "--limit",
+            "1",
+        )
+        if branch
+        else sh("true"),
+        sh("git", "fetch", "origin", "--tags", "--quiet"),
     )
 
     state.branch = branch or "detached"
@@ -158,7 +184,7 @@ async def fetch_state() -> State:
     # Parse tag dates from git
     tag_dates: dict[str, str] = {}
     for line in (tags_raw or "").split("\n"):
-        line = line.strip().strip("'")
+        line = line.strip()
         if not line:
             continue
         parts = line.split(" ", 1)
@@ -395,22 +421,31 @@ async def action_create_pr(state: State) -> None:
     """Create a PR for the current branch."""
     console.print()
 
-    last_commit = await sh("git log -1 --format='%s'")
+    last_commit = await sh("git", "log", "-1", "--format=%s")
     title = Prompt.ask("  [bold]PR title[/]", default=last_commit)
 
     label = _ask_bump(state)
 
     with console.status("  [bold]Pushing branch..."):
-        push_ok = await sh_ok(f"git push -u origin {state.branch}")
+        push_ok = await sh_ok("git", "push", "-u", "origin", state.branch)
     if not push_ok:
         console.print("  [red]✗ Failed to push branch.[/]")
         return
     console.print("  [green]✓[/] Branch pushed")
 
-    label_flag = f'--label "{label}"' if label else ""
+    label_args = ["--label", label] if label else []
     with console.status("  [bold]Creating PR..."):
         result = await sh(
-            f'gh pr create --title "{title}" --body "" --base {MAIN_BRANCH} {label_flag}'
+            "gh",
+            "pr",
+            "create",
+            "--title",
+            title,
+            "--body",
+            "",
+            "--base",
+            MAIN_BRANCH,
+            *label_args,
         )
 
     if result:
@@ -432,7 +467,7 @@ async def action_tag_pr(state: State) -> None:
         return
 
     with console.status("  [bold]Adding label..."):
-        ok = await sh_ok(f'gh pr edit {state.pr["number"]} --add-label "{label}"')
+        ok = await sh_ok("gh", "pr", "edit", str(state.pr["number"]), "--add-label", label)
 
     if ok:
         console.print(f"  [green]✓[/] Label [bold]{label}[/] added to PR #{state.pr['number']}")
@@ -456,7 +491,9 @@ async def action_merge_pr(state: State) -> None:
         return
 
     with console.status("  [bold]Merging..."):
-        ok = await sh_ok(f"gh pr merge {state.pr['number']} --squash --delete-branch")
+        ok = await sh_ok(
+            "gh", "pr", "merge", str(state.pr["number"]), "--squash", "--delete-branch"
+        )
 
     if ok:
         console.print("  [green]✓[/] PR merged")
@@ -491,9 +528,15 @@ async def action_release_beta(state: State) -> None:
 
     with console.status("  [bold]Creating release..."):
         ok = await sh_ok(
-            f'gh release create "{selected.tag}" '
-            f'--title "{selected.tag}" '
-            f"--generate-notes --prerelease --latest=false"
+            "gh",
+            "release",
+            "create",
+            selected.tag,
+            "--title",
+            selected.tag,
+            "--generate-notes",
+            "--prerelease",
+            "--latest=false",
         )
 
     if ok:
@@ -528,7 +571,7 @@ async def action_release_stable(state: State) -> None:
     )
     ver, beta = items[int(choice) - 1]
 
-    sha = await sh(f"git rev-list -n1 {beta.tag}")
+    sha = await sh("git", "rev-list", "-n1", beta.tag)
     if not sha:
         console.print(f"  [red]Could not resolve commit for {beta.tag}[/]")
         return
@@ -539,15 +582,24 @@ async def action_release_stable(state: State) -> None:
         return
 
     with console.status("  [bold]Creating tag..."):
-        await sh(f'git tag -m "v{ver}" "v{ver}" "{sha}"')
-        push_ok = await sh_ok(f'git push origin "v{ver}"')
+        await sh("git", "tag", "-m", f"v{ver}", f"v{ver}", sha)
+        push_ok = await sh_ok("git", "push", "origin", f"v{ver}")
 
     if not push_ok:
         console.print("  [red]✗ Failed to push tag.[/]")
         return
 
     with console.status("  [bold]Creating GitHub release..."):
-        ok = await sh_ok(f'gh release create "v{ver}" --title "v{ver}" --generate-notes --latest')
+        ok = await sh_ok(
+            "gh",
+            "release",
+            "create",
+            f"v{ver}",
+            "--title",
+            f"v{ver}",
+            "--generate-notes",
+            "--latest",
+        )
 
     if ok:
         console.print(
@@ -589,7 +641,9 @@ async def action_view_releases(state: State) -> None:
 
 async def action_retry(state: State) -> None:
     """Re-trigger the release workflow for a tag."""
-    releases_json = await sh("gh release list --limit 10 --json tagName,publishedAt")
+    releases_json = await sh(
+        "gh", "release", "list", "--limit", "10", "--json", "tagName,publishedAt"
+    )
     releases = json.loads(releases_json) if releases_json else []
 
     if not releases:
@@ -610,7 +664,7 @@ async def action_retry(state: State) -> None:
         return
 
     with console.status("  [bold]Dispatching..."):
-        ok = await sh_ok(f'gh workflow run {RELEASE_WORKFLOW} -f tag_name="{tag}"')
+        ok = await sh_ok("gh", "workflow", "run", RELEASE_WORKFLOW, "-f", f"tag_name={tag}")
 
     if ok:
         console.print(f"  [green]✓[/] Workflow dispatched for {tag}")

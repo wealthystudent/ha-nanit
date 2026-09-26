@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 from getpass import getpass
 from pathlib import Path
@@ -55,7 +56,13 @@ async def async_main() -> int:
                 "baby_name": baby.name,
             }
 
-            SESSION_FILE.write_text(json.dumps(session_data, indent=2) + "\n")
+            # The session holds live tokens: create it owner-only, and tighten
+            # a file left world-readable by older versions of this tool before
+            # any token is written to it.
+            fd = os.open(SESSION_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w") as fh:
+                fh.write(json.dumps(session_data, indent=2) + "\n")
 
             print(f"Logged in. Baby: {session_data['baby_name']} (uid={session_data['baby_uid']})")
             print(f"Session saved to {SESSION_FILE.name}")

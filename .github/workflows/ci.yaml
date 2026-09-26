@@ -37,6 +37,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
+          version: "0.12.14" # at or above required-version in pyproject.toml
           enable-cache: true
 
       - name: Install dependencies
@@ -61,6 +62,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
+          version: "0.12.14" # at or above required-version in pyproject.toml
           enable-cache: true
 
       - name: Install dependencies
@@ -81,6 +83,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
+          version: "0.12.14" # at or above required-version in pyproject.toml
           enable-cache: true
 
       - name: Install dependencies
@@ -100,10 +103,13 @@ jobs:
 
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
+          version: "0.12.14" # at or above required-version in pyproject.toml
           enable-cache: true
 
       - name: Install dependencies
-        # The library alone, without Home Assistant, as PyPI users get it.
+        # The library without Home Assistant installed. Versions still come
+        # from the workspace lock, so this proves no hidden HA dependency
+        # rather than testing every version PyPI users might resolve.
         run: uv sync --locked --package aionanit --extra dev
 
       - name: Run aionanit tests
@@ -195,6 +201,8 @@ jobs:
           ./actionlint -color
 
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.12.14" # at or above required-version in pyproject.toml
 
       - name: zizmor
         env:

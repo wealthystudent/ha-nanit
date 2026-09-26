@@ -31,9 +31,10 @@ TITLE_RE = re.compile(
     r"(?:\([\w./-]+\))?(?P<breaking>!)?: \S"
 )
 PR_REF_RE = re.compile(r"\(#(\d+)\)$")
-SECTION_RE = re.compile(r"^##\s+Changelog\s*$(?P<text>.*?)(?=^#{1,2}\s|\Z)", re.M | re.S | re.I)
+HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
+FENCE_RE = re.compile(r"^\s*(```|~~~)")
 COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
-NONE_VALUES = {"", "none", "n/a", "-", "no"}
+NONE_VALUES = {"none", "n/a", "-", "no"}
 USER_FACING_TYPES = {"feat", "fix", "perf"}
 
 SECTIONS = {
@@ -59,18 +60,44 @@ def git(*args: str) -> str:
     return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout.strip()
 
 
+def _raw_changelog(body: str | None) -> str | None:
+    """Return the text under the first '## Changelog' heading, or None if absent.
+
+    Headings inside fenced code blocks don't count, HTML comments (the
+    template's guidance) are dropped, and the section ends at the next
+    level 1 or 2 heading.
+    """
+    in_fence = False
+    collecting = False
+    lines: list[str] = []
+    for line in COMMENT_RE.sub("", body or "").splitlines():
+        if FENCE_RE.match(line):
+            in_fence = not in_fence
+        heading = None if in_fence else HEADING_RE.match(line)
+        if collecting:
+            if heading and len(heading.group(1)) <= 2:
+                break
+            lines.append(line)
+        elif heading and len(heading.group(1)) == 2 and heading.group(2).lower() == "changelog":
+            collecting = True
+    return "\n".join(lines).strip() if collecting else None
+
+
+def changelog_state(body: str | None) -> str:
+    """Classify the Changelog section: missing, empty, none (opted out) or text."""
+    text = _raw_changelog(body)
+    if text is None:
+        return "missing"
+    if not text:
+        return "empty"
+    if text.lower().rstrip(".!") in NONE_VALUES:
+        return "none"
+    return "text"
+
+
 def changelog_section(body: str | None) -> str | None:
-    """Return the Changelog section text, or None when absent or opted out."""
-    match = SECTION_RE.search(body or "")
-    if not match:
-        return None
-    text = COMMENT_RE.sub("", match.group("text")).strip()
-    return None if text.lower() in NONE_VALUES else text
-
-
-def has_changelog_heading(body: str | None) -> bool:
-    """Return True if the body has a Changelog heading at all."""
-    return SECTION_RE.search(body or "") is not None
+    """Return the user-facing Changelog text, or None when there is none."""
+    return _raw_changelog(body) if changelog_state(body) == "text" else None
 
 
 def section_for(title: str) -> str:
@@ -173,20 +200,21 @@ def check_pr() -> int:
     errors: list[str] = []
 
     match = TITLE_RE.match(title)
+    state = changelog_state(body)
     if not match:
         errors.append(
             f"PR title {title!r} is not a conventional commit, e.g. 'fix: handle token "
             "refresh during reconnect'. It becomes the squash commit on main."
         )
-    elif release_label and not changelog_section(body):
+    elif release_label and state != "text":
         errors.append(
-            f"The {release_label} label publishes a release, so the description needs a "
-            "'## Changelog' section describing the change for users."
+            f"The {release_label} label publishes a release, so '## Changelog' needs a "
+            "user-facing entry. 'none' or an empty section is only for unlabelled PRs."
         )
-    elif match.group("type") in USER_FACING_TYPES and not has_changelog_heading(body):
+    elif match.group("type") in USER_FACING_TYPES and state in ("missing", "empty"):
         errors.append(
-            "feat/fix/perf PRs need a '## Changelog' section in the description: one or "
-            "more user-facing sentences, or 'none' if users won't notice the change."
+            "feat/fix/perf PRs need the '## Changelog' section filled in: one or more "
+            "user-facing sentences, or 'none' if users won't notice the change."
         )
 
     for error in errors:

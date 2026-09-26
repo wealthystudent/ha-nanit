@@ -4,9 +4,14 @@ name: Auto Beta Release
 # the merge commit and dispatches release.yaml, which gates, publishes to
 # PyPI and creates the GitHub pre-release that HACS beta users get.
 #
-# One beta train: the next version is the latest stable bumped by the label,
-# but never lower than a beta already in flight. A patch merged while
-# v1.13.0-beta.2 exists becomes v1.13.0-beta.3, not v1.12.3-beta.1.
+# One beta train: the next version is the latest stable bumped by the
+# largest release label among all PRs merged since that stable, and never
+# lower than a beta already in flight. A patch merged while v1.13.0-beta.2
+# exists becomes v1.13.0-beta.3, not v1.12.3-beta.1.
+#
+# Taking the bump from every PR since the stable (not just this one) means a
+# run cancelled by a burst of merges loses nothing: the next run publishes
+# a beta that contains the cancelled PR and honours its label.
 
 on:
   pull_request:
@@ -32,24 +37,40 @@ jobs:
     permissions:
       contents: write # create the tag
       actions: write # dispatch release.yaml
+      pull-requests: read # labels of earlier PRs in the train
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Determine bump type from PR labels
+      - name: Determine bump from every labelled PR since the last stable
         id: bump
         env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.pull_request.merge_commit_sha }}
           LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
         run: |
-          if echo "$LABELS" | grep -q '"release:major"'; then
-            echo "type=major" >> "$GITHUB_OUTPUT"
-          elif echo "$LABELS" | grep -q '"release:minor"'; then
-            echo "type=minor" >> "$GITHUB_OUTPUT"
+          latest_stable=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' \
+            | { grep -v '-' || true; } \
+            | sort -V \
+            | tail -1)
+          range="${latest_stable:+${latest_stable}..}${SHA}"
+
+          labels="${LABELS}"
+          for n in $(git log --format=%s "${range}" | sed -nE 's/.*\(#([0-9]+)\)$/\1/p'); do
+            labels+=$(gh pr view "${n}" --repo "${GITHUB_REPOSITORY}" --json labels --jq '[.labels[].name]')
+          done
+
+          if grep -q '"release:major"' <<< "${labels}"; then
+            type="major"
+          elif grep -q '"release:minor"' <<< "${labels}"; then
+            type="minor"
           else
-            echo "type=patch" >> "$GITHUB_OUTPUT"
+            type="patch"
           fi
+          echo "type=${type}" >> "$GITHUB_OUTPUT"
+          echo "Bump since ${latest_stable:-the beginning}: ${type}"
 
       - name: Compute next beta version
         id: version

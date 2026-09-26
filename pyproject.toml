@@ -30,6 +30,12 @@ dev = [
 
 [tool.uv]
 package = false
+# Everyone runs the same uv-managed interpreter. It also stops uv from picking
+# up a system 3.14.0/3.14.1, which is below requires-python and would fail the
+# sync instead of downloading a newer 3.14.
+python-preference = "only-managed"
+# Floor for contributors; CI pins the exact version in setup-uv.
+required-version = ">=0.12.14"
 
 [tool.uv.workspace]
 members = ["packages/aionanit"]

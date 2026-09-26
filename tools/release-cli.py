@@ -91,7 +91,7 @@ class State:
 
     @property
     def promotable_versions(self) -> dict[str, BetaInfo]:
-        """Versions with beta tags not yet promoted to stable."""
+        """Versions whose newest published beta can be promoted to stable."""
         stable_versions = {s.tag.lstrip("v") for s in self.stables}
         floor = _vkey(self.latest_stable.tag.lstrip("v")) if self.latest_stable else [0, 0, 0]
         versions: dict[str, BetaInfo] = {}
@@ -99,6 +99,11 @@ class State:
             # Only versions ahead of the latest stable: older beta trains
             # were abandoned or superseded.
             if _vkey(beta.version) <= floor:
+                continue
+            # Only betas the pipeline actually published (a GitHub
+            # pre-release exists). A bare tag was never gated or tested,
+            # and promoting it could burn the stable version on a failure.
+            if not beta.released:
                 continue
             if beta.version not in stable_versions and (
                 beta.version not in versions or beta.beta_num > versions[beta.version].beta_num
@@ -552,10 +557,7 @@ async def action_release_stable(state: State) -> None:
 
     console.print("\n  [bold]Available versions:[/]")
     for i, (ver, beta) in enumerate(items, 1):
-        tested = "[green]✓ beta-tested[/]" if beta.released else "[dim]untested[/]"
-        console.print(
-            f"    [cyan]{i})[/]  [bold]v{ver}[/]  [dim](from {beta.tag}, {beta.date})[/]  {tested}"
-        )
+        console.print(f"    [cyan]{i})[/]  [bold]v{ver}[/]  [dim](from {beta.tag}, {beta.date})[/]")
 
     choice = Prompt.ask(
         "\n  [bold]Release which version[/]",
@@ -695,7 +697,7 @@ async def action_view_releases(state: State) -> None:
 
 async def action_retry(state: State) -> None:
     """Re-trigger the release workflow for a tag."""
-    tags = [
+    candidates = [
         t
         for t in (
             await sh(
@@ -703,10 +705,16 @@ async def action_retry(state: State) -> None:
             )
         ).splitlines()
         if BETA_RE.match(t) or STABLE_RE.match(t)
-    ][:10]
+    ][:20]
+    # release.yaml runs main's CI against the tag's tree, which only works for
+    # trees that have uv.lock. Older tags can't be rebuilt; don't offer them.
+    rebuildable = await asyncio.gather(
+        *(sh_ok("git", "cat-file", "-e", f"{t}:uv.lock") for t in candidates)
+    )
+    tags = [t for t, ok in zip(candidates, rebuildable, strict=True) if ok][:10]
 
     if not tags:
-        console.print("  [yellow]No release tags found.[/]")
+        console.print("  [yellow]No release tags built on the current pipeline.[/]")
         return
 
     console.print("\n  [bold]Recent release tags:[/]")

@@ -34,6 +34,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      actions: read # read the release-stable environment's protection rules
     outputs:
       tag: ${{ steps.meta.outputs.tag }}
       is_stable: ${{ steps.meta.outputs.is_stable }}
@@ -49,6 +50,7 @@ jobs:
         id: meta
         env:
           TAG: ${{ inputs.tag_name }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           if [[ "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
             is_stable=true
@@ -71,6 +73,23 @@ jobs:
           if ! git merge-base --is-ancestor "$TAG" origin/main; then
             echo "::error::Tag $TAG is not on main"
             exit 1
+          fi
+          # The gate below is main's ci.yaml run against the tag's tree, which
+          # needs uv.lock. Tags from before the uv pipeline can't be rebuilt.
+          if ! git cat-file -e "$TAG:uv.lock" 2> /dev/null; then
+            echo "::error::Tag $TAG predates the uv pipeline and can't be rebuilt"
+            exit 1
+          fi
+          # Fail closed: GitHub creates a missing environment with no
+          # protection, which would let a stable release through unapproved.
+          if [ "$is_stable" = "true" ]; then
+            reviewers=$(gh api "repos/${GITHUB_REPOSITORY}/environments/release-stable" \
+              --jq '[.protection_rules[] | select(.type == "required_reviewers")] | length' \
+              2> /dev/null || echo 0)
+            if [ "$reviewers" -lt 1 ]; then
+              echo "::error::The release-stable environment needs a required reviewer (docs/RELEASING.md)"
+              exit 1
+            fi
           fi
 
           {
@@ -121,6 +140,8 @@ jobs:
           persist-credentials: false
 
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.12.14" # at or above required-version in pyproject.toml
 
       - name: Inject version from tag
         # Version files on main hold a 0.0.0 placeholder; the tag is the

@@ -45,16 +45,36 @@ def test_changelog_section_extracts_text_between_headings() -> None:
     )
 
 
-@pytest.mark.parametrize("value", ["none", "None", "n/a", "-", "", "<!-- only a comment -->"])
-def test_changelog_section_opt_out(value: str) -> None:
-    assert rn.changelog_section(f"## Changelog\n\n{value}\n") is None
-    assert rn.has_changelog_heading(f"## Changelog\n\n{value}\n")
+@pytest.mark.parametrize("value", ["none", "None", "None.", "n/a", "-", "no"])
+def test_changelog_opt_out(value: str) -> None:
+    body = f"## Changelog\n\n{value}\n"
+    assert rn.changelog_section(body) is None
+    assert rn.changelog_state(body) == "none"
+
+
+@pytest.mark.parametrize("value", ["", "<!-- only a comment -->"])
+def test_changelog_empty(value: str) -> None:
+    body = f"## Changelog\n\n{value}\n\n## How I tested this\n\nDev instance."
+    assert rn.changelog_section(body) is None
+    assert rn.changelog_state(body) == "empty"
 
 
 def test_changelog_section_missing() -> None:
     assert rn.changelog_section("Just a description.") is None
     assert rn.changelog_section(None) is None
-    assert not rn.has_changelog_heading("Just a description.")
+    assert rn.changelog_state("Just a description.") == "missing"
+
+
+def test_changelog_heading_in_code_block_is_ignored() -> None:
+    body = (
+        "Template example:\n\n```md\n## Changelog\n\nnot this\n```\n\n## Changelog\n\nReal entry.\n"
+    )
+    assert rn.changelog_section(body) == "Real entry."
+
+
+def test_changelog_keeps_code_block_inside_entry() -> None:
+    body = "## Changelog\n\nSet this:\n```yaml\n## not a heading\n```\n## Next\nignored"
+    assert rn.changelog_section(body) == "Set this:\n```yaml\n## not a heading\n```"
 
 
 def test_changelog_section_keeps_subheadings() -> None:
@@ -117,15 +137,25 @@ def test_check_rejects_non_conventional_title(monkeypatch: pytest.MonkeyPatch) -
     assert _check(monkeypatch, "Update stuff", TEMPLATE_BODY) == 1
 
 
-def test_check_fix_needs_heading_but_allows_none(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_check_fix_needs_text_or_explicit_none(monkeypatch: pytest.MonkeyPatch) -> None:
     assert _check(monkeypatch, "fix: x", "no section") == 1
     assert _check(monkeypatch, "fix: x", "## Changelog\n\nnone") == 0
+    assert _check(monkeypatch, "fix: x", "## Changelog\n\nNone.") == 0
     assert _check(monkeypatch, "fix: x", TEMPLATE_BODY) == 0
 
 
-def test_check_release_label_needs_real_entry(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_check_untouched_template_fails_for_fix(monkeypatch: pytest.MonkeyPatch) -> None:
+    template = Path(__file__).resolve().parents[2] / ".github" / "pull_request_template.md"
+    assert _check(monkeypatch, "fix: x", template.read_text()) == 1
+    assert _check(monkeypatch, "chore: x", template.read_text()) == 0
+
+
+def test_check_release_label_needs_real_entry(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     body = "## Changelog\n\nnone"
     assert _check(monkeypatch, "chore: x", body, ["release:patch"]) == 1
+    assert "needs a user-facing entry" in capsys.readouterr().out
     assert _check(monkeypatch, "chore: x", TEMPLATE_BODY, ["release:patch"]) == 0
 
 

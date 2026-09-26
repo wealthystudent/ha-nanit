@@ -16,9 +16,9 @@ Interpretation guide:
   - HTTP 5xx         → Server error (endpoint may exist but is broken).
 
 Usage:
-    python3 tools/nanit-activities.py              # probe all endpoints
-    python3 tools/nanit-activities.py --verbose    # include full response bodies
-    python3 tools/nanit-activities.py --endpoint activities  # probe one endpoint
+    uv run tools/nanit-activities.py              # probe all endpoints
+    uv run tools/nanit-activities.py --verbose    # include full response bodies
+    uv run tools/nanit-activities.py --endpoint activities  # probe one endpoint
 """
 
 from __future__ import annotations

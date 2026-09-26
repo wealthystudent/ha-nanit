@@ -4,6 +4,7 @@ updates:
     directory: /
     schedule:
       interval: monthly
+    # Conventional PR titles: they become the squash commit on main.
     commit-message:
       prefix: chore
       include: scope
@@ -29,3 +30,6 @@ updates:
     schedule:
       interval: monthly
     open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+      include: scope

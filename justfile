@@ -52,7 +52,9 @@ card action="build":
     #!/usr/bin/env bash
     set -euo pipefail
     cd frontend
-    [ -d node_modules ] || npm ci --ignore-scripts
+    # Always install from the lockfile: a stale node_modules builds a bundle
+    # that fails the CI drift check with a confusing diff.
+    npm ci --ignore-scripts --no-audit --no-fund
     case "{{ action }}" in
         build) npm run build ;;
         watch) npm run watch ;;

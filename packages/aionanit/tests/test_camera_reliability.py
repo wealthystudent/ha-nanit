@@ -400,6 +400,102 @@ async def test_token_refresh_auth_rejection_stops_loop() -> None:
 
 
 @pytest.mark.asyncio
+async def test_failed_reinit_is_finished_by_health_check() -> None:
+    """A re-init that failed while the socket stayed up must be retried.
+
+    The failure log promises "retrying on next health check"; without the
+    retry, sensor push stays disabled until the next actual drop and
+    motion/sound degrade to the slow poll.
+    """
+    camera, _ = _make_camera()
+    camera._async_request_initial_state = AsyncMock(
+        side_effect=[NanitCameraUnavailable("busy"), None]
+    )
+    camera._async_enable_sensor_push = AsyncMock(
+        side_effect=lambda: setattr(camera, "_stopped", True)
+    )
+
+    await camera._async_on_reconnected()
+    assert camera._session_init_pending is True
+    camera._async_enable_sensor_push.assert_not_awaited()
+
+    camera._stopped = False
+    transport = MagicMock()
+    transport.connected = True
+    camera._transport = transport
+    camera.async_get_status = AsyncMock()
+
+    sleep_count = 0
+
+    async def _bounded_sleep(_delay: float) -> None:
+        # Escape hatch: if the loop ever iterates more than a few times
+        # (e.g. the re-init branch is missing), end it instead of
+        # spinning, so a regression fails the assertions rather than
+        # hanging the suite.
+        nonlocal sleep_count
+        sleep_count += 1
+        if sleep_count > 3:
+            camera._stopped = True
+
+    with patch("aionanit.camera.asyncio.sleep", _bounded_sleep):
+        await asyncio.wait_for(camera._health_check_loop(), timeout=5)
+
+    assert camera._session_init_pending is False
+    assert camera._async_request_initial_state.await_count == 2
+    camera._async_enable_sensor_push.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_successful_reinit_clears_pending() -> None:
+    camera, _ = _make_camera()
+    camera._async_request_initial_state = AsyncMock()
+    camera._async_enable_sensor_push = AsyncMock()
+
+    await camera._async_on_reconnected()
+
+    assert camera._session_init_pending is False
+
+
+@pytest.mark.asyncio
+async def test_health_check_skips_reinit_while_task_in_flight() -> None:
+    """The health check must not double-run a re-init already running."""
+    camera, _ = _make_camera()
+    camera._stopped = False
+    camera._session_init_pending = True
+    transport = MagicMock()
+    transport.connected = True
+    camera._transport = transport
+
+    started = asyncio.Event()
+
+    async def _slow_reinit() -> None:
+        started.set()
+        await asyncio.Event().wait()
+
+    camera._reconnected_task = asyncio.get_running_loop().create_task(_slow_reinit())
+    await started.wait()
+
+    camera._async_on_reconnected = AsyncMock()
+    camera.async_get_status = AsyncMock(side_effect=lambda: setattr(camera, "_stopped", True))
+
+    sleep_count = 0
+
+    async def _bounded_sleep(_delay: float) -> None:
+        nonlocal sleep_count
+        sleep_count += 1
+        if sleep_count > 3:
+            camera._stopped = True
+
+    try:
+        with patch("aionanit.camera.asyncio.sleep", _bounded_sleep):
+            await asyncio.wait_for(camera._health_check_loop(), timeout=5)
+
+        camera._async_on_reconnected.assert_not_awaited()
+    finally:
+        camera._reconnected_task.cancel()
+
+
+@pytest.mark.asyncio
 async def test_reconnect_reinit_failure_is_contained() -> None:
     """_async_on_reconnected must not leak exceptions out of its task.
 

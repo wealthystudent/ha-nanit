@@ -41,6 +41,7 @@
     },
     "abort": {
       "already_configured": "This Nanit account is already configured",
+      "already_in_progress": "Configuration flow is already in progress",
       "reauth_successful": "Re-authentication successful",
       "reauth_email_mismatch": "The email address does not match the original account. Please use the same email.",
       "no_cameras": "No devices found on this Nanit account"

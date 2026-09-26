@@ -142,12 +142,12 @@ Rules:
 ### PR process
 
 1. Branch from `main` → make changes → `just check` passes locally.
-2. Open PR against `main`. PR title must follow conventional commit format.
+2. Open PR against `main`. PR title must follow conventional commit format. Fill in the `## Changelog` section of the description: it becomes the release notes (`none` if users won't notice). The `PR Metadata` check enforces both.
 3. If the PR should trigger a release: add a label — `release:patch`, `release:minor`, or `release:major`. PRs without a release label will not create a beta release.
 4. Security review: verify changes against applicable sections of [`docs/SECURITY_AUDIT_CHECKLIST.md`](docs/SECURITY_AUDIT_CHECKLIST.md).
 5. CI must pass (lint, format, typecheck, tests). If CI fails, fix in the same branch and push.
 6. Maintainer reviews and squash-merges. Head branch is auto-deleted.
-7. On merge, if a `release:*` label is present, `auto-beta.yaml` automatically creates a beta pre-release.
+7. On merge, if a `release:*` label is present, `auto-beta.yaml` automatically publishes a beta (tag, PyPI, GitHub pre-release with nanit.zip).
 
 ### Fork PRs (external contributors)
 
@@ -158,58 +158,13 @@ Rules:
 
 ### Releases
 
-All release operations go through `just release` — an interactive CLI (`tools/release-cli.py`) that handles the full lifecycle.
+Full details: [docs/RELEASING.md](docs/RELEASING.md).
 
-```
-just release
-╭─ ha-nanit ──────────────────────────────────────────────╮
-│  stable   v1.4.0  (2026-05-10)                         │
-│  betas    v1.5.0-beta.2  v1.4.1-beta.1                 │
-│  branch   feat/sound-machine  (3 ahead of main)        │
-│  pr       #42 feat: add sound machine  (release:minor)  │
-╰─────────────────────────────────────────────────────────╯
-
-  p)  Create PR        push & open PR with release label
-  t)  Tag PR           add release label to current PR
-  m)  Merge PR         squash-merge → triggers auto-beta
-  b)  Release beta     publish pre-release → PyPI beta
-  s)  Release stable   ship to production
-  v)  View releases    release history & status
-  r)  Retry pipeline   re-trigger failed release workflow
-  q)  Quit
-```
-
-**Typical workflows:**
-
-```
-Path A (with beta testing):
-  branch → just release (Create PR) → just release (Merge PR)
-    → auto-beta tags → just release (Release beta) → test on HACS
-    → just release (Release stable)
-
-Path B (skip beta):
-  branch → just release (Create PR) → just release (Merge PR)
-    → auto-beta tags → just release (Release stable)
-```
-
-**Multiple concurrent betas** are supported. Different features can have independent beta tracks (e.g., `v1.4.0-beta.2` and `v1.5.0-beta.1` can coexist).
-
-**Version lives in two files** (kept in sync by release workflow and version-bump PRs):
-- `custom_components/nanit/manifest.json` → `"version"` (semver) + `"requirements"` (PEP 440)
-- `packages/aionanit/pyproject.toml` → `version` (PEP 440)
-
-Version files on `main` contain the **last stable release version** (not the current beta). The actual release version is always derived from the **git tag name** and injected at build time by the release workflow. After a stable release, the workflow opens a PR to bump version files on `main`.
-
-| Version mapping | manifest.json `version` | pyproject.toml `version` | manifest.json `requirements` |
-|-----------------|------------------------|--------------------------|------------------------------|
-| Beta            | `1.4.0-beta.1`        | `1.4.0b1`               | `["aionanit>=1.4.0b1"]`     |
-| Stable          | `1.4.0`               | `1.4.0`                  | `["aionanit>=1.4.0"]`       |
-
-**Rollback strategy**: Forward-fix via new PR. Merge the fix → auto-beta tags a new beta → `just release` → test → release stable.
-
-**Pipeline fix**: If the release workflow fails (e.g. action version issues, PyPI errors), fix the pipeline code, push to `main`, then use the "Retry pipeline" option in `just release`. This re-triggers the workflow using the updated YAML from `main` while building from the original tag. PyPI publish is idempotent (skips already-uploaded versions).
-
-**Branch protection compatibility**: The auto-beta workflow tags the merge commit directly (no version-injection commit) and pushes only the tag — no push to `main`. The release workflow opens a version-bump PR after stable releases instead of pushing directly to `main`. This ensures all commits on `main` go through the normal PR + signed-commit flow.
+- **Betas are automatic**: merging a PR with a `release:*` label tags the merge commit (`vX.Y.Z-beta.N`, one beta train) and publishes it.
+- **Stable is owner only**: `just release` → Release stable promotes a beta's commit with a signed `vX.Y.Z` tag. A tag ruleset and the `release-stable` environment enforce this.
+- **Versions come from the tag.** `manifest.json` and `packages/aionanit/pyproject.toml` hold a `0.0.0` placeholder on `main`; `release.yaml` injects the real version at build time, and the integration pins `aionanit==<version>`. Never bump version files by hand.
+- **Release notes** are assembled from each merged PR's `## Changelog` section (`just notes` previews them). There is no changelog file to edit.
+- **Rollback**: forward-fix via a new PR. **Pipeline fix**: fix the workflow on `main`, then `just release` → Retry.
 
 ### Pinned dependencies
 
@@ -339,10 +294,11 @@ failure that was observed on real hardware:
 
 ## CI
 
-- **Lint + typecheck + tests**: `.github/workflows/ci.yaml` (runs on every push/PR to `main`).
-- **Auto beta**: `.github/workflows/auto-beta.yaml` (triggers on PR merge to `main` with a `release:*` label; bumps version in manifest + pyproject, commits to `main`, tags, and pushes both).
-- **Release**: `.github/workflows/release.yaml` (triggers on release published or manual dispatch; publishes aionanit to PyPI, attaches nanit.zip. For stable releases: also commits the clean version to `main`).
+- **CI**: `.github/workflows/ci.yaml` runs on every PR and push to `main`, and is reused as the release gate. `CI OK` is the single required check that sums up the jobs (lint, types, tests, protobuf and card bundle drift, workflow lint, hassfest). HACS validation is informational.
+- **PR**: `.github/workflows/pr.yaml` checks the PR title and `## Changelog` section (`PR Metadata`).
+- **Auto beta**: `.github/workflows/auto-beta.yaml` tags labelled merges and dispatches the release.
+- **Release**: `.github/workflows/release.yaml` resolves the tag, gates stable on owner approval, runs CI, builds, publishes aionanit to PyPI, then creates the GitHub release with nanit.zip and notes.
 
 ### Changelog
 
-`CHANGELOG.md` tracks notable changes. Versions 1.2.0–1.7.0 were released before the changelog was maintained — only 1.0.x and 1.1.0 entries exist. New releases from 1.8.0 onward must have a changelog entry added before merging.
+Release notes come from each PR's `## Changelog` section, see [docs/RELEASING.md](docs/RELEASING.md#release-notes). `CHANGELOG.md` is history up to 1.12.2; don't add entries to it.

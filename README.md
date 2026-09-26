@@ -34,7 +34,11 @@
 
 ### Manual
 
-Copy `custom_components/nanit/` into your HA `config/custom_components/` directory and restart.
+1. Download `nanit.zip` from the [latest release](https://github.com/wealthystudent/ha-nanit/releases/latest).
+2. Extract it into `config/custom_components/nanit/` in your Home Assistant configuration directory.
+3. Restart Home Assistant.
+
+Use the release zip, not a copy of the repository: the source on `main` carries a placeholder version that release builds replace.
 
 ## Setup
 

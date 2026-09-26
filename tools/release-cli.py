@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """Interactive release CLI for ha-nanit.
 
-Single entry point for the full release lifecycle:
-  create PR → tag → merge → release beta → release stable
+Single entry point for the release lifecycle:
+  create PR → label → merge (publishes a beta automatically) → release stable
+
+Stable releases are owner only: the tag ruleset restricts stable tags and
+the release-stable environment needs the owner's approval, which this CLI
+gives for you after dispatching.
 
 Usage: python tools/release-cli.py
        just release
@@ -16,6 +20,7 @@ import re
 import shutil
 import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 try:
@@ -34,12 +39,18 @@ console = Console()
 
 REPO_NAME = "ha-nanit"
 RELEASE_WORKFLOW = "release.yaml"
+RELEASE_RUN_NAME = "Release {tag}"  # run-name in release.yaml
 MAIN_BRANCH = "main"
 
 # ─── Data model ──────────────────────────────────────────────────────
 
 BETA_RE = re.compile(r"^v(\d+\.\d+\.\d+)-beta\.(\d+)$")
 STABLE_RE = re.compile(r"^v(\d+\.\d+\.\d+)$")
+
+
+def _vkey(version: str) -> list[int]:
+    """Sort key for an X.Y.Z version string."""
+    return [int(p) for p in version.split(".")]
 
 
 @dataclass
@@ -67,6 +78,8 @@ class State:
     stables: list[StableInfo] = field(default_factory=list)
     betas: list[BetaInfo] = field(default_factory=list)
     pr: dict[str, Any] | None = None
+    repo: str = ""
+    is_admin: bool = False
 
     @property
     def unreleased_betas(self) -> list[BetaInfo]:
@@ -78,10 +91,20 @@ class State:
 
     @property
     def promotable_versions(self) -> dict[str, BetaInfo]:
-        """Versions with beta tags not yet promoted to stable."""
+        """Versions whose newest published beta can be promoted to stable."""
         stable_versions = {s.tag.lstrip("v") for s in self.stables}
+        floor = _vkey(self.latest_stable.tag.lstrip("v")) if self.latest_stable else [0, 0, 0]
         versions: dict[str, BetaInfo] = {}
         for beta in self.betas:
+            # Only versions ahead of the latest stable: older beta trains
+            # were abandoned or superseded.
+            if _vkey(beta.version) <= floor:
+                continue
+            # Only betas the pipeline actually published (a GitHub
+            # pre-release exists). A bare tag was never gated or tested,
+            # and promoting it could burn the stable version on a failure.
+            if not beta.released:
+                continue
             if beta.version not in stable_versions and (
                 beta.version not in versions or beta.beta_num > versions[beta.version].beta_num
             ):
@@ -138,10 +161,14 @@ async def fetch_state() -> State:
     """Fetch all release state in one parallel batch."""
     state = State()
 
-    branch = await sh("git", "branch", "--show-current")
+    # Fetch first: the ahead count and tag list below read these refs.
+    branch, _ = await asyncio.gather(
+        sh("git", "branch", "--show-current"),
+        sh("git", "fetch", "origin", "--tags", "--quiet"),
+    )
 
-    # All network + git calls fire in parallel
-    ahead, tags_raw, releases_json, pr_json, _ = await asyncio.gather(
+    # All remaining network + git calls fire in parallel
+    ahead, tags_raw, releases_json, pr_json, repo_json = await asyncio.gather(
         sh("git", "rev-list", "--count", f"origin/{MAIN_BRANCH}..HEAD"),
         sh(
             "git",
@@ -174,10 +201,14 @@ async def fetch_state() -> State:
         )
         if branch
         else sh("true"),
-        sh("git", "fetch", "origin", "--tags", "--quiet"),
+        sh("gh", "repo", "view", "--json", "nameWithOwner,viewerPermission"),
     )
 
     state.branch = branch or "detached"
+    if repo_json:
+        repo_info = json.loads(repo_json)
+        state.repo = repo_info["nameWithOwner"]
+        state.is_admin = repo_info.get("viewerPermission") == "ADMIN"
     state.ahead = int(ahead) if ahead.isdigit() else 0
     state.on_main = state.branch == MAIN_BRANCH
 
@@ -284,7 +315,9 @@ def render_dashboard(state: State) -> Panel:
     if unreleased:
         tags = "  ".join(f"[cyan]{b.tag}[/]" for b in unreleased[:3])
         extra = f"  [dim]+{len(unreleased) - 3} more[/]" if len(unreleased) > 3 else ""
-        lines.append(f"  [bold cyan]pending[/] {tags}{extra}")
+        lines.append(
+            f"  [bold cyan]unpub. [/] {tags}{extra}  [dim](publishing or failed: retry)[/]"
+        )
 
     lines.append("")
 
@@ -352,19 +385,11 @@ def build_menu(state: State) -> list[MenuItem]:
         items.append(MenuItem("t", "Tag PR", "add release label to current PR", "tag_pr"))
 
     if state.pr:
-        items.append(MenuItem("m", "Merge PR", "squash-merge → triggers auto-beta", "merge_pr"))
-
-    if state.unreleased_betas:
         items.append(
-            MenuItem(
-                "b",
-                "Release beta",
-                "publish pre-release → PyPI beta",
-                "release_beta",
-            )
+            MenuItem("m", "Merge PR", "squash-merge → labelled PRs publish a beta", "merge_pr")
         )
 
-    if state.promotable_versions:
+    if state.promotable_versions and state.is_admin:
         items.append(MenuItem("s", "Release stable", "ship to production", "release_stable"))
 
     items.append(MenuItem("v", "View releases", "release history & status", "view_releases"))
@@ -426,6 +451,18 @@ async def action_create_pr(state: State) -> None:
 
     label = _ask_bump(state)
 
+    console.print(
+        "\n  [bold]Changelog[/] [dim](what users will notice; becomes the release notes. "
+        "Leave empty for 'none')[/]"
+    )
+    changelog = Prompt.ask("  [bold]▸[/]", default="none", show_default=False)
+    if label and changelog.strip().lower() in ("", "none"):
+        console.print("  [red]✗ A release label needs a changelog entry.[/]")
+        return
+    template = Path(".github/pull_request_template.md")
+    body = template.read_text() if template.exists() else "## Changelog\n"
+    body = body.replace("## Changelog\n", f"## Changelog\n\n{changelog.strip()}\n", 1)
+
     with console.status("  [bold]Pushing branch..."):
         push_ok = await sh_ok("git", "push", "-u", "origin", state.branch)
     if not push_ok:
@@ -442,7 +479,7 @@ async def action_create_pr(state: State) -> None:
             "--title",
             title,
             "--body",
-            "",
+            body,
             "--base",
             MAIN_BRANCH,
             *label_args,
@@ -483,9 +520,9 @@ async def action_merge_pr(state: State) -> None:
     console.print(f"\n  Merging PR [bold]#{state.pr['number']}[/]: {state.pr['title']}")
 
     if state.pr_has_release_label:
-        console.print(f"  Label: [green]{state.pr_release_label}[/] → auto-beta will tag on merge")
+        console.print(f"  Label: [green]{state.pr_release_label}[/] → publishes a beta on merge")
     else:
-        console.print("  [yellow]No release label — no beta tag will be created[/]")
+        console.print("  [yellow]No release label — ships with the next beta or stable[/]")
 
     if not Confirm.ask("\n  Squash-merge?"):
         return
@@ -499,50 +536,10 @@ async def action_merge_pr(state: State) -> None:
         console.print("  [green]✓[/] PR merged")
         if state.pr_has_release_label:
             console.print(
-                "  [dim]auto-beta.yaml will tag shortly. Refresh to see new beta tags.[/]"
+                "  [dim]auto-beta.yaml tags and publishes shortly. Refresh to see the beta.[/]"
             )
     else:
         console.print("  [red]✗ Failed to merge. Check CI status and approvals.[/]")
-
-
-async def action_release_beta(state: State) -> None:
-    """Create a GitHub pre-release for an unreleased beta tag."""
-    unreleased = state.unreleased_betas
-    if not unreleased:
-        console.print("  [yellow]No unreleased beta tags.[/]")
-        return
-
-    console.print("\n  [bold]Unreleased beta tags:[/]")
-    for i, beta in enumerate(unreleased, 1):
-        console.print(f"    [cyan]{i})[/]  {beta.tag}  [dim](tagged {beta.date})[/]")
-
-    choice = Prompt.ask(
-        "\n  [bold]Release which beta[/]",
-        choices=[str(i) for i in range(1, len(unreleased) + 1)],
-    )
-    selected = unreleased[int(choice) - 1]
-
-    console.print(f"\n  Releasing [bold]{selected.tag}[/] as pre-release")
-    if not Confirm.ask("  Confirm?"):
-        return
-
-    with console.status("  [bold]Creating release..."):
-        ok = await sh_ok(
-            "gh",
-            "release",
-            "create",
-            selected.tag,
-            "--title",
-            selected.tag,
-            "--generate-notes",
-            "--prerelease",
-            "--latest=false",
-        )
-
-    if ok:
-        console.print(f"  [green]✓[/] Pre-release {selected.tag} created → PyPI publish triggered")
-    else:
-        console.print("  [red]✗ Failed to create release.[/]")
 
 
 async def action_release_stable(state: State) -> None:
@@ -560,10 +557,7 @@ async def action_release_stable(state: State) -> None:
 
     console.print("\n  [bold]Available versions:[/]")
     for i, (ver, beta) in enumerate(items, 1):
-        tested = "[green]✓ beta-tested[/]" if beta.released else "[dim]untested[/]"
-        console.print(
-            f"    [cyan]{i})[/]  [bold]v{ver}[/]  [dim](from {beta.tag}, {beta.date})[/]  {tested}"
-        )
+        console.print(f"    [cyan]{i})[/]  [bold]v{ver}[/]  [dim](from {beta.tag}, {beta.date})[/]")
 
     choice = Prompt.ask(
         "\n  [bold]Release which version[/]",
@@ -581,32 +575,94 @@ async def action_release_stable(state: State) -> None:
     if not Confirm.ask("\n  Confirm release?"):
         return
 
-    with console.status("  [bold]Creating tag..."):
-        await sh("git", "tag", "-m", f"v{ver}", f"v{ver}", sha)
-        push_ok = await sh_ok("git", "push", "origin", f"v{ver}")
+    with console.status("  [bold]Creating signed tag..."):
+        tag_ok = await sh_ok("git", "tag", "-s", "-m", f"v{ver}", f"v{ver}", sha)
+        push_ok = tag_ok and await sh_ok("git", "push", "origin", f"v{ver}")
 
     if not push_ok:
-        console.print("  [red]✗ Failed to push tag.[/]")
+        console.print(
+            "  [red]✗ Failed to create or push the tag (is your signing key available?).[/]"
+        )
         return
 
-    with console.status("  [bold]Creating GitHub release..."):
-        ok = await sh_ok(
-            "gh",
-            "release",
-            "create",
-            f"v{ver}",
-            "--title",
-            f"v{ver}",
-            "--generate-notes",
-            "--latest",
-        )
+    if not await _dispatch(f"v{ver}"):
+        return
+    await _approve_stable(state, f"v{ver}")
 
-    if ok:
-        console.print(
-            f"  [green]✓[/] v{ver} released → CI gate + PyPI publish + artifact attachment"
+
+async def _dispatch(tag: str) -> bool:
+    """Dispatch the release workflow for a tag."""
+    with console.status("  [bold]Dispatching release workflow..."):
+        ok = await sh_ok(
+            "gh", "workflow", "run", RELEASE_WORKFLOW, "--ref", MAIN_BRANCH, "-f", f"tag_name={tag}"
         )
+    if ok:
+        console.print(f"  [green]✓[/] {RELEASE_WORKFLOW} dispatched for {tag}")
     else:
-        console.print("  [red]✗ Failed to create GitHub release.[/]")
+        console.print("  [red]✗ Failed to dispatch workflow.[/]")
+    return ok
+
+
+async def _approve_stable(state: State, tag: str) -> None:
+    """Approve the release-stable gate of the run just dispatched for tag."""
+    title = RELEASE_RUN_NAME.format(tag=tag)
+    with console.status("  [bold]Waiting for the stable approval gate..."):
+        for _ in range(40):  # ~2 minutes
+            await asyncio.sleep(3)
+            runs = json.loads(
+                await sh(
+                    "gh",
+                    "run",
+                    "list",
+                    "--workflow",
+                    RELEASE_WORKFLOW,
+                    "--limit",
+                    "10",
+                    "--json",
+                    "databaseId,displayTitle,status,url",
+                )
+                or "[]"
+            )
+            # Skip finished runs of the same tag (earlier attempts or retries).
+            run = next(
+                (r for r in runs if r["displayTitle"] == title and r["status"] != "completed"),
+                None,
+            )
+            if not run:
+                continue
+            pending = json.loads(
+                await sh(
+                    "gh",
+                    "api",
+                    f"repos/{state.repo}/actions/runs/{run['databaseId']}/pending_deployments",
+                )
+                or "[]"
+            )
+            env_ids = [str(p["environment"]["id"]) for p in pending]
+            if env_ids:
+                break
+        else:
+            console.print("  [yellow]Gate not reached yet. Approve it from the Actions tab.[/]")
+            return
+
+    console.print(f"  Run: [dim]{run['url']}[/]")
+    if not Confirm.ask(f"  Approve publishing [bold]{tag}[/] as stable?"):
+        console.print("  [yellow]Left pending. Approve or reject it from the Actions tab.[/]")
+        return
+    args = [
+        "gh",
+        "api",
+        "-X",
+        "POST",
+        f"repos/{state.repo}/actions/runs/{run['databaseId']}/pending_deployments",
+    ]
+    for env_id in env_ids:
+        args += ["-F", f"environment_ids[]={env_id}"]
+    args += ["-f", "state=approved", "-f", "comment=Approved from just release"]
+    if await sh_ok(*args):
+        console.print(f"  [green]✓[/] Approved → CI gate, PyPI, then the GitHub release for {tag}")
+    else:
+        console.print("  [red]✗ Approval failed. Approve it from the Actions tab.[/]")
 
 
 async def action_view_releases(state: State) -> None:
@@ -630,7 +686,7 @@ async def action_view_releases(state: State) -> None:
         table.add_row(b.tag, "[yellow]beta[/]", "[yellow]released[/]", b.date)
 
     for b in state.unreleased_betas:
-        table.add_row(b.tag, "[cyan]tag[/]", "[dim]pending[/]", b.date)
+        table.add_row(b.tag, "[cyan]tag[/]", "[dim]unpublished[/]", b.date)
 
     if not state.stables and not state.betas:
         console.print("\n  [dim]No releases yet.[/]")
@@ -641,35 +697,41 @@ async def action_view_releases(state: State) -> None:
 
 async def action_retry(state: State) -> None:
     """Re-trigger the release workflow for a tag."""
-    releases_json = await sh(
-        "gh", "release", "list", "--limit", "10", "--json", "tagName,publishedAt"
+    candidates = [
+        t
+        for t in (
+            await sh(
+                "git", "tag", "--list", "v*", "--sort=-creatordate", "--format=%(refname:short)"
+            )
+        ).splitlines()
+        if BETA_RE.match(t) or STABLE_RE.match(t)
+    ][:20]
+    # release.yaml runs main's CI against the tag's tree, which only works for
+    # trees that have uv.lock. Older tags can't be rebuilt; don't offer them.
+    rebuildable = await asyncio.gather(
+        *(sh_ok("git", "cat-file", "-e", f"{t}:uv.lock") for t in candidates)
     )
-    releases = json.loads(releases_json) if releases_json else []
+    tags = [t for t, ok in zip(candidates, rebuildable, strict=True) if ok][:10]
 
-    if not releases:
-        console.print("  [yellow]No releases found.[/]")
+    if not tags:
+        console.print("  [yellow]No release tags built on the current pipeline.[/]")
         return
 
-    console.print("\n  [bold]Recent releases:[/]")
-    for i, r in enumerate(releases, 1):
-        console.print(f"    [cyan]{i})[/]  {r['tagName']}  [dim]({r['publishedAt'][:10]})[/]")
+    console.print("\n  [bold]Recent release tags:[/]")
+    for i, tag in enumerate(tags, 1):
+        console.print(f"    [cyan]{i})[/]  {tag}")
 
     choice = Prompt.ask(
-        "\n  [bold]Retry which release[/]",
-        choices=[str(i) for i in range(1, len(releases) + 1)],
+        "\n  [bold]Retry which tag[/]",
+        choices=[str(i) for i in range(1, len(tags) + 1)],
     )
-    tag = releases[int(choice) - 1]["tagName"]
+    tag = tags[int(choice) - 1]
 
-    if not Confirm.ask(f"  Re-trigger {RELEASE_WORKFLOW} for [bold]{tag}[/]?"):
+    if not Confirm.ask(f"  Re-run {RELEASE_WORKFLOW} for [bold]{tag}[/]?"):
         return
 
-    with console.status("  [bold]Dispatching..."):
-        ok = await sh_ok("gh", "workflow", "run", RELEASE_WORKFLOW, "-f", f"tag_name={tag}")
-
-    if ok:
-        console.print(f"  [green]✓[/] Workflow dispatched for {tag}")
-    else:
-        console.print("  [red]✗ Failed to dispatch workflow.[/]")
+    if await _dispatch(tag) and STABLE_RE.match(tag) and state.is_admin:
+        await _approve_stable(state, tag)
 
 
 # ─── Main loop ───────────────────────────────────────────────────────
@@ -678,7 +740,6 @@ ACTIONS: dict[str, Any] = {
     "create_pr": action_create_pr,
     "tag_pr": action_tag_pr,
     "merge_pr": action_merge_pr,
-    "release_beta": action_release_beta,
     "release_stable": action_release_stable,
     "view_releases": action_view_releases,
     "retry": action_retry,

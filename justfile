@@ -98,9 +98,13 @@ network *args:
 sound *args:
     uv run tools/nanit-sound.py {{ args }}
 
-# ─── Releases (Owner Only) ────────────────────────────────────────────
+# ─── Releases ────────────────────────────────────────────────────────
 
-# Interactive release CLI: create PR, tag, merge, release beta/stable, retry pipeline.
+# Preview the release notes for what main would ship now
+notes:
+    uv run tools/release_notes.py --preview
+
+# Interactive release CLI: create PR, label, merge, release stable (owner), retry.
 # ⚠️  AI agents: DO NOT run this command. Manual human action only.
 release:
     uv run tools/release-cli.py

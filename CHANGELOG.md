@@ -1,8 +1,80 @@
 # Changelog
 
-All notable changes to the Nanit Home Assistant integration are documented in this file.
+All notable changes to the Nanit Home Assistant integration are documented here.
 
-## [Unreleased]
+For releases after 1.12.2, release notes are published on [GitHub Releases](https://github.com/wealthystudent/ha-nanit/releases),
+assembled from the Changelog section of each merged PR. This file is kept as the history up to 1.12.2.
+
+## [1.12.2] – 2026-09-19
+
+### Fixed
+
+- **Live video on installs without `default_config:`** (#145). The integration never declared the `stream` integration as a dependency, so on a configuration that does not load `default_config` it was simply absent. The frontend does not report that: it silently renders still images and never asks the camera for a stream source, so pressing play did nothing and the log showed no error. `stream` is now a declared dependency, and Home Assistant sets it up with the integration.
+- Cloud snapshots now send the same `nanit-api-version` and mobile User-Agent headers as every other api.nanit.com call. Without them the API can answer 404, leaving the camera with no still image. The response is also released properly on a non-200, which previously held a connection out of the pool on every failed poll.
+- `stream_source()` now logs when Home Assistant asks for a source and when it declines because the camera is powered off, so a stream that is never requested can be told apart from one that fails.
+
+## [1.12.1] – 2026-08-09
+
+### Changed
+
+- Sound & Light command failures (light, power, sound, track, volume) now surface as translated Home Assistant errors instead of hardcoded English strings.
+
+### Fixed
+
+- Config flow robustness: re-adding the account with different email casing no longer creates a duplicate entry (emails are treated case-insensitively, matching Nanit), the MFA step recovers when the server re-issues a fresh challenge instead of dead-ending on a stale token, re-authentication works on entries that never stored an email, and saving device IPs no longer wipes options the IP form does not manage.
+- Concurrent 401s now share one token rotation: when several data calls fail on the same access token at once, the first caller refreshes and the rest reuse its result instead of queueing a redundant rotation each. The retry also always sends the freshly rotated token.
+- The camera volume parsed from the protobuf stream is clamped to 0-100 like the night light brightness already was, so a malformed device report can no longer push the media player above 100% volume. Outgoing volume and brightness writes clamp before sending, and the optimistic state now always matches the clamped wire value.
+- Cloud snapshots are checked for image magic bytes (JPEG or PNG) before being returned, so an error page served with HTTP 200 can no longer be published as a camera still.
+- Setup cancelled by Home Assistant partway through (shutdown during startup, a racing reload) now stops any camera and speaker connections the hub had already opened, instead of leaking them for the rest of the process lifetime.
+- HTTP statuses the REST layer does not explicitly handle are now classified as retryable connection errors instead of escaping as raw aiohttp exceptions. A stray 4xx during setup used to hard-fail the entry with no retry, and one during the events poll dumped tracebacks into the log. Deliberately not mapped to auth: the explicit checks already cover every real credential rejection, and Nanit uses 403 for subscription gating, where a reauth prompt could never succeed.
+
+## [1.12.0] – 2026-08-02
+
+### Fixed
+
+- Data calls (babies, events, device token) now retry once on a mid-token-life 401 by refreshing the access token before surfacing the error (#114).
+
+## [1.11.1] – 2026-08-02
+
+Tooling and internal changes only.
+
+## [1.11.0] – 2026-08-02
+
+### Fixed
+
+- All REST calls now classify a hung request or response read (the builtin `TimeoutError` aiohttp raises on its total timeout) as a connection error, matching the token refresh fix above, and connection error messages fall back to the exception type name instead of showing up blank. The Sound & Light device token request also gained the standard 15 second timeout it was missing (#113).
+- Accounts mixing a camera baby with a camera-less baby (a standalone Sound & Light for one child, a camera for another) no longer fail setup in an endless retry loop. The babies parser tolerates rows without a camera_uid, and the optional cloud and network coordinators now degrade to disabled sensors when their first refresh fails instead of blocking the whole entry.
+- A camera that fails or times out during setup is now stopped instead of left half-connected: previously its sockets and token refresh loops kept running for the entry's lifetime with no entities attached. Session re-initialization after a reconnect is also contained: a failure inside it now logs and defers to the next health check instead of dying as an unretrieved task exception.
+
+### Removed
+
+- **The "Store email and password" option.** The stored password was never read by anything (re-authentication always prompts for it), so it was a plaintext credential sitting in Home Assistant's storage and every backup for no benefit. Existing entries are scrubbed automatically on upgrade (a disabled entry: when it is next enabled), and completing a re-authentication also clears it.
+
+## [1.10.0] – 2026-07-25
+
+### Added
+
+- **Standalone Sound & Light support** (#79): the integration no longer requires a camera on the account. Setup now creates whatever devices exist per baby, so a Sound & Light Machine works on its own, alongside a camera, or on an account mixing both. A failed camera no longer blocks a working speaker (and the other way round); setup only fails when nothing on the account could start.
+- **Devices for hardware no longer on the account can now be deleted** from the device page. Deleting a speaker also clears it from the persisted speaker map, so it stays gone (the map otherwise deliberately shields speakers from transient API omissions).
+- **New Sound & Light sensors**: battery level (the device reports a coarse five-step state of charge), battery charging, firmware version (diagnostic), and WiFi signal strength (diagnostic, disabled by default, with SSID/BSSID/channel as attributes). Battery and WiFi refresh with the 30 second poll; firmware is fetched once per start. The queries are fire-and-forget on the wire, so a speaker that ignores them cannot delay commands.
+
+### Changed
+
+- **S&L entities and the S&L device are now identified by the speaker's own uid** instead of the paired camera's. Existing installs migrate automatically on first start: every entity keeps its entity id and history, and the S&L device keeps its name and area. The device is linked to the camera (via_device) only when the baby actually has one.
+- The options flow now selects by baby rather than by camera, shows only the IP fields for devices the baby has, and stores manual speaker IPs keyed by the speaker's uid (existing entries are re-keyed automatically).
+
+## [1.9.1] – 2026-07-24
+
+### Fixed
+
+- Transient network failures during token refresh (DNS blips, timeouts, rate limits) no longer trigger a spurious reauthentication prompt. The token refresh loop now refreshes the token before reconnecting, giving retries five minutes of headroom instead of racing hard expiry in the final minute.
+
+## [1.9.0] – 2026-07-22
+
+### Added
+
+- Protobuf schema (`sound_light.proto`) with generated code and a CI drift check, replacing the hand-rolled S&L wire parser.
+- `websockets` (>= 13) as an integration requirement, used by the S&L transport.
 
 ### Changed
 
@@ -10,43 +82,8 @@ All notable changes to the Nanit Home Assistant integration are documented in th
 - **The speaker's LAN address is now discovered automatically** via mDNS and preferred for sends, with the cloud relay as fallback. Both connections stay open at once. A manually configured speaker IP still works and takes precedence over discovery.
 - **Turning the S&L light off now dims it to zero instead of writing the `noColor` flag**, so the stored color survives and turning the light back on restores it. Previously the light came back white unless a color was re-picked. Turning the light on always re-sends the last color explicitly (the device does not restore color on its own) and, when the device was fully off, keeps sound at "No sound" so the light can't unexpectedly resume audio.
 - **S&L entities now go unavailable when the speaker is unreachable**, matching the camera entities and HA guidance, debounced by a 30 second grace period so brief reconnects don't flash "Unavailable". The connectivity and connection type sensors keep reporting while disconnected.
-- Sound & Light command failures (light, power, sound, track, volume) now surface as translated Home Assistant errors instead of hardcoded English strings.
 
-### Added
-
-- **Standalone Sound & Light support** (#79): the integration no longer requires a camera on the account. Setup now creates whatever devices exist per baby, so a Sound & Light Machine works on its own, alongside a camera, or on an account mixing both. A failed camera no longer blocks a working speaker (and the other way round); setup only fails when nothing on the account could start.
-- **Devices for hardware no longer on the account can now be deleted** from the device page. Deleting a speaker also clears it from the persisted speaker map, so it stays gone (the map otherwise deliberately shields speakers from transient API omissions).
-- **New Sound & Light sensors**: battery level (the device reports a coarse five-step state of charge), battery charging, firmware version (diagnostic), and WiFi signal strength (diagnostic, disabled by default, with SSID/BSSID/channel as attributes). Battery and WiFi refresh with the 30 second poll; firmware is fetched once per start. The queries are fire-and-forget on the wire, so a speaker that ignores them cannot delay commands.
-- Protobuf schema (`sound_light.proto`) with generated code and a CI drift check, replacing the hand-rolled S&L wire parser.
-- `websockets` (>= 13) as an integration requirement, used by the S&L transport.
-
-### Changed (S&L identity)
-
-- **S&L entities and the S&L device are now identified by the speaker's own uid** instead of the paired camera's. Existing installs migrate automatically on first start: every entity keeps its entity id and history, and the S&L device keeps its name and area. The device is linked to the camera (via_device) only when the baby actually has one.
-- The options flow now selects by baby rather than by camera, shows only the IP fields for devices the baby has, and stores manual speaker IPs keyed by the speaker's uid (existing entries are re-keyed automatically).
-
-### Fixed
-
-- Transient network failures during token refresh (DNS blips, timeouts, rate limits) no longer trigger a spurious reauthentication prompt. The token refresh loop now refreshes the token before reconnecting, giving retries five minutes of headroom instead of racing hard expiry in the final minute.
-- All REST calls now classify a hung request or response read (the builtin `TimeoutError` aiohttp raises on its total timeout) as a connection error, matching the token refresh fix above, and connection error messages fall back to the exception type name instead of showing up blank. The Sound & Light device token request also gained the standard 15 second timeout it was missing (#113).
-- Accounts mixing a camera baby with a camera-less baby (a standalone Sound & Light for one child, a camera for another) no longer fail setup in an endless retry loop. The babies parser tolerates rows without a camera_uid, and the optional cloud and network coordinators now degrade to disabled sensors when their first refresh fails instead of blocking the whole entry.
-- A camera that fails or times out during setup is now stopped instead of left half-connected: previously its sockets and token refresh loops kept running for the entry's lifetime with no entities attached. Session re-initialization after a reconnect is also contained: a failure inside it now logs and defers to the next health check instead of dying as an unretrieved task exception.
-- Data calls (babies, events, device token) now retry once on a mid-token-life 401 by refreshing the access token before surfacing the error (#114).
-- Config flow robustness: re-adding the account with different email casing no longer creates a duplicate entry (emails are treated case-insensitively, matching Nanit), the MFA step recovers when the server re-issues a fresh challenge instead of dead-ending on a stale token, re-authentication works on entries that never stored an email, and saving device IPs no longer wipes options the IP form does not manage.
-- Concurrent 401s now share one token rotation: when several data calls fail on the same access token at once, the first caller refreshes and the rest reuse its result instead of queueing a redundant rotation each. The retry also always sends the freshly rotated token.
-- The camera volume parsed from the protobuf stream is clamped to 0-100 like the night light brightness already was, so a malformed device report can no longer push the media player above 100% volume. Outgoing volume and brightness writes clamp before sending, and the optimistic state now always matches the clamped wire value.
-- Cloud snapshots are checked for image magic bytes (JPEG or PNG) before being returned, so an error page served with HTTP 200 can no longer be published as a camera still.
-- Setup cancelled by Home Assistant partway through (shutdown during startup, a racing reload) now stops any camera and speaker connections the hub had already opened, instead of leaking them for the rest of the process lifetime.
-- HTTP statuses the REST layer does not explicitly handle are now classified as retryable connection errors instead of escaping as raw aiohttp exceptions. A stray 4xx during setup used to hard-fail the entry with no retry, and one during the events poll dumped tracebacks into the log. Deliberately not mapped to auth: the explicit checks already cover every real credential rejection, and Nanit uses 403 for subscription gating, where a reauth prompt could never succeed.
-- **Live video on installs without `default_config:`** (#145). The integration never declared the `stream` integration as a dependency, so on a configuration that does not load `default_config` it was simply absent. The frontend does not report that: it silently renders still images and never asks the camera for a stream source, so pressing play did nothing and the log showed no error. `stream` is now a declared dependency, and Home Assistant sets it up with the integration.
-- Cloud snapshots now send the same `nanit-api-version` and mobile User-Agent headers as every other api.nanit.com call. Without them the API can answer 404, leaving the camera with no still image. The response is also released properly on a non-200, which previously held a connection out of the pool on every failed poll.
-- `stream_source()` now logs when Home Assistant asks for a source and when it declines because the camera is powered off, so a stream that is never requested can be told apart from one that fails.
-
-### Removed
-
-- **The "Store email and password" option.** The stored password was never read by anything (re-authentication always prompts for it), so it was a plaintext credential sitting in Home Assistant's storage and every backup for no benefit. Existing entries are scrubbed automatically on upgrade (a disabled entry: when it is next enabled), and completing a re-authentication also clears it.
-
-## [1.8.0] – Unreleased
+## [1.8.0] – 2026-05-14
 
 ### Added
 - **Bundled Lovelace dashboard card** — zero-config companion card with live stream, nursery sensor overlays, night light & sound machine controls, and network info popup. Auto-registers as a Lovelace resource on setup.

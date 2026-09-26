@@ -12,6 +12,17 @@ updates:
       actions:
         patterns: ["*"]
 
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      python:
+        patterns: ["*"]
+
   # Security updates only: any change to the card's dependencies needs the
   # bundle rebuilt and committed, so routine bumps are not worth the churn.
   - package-ecosystem: npm

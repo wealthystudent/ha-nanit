@@ -1,19 +1,18 @@
+# Hooks run the project's own locked tools through uv, so the versions always
+# match `just check` and CI. Type checking stays in `just check`: it needs the
+# full Home Assistant environment and is too slow for every commit.
 repos:
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.9.10
+  - repo: local
     hooks:
-      - id: ruff
-        args: [--fix]
+      - id: ruff-check
+        name: ruff check
+        entry: uv run --frozen ruff check --fix --force-exclude
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
       - id: ruff-format
-
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.20.0
-    hooks:
-      - id: mypy
-        language_version: python3.14
-        additional_dependencies:
-          - aiohttp>=3.9.0
-          - homeassistant-stubs
-        args: [--config-file, pyproject.toml]
-        pass_filenames: false
-        entry: mypy custom_components/nanit packages/aionanit/aionanit
+        name: ruff format
+        entry: uv run --frozen ruff format --force-exclude
+        language: system
+        types_or: [python, pyi]
+        require_serial: true

@@ -35,20 +35,21 @@ jobs:
           ref: ${{ inputs.ref }}
           persist-credentials: false
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
-          python-version: "3.14"
+          version: "0.12.14" # at or above required-version in pyproject.toml
+          enable-cache: true
 
-      - name: Install ruff
-        # Same pinned range devs use, so a new ruff minor can't redden CI
-        # without a repo change.
-        run: pip install "$(grep -m1 -E '^ruff[<>=~]' dev/requirements.txt)"
+      - name: Install dependencies
+        # Python version from .python-version, packages from uv.lock; fails
+        # if the lock is out of date with pyproject.toml.
+        run: uv sync --locked
 
       - name: Ruff check
-        run: ruff check .
+        run: uv run --locked ruff check .
 
       - name: Ruff format check
-        run: ruff format --check .
+        run: uv run --locked ruff format --check .
 
   typecheck:
     name: Type Check
@@ -59,18 +60,17 @@ jobs:
           ref: ${{ inputs.ref }}
           persist-credentials: false
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
-          python-version: "3.14"
-          cache: pip
-          cache-dependency-path: dev/requirements.txt
+          version: "0.12.14" # at or above required-version in pyproject.toml
+          enable-cache: true
 
       - name: Install dependencies
-        run: pip install -r dev/requirements.txt
+        run: uv sync --locked
 
       - name: Run mypy
         # Targets and strictness live in pyproject.toml, shared with `just check`.
-        run: mypy
+        run: uv run --locked mypy
 
   test-integration:
     name: Integration Tests
@@ -81,17 +81,16 @@ jobs:
           ref: ${{ inputs.ref }}
           persist-credentials: false
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
-          python-version: "3.14"
-          cache: pip
-          cache-dependency-path: dev/requirements.txt
+          version: "0.12.14" # at or above required-version in pyproject.toml
+          enable-cache: true
 
       - name: Install dependencies
-        run: pip install -r dev/requirements.txt
+        run: uv sync --locked
 
       - name: Run integration tests with coverage
-        run: python -m pytest tests/unit/ --tb=short --cov=custom_components/nanit --cov-fail-under=80
+        run: uv run --locked pytest tests/unit/ --tb=short --cov=custom_components/nanit --cov-fail-under=80
 
   test-aionanit:
     name: aionanit Library Tests
@@ -102,18 +101,19 @@ jobs:
           ref: ${{ inputs.ref }}
           persist-credentials: false
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
-          python-version: "3.14"
-          cache: pip
-          cache-dependency-path: packages/aionanit/pyproject.toml
+          version: "0.12.14" # at or above required-version in pyproject.toml
+          enable-cache: true
 
       - name: Install dependencies
-        # The library alone, without Home Assistant, as PyPI users get it.
-        run: pip install -e "packages/aionanit[dev]"
+        # The library without Home Assistant installed. Versions still come
+        # from the workspace lock, so this proves no hidden HA dependency
+        # rather than testing every version PyPI users might resolve.
+        run: uv sync --locked --package aionanit --extra dev
 
       - name: Run aionanit tests
-        run: python -m pytest packages/aionanit/tests/ --tb=short
+        run: uv run --no-sync pytest packages/aionanit/tests/ --tb=short
 
   protobuf-drift:
     name: Protobuf Drift Check
@@ -200,12 +200,14 @@ jobs:
           tar -xzf "${archive}" actionlint
           ./actionlint -color
 
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.12.14" # at or above required-version in pyproject.toml
+
       - name: zizmor
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          pip install "zizmor==1.30.1"
-          zizmor --format=github .github/workflows
+        run: uvx zizmor@1.30.1 --format=github .github/workflows
 
   hassfest:
     name: Hassfest

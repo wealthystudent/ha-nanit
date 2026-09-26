@@ -15,9 +15,9 @@ tests/
 ## Unit tests (no hardware needed)
 
 ```bash
-just test          # Integration tests (30 — config flow, migration, hub, lifecycle)
-just test-lib      # aionanit library tests (183 — protocol, REST, auth, transport)
-just test-all      # Both
+just test          # Integration tests with coverage
+just test lib      # aionanit library tests
+just test all      # Both
 ```
 
 First time setup: `just setup`
@@ -34,13 +34,13 @@ First time setup: `just setup`
 
 ```bash
 just dev           # Start → http://localhost:8123
-just dev-logs      # Tail logs (debug logging for all custom_components)
-just dev-restart   # Restart after code changes
-just dev-stop      # Stop
-just dev-reset     # Wipe all state for a fresh start
+just dev logs      # Tail logs (debug logging for all custom_components)
+just dev restart   # Restart after code changes
+just dev stop      # Stop
+just dev reset     # Wipe all state for a fresh start
 ```
 
-The entire `custom_components/` directory is mounted read-only — any custom component you put there is available in the dev HA. Edit source files normally, then `just dev-restart`.
+The entire `custom_components/` directory is mounted read-only — any custom component you put there is available in the dev HA. Edit source files normally, then `just dev restart`.
 
 State lives in `dev/ha-config/` (gitignored except `configuration.yaml`).
 
@@ -54,8 +54,7 @@ Step-by-step instructions for testing specific features with the dev HA instance
 
 ## Pre-release checklist
 
-- [ ] `just test` → 30/30 pass
-- [ ] `just test-lib` → 183/183 pass
+- [ ] `just check` passes
 - [ ] Docker dev instance: add integration, all cameras appear
 - [ ] Docker dev instance: options flow works (set/clear camera IP)
 - [ ] Docker dev instance: restart HA → cameras reconnect

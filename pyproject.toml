@@ -1,5 +1,47 @@
-# Root pyproject.toml — shared tooling config for the ha-nanit monorepo.
-# The aionanit library has its own pyproject.toml in packages/aionanit/.
+# Root pyproject.toml: the uv workspace and shared tooling config for the
+# ha-nanit monorepo. The root is not a package (the integration ships as a
+# zip); the aionanit library is a workspace member with its own pyproject.toml.
+#
+# `uv sync` installs everything below into .venv from uv.lock.
+
+[project]
+name = "ha-nanit"
+version = "0.0.0"
+requires-python = ">=3.14.2"  # Home Assistant's floor
+
+[dependency-groups]
+dev = [
+    "aionanit",
+    "aiohttp>=3.13,<3.14",  # aioresponses 0.7.x is incompatible with aiohttp 3.14+
+    "aioresponses>=0.7,<0.8",
+    # PyAV backs the stream integration, which nanit depends on; without it
+    # HA cannot set up `stream` and every entry-setup test fails.
+    "av>=16.0,<16.1",
+    "homeassistant>=2026.5,<2026.7",
+    "mypy>=2.1,<3",
+    "pre-commit>=4,<5",
+    "pytest-cov>=7,<8",
+    "pytest-homeassistant-custom-component>=0.13.333,<0.14",
+    "rich>=15,<16",
+    "ruff>=0.16,<0.17",
+    "syrupy>=5,<6",
+    "websockets>=13.0,<16",
+]
+
+[tool.uv]
+package = false
+# Everyone runs the same uv-managed interpreter. It also stops uv from picking
+# up a system 3.14.0/3.14.1, which is below requires-python and would fail the
+# sync instead of downloading a newer 3.14.
+python-preference = "only-managed"
+# Floor for contributors; CI pins the exact version in setup-uv.
+required-version = ">=0.12.14"
+
+[tool.uv.workspace]
+members = ["packages/aionanit"]
+
+[tool.uv.sources]
+aionanit = { workspace = true }
 
 [tool.ruff]
 target-version = "py313"
@@ -71,6 +113,19 @@ ignore_errors = true
 [[tool.mypy.overrides]]
 module = "aionanit.camera"
 disable_error_code = ["attr-defined"]
+
+[tool.pytest.ini_options]
+# Integration tests. The aionanit suite uses packages/aionanit/pyproject.toml.
+asyncio_mode = "auto"
+pythonpath = ["."]
+testpaths = ["tests/unit"]
+
+[tool.pyright]
+# Editor language servers (basedpyright, pyright, Pylance). mypy is the type
+# checking authority in CI; this only points editors at the uv environment.
+venvPath = "."
+venv = ".venv"
+typeCheckingMode = "standard"
 
 [tool.coverage.run]
 omit = ["custom_components/nanit/aionanit_sl/*"]

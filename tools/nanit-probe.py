@@ -8,9 +8,9 @@ fields (e.g. night light brightness).
 Reads session from .nanit-session (created by nanit-login.py).
 
 Usage:
-    python3 tools/nanit-probe.py              # interactive menu
-    python3 tools/nanit-probe.py <command>    # run a single command
-    python3 tools/nanit-probe.py --list       # list all commands
+    uv run tools/nanit-probe.py              # interactive menu
+    uv run tools/nanit-probe.py <command>    # run a single command
+    uv run tools/nanit-probe.py --list       # list all commands
 """
 
 from __future__ import annotations

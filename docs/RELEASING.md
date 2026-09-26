@@ -41,7 +41,7 @@ release.yaml:  resolve → approve (release-stable) → CI gate → build → Py
 
 | Action | Who | Enforced by |
 |--------|-----|-------------|
-| Merge PRs, publish betas (via labels), retry pipelines | Maintainers | Repository role |
+| Merge PRs, publish betas (via labels), retry pipelines | Collaborators | Write access |
 | Create stable tags `vX.Y.Z` | Owner | Tag ruleset (beta tags are excluded) |
 | Publish a stable release to PyPI and HACS | Owner | `release-stable` environment, owner is the required reviewer |
 | Publish to PyPI at all | Only `release.yaml` on `main` | PyPI trusted publishing + `pypi` environment limited to `main` |
@@ -109,4 +109,4 @@ The guarantees above depend on these settings. Only admins can change them.
 | Environment `pypi` | Deployment branches: `main` only | Only `main`'s `release.yaml` can publish. |
 | Actions | "Allow GitHub Actions to create and approve pull requests" off | No workflow can approve its own PR. |
 | PyPI trusted publisher for `aionanit` | Workflow `release.yaml`, environment `pypi` | No long-lived PyPI token exists. |
-| Collaborators | Maintainers get the Maintain role | Merge, label, retry, betas; no settings or stable tags. |
+| Collaborators | Write (a personal-account repo has no finer roles) | Merge, label, retry and publish betas. Settings, stable tags and stable publishing stay with the owner through the rulesets and `release-stable`. |

@@ -2,19 +2,21 @@
 
 > For AI agents. Read the section relevant to your task — you don't need to read everything every time.
 > Use the [Context Router](#context-router) to find which sections apply.
-> Human contributors: see [CONTRIBUTING.md](CONTRIBUTING.md).
+> The development workflow (setup, branches, PRs, signing) is in [CONTRIBUTING.md](CONTRIBUTING.md) and applies to agents too.
 
 ## Context Router
 
 | If your task involves…              | Read sections                                      |
 |--------------------------------------|----------------------------------------------------|
-| Any code change                      | [Code Standards](#code-standards), [Git Workflow](#git-workflow), [Guardrails](#guardrails) |
+| Any code change                      | [Code Standards](#code-standards), [Workflow](#workflow), [Guardrails](#guardrails) |
 | Integration code (`custom_components/`) | Above + [Architecture](#architecture), [HA Integration Patterns](#ha-integration-patterns) |
 | Client library (`packages/aionanit/`)  | Above + [Architecture](#architecture), [aionanit Patterns](#aionanit-patterns) |
+| Sound & Light (`aionanit_sl/`)       | Above + [aionanit_sl Invariants](#aionanit_sl-sound--light-invariants) |
 | Connection/WebSocket work            | Above + [docs/CONNECTION_RELIABILITY.md](docs/CONNECTION_RELIABILITY.md) |
+| Lovelace card (`frontend/`)          | [Code Standards](#code-standards), [Workflow](#workflow) |
 | Security review                      | [Security](#security), [docs/SECURITY_AUDIT_CHECKLIST.md](docs/SECURITY_AUDIT_CHECKLIST.md) |
-| PR review                            | [Git Workflow](#git-workflow), [Security](#security), [Guardrails](#guardrails) |
-| Release                              | [Git Workflow → Releases](#releases), [Security](#security) |
+| PR review                            | [Workflow](#workflow), [Security](#security), [Guardrails](#guardrails), `.claude/skills/review-prs/` |
+| Release                              | [Releases](#releases), [docs/RELEASING.md](docs/RELEASING.md) |
 
 ---
 
@@ -28,7 +30,7 @@ packages/aionanit/         ← Nanit API client library (published to PyPI)
 frontend/                  ← Lovelace card source (TypeScript, Rollup → nanit-card.js)
 tests/unit/                ← Integration tests (80% coverage threshold)
 dev/                       ← Docker-based dev HA instance
-tools/                     ← CLI utilities (login, events, probe)
+tools/                     ← CLI utilities (login, events, probe, release)
 docs/                      ← Security checklist, connection reliability, testing
 ```
 
@@ -51,6 +53,7 @@ docs/                      ← Security checklist, connection reliability, testi
 | `entity.py` | `NanitEntity` base class with availability logic |
 | `camera.py`, `sensor.py`, `binary_sensor.py`, `switch.py`, `number.py` | Entity platforms |
 | `manifest.json` | Version, requirements, HA metadata |
+| `aionanit_sl/` | Sound & Light transport (see [invariants](#aionanit_sl-sound--light-invariants)) |
 | `aionanit/camera.py` | `NanitCamera` state machine, subscribe, commands |
 | `aionanit/auth.py` | `TokenManager` (auto-refresh, token change callback) |
 | `aionanit/ws/transport.py` | `WsTransport` (WebSocket connection, reconnect, keepalive) |
@@ -63,13 +66,16 @@ docs/                      ← Security checklist, connection reliability, testi
 ## Code Standards
 
 - **Python**: 3.14 (Home Assistant's floor, pinned in `.python-version`). aionanit itself supports 3.12+. Fully async — no blocking I/O in the event loop.
+- **Environment**: uv. `uv.lock` pins every dev dependency; run tools through `uv run` or `just`.
 - **Linter**: Ruff (rules: B, BLE, C4, D, E, F, I, ICN, N, PGH, PIE, RUF, SIM, T20, UP, W). Line length: 100.
-- **Type checking**: mypy strict mode. All functions must have type hints.
+- **Type checking**: mypy strict mode (targets in `pyproject.toml`). All functions must have type hints.
 - **Formatting**: Ruff formatter (enforced via pre-commit).
 - **Strings**: User-facing text in `strings.json` / `translations/en.json` — no hardcoded English.
 - **Imports**: isort via Ruff. Known first-party: `aionanit`, `custom_components.nanit`.
 - **Naming**: Follow existing patterns. Never change entity unique IDs or class names without a migration plan.
 - **Tests**: New features must include tests. Coverage threshold: 80% (enforced in CI).
+- **Card**: edit `frontend/src/`, then `just card` and commit the rebuilt `nanit-card.js` (CI checks it matches).
+- **Generated code**: never hand-edit `*_pb2.py` / `*_pb2.pyi`.
 
 ### Commands
 
@@ -80,81 +86,26 @@ just fix              # Auto-fix lint issues and reformat
 just test             # Integration tests with coverage (custom_components)
 just test lib         # aionanit library tests
 just test all         # Both test suites
+just card             # Rebuild the Lovelace card bundle
 just dev              # Start dev HA instance → http://localhost:8123
 just dev restart      # Restart after code changes
-just dev stop         # Stop dev HA instance
-just release-retry    # Re-trigger release workflow after fixing CI (uses same tag)
-just release          # Interactive release CLI (PR, tag, merge, beta, stable)
+just notes            # Preview release notes for what main would ship
 ```
 
 ---
 
-## Git Workflow
+## Workflow
 
-### Repository settings (enforced on GitHub)
+Full details in [CONTRIBUTING.md](CONTRIBUTING.md). What agents must get right:
 
-- **Branch protection** (`~ALL` ruleset): All branches require signed commits, a PR (no direct push), and passing CI status checks. No bypass actors.
-- **Merge method**: Squash merge only. PR title = squash commit message (must follow conventional commits). PR body = commit body.
-- **Auto-delete**: Head branches are automatically deleted after merge.
-
-### Signed commits (mandatory)
-
-All commits must be GPG-signed. Unsigned commits are rejected by branch protection.
-
-- Configure `git commit.gpgsign = true` in your global git config.
-- Add your GPG key to GitHub: [GitHub GPG docs](https://docs.github.com/en/authentication/managing-commit-signature-verification).
-- AI agents must use the host machine's GPG signing configuration.
-- **Fork PRs with unsigned commits will be rejected.** Contributors must set up GPG signing before opening a PR.
-
-### Branching (trunk-based)
-
-- **`main`** is the only long-lived branch. All work branches off `main` and merges back via PR.
-- Branch naming: `feat/<description>`, `fix/<description>`, `chore/<description>`, `docs/<description>`, `test/<description>`.
-- Keep branches short-lived. Rebase on `main` before merge if needed.
-
-### Commit messages (conventional commits)
-
-Format: `<type>: <description>`
-
-| Type | Use for |
-|------|---------|
-| `feat:` | New feature or capability |
-| `fix:` | Bug fix |
-| `refactor:` | Code restructuring (no behavior change) |
-| `docs:` | Documentation only |
-| `test:` | Adding or updating tests |
-| `chore:` | Tooling, deps, CI, config |
-
-Rules:
-- One logical change per commit. Keep it atomic.
-- Description: imperative mood, lowercase, no period. e.g., `feat: add night vision toggle`
-- If behavior or user-facing functionality changes, update `README.md` in the same commit.
-- **PR titles must follow the same format** — they become the squash commit message on `main`.
-
-### Pre-commit hooks
-
-`just setup` installs pre-commit hooks that run on every commit, using the locked ruff from `uv.lock`:
-- `ruff check --fix` — lint
-- `ruff format` — formatting
-
-**Bypassing hooks (`--no-verify`) is forbidden.** Fix lint/format errors before committing.
-
-### PR process
-
-1. Branch from `main` → make changes → `just check` passes locally.
-2. Open PR against `main`. PR title must follow conventional commit format. Fill in the `## Changelog` section of the description: it becomes the release notes (`none` if users won't notice). The `PR Metadata` check enforces both.
-3. If the PR should trigger a release: add a label — `release:patch`, `release:minor`, or `release:major`. PRs without a release label will not create a beta release.
-4. Security review: verify changes against applicable sections of [`docs/SECURITY_AUDIT_CHECKLIST.md`](docs/SECURITY_AUDIT_CHECKLIST.md).
-5. CI must pass (lint, format, typecheck, tests). If CI fails, fix in the same branch and push.
-6. Maintainer reviews and squash-merges. Head branch is auto-deleted.
-7. On merge, if a `release:*` label is present, `auto-beta.yaml` automatically publishes a beta (tag, PyPI, GitHub pre-release with nanit.zip).
-
-### Fork PRs (external contributors)
-
-1. Contributor must have GPG signing configured — unsigned PRs are rejected.
-2. Open PR against `main` from the fork.
-3. Same CI and review process applies.
-4. If signing is not set up, the PR will be closed with a request to configure GPG signing first.
+- Branch from `main`: `feat/`, `fix/`, `refactor/`, `docs/`, `test/`, `chore/` + short description.
+- Commits and PR titles use conventional commits: `<type>: <description>`, imperative, lowercase, no period. The PR title becomes the squash commit on `main`.
+- PR description follows `.github/pull_request_template.md`. The `## Changelog` section is user-facing text that becomes the release notes, or `none`.
+- Release labels (`release:patch|minor|major`) publish a beta on merge. Pick the size that matches the change; leave unlabelled if nothing user-facing changed.
+- If behavior or user-facing functionality changes, update `README.md` in the same PR.
+- Commits are signed with the host's existing git signing setup. Never change signing config or disable it.
+- `just check` passes before pushing. Verify behavior in the dev HA instance (`just dev`) when the change is user-facing.
+- Check the change against the applicable sections of [`docs/SECURITY_AUDIT_CHECKLIST.md`](docs/SECURITY_AUDIT_CHECKLIST.md) before opening the PR.
 
 ### Releases
 
@@ -163,23 +114,8 @@ Full details: [docs/RELEASING.md](docs/RELEASING.md).
 - **Betas are automatic**: merging a PR with a `release:*` label tags the merge commit (`vX.Y.Z-beta.N`, one beta train) and publishes it.
 - **Stable is owner only**: `just release` → Release stable promotes a beta's commit with a signed `vX.Y.Z` tag. A tag ruleset and the `release-stable` environment enforce this.
 - **Versions come from the tag.** `manifest.json` and `packages/aionanit/pyproject.toml` hold a `0.0.0` placeholder on `main`; `release.yaml` injects the real version at build time, and the integration pins `aionanit==<version>`. Never bump version files by hand.
-- **Release notes** are assembled from each merged PR's `## Changelog` section (`just notes` previews them). There is no changelog file to edit.
-- **Rollback**: forward-fix via a new PR. **Pipeline fix**: fix the workflow on `main`, then `just release` → Retry.
-
-### Pinned dependencies
-
-Dev and test dependencies are declared with minor-version ranges and locked exactly, with hashes, in `uv.lock`:
-
-- Root `pyproject.toml` `[dependency-groups] dev` — integration dev/test/CI tooling (`>=x.y,<x.(y+1)` ranges)
-- `packages/aionanit/pyproject.toml` `[project.optional-dependencies] dev` — library test deps
-
-Local, pre-commit and CI all install from the same lock, so versions never drift between them. CI fails if `uv.lock` is out of date with the pyproject files (`uv sync --locked`).
-
-**Python**: `.python-version` (3.14) matches current Home Assistant (the `homeassistant` dev pin sits at `>=2026.5,<2026.7`). The `aiohttp` dev pin must stay below `3.14` (aioresponses 0.7.x incompatible with aiohttp 3.14+).
-
-**Runtime dependencies** (`aiohttp`, `protobuf` in `[project] dependencies`) use broader range constraints (e.g., `>=3.9.0,<4`) since exact pins would conflict with Home Assistant's own dependency resolution.
-
-**Updating**: Dependabot opens a grouped monthly PR for `uv.lock` and pinned actions. To update by hand: `just upgrade`, review the lock diff, `just check`, and commit as `chore: update locked dev dependencies`.
+- **Release notes** are assembled from each merged PR's `## Changelog` section. There is no changelog file to edit.
+- **Rollback**: forward-fix via a new PR. **Pipeline fix**: fix the workflow on `main`, then the owner retries from `just release`.
 
 ---
 
@@ -213,7 +149,7 @@ Full checklist: [`docs/SECURITY_AUDIT_CHECKLIST.md`](docs/SECURITY_AUDIT_CHECKLI
 - Run `just check` before any PR or merge.
 - Follow existing code patterns — read neighboring files before writing new ones.
 - Ask questions before starting work if anything is unclear. Do not guess.
-- Verify changes work in a Home Assistant instance.
+- Verify user-facing changes in the dev Home Assistant instance (`just dev`), not a production one.
 
 ### Must not
 - Suppress type errors (`# type: ignore`, `cast()` to bypass, `Any` as escape hatch).
@@ -221,12 +157,17 @@ Full checklist: [`docs/SECURITY_AUDIT_CHECKLIST.md`](docs/SECURITY_AUDIT_CHECKLI
 - Introduce blocking I/O in async code paths.
 - Log or store credentials, tokens, or URLs containing tokens.
 - Add dependencies without full supply chain review (Section 10 of security checklist).
+- Pin aionanit's runtime dependencies (`aiohttp`, `protobuf` in `[project] dependencies`) exactly. They stay broad ranges (e.g. `>=3.9.0,<4`) because exact pins fight Home Assistant's own dependency resolution. Exact pins belong in `uv.lock` only.
 - Commit directly to `main` — always use a PR.
-- Push unsigned commits — all commits must be GPG-signed.
-- Bypass pre-commit hooks with `--no-verify`.
-- **Run `just release`** — use with care. Ensure all CI checks pass and version files are correct before releasing.
+- Disable or reconfigure the host's commit signing, or bypass pre-commit hooks with `--no-verify`. (Signing isn't required for PR commits, since squash merges are signed by GitHub, but agents never turn it off where it is set up.)
+- Merge with `--admin`, or force-push to a branch you did not create.
+- **Release anything**: never run `just release`, create or edit tags and GitHub releases, or dispatch workflows. Releases are human actions.
 - **Edit `AGENTS.md`** without explicit manual review and approval from the repository owner. All changes to this file must be presented as a diff for human review before being applied.
-- **Add AI co-author attribution** — never include Sisyphus, Copilot, or any other AI agent as a co-author or in commit trailers.
+- **Add AI co-author attribution** — never include any AI agent as a co-author or in commit trailers.
+
+### Enforcement (Claude Code)
+
+`.claude/settings.json` is checked in and applies to anyone running Claude Code in this repo. Its permission rules guard against the common forms of the actions above (releases, tag creation, workflow dispatch and reruns, `--admin` merges, force pushes, `--no-verify`) and ask before pushes, merges and `AGENTS.md` edits. They match command text, so they are accident guards, not a security boundary: an unusual spelling of the same command slips past, and the rules above still apply as written. A hook formats edited Python files with the locked ruff (it installs only ruff, not the full environment). Personal overrides go in `.claude/settings.local.json` (gitignored). Other agents: follow the rules as written.
 
 ---
 

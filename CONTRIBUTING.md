@@ -1,69 +1,98 @@
 # Contributing to ha-nanit
 
-Thanks for your interest in contributing! This guide covers the human workflow.
-For code standards, architecture details, and security requirements, see [AGENTS.md](AGENTS.md).
+Thanks for your interest in contributing! This is the development workflow for
+everyone, people and AI agents alike. Code standards, architecture and
+invariants are in [AGENTS.md](AGENTS.md). Releases are in
+[docs/RELEASING.md](docs/RELEASING.md).
 
-## Prerequisites
+## Setup
+
+Prerequisites:
 
 - [uv](https://docs.astral.sh/uv/) (installs the right Python and all dependencies)
 - [just](https://just.systems/) (task runner)
 - Docker (optional, for the dev Home Assistant instance)
+- Node.js 24 (optional, only to rebuild the Lovelace card; `frontend/.nvmrc`)
 - A Nanit account (for testing against real hardware)
-
-## Setup
 
 ```bash
 git clone https://github.com/wealthystudent/ha-nanit.git
 cd ha-nanit
 just setup   # uv sync into .venv + pre-commit hooks
+just check   # everything CI runs on Python code
 ```
 
-## Development
+`uv.lock` pins every dev dependency with hashes, so your environment, the
+pre-commit hooks and CI all run the same versions. `uv run` (and every `just`
+recipe) re-syncs `.venv` when the lock changes, so there is no separate
+install step to forget.
 
-### Running tests
+uv uses its own managed Python (`python-preference = "only-managed"`), so a
+system Python never leaks in. If `uv sync` fails to replace `.venv` with
+"Directory not empty" on macOS, a Finder window on the repo is recreating
+`.DS_Store` files: close it, `rm -rf .venv`, and sync again.
+
+## Development loop
 
 ```bash
 just test          # Integration tests with coverage
 just test lib      # aionanit library tests
 just test all      # Both
-just check         # Everything CI runs on Python code (lint, format, types, tests)
-```
+just check         # Lint, format, types and both test suites
+just fix           # Auto-fix lint and formatting
+just card          # Rebuild the Lovelace card after editing frontend/src (commit the bundle)
+just card watch    # Rebuild on every change
 
-### Dev HA instance
-
-```bash
-just dev           # Start → http://localhost:8123
+just dev           # Dev Home Assistant → http://localhost:8123
 just dev restart   # Restart after code changes
-just dev stop      # Stop
+just dev logs      # Follow logs
+just dev reset     # Wipe dev state
 ```
 
-See [tests/README.md](tests/README.md) for more details.
+The dev instance mounts `custom_components/` read-only and installs
+`packages/aionanit` in editable mode. See [tests/README.md](tests/README.md)
+for test details and manual test guides.
+
+`just login` saves a Nanit session to `.nanit-session` (gitignored, owner-only)
+for the probing tools (`just events`, `just probe`, `just network`,
+`just sound`).
 
 ## Making changes
 
-### Git requirements
+1. **Branch** from `main`: `feat/`, `fix/`, `refactor/`, `docs/`, `test/` or `chore/` + a short description.
+2. Make your changes. Follow existing code patterns and [AGENTS.md](AGENTS.md).
+3. Run `just check`.
+4. **Verify in the dev HA instance** (`just dev`) for anything users will notice. This is how the maintainers test your PR too.
+5. Open a **pull request** against `main` and fill in the template:
+   - **Title**: conventional commit, e.g. `fix: handle token refresh during reconnect`. It becomes the commit on `main`.
+   - **Changelog**: what users will notice, in plain sentences. It becomes the release notes. Write `none` if users won't notice (refactors, tests, CI).
+6. If the change should ship, it needs a label: `release:patch` (fixes), `release:minor` (features) or `release:major` (breaking). Maintainers add it themselves; from a fork, suggest one in the description and a maintainer adds it. Merging a labelled PR publishes a beta automatically.
+7. CI must pass: `CI OK` (lint, types, tests, drift checks, hassfest) and `PR Metadata` (title and changelog). Fix in the same branch and push.
+8. A maintainer reviews and squash-merges. The branch is deleted automatically.
 
-- **All commits must be GPG-signed.** PRs with unsigned commits will be rejected.
-  Set up GPG signing: [GitHub docs](https://docs.github.com/en/authentication/managing-commit-signature-verification).
-- **Squash merge only.** PR title becomes the commit message on `main`.
-- **Pre-commit hooks** run ruff lint + format on every commit. Do not bypass with `--no-verify`.
+`just release` → Create PR does steps 5 and 6 interactively.
 
-### Workflow
+### Stacked PRs
 
-1. **Branch** from `main`: `feat/<description>`, `fix/<description>`, or `chore/<description>`.
-2. Make your changes. Follow existing code patterns.
-3. Run `just check` (lint + format + typecheck + tests).
-4. **Verify with the dev HA instance.** Start it with `just dev`, add the integration, and confirm your change works end-to-end. This is how the maintainer will test your PR — if it doesn't work locally for you, it won't work for review either.
-5. Open a **pull request** against `main`. PR title must follow conventional commit format (e.g., `feat: add night vision toggle`). Fill in the **Changelog** section of the description with what users will notice: it becomes the release notes. Write `none` if users won't notice the change.
-6. If the PR should trigger a release, add a label: `release:patch`, `release:minor`, or `release:major`. Merging a labelled PR publishes a beta automatically. See [docs/RELEASING.md](docs/RELEASING.md).
-7. CI must pass. If it fails, fix in the same branch and push.
-8. Maintainer reviews and squash-merges. Branch is auto-deleted.
+A PR can target another PR's branch when it builds on it. CI runs on it all
+the same. When the parent is squash-merged, `main` gets a new commit the child
+doesn't contain, so move the child over before merging it:
 
-For full details on branching, commits, and signing: see [AGENTS.md → Git Workflow](AGENTS.md#git-workflow).
+```bash
+git fetch origin
+git rebase --onto origin/main <parent's last head sha> <child branch>
+git push --force-with-lease=<child branch>:<child sha you last saw>
+```
+
+Then retarget the child to `main` and, after it merges, check that
+`git diff --stat origin/main <child branch>` lists only files `main` changed
+on its own. A stacked PR merged into its parent's branch instead of `main`
+never reaches `main`.
 
 ### Commit messages
 
-We use [conventional commits](https://www.conventionalcommits.org/):
+[Conventional commits](https://www.conventionalcommits.org/), imperative,
+lowercase, no period:
 
 ```
 feat: add night vision toggle
@@ -71,26 +100,66 @@ fix: handle token refresh during reconnect
 refactor: extract protobuf parsing into separate module
 docs: update camera IP configuration instructions
 test: add coverage for MFA config flow
-chore: bump aionanit to 1.0.14
+chore: update locked dev dependencies
 ```
 
-One logical change per commit. If behavior changes, update `README.md` in the same commit.
+One logical change per commit. If behavior changes, update `README.md` in the
+same PR. Pre-commit runs ruff lint and format on every commit; don't bypass it
+with `--no-verify`.
 
-### Code style
+### Signed commits
 
-- Fully async — no blocking I/O in the event loop.
-- Type hints on all functions (mypy strict mode).
-- User-facing text in `strings.json` / translations — no hardcoded English.
-- Line length: 100 characters (enforced by Ruff).
-- See [AGENTS.md → Code Standards](AGENTS.md#code-standards) for full details.
+`main` only accepts signed commits. PRs are squash-merged and GitHub signs the
+squash commit, so **your PR commits don't need to be signed**. Signing them is
+still encouraged, and the owner signs stable release tags. GitHub accepts GPG
+or SSH signatures
+([docs](https://docs.github.com/en/authentication/managing-commit-signature-verification));
+SSH is the quickest to set up:
 
-### Security
+```bash
+git config --global gpg.format ssh
+git config --global user.signingkey ~/.ssh/id_ed25519.pub
+git config --global commit.gpgsign true
+git config --global tag.gpgsign true
+```
+
+Agents use whatever signing the host has configured. A hardware key that needs
+a touch (e.g. a YubiKey) makes every agent commit a deliberate human action.
+
+## Editor setup (optional)
+
+The repo is editor-neutral. It ships an `.editorconfig` and a `[tool.pyright]`
+section that points language servers at `.venv`. mypy in `just check` is the
+type-checking authority; the editor only gives fast feedback.
+
+- **Neovim**: enable `basedpyright` (or `pyright`) and `ruff` language servers
+  (e.g. via mason + nvim-lspconfig), and format Python with `ruff_format` in
+  conform.nvim. They pick up `pyproject.toml` and `.venv` from the repo root.
+- **VS Code**: the Python, Pylance and Ruff extensions, with `.venv` as the
+  interpreter.
+
+## AI assistants
+
+- [AGENTS.md](AGENTS.md) is the tool-neutral brief every agent should read.
+- **Claude Code** applies `.claude/settings.json` to anyone using it in this
+  repo. Its rules catch the usual forms of releases, tag creation, workflow
+  dispatch, force pushes, `--admin` merges and `--no-verify` (accident guards
+  that match command text, not a security boundary), ask before pushes and
+  merges, and format edited Python with the locked ruff. The format hook
+  installs only ruff, so it stays light on a fresh clone. The `review-prs`
+  skill reviews open PRs. Personal settings go in
+  `.claude/settings.local.json` (gitignored).
+- Keep personal tool config (MCP server URLs, tokens) out of the repo: use
+  your user-level config or `.git/info/exclude`.
+- Point agents that talk to Home Assistant at the dev instance, not your home.
+
+## Security
 
 All contributions must pass security review. Key rules:
 
 - Never log credentials, tokens, or stream URLs containing tokens.
 - Validate user input with voluptuous schemas in config/options flows.
-- Sanitize data from external APIs before using as entity names.
+- Sanitize data from external APIs before using it as entity names.
 - No `eval()`, `exec()`, `os.system()`, or `subprocess(shell=True)`.
 - Secrets in `entry.data` only, never in `entry.options`.
 - Use `async_redact_data()` in diagnostics.

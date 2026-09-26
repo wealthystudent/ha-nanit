@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(just check)",
+      "Bash(just fix)",
+      "Bash(just test *)",
+      "Bash(just notes)",
+      "Bash(just card *)",
+      "Bash(uv sync *)",
+      "Bash(uv run ruff *)",
+      "Bash(uv run mypy *)",
+      "Bash(uv run pytest *)",
+      "Bash(gh pr view *)",
+      "Bash(gh pr diff *)",
+      "Bash(gh pr checks *)",
+      "Bash(gh pr list *)",
+      "Bash(gh run list *)",
+      "Bash(gh run view *)",
+      "Bash(gh issue view *)",
+      "Bash(gh issue list *)"
+    ],
+    "ask": [
+      "Bash(git push *)",
+      "Bash(gh pr merge *)",
+      "Bash(gh pr create *)",
+      "Edit(/AGENTS.md)"
+    ],
+    "deny": [
+      "Bash(just release *)",
+      "Bash(uv run tools/release-cli.py*)",
+      "Bash(python* tools/release-cli.py*)",
+      "Bash(gh release create *)",
+      "Bash(gh release edit *)",
+      "Bash(gh release upload *)",
+      "Bash(gh release delete *)",
+      "Bash(gh workflow run *)",
+      "Bash(gh run rerun *)",
+      "Bash(gh pr merge *--admin*)",
+      "Bash(git tag -a *)",
+      "Bash(git tag -s *)",
+      "Bash(git push *--tags*)",
+      "Bash(git push * refs/tags/*)",
+      "Bash(git push *--force*)",
+      "Bash(git push -f*)",
+      "Bash(git push * -f*)",
+      "Bash(git push * +*)",
+      "Bash(git commit *--no-verify*)",
+      "Bash(git push *--no-verify*)",
+      "Bash(git merge *--no-verify*)",
+      "Bash(git commit -n *)",
+      "Read(/.nanit-session)",
+      "Read(/.env)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/format-python.sh"
+          }
+        ]
+      }
+    ]
+  }
+}

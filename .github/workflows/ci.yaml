@@ -15,9 +15,11 @@ on:
         type: string
         default: ""
 
+# PR pushes share a group per PR, so a newer push cancels the older run.
+# Main pushes and release gates get a group of their own (commit or tag), so
+# a burst of merges never cancels a queued run on main.
 concurrency:
-  group: ci-${{ inputs.ref || github.ref }}
-  # Superseded PR pushes are cancelled; every main commit keeps its run.
+  group: ci-${{ inputs.ref || (github.event_name == 'pull_request' && github.ref) || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -221,9 +223,11 @@ jobs:
   hacs-validation:
     # Informational, not part of CI OK: it validates repository metadata
     # (topics, releases) that PRs rarely touch and fails on GitHub API
-    # hiccups that no code change can fix.
+    # hiccups that no code change can fix. continue-on-error keeps a failure
+    # here from failing the whole run, which is what the release gate checks.
     name: HACS Validation
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:

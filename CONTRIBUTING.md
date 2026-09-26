@@ -84,10 +84,15 @@ git rebase --onto origin/main <parent's last head sha> <child branch>
 git push --force-with-lease=<child branch>:<child sha you last saw>
 ```
 
+Don't use `gh pr update-branch` (or merge `main` in) for a formerly stacked
+PR: a three-way merge against the parent's squash can silently bring back
+lines the child removed, with no conflict to warn you.
+
 Then retarget the child to `main` and, after it merges, check that
-`git diff --stat origin/main <child branch>` lists only files `main` changed
-on its own. A stacked PR merged into its parent's branch instead of `main`
-never reaches `main`.
+`git diff --stat origin/main <head sha>` lists only files `main` changed on
+its own. Use the PR's head SHA (`gh pr view <n> --json headRefOid`): the
+branch itself is deleted on merge. A stacked PR merged into its parent's
+branch instead of `main` never reaches `main`.
 
 ### Commit messages
 

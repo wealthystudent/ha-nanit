@@ -22,7 +22,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      # Credentials persist on purpose: this job pushes the beta tag.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2 # zizmor: ignore[artipacked]
         with:
           fetch-depth: 0
 
@@ -41,6 +42,8 @@ jobs:
 
       - name: Compute next beta version
         id: version
+        env:
+          BUMP: ${{ steps.bump.outputs.type }}
         run: |
           latest_stable=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' \
             | { grep -v '-' || true; } \
@@ -50,7 +53,7 @@ jobs:
           latest_stable="${latest_stable#v}"
           IFS='.' read -r major minor patch <<< "${latest_stable}"
 
-          case "${{ steps.bump.outputs.type }}" in
+          case "${BUMP}" in
             patch) patch=$((patch + 1)) ;;
             minor) minor=$((minor + 1)); patch=0 ;;
             major) major=$((major + 1)); minor=0; patch=0 ;;

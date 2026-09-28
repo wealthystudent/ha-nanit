@@ -56,6 +56,21 @@ _CARD_RESOURCE_VERSION: str = (
 )
 
 
+def _lovelace_resource_mode(lovelace_data: Any) -> str | None:
+    """Return Lovelace's resource mode across Home Assistant versions.
+
+    Home Assistant 2026.2 renamed ``LovelaceData.mode`` to ``resource_mode``,
+    and neither version has the other attribute. Both lookups are lazy on
+    purpose: a ``getattr`` default is evaluated eagerly, so
+    ``getattr(data, "resource_mode", data.mode)`` would raise on every
+    install from 2026.2 on.
+    """
+    mode = getattr(lovelace_data, "resource_mode", None)
+    if mode is None:
+        mode = getattr(lovelace_data, "mode", None)
+    return mode
+
+
 async def async_register_card(hass: HomeAssistant) -> None:
     """Register the Nanit companion card as a static Lovelace resource.
 
@@ -77,7 +92,7 @@ async def async_register_card(hass: HomeAssistant) -> None:
         )
 
         lovelace_data: LovelaceData = hass.data["lovelace"]
-        if lovelace_data.resource_mode == "yaml":
+        if _lovelace_resource_mode(lovelace_data) == "yaml":
             _LOGGER.debug("Lovelace in YAML mode — skipping automatic card resource registration")
             hass.data[_REGISTERED_KEY] = True
             return

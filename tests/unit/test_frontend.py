@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -154,6 +155,46 @@ async def test_register_card_yaml_mode_skips_resource(hass: HomeAssistant) -> No
 
     hass.http.async_register_static_paths.assert_awaited_once()
     resources.async_create_item.assert_not_awaited()
+
+
+async def _register_with_lovelace(hass: HomeAssistant, lovelace: object) -> None:
+    hass.http = MagicMock()
+    hass.http.async_register_static_paths = AsyncMock()
+    hass.data["lovelace"] = lovelace
+    with patch(f"{_FRONTEND_MODULE}._CARD_DIR", Path(__file__).parent):
+        with patch(f"{_FRONTEND_MODULE}._CARD_FILENAME", "conftest.py"):
+            await async_register_card(hass)
+
+
+# SimpleNamespace rather than MagicMock: a MagicMock invents any attribute it
+# is asked for, so it would hide exactly the missing-attribute bug from #153.
+
+
+async def test_register_card_pre_2026_2_lovelace_uses_mode(hass: HomeAssistant) -> None:
+    """Before HA 2026.2 the field is ``mode`` and ``resource_mode`` doesn't exist (#153)."""
+    resources = _mock_resources()
+    await _register_with_lovelace(hass, SimpleNamespace(mode="storage", resources=resources))
+
+    assert hass.data[_REGISTERED_KEY] is True
+    resources.async_create_item.assert_awaited_once()
+
+
+async def test_register_card_pre_2026_2_lovelace_yaml_mode_skips(hass: HomeAssistant) -> None:
+    resources = _mock_resources()
+    await _register_with_lovelace(hass, SimpleNamespace(mode="yaml", resources=resources))
+
+    resources.async_create_item.assert_not_awaited()
+
+
+async def test_register_card_current_lovelace_has_no_mode(hass: HomeAssistant) -> None:
+    """From HA 2026.2 only ``resource_mode`` exists, so ``mode`` must never be read."""
+    resources = _mock_resources()
+    await _register_with_lovelace(
+        hass, SimpleNamespace(resource_mode="storage", resources=resources)
+    )
+
+    assert hass.data[_REGISTERED_KEY] is True
+    resources.async_create_item.assert_awaited_once()
 
 
 def test_manifest_version_is_loaded() -> None:

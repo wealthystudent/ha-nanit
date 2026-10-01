@@ -12,7 +12,7 @@ requires-python = ">=3.14.2"  # Home Assistant's floor
 [dependency-groups]
 # Just ruff: the pre-commit hooks and the Claude Code format hook run with
 # `--only-group lint`, so they never pull in Home Assistant on a fresh clone.
-lint = ["ruff>=0.16,<0.17"]
+lint = ["ruff>=0.16.9,<0.17"]
 dev = [
     { include-group = "lint" },
     "aionanit",

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
+
 import pytest
-from aiohttp import ClientConnectionError, ClientResponseError, ClientSession
-from aioresponses import aioresponses
+from aiohttp import ClientConnectionError, ClientResponseError
 
 from aionanit.exceptions import (
     NanitAuthError,
@@ -14,6 +15,8 @@ from aionanit.exceptions import (
 from aionanit.models import Baby, CloudEvent
 from aionanit.rest import DEFAULT_BASE_URL, NanitRestClient
 
+from .fake_http import FakeSession, mock_api
+
 LOGIN_URL = f"{DEFAULT_BASE_URL}/login"
 REFRESH_URL = f"{DEFAULT_BASE_URL}/tokens/refresh"
 BABIES_URL = f"{DEFAULT_BASE_URL}/babies"
@@ -22,19 +25,28 @@ DEVICE_TOKEN_URL = f"{DEFAULT_BASE_URL}/speakers/spk001/udtokens"
 
 
 @pytest.fixture
-async def session():
-    async with ClientSession() as s:
-        yield s
+async def session(request: pytest.FixtureRequest):
+    # The Home Assistant test plugin blocks sockets, except connects to
+    # 127.0.0.1 once a test asks for pytest-socket's socket_enabled. Run
+    # standalone, without that plugin, sockets are open already.
+    with contextlib.suppress(pytest.FixtureLookupError):
+        request.getfixturevalue("socket_enabled")
+    fake = FakeSession()
+    await fake.start()
+    try:
+        yield fake
+    finally:
+        await fake.close()
 
 
 @pytest.fixture
-def client(session: ClientSession) -> NanitRestClient:
-    return NanitRestClient(session)
+def client(session: FakeSession) -> NanitRestClient:
+    return NanitRestClient(session)  # type: ignore[arg-type]
 
 
 class TestLogin:
     async def test_login_success(self, client: NanitRestClient) -> None:
-        with aioresponses() as m:
+        with mock_api() as m:
             m.post(
                 LOGIN_URL,
                 payload={
@@ -50,7 +62,7 @@ class TestLogin:
         }
 
     async def test_login_invalid_credentials(self, client: NanitRestClient) -> None:
-        with aioresponses() as m:
+        with mock_api() as m:
             m.post(LOGIN_URL, status=401)
 
             with pytest.raises(NanitAuthError, match="Invalid credentials"):
@@ -58,7 +70,7 @@ class TestLogin:
 
     async def test_login_timeout_is_connection_error(self, client: NanitRestClient) -> None:
         """aiohttp's total timeout raises builtin TimeoutError, not ClientError."""
-        with aioresponses() as m:
+        with mock_api() as m:
             m.post(LOGIN_URL, exception=TimeoutError())
 
             with pytest.raises(NanitConnectionError):
@@ -68,14 +80,14 @@ class TestLogin:
         self, client: NanitRestClient
     ) -> None:
         """A non-JSON body (e.g. an HTML error page) is transient, not auth."""
-        with aioresponses() as m:
+        with mock_api() as m:
             m.post(LOGIN_URL, status=200, body="<html>oops</html>", content_type="text/html")
 
             with pytest.raises(NanitConnectionError, match="Invalid login response"):
                 await client.async_login("user@test.com", "pass123")
 
     async def test_login_mfa_required(self, client: NanitRestClient) -> None:
-        with aioresponses() as m:
+        with mock_api() as m:
             m.post(
                 LOGIN_URL,
                 payload={"mfa_token": "mfa_abc"},
@@ -88,7 +100,7 @@ class TestLogin:
 
     async def test_login_mfa_required_http_482(self, client: NanitRestClient) -> None:
         """Nanit returns HTTP 482 for MFA — verify we parse it before raise_for_status."""
-        with aioresponses() as m:
+        with mock_api() as m:
             m.post(
                 LOGIN_URL,
                 status=482,
@@ -101,14 +113,14 @@ class TestLogin:
             assert exc_info.value.mfa_token == "mfa_482"
 
     async def test_login_connection_error(self, client: NanitRestClient) -> None:
-        with aioresponses() as m:
+        with mock_api() as m:
             m.post(LOGIN_URL, exception=ClientConnectionError("DNS failed"))
 
             with pytest.raises(NanitConnectionError):
                 await client.async_login("user@test.com", "pass123")
 
     async def test_login_oauth2_error_with_description(self, client: NanitRestClient) -> None:
-        with aioresponses() as m:
+        with mock_api() as m:
             m.post(
                 LOGIN_URL,
                 status=400,
@@ -125,7 +137,7 @@ class TestLogin:
                 await client.async_login("user@test.com", "pass123")
 
     async def test_login_oauth2_error_without_description(self, client: NanitRestClient) -> None:
-        with aioresponses() as m:
+        with mock_api() as m:
             m.post(
                 LOGIN_URL,
                 status=400,
@@ -136,7 +148,7 @@ class TestLogin:
                 await client.async_login("user@test.com", "pass123")
 
     async def test_login_api_message_error(self, client: NanitRestClient) -> None:
-        with aioresponses() as m:
+        with mock_api() as m:
             m.post(
                 LOGIN_URL,
                 status=403,
@@ -149,7 +161,7 @@ class TestLogin:
 
 class TestLoginMfa:
     async def test_login_mfa_success(self, client: NanitRestClient) -> None:
-        with aioresponses() as m:
+        with mock_api() as m:
             m.post(
                 LOGIN_URL,
                 payload={
@@ -167,7 +179,7 @@ class TestLoginMfa:
 
 class TestRefreshToken:
     async def test_refresh_success(self, client: NanitRestClient) -> None:
-        with aioresponses() as m:
+        with mock_api() as m:
             m.post(
                 REFRESH_URL,
                 payload={
@@ -188,35 +200,35 @@ class TestRefreshToken:
         It must map to NanitConnectionError: a hung refresh is transient and
         must never read as an auth failure (which triggers reauth upstream).
         """
-        with aioresponses() as m:
+        with mock_api() as m:
             m.post(REFRESH_URL, exception=TimeoutError())
 
             with pytest.raises(NanitConnectionError):
                 await client.async_refresh_token("acc", "ref")
 
     async def test_refresh_rate_limit_is_connection_error(self, client: NanitRestClient) -> None:
-        with aioresponses() as m:
+        with mock_api() as m:
             m.post(REFRESH_URL, status=429, payload={"error": "too many requests"})
 
             with pytest.raises(NanitConnectionError):
                 await client.async_refresh_token("acc", "ref")
 
     async def test_refresh_token_expired(self, client: NanitRestClient) -> None:
-        with aioresponses() as m:
+        with mock_api() as m:
             m.post(REFRESH_URL, status=404)
 
             with pytest.raises(NanitAuthError, match="Refresh token expired"):
                 await client.async_refresh_token("old_acc", "expired_ref")
 
     async def test_refresh_access_token_invalid(self, client: NanitRestClient) -> None:
-        with aioresponses() as m:
+        with mock_api() as m:
             m.post(REFRESH_URL, status=401)
 
             with pytest.raises(NanitAuthError, match="Access token invalid"):
                 await client.async_refresh_token("bad_acc", "ref")
 
     async def test_refresh_oauth2_error(self, client: NanitRestClient) -> None:
-        with aioresponses() as m:
+        with mock_api() as m:
             m.post(
                 REFRESH_URL,
                 status=400,
@@ -233,7 +245,7 @@ class TestRefreshToken:
                 await client.async_refresh_token("acc", "ref")
 
     async def test_refresh_api_message_error(self, client: NanitRestClient) -> None:
-        with aioresponses() as m:
+        with mock_api() as m:
             m.post(
                 REFRESH_URL,
                 status=403,
@@ -245,7 +257,7 @@ class TestRefreshToken:
 
     async def test_refresh_server_error_is_connection_error(self, client: NanitRestClient) -> None:
         """A 5xx during refresh is transient — must not trigger reauth."""
-        with aioresponses() as m:
+        with mock_api() as m:
             m.post(REFRESH_URL, status=502, body="<html>Bad Gateway</html>")
 
             with pytest.raises(NanitConnectionError, match="HTTP 502"):
@@ -253,7 +265,7 @@ class TestRefreshToken:
 
     async def test_refresh_invalid_body_is_connection_error(self, client: NanitRestClient) -> None:
         """A non-JSON body on a 200 is transient — must not trigger reauth."""
-        with aioresponses() as m:
+        with mock_api() as m:
             m.post(
                 REFRESH_URL,
                 status=200,
@@ -267,7 +279,7 @@ class TestRefreshToken:
 
 class TestGetBabies:
     async def test_get_babies_success(self, client: NanitRestClient) -> None:
-        with aioresponses() as m:
+        with mock_api() as m:
             m.get(
                 BABIES_URL,
                 payload={
@@ -295,7 +307,7 @@ class TestGetBabies:
         assert babies[1] == Baby(uid="baby789", name="Max", camera_uid="cam012", speaker_uid=None)
 
     async def test_get_babies_speaker_with_null_nested(self, client: NanitRestClient) -> None:
-        with aioresponses() as m:
+        with mock_api() as m:
             m.get(
                 BABIES_URL,
                 payload={
@@ -321,14 +333,14 @@ class TestGetBabies:
         assert babies[1].speaker_uid is None
 
     async def test_get_babies_empty(self, client: NanitRestClient) -> None:
-        with aioresponses() as m:
+        with mock_api() as m:
             m.get(BABIES_URL, payload={"babies": []})
             babies = await client.async_get_babies("token123")
 
         assert babies == []
 
     async def test_get_babies_null_name(self, client: NanitRestClient) -> None:
-        with aioresponses() as m:
+        with mock_api() as m:
             m.get(
                 BABIES_URL,
                 payload={
@@ -347,14 +359,14 @@ class TestGetBabies:
         assert babies[0].name == ""
 
     async def test_get_babies_unauthorized(self, client: NanitRestClient) -> None:
-        with aioresponses() as m:
+        with mock_api() as m:
             m.get(BABIES_URL, status=401)
 
             with pytest.raises(NanitAuthError):
                 await client.async_get_babies("bad_token")
 
     async def test_get_babies_camera_connected_true(self, client: NanitRestClient) -> None:
-        with aioresponses() as m:
+        with mock_api() as m:
             m.get(
                 BABIES_URL,
                 payload={
@@ -377,7 +389,7 @@ class TestGetBabies:
         assert babies[0].camera_last_seen == 1783109177
 
     async def test_get_babies_camera_connected_false(self, client: NanitRestClient) -> None:
-        with aioresponses() as m:
+        with mock_api() as m:
             m.get(
                 BABIES_URL,
                 payload={
@@ -401,7 +413,7 @@ class TestGetBabies:
 
     async def test_get_babies_camera_connected_absent(self, client: NanitRestClient) -> None:
         """When the camera object is missing, camera_connected and camera_last_seen are None."""
-        with aioresponses() as m:
+        with mock_api() as m:
             m.get(
                 BABIES_URL,
                 payload={
@@ -421,7 +433,7 @@ class TestGetBabies:
 
     async def test_get_babies_timeout_is_connection_error(self, client: NanitRestClient) -> None:
         """aiohttp's total timeout raises builtin TimeoutError, not ClientError."""
-        with aioresponses() as m:
+        with mock_api() as m:
             m.get(BABIES_URL, exception=TimeoutError())
 
             with pytest.raises(NanitConnectionError):
@@ -429,7 +441,7 @@ class TestGetBabies:
 
     async def test_get_babies_camera_less_row(self, client: NanitRestClient) -> None:
         """A speaker-only baby has no camera_uid; mixed accounts must parse."""
-        with aioresponses() as m:
+        with mock_api() as m:
             m.get(
                 BABIES_URL,
                 payload={
@@ -453,7 +465,7 @@ class TestGetBabies:
         self, client: NanitRestClient
     ) -> None:
         """Explicit null camera_uid and an absent name both parse defensively."""
-        with aioresponses() as m:
+        with mock_api() as m:
             m.get(
                 BABIES_URL,
                 payload={"babies": [{"uid": "baby3", "camera_uid": None}]},
@@ -466,7 +478,7 @@ class TestGetBabies:
 
 class TestGetEvents:
     async def test_get_events_success(self, client: NanitRestClient) -> None:
-        with aioresponses() as m:
+        with mock_api() as m:
             m.get(
                 EVENTS_URL,
                 payload={
@@ -487,21 +499,21 @@ class TestGetEvents:
         )
 
     async def test_get_events_empty(self, client: NanitRestClient) -> None:
-        with aioresponses() as m:
+        with mock_api() as m:
             m.get(EVENTS_URL, payload={"messages": []})
             events = await client.async_get_events("token123", "baby123")
 
         assert events == []
 
     async def test_get_events_unauthorized(self, client: NanitRestClient) -> None:
-        with aioresponses() as m:
+        with mock_api() as m:
             m.get(EVENTS_URL, status=401)
 
             with pytest.raises(NanitAuthError):
                 await client.async_get_events("bad_token", "baby123")
 
     async def test_get_events_connection_error(self, client: NanitRestClient) -> None:
-        with aioresponses() as m:
+        with mock_api() as m:
             m.get(EVENTS_URL, exception=ClientConnectionError("timeout"))
 
             with pytest.raises(NanitConnectionError):
@@ -509,7 +521,7 @@ class TestGetEvents:
 
     async def test_get_events_timeout_is_connection_error(self, client: NanitRestClient) -> None:
         """aiohttp's total timeout raises builtin TimeoutError, not ClientError."""
-        with aioresponses() as m:
+        with mock_api() as m:
             m.get(EVENTS_URL, exception=TimeoutError())
 
             with pytest.raises(NanitConnectionError):
@@ -518,7 +530,7 @@ class TestGetEvents:
     async def test_get_events_non_json_response_is_connection_error(
         self, client: NanitRestClient
     ) -> None:
-        with aioresponses() as m:
+        with mock_api() as m:
             m.get(EVENTS_URL, status=200, body="<html>oops</html>", content_type="text/html")
 
             with pytest.raises(NanitConnectionError, match="Invalid events response"):
@@ -527,7 +539,7 @@ class TestGetEvents:
 
 class TestGetDeviceToken:
     async def test_get_device_token_success(self, client: NanitRestClient) -> None:
-        with aioresponses() as m:
+        with mock_api() as m:
             m.get(
                 DEVICE_TOKEN_URL,
                 payload={"user_device_token": {"token": "dev_tok_abc"}},
@@ -537,21 +549,21 @@ class TestGetDeviceToken:
         assert token == "dev_tok_abc"
 
     async def test_get_device_token_unauthorized(self, client: NanitRestClient) -> None:
-        with aioresponses() as m:
+        with mock_api() as m:
             m.get(DEVICE_TOKEN_URL, status=401)
 
             with pytest.raises(NanitAuthError, match="Access token invalid"):
                 await client.async_get_device_token("bad_token", "spk001")
 
     async def test_get_device_token_connection_error(self, client: NanitRestClient) -> None:
-        with aioresponses() as m:
+        with mock_api() as m:
             m.get(DEVICE_TOKEN_URL, exception=ClientConnectionError("timeout"))
 
             with pytest.raises(NanitConnectionError):
                 await client.async_get_device_token("acc123", "spk001")
 
     async def test_get_device_token_empty_response(self, client: NanitRestClient) -> None:
-        with aioresponses() as m:
+        with mock_api() as m:
             m.get(DEVICE_TOKEN_URL, payload={"user_device_token": {}})
 
             with pytest.raises(NanitConnectionError, match="No token"):
@@ -561,7 +573,7 @@ class TestGetDeviceToken:
         self, client: NanitRestClient
     ) -> None:
         """aiohttp's total timeout raises builtin TimeoutError, not ClientError."""
-        with aioresponses() as m:
+        with mock_api() as m:
             m.get(DEVICE_TOKEN_URL, exception=TimeoutError())
 
             with pytest.raises(NanitConnectionError):
@@ -570,7 +582,7 @@ class TestGetDeviceToken:
     async def test_get_device_token_malformed_body_is_connection_error(
         self, client: NanitRestClient
     ) -> None:
-        with aioresponses() as m:
+        with mock_api() as m:
             m.get(DEVICE_TOKEN_URL, status=200, body="not json", content_type="text/html")
 
             with pytest.raises(NanitConnectionError, match="Invalid udtokens response"):
@@ -590,19 +602,19 @@ class TestHttpErrorClassification:
     """
 
     async def test_login_forbidden_is_connection_error(self, client: NanitRestClient) -> None:
-        with aioresponses() as m:
+        with mock_api() as m:
             m.post(LOGIN_URL, status=403, payload={})
             with pytest.raises(NanitConnectionError, match="HTTP 403"):
                 await client.async_login("user@test.com", "pass123")
 
     async def test_login_unexpected_4xx_is_connection_error(self, client: NanitRestClient) -> None:
-        with aioresponses() as m:
+        with mock_api() as m:
             m.post(LOGIN_URL, status=418, payload={})
             with pytest.raises(NanitConnectionError, match="HTTP 418"):
                 await client.async_login("user@test.com", "pass123")
 
     async def test_refresh_forbidden_is_connection_error(self, client: NanitRestClient) -> None:
-        with aioresponses() as m:
+        with mock_api() as m:
             m.post(REFRESH_URL, status=403, payload={})
             with pytest.raises(NanitConnectionError, match="HTTP 403"):
                 await client.async_refresh_token("acc", "ref")
@@ -610,13 +622,13 @@ class TestHttpErrorClassification:
     async def test_refresh_unexpected_4xx_is_connection_error(
         self, client: NanitRestClient
     ) -> None:
-        with aioresponses() as m:
+        with mock_api() as m:
             m.post(REFRESH_URL, status=400, payload={})
             with pytest.raises(NanitConnectionError, match="HTTP 400"):
                 await client.async_refresh_token("acc", "ref")
 
     async def test_get_babies_forbidden_is_connection_error(self, client: NanitRestClient) -> None:
-        with aioresponses() as m:
+        with mock_api() as m:
             m.get(BABIES_URL, status=403)
             with pytest.raises(NanitConnectionError, match="HTTP 403"):
                 await client.async_get_babies("token")
@@ -624,7 +636,7 @@ class TestHttpErrorClassification:
     async def test_get_babies_unexpected_4xx_is_connection_error(
         self, client: NanitRestClient
     ) -> None:
-        with aioresponses() as m:
+        with mock_api() as m:
             m.get(BABIES_URL, status=404)
             with pytest.raises(NanitConnectionError, match="HTTP 404") as excinfo:
                 await client.async_get_babies("token")
@@ -632,7 +644,7 @@ class TestHttpErrorClassification:
         assert isinstance(excinfo.value.__cause__, ClientResponseError)
 
     async def test_get_events_forbidden_is_connection_error(self, client: NanitRestClient) -> None:
-        with aioresponses() as m:
+        with mock_api() as m:
             m.get(EVENTS_URL, status=403)
             with pytest.raises(NanitConnectionError, match="HTTP 403"):
                 await client.async_get_events("token", "baby123")
@@ -640,7 +652,7 @@ class TestHttpErrorClassification:
     async def test_get_events_unexpected_4xx_is_connection_error(
         self, client: NanitRestClient
     ) -> None:
-        with aioresponses() as m:
+        with mock_api() as m:
             m.get(EVENTS_URL, status=404)
             with pytest.raises(NanitConnectionError, match="HTTP 404"):
                 await client.async_get_events("token", "baby123")
@@ -648,7 +660,7 @@ class TestHttpErrorClassification:
     async def test_get_device_token_forbidden_is_connection_error(
         self, client: NanitRestClient
     ) -> None:
-        with aioresponses() as m:
+        with mock_api() as m:
             m.get(DEVICE_TOKEN_URL, status=403)
             with pytest.raises(NanitConnectionError, match="HTTP 403"):
                 await client.async_get_device_token("token", "spk001")
@@ -656,7 +668,7 @@ class TestHttpErrorClassification:
     async def test_get_device_token_unexpected_4xx_is_connection_error(
         self, client: NanitRestClient
     ) -> None:
-        with aioresponses() as m:
+        with mock_api() as m:
             m.get(DEVICE_TOKEN_URL, status=404)
             with pytest.raises(NanitConnectionError, match="HTTP 404"):
                 await client.async_get_device_token("token", "spk001")

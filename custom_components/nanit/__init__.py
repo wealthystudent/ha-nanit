@@ -30,6 +30,7 @@ from .const import (
     LOGGER,
     PLATFORMS,
 )
+from .coordinator import NanitPushCoordinator, NanitSoundLightCoordinator
 from .frontend import async_register_card
 from .hub import CameraData, NanitHub, SpeakerData
 
@@ -109,7 +110,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: NanitConfigEntry) -> boo
     # subscribed to the connections the hub is about to close, and would
     # otherwise start their 30s "still disconnected" timers.
     async def _async_close_on_stop(_event: Event) -> None:
-        coordinators = [
+        coordinators: list[NanitPushCoordinator | NanitSoundLightCoordinator] = [
             *(cam.push_coordinator for cam in entry.runtime_data.cameras.values()),
             *(speaker.coordinator for speaker in entry.runtime_data.speakers.values()),
         ]

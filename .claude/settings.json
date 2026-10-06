@@ -21,9 +21,7 @@
       "Bash(gh issue list *)"
     ],
     "ask": [
-      "Bash(git push *)",
       "Bash(gh pr merge *)",
-      "Bash(gh pr create *)",
       "Edit(/AGENTS.md)"
     ],
     "deny": [

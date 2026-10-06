@@ -167,7 +167,7 @@ Full checklist: [`docs/SECURITY_AUDIT_CHECKLIST.md`](docs/SECURITY_AUDIT_CHECKLI
 
 ### Enforcement (Claude Code)
 
-`.claude/settings.json` is checked in and applies to anyone running Claude Code in this repo. Its permission rules guard against the common forms of the actions above (releases, tag creation, workflow dispatch and reruns, `--admin` merges, force pushes, `--no-verify`) and ask before pushes, merges and `AGENTS.md` edits. They match command text, so they are accident guards, not a security boundary: an unusual spelling of the same command slips past, and the rules above still apply as written. A hook formats edited Python files with the locked ruff (it installs only ruff, not the full environment). Personal overrides go in `.claude/settings.local.json` (gitignored). Other agents: follow the rules as written.
+`.claude/settings.json` is checked in and applies to anyone running Claude Code in this repo. Its permission rules guard against the common forms of the actions above (releases, tag creation, workflow dispatch and reruns, `--admin` merges, force pushes, `--no-verify`) and ask before merges and `AGENTS.md` edits. They match command text, so they are accident guards, not a security boundary: an unusual spelling of the same command slips past, and the rules above still apply as written. A hook formats edited Python files with the locked ruff (it installs only ruff, not the full environment). Personal overrides go in `.claude/settings.local.json` (gitignored). Other agents: follow the rules as written.
 
 ---
 

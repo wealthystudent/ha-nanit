@@ -440,7 +440,6 @@ async def test_clock_readback_from_independent_wire_bytes(
     await api._process_protobuf_message(api._conn_key(UID, "remote"), raw + settings)
     assert api.get_device_state(UID) == {
         "clock_enabled": True,
-        "clock_use_12h": False,
         "clock_brightness": 8,
     }
 
@@ -451,7 +450,6 @@ async def test_partial_clock_readback_preserves_clock_and_lamp_state(
     api._device_state[UID] = {
         "clock_enabled": True,
         "clock_brightness": 4,
-        "clock_use_12h": True,
         "brightness": 0.5,
         "is_on": True,
     }
@@ -460,7 +458,6 @@ async def test_partial_clock_readback_preserves_clock_and_lamp_state(
     assert api.get_device_state(UID) == {
         "clock_enabled": False,
         "clock_brightness": 4,
-        "clock_use_12h": True,
         "brightness": 0.5,
         "is_on": True,
     }

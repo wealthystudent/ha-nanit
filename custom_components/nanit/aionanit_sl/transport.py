@@ -1515,10 +1515,15 @@ class SoundLightTransport:
             clock = settings.clock
             if clock.HasField("enabled"):
                 device_state["clock_enabled"] = clock.enabled
-            if clock.HasField("use12hFormat"):
-                device_state["clock_use_12h"] = clock.use12hFormat
-            if clock.HasField("brightness") and 0 <= clock.brightness <= 8:
-                device_state["clock_brightness"] = clock.brightness
+            if clock.HasField("brightness"):
+                if 0 <= clock.brightness <= 8:
+                    device_state["clock_brightness"] = clock.brightness
+                else:
+                    _LOGGER.debug(
+                        "Settings[%s] ignoring out-of-range clock brightness: %s",
+                        source,
+                        clock.brightness,
+                    )
         if settings.HasField("sound"):
             sound = settings.sound
             if sound.HasField("noSound") and sound.noSound:

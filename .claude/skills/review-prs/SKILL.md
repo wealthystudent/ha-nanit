@@ -19,6 +19,11 @@ Context Router points to for the files each PR touches.
 - Open issues the PRs reference: `gh issue view <n>`
 - `docs/SECURITY_AUDIT_CHECKLIST.md`: use its file-to-section map to scope each PR.
 
+Review from the diff and CI. Don't check out or run a PR's code locally
+(`gh pr checkout`, `uv sync`, `just check`) when its author has no merged PRs
+here: its tests, conftest and build hooks would run as the owner, with their
+GitHub token and Home Assistant in reach. CI already runs the full suite.
+
 ## 2. Review each PR
 
 | Dimension | Look for | Rating |

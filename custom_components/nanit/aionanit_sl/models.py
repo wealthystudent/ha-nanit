@@ -29,6 +29,10 @@ class SoundLightFullState:
     color_r: float | None = None
     color_g: float | None = None
 
+    # Clock display settings (brightness is the device integer scale 0-8).
+    clock_enabled: bool | None = None
+    clock_brightness: int | None = None
+
     # Sound
     sound_on: bool | None = None
     current_track: str | None = None

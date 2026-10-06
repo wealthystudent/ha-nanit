@@ -280,3 +280,27 @@ class TestClampRestoredValue:
 
     def test_unknown_field_returns_none(self) -> None:
         assert _clamp_restored_value("unknown_field", 42) is None
+
+
+@pytest.mark.parametrize("value", [0, 1, 8])
+def test_restore_clock_brightness_native_integer(value: int) -> None:
+    assert _clamp_restored_value("clock_brightness", value) == value
+
+
+@pytest.mark.parametrize("value", [True, False, -1, 9, 1.0, "1", None])
+def test_restore_clock_brightness_rejects_invalid_values(value: object) -> None:
+    assert _clamp_restored_value("clock_brightness", value) is None
+
+
+async def test_clock_settings_persist_and_restore_false_and_zero(hass: HomeAssistant) -> None:
+    entry = _make_entry(hass)
+    coord = NanitSoundLightCoordinator(hass, entry, _make_mock_sound_light(), MOCK_BABY_1)
+    state = SoundLightFullState(clock_enabled=False, clock_brightness=0)
+    with patch.object(coord._store, "async_save", new_callable=AsyncMock) as save:
+        await coord._async_save_state(state)
+    saved = save.call_args.args[0]
+    assert saved["clock_enabled"] is False
+    assert saved["clock_brightness"] == 0
+    with patch.object(coord._store, "async_load", new_callable=AsyncMock, return_value=saved):
+        restored = await coord._async_restore_state()
+    assert restored == state

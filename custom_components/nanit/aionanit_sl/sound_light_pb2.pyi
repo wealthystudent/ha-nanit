@@ -87,19 +87,21 @@ class Response(_message.Message):
     def __init__(self, requestId: _Optional[int] = ..., statusCode: _Optional[int] = ..., statusMessage: _Optional[str] = ..., settings: _Optional[_Union[Settings, _Mapping]] = ..., firmware: _Optional[_Union[FirmwareInfo, _Mapping]] = ..., networkStatus: _Optional[_Union[NetworkStatus, _Mapping]] = ..., status: _Optional[_Union[Status, _Mapping]] = ...) -> None: ...
 
 class GetSettings(_message.Message):
-    __slots__ = ("all", "savedSounds", "temperature", "humidity")
+    __slots__ = ("all", "savedSounds", "temperature", "humidity", "clock")
     ALL_FIELD_NUMBER: _ClassVar[int]
     SAVEDSOUNDS_FIELD_NUMBER: _ClassVar[int]
     TEMPERATURE_FIELD_NUMBER: _ClassVar[int]
     HUMIDITY_FIELD_NUMBER: _ClassVar[int]
+    CLOCK_FIELD_NUMBER: _ClassVar[int]
     all: bool
     savedSounds: bool
     temperature: bool
     humidity: bool
-    def __init__(self, all: bool = ..., savedSounds: bool = ..., temperature: bool = ..., humidity: bool = ...) -> None: ...
+    clock: bool
+    def __init__(self, all: bool = ..., savedSounds: bool = ..., temperature: bool = ..., humidity: bool = ..., clock: bool = ...) -> None: ...
 
 class Settings(_message.Message):
-    __slots__ = ("brightness", "color", "volume", "sound", "isOn", "soundList", "temperature", "humidity")
+    __slots__ = ("brightness", "color", "volume", "sound", "isOn", "soundList", "temperature", "humidity", "clock")
     BRIGHTNESS_FIELD_NUMBER: _ClassVar[int]
     COLOR_FIELD_NUMBER: _ClassVar[int]
     VOLUME_FIELD_NUMBER: _ClassVar[int]
@@ -108,6 +110,7 @@ class Settings(_message.Message):
     SOUNDLIST_FIELD_NUMBER: _ClassVar[int]
     TEMPERATURE_FIELD_NUMBER: _ClassVar[int]
     HUMIDITY_FIELD_NUMBER: _ClassVar[int]
+    CLOCK_FIELD_NUMBER: _ClassVar[int]
     brightness: float
     color: Color
     volume: float
@@ -116,7 +119,18 @@ class Settings(_message.Message):
     soundList: SoundList
     temperature: float
     humidity: float
-    def __init__(self, brightness: _Optional[float] = ..., color: _Optional[_Union[Color, _Mapping]] = ..., volume: _Optional[float] = ..., sound: _Optional[_Union[Sound, _Mapping]] = ..., isOn: bool = ..., soundList: _Optional[_Union[SoundList, _Mapping]] = ..., temperature: _Optional[float] = ..., humidity: _Optional[float] = ...) -> None: ...
+    clock: Clock
+    def __init__(self, brightness: _Optional[float] = ..., color: _Optional[_Union[Color, _Mapping]] = ..., volume: _Optional[float] = ..., sound: _Optional[_Union[Sound, _Mapping]] = ..., isOn: bool = ..., soundList: _Optional[_Union[SoundList, _Mapping]] = ..., temperature: _Optional[float] = ..., humidity: _Optional[float] = ..., clock: _Optional[_Union[Clock, _Mapping]] = ...) -> None: ...
+
+class Clock(_message.Message):
+    __slots__ = ("enabled", "use12hFormat", "brightness")
+    ENABLED_FIELD_NUMBER: _ClassVar[int]
+    USE12HFORMAT_FIELD_NUMBER: _ClassVar[int]
+    BRIGHTNESS_FIELD_NUMBER: _ClassVar[int]
+    enabled: bool
+    use12hFormat: bool
+    brightness: int
+    def __init__(self, enabled: bool = ..., use12hFormat: bool = ..., brightness: _Optional[int] = ...) -> None: ...
 
 class Color(_message.Message):
     __slots__ = ("noColor", "hue", "saturation")

@@ -401,3 +401,92 @@ async def test_unprintable_track_name_is_dropped(api):
     message = pb2.Message(response=pb2.Response(requestId=1, settings=settings))
     await api._process_protobuf_message(api._conn_key(UID, "remote"), message.SerializeToString())
     assert "current_sound" not in api.get_device_state(UID)
+
+
+# Clock fields verified against the dedicated Sound & Light app 1.11.0.
+def test_clock_control_uses_verified_wire_bytes(api: SoundLightTransport) -> None:
+    raw, _ = api.build_control_message(clock_enabled=False, clock_brightness=0)
+    message = pb2.Message.FromString(raw)
+    # Settings.clock tag 11, Clock.enabled tag 1, brightness tag 4 (varint).
+    # Explicit false/zero must remain present. No lamp, sound, power or format fields.
+    assert message.request.settings.SerializeToString() == bytes.fromhex("5a0408002000")
+    assert not message.request.settings.clock.HasField("use12hFormat")
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected"),
+    [
+        ({"clock_enabled": True}, "5a020801"),
+        ({"clock_brightness": 8}, "5a022008"),
+    ],
+)
+def test_clock_partial_writes_do_not_overwrite_other_fields(
+    api: SoundLightTransport, kwargs: dict[str, bool | int], expected: str
+) -> None:
+    raw, _ = api.build_control_message(**kwargs)
+    assert pb2.Message.FromString(raw).request.settings.SerializeToString() == bytes.fromhex(
+        expected
+    )
+
+
+@pytest.mark.parametrize("wrapper", ["request", "response"])
+async def test_clock_readback_from_independent_wire_bytes(
+    api: SoundLightTransport, wrapper: str
+) -> None:
+    # Settings.clock {enabled: true, use12hFormat: false, brightness: 8}.
+    settings = bytes.fromhex("5a06080118002008")
+    # Request.settings=6 or Response.settings=4 inside Message.request/response.
+    raw = bytes.fromhex("0a0a3208") if wrapper == "request" else bytes.fromhex("120a2208")
+    await api._process_protobuf_message(api._conn_key(UID, "remote"), raw + settings)
+    assert api.get_device_state(UID) == {
+        "clock_enabled": True,
+        "clock_use_12h": False,
+        "clock_brightness": 8,
+    }
+
+
+async def test_partial_clock_readback_preserves_clock_and_lamp_state(
+    api: SoundLightTransport,
+) -> None:
+    api._device_state[UID] = {
+        "clock_enabled": True,
+        "clock_brightness": 4,
+        "clock_use_12h": True,
+        "brightness": 0.5,
+        "is_on": True,
+    }
+    raw = bytes.fromhex("120622045a020800")  # Response.settings.clock.enabled=false
+    await api._process_protobuf_message(api._conn_key(UID, "remote"), raw)
+    assert api.get_device_state(UID) == {
+        "clock_enabled": False,
+        "clock_brightness": 4,
+        "clock_use_12h": True,
+        "brightness": 0.5,
+        "is_on": True,
+    }
+
+
+@pytest.mark.parametrize("brightness", [-1, 9])
+async def test_invalid_clock_readback_does_not_replace_known_value(
+    api: SoundLightTransport, brightness: int
+) -> None:
+    api._device_state[UID] = {"clock_brightness": 4}
+    message = pb2.Message(
+        response=pb2.Response(settings=pb2.Settings(clock=pb2.Clock(brightness=brightness)))
+    )
+    await api._process_protobuf_message(api._conn_key(UID, "remote"), message.SerializeToString())
+    assert api.get_device_state(UID)["clock_brightness"] == 4
+
+
+async def test_state_query_includes_clock_and_existing_sensor_selectors(
+    api: SoundLightTransport,
+) -> None:
+    api.ensure_websocket_connection = AsyncMock(return_value=True)
+    api.wait_for_device_attached = AsyncMock(return_value=True)
+    api._send_no_wait = AsyncMock()
+    await api.send_ping_for_state(UID)
+    raw = api._send_no_wait.call_args.args[1]
+    # all=true, temperature=true, humidity=true and clock=true (tag 12).
+    assert pb2.Message.FromString(raw).request.getSettings.SerializeToString() == bytes.fromhex(
+        "0801400148016001"
+    )

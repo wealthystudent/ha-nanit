@@ -715,3 +715,79 @@ class TestDiagnostics:
 
         assert api.send_status_request.await_count >= 1
         assert api.send_network_request.await_count >= 1
+
+
+class TestClock:
+    async def test_clock_scene_coalesces_without_touching_light_or_sound(self) -> None:
+        sl = _make_sound_light()
+        api = _mock_transport(sl)
+        api.get_device_state.return_value = {"clock_enabled": True, "clock_brightness": 1}
+        sl._ingest_device_state()
+        await sl.async_set_clock_enabled(False)
+        await sl.async_set_clock_brightness(0)
+        await _flushed(sl)
+        api.send_control_command.assert_awaited_once_with(
+            "L101TEST", clock_enabled=False, clock_brightness=0
+        )
+        assert sl.state.clock_enabled is False
+        assert sl.state.clock_brightness == 0
+        assert sl.state.light_enabled is None
+        api.get_device_state.return_value = {"clock_enabled": True, "clock_brightness": 1}
+        sl._ingest_device_state()
+        assert sl.state.clock_enabled is False
+        assert sl.state.clock_brightness == 0
+        api.get_device_state.return_value = {"clock_enabled": False, "clock_brightness": 0}
+        sl._ingest_device_state()
+        api.get_device_state.return_value = {"clock_enabled": True, "clock_brightness": 8}
+        sl._ingest_device_state()
+        assert sl.state.clock_enabled is True
+        assert sl.state.clock_brightness == 8
+
+    @pytest.mark.parametrize("known", [False, True])
+    async def test_failed_clock_commands_restore_known_or_unknown_state(self, known: bool) -> None:
+        sl = _make_sound_light()
+        api = _mock_transport(sl)
+        if known:
+            api.get_device_state.return_value = {"clock_enabled": True, "clock_brightness": 1}
+            sl._ingest_device_state()
+        api.send_control_command.side_effect = ConnectionError("unreachable")
+        await sl.async_set_clock_enabled(False)
+        await sl.async_set_clock_brightness(2)
+        await _flushed(sl)
+        assert sl.state.clock_enabled is (True if known else None)
+        assert sl.state.clock_brightness == (1 if known else None)
+
+    @pytest.mark.parametrize("value", [-1, 9, 1.5, True, "4"])
+    async def test_invalid_brightness_never_queues_a_command(
+        self, value: int | float | str
+    ) -> None:
+        sl = _make_sound_light()
+        api = _mock_transport(sl)
+        with pytest.raises(ValueError):
+            await sl.async_set_clock_brightness(value)
+        api.send_control_command.assert_not_called()
+        assert sl.state.clock_brightness is None
+
+    @pytest.mark.parametrize("enabled", [False, True])
+    async def test_visibility_only_changes_clock_enabled(self, enabled: bool) -> None:
+        sl = _make_sound_light()
+        api = _mock_transport(sl)
+        api.get_device_state.return_value = {"clock_enabled": not enabled, "clock_brightness": 4}
+        sl._ingest_device_state()
+        await sl.async_set_clock_enabled(enabled)
+        await _flushed(sl)
+        api.send_control_command.assert_awaited_once_with("L101TEST", clock_enabled=enabled)
+        assert sl.state.clock_enabled is enabled
+        assert sl.state.clock_brightness == 4
+
+    @pytest.mark.parametrize("brightness", [0, 8])
+    async def test_brightness_does_not_enable_hidden_clock(self, brightness: int) -> None:
+        sl = _make_sound_light()
+        api = _mock_transport(sl)
+        api.get_device_state.return_value = {"clock_enabled": False, "clock_brightness": 4}
+        sl._ingest_device_state()
+        await sl.async_set_clock_brightness(brightness)
+        await _flushed(sl)
+        api.send_control_command.assert_awaited_once_with("L101TEST", clock_brightness=brightness)
+        assert sl.state.clock_enabled is False
+        assert sl.state.clock_brightness == brightness

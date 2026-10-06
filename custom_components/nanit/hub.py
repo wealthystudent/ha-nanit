@@ -604,9 +604,6 @@ class NanitHub:
 
     async def async_close(self) -> None:
         """Stop all devices and clean up."""
-        if self._unsubscribe_tokens is not None:
-            self._unsubscribe_tokens()
-            self._unsubscribe_tokens = None
         await self._client.async_close()
         self._camera_data.clear()
         self._speaker_data.clear()
@@ -617,6 +614,11 @@ class NanitHub:
             except Exception:
                 _LOGGER.debug("Error stopping S&L during close")
         self._sound_lights.clear()
+        # Last, so a token refresh that lands while the devices are stopping
+        # is still persisted rather than lost to a stale refresh token.
+        if self._unsubscribe_tokens is not None:
+            self._unsubscribe_tokens()
+            self._unsubscribe_tokens = None
 
     async def _discover_speaker_uids(self) -> dict[str, str]:
         """Fetch speaker UIDs from the raw /babies API response, keyed by baby uid.

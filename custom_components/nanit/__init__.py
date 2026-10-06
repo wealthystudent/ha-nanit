@@ -9,8 +9,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
-from homeassistant.core import HomeAssistant
+from homeassistant.const import CONF_EMAIL, CONF_PASSWORD, EVENT_HOMEASSISTANT_STOP
+from homeassistant.core import Event, HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
@@ -30,6 +30,7 @@ from .const import (
     LOGGER,
     PLATFORMS,
 )
+from .coordinator import NanitPushCoordinator, NanitSoundLightCoordinator
 from .frontend import async_register_card
 from .hub import CameraData, NanitHub, SpeakerData
 
@@ -102,6 +103,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: NanitConfigEntry) -> boo
     entry.async_on_unload(
         entry.add_update_listener(_make_options_update_listener(dict(entry.options)))
     )
+
+    # HA does not unload config entries when it stops, so without this the
+    # sockets stay up and keep reconnecting until HA cancels the tasks,
+    # which drags out shutdown. The push coordinators go first: they are
+    # subscribed to the connections the hub is about to close, and would
+    # otherwise start their 30s "still disconnected" timers.
+    async def _async_close_on_stop(_event: Event) -> None:
+        coordinators: list[NanitPushCoordinator | NanitSoundLightCoordinator] = [
+            *(cam.push_coordinator for cam in entry.runtime_data.cameras.values()),
+            *(speaker.coordinator for speaker in entry.runtime_data.speakers.values()),
+        ]
+        for coordinator in coordinators:
+            with contextlib.suppress(Exception):
+                await asyncio.shield(coordinator.async_shutdown())
+        await _async_shutdown_hub(hub)
+
+    # async_listen rather than async_listen_once: the stop event only fires
+    # once anyway, and a once-listener has already removed itself by then,
+    # so an unload after stop would log "Unable to remove unknown job
+    # listener" when it calls the remover again.
+    entry.async_on_unload(hass.bus.async_listen(EVENT_HOMEASSISTANT_STOP, _async_close_on_stop))
 
     return True
 

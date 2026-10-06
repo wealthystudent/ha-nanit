@@ -5,7 +5,7 @@ import importlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from homeassistant.const import CONF_ACCESS_TOKEN
+from homeassistant.const import CONF_ACCESS_TOKEN, EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -161,6 +161,108 @@ async def test_async_unload_entry_success(
         AsyncMock(return_value=True),
     ):
         assert await async_unload_entry(hass, entry)
+
+    mock_nanit_client.async_close.assert_awaited_once()
+
+
+async def test_hub_closed_when_home_assistant_stops(
+    hass: HomeAssistant,
+    mock_nanit_client,
+) -> None:
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=mock_entry_data_v2(),
+        version=2,
+        unique_id=MOCK_EMAIL,
+    )
+    entry.add_to_hass(hass)
+
+    with patch.object(
+        hass.config_entries,
+        "async_forward_entry_setups",
+        AsyncMock(return_value=True),
+    ):
+        assert await async_setup_entry(hass, entry)
+
+    mock_nanit_client.async_close.assert_not_awaited()
+    hass.bus.async_fire(EVENT_HOMEASSISTANT_STOP)
+    await hass.async_block_till_done()
+
+    mock_nanit_client.async_close.assert_awaited_once()
+
+
+async def _setup_loaded_entry(hass: HomeAssistant) -> MockConfigEntry:
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=mock_entry_data_v2(),
+        version=2,
+        unique_id=MOCK_EMAIL,
+    )
+    entry.add_to_hass(hass)
+    with patch.object(
+        hass.config_entries,
+        "async_forward_entry_setups",
+        AsyncMock(return_value=True),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    return entry
+
+
+async def test_push_coordinators_shut_down_before_hub_on_stop(
+    hass: HomeAssistant,
+    mock_nanit_client,
+) -> None:
+    entry = await _setup_loaded_entry(hass)
+    cameras = list(entry.runtime_data.cameras.values())
+    assert cameras
+
+    order: list[str] = []
+    mock_nanit_client.async_close.side_effect = lambda: order.append("hub")
+    with patch(
+        "custom_components.nanit.coordinator.NanitPushCoordinator.async_shutdown",
+        AsyncMock(side_effect=lambda: order.append("coordinator")),
+    ):
+        hass.bus.async_fire(EVENT_HOMEASSISTANT_STOP)
+        await hass.async_block_till_done()
+
+    assert order == ["coordinator"] * len(cameras) + ["hub"]
+
+
+async def test_unload_after_stop_is_clean(
+    hass: HomeAssistant,
+    mock_nanit_client,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    entry = await _setup_loaded_entry(hass)
+    hass.bus.async_fire(EVENT_HOMEASSISTANT_STOP)
+    await hass.async_block_till_done()
+
+    with patch.object(
+        hass.config_entries,
+        "async_unload_platforms",
+        AsyncMock(return_value=True),
+    ):
+        assert await hass.config_entries.async_unload(entry.entry_id)
+
+    assert "Unable to remove unknown job listener" not in caplog.text
+
+
+async def test_stop_after_unload_does_not_close_again(
+    hass: HomeAssistant,
+    mock_nanit_client,
+) -> None:
+    entry = await _setup_loaded_entry(hass)
+    with patch.object(
+        hass.config_entries,
+        "async_unload_platforms",
+        AsyncMock(return_value=True),
+    ):
+        assert await hass.config_entries.async_unload(entry.entry_id)
+    mock_nanit_client.async_close.assert_awaited_once()
+
+    hass.bus.async_fire(EVENT_HOMEASSISTANT_STOP)
+    await hass.async_block_till_done()
 
     mock_nanit_client.async_close.assert_awaited_once()
 

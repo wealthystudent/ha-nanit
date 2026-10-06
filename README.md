@@ -59,11 +59,11 @@ Use the release zip, not a copy of the repository: the source on `main` carries 
 **Sound & Light Machine** (works standalone or paired with a camera):
 - Power, sound, and light switches
 - Sound track selector, volume & brightness controls
-- Clock display switch & clock brightness (0–8), under device configuration
 - Temperature & humidity sensors
 - Battery level & charging status
 - Firmware version (diagnostic)
 - WiFi signal strength (diagnostic, disabled by default)
+- Clock display switch & clock brightness
 
 Some entities are disabled by default. Enable them in **Settings → Devices & Services → Nanit → Entities**.
 

@@ -77,9 +77,8 @@ message Settings {
     optional Clock clock = 11;              // Independent clock display settings
 }
 
-// Verified against com.nanit.lite 1.11.0's kotlinx @ProtoNumber descriptors.
-// Timezone (tag 2) and timestamp (tag 5) are omitted; partial clock writes
-// must leave them untouched. Brightness is an integer varint, NOT a float.
+// Verified against the Sound & Light app 1.11.0.
+// Omit timezone (2) and timestamp (5) to preserve them in partial writes.
 message Clock {
     optional bool enabled = 1;
     optional bool use12hFormat = 3;

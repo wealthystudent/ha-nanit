@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -78,7 +80,11 @@ class NanitSoundLightEntity(CoordinatorEntity[NanitSoundLightCoordinator]):
             model="Sound & Light Machine",
         )
         if self.coordinator.via_camera_uid:
-            info["via_device"] = (DOMAIN, self.coordinator.via_camera_uid)
+            # HA 2026.8 dropped via_device from the DeviceInfo type in favor of
+            # via_device_id (a registry id), but still accepts it until 2027.8,
+            # and HA before 2026.8 rejects via_device_id outright. Keep the
+            # identifier form until the version-gated move to via_device_id.
+            cast(dict[str, Any], info)["via_device"] = (DOMAIN, self.coordinator.via_camera_uid)
         return info
 
     @property

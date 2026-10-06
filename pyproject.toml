@@ -16,18 +16,16 @@ lint = ["ruff>=0.16.9,<0.17"]
 dev = [
     { include-group = "lint" },
     "aionanit",
-    "aiohttp>=3.13,<3.14",  # aioresponses 0.7.x is incompatible with aiohttp 3.14+
-    "aioresponses>=0.7,<0.8",
     # PyAV backs the stream integration, which nanit depends on; without it
     # HA cannot set up `stream` and every entry-setup test fails.
     "av>=18.1.0,<18.2",
-    "homeassistant>=2026.6.4,<2026.7",  # 2026.6.4 pins the patched zeroconf 0.149.16
+    "homeassistant>=2026.9.4,<2026.10",  # 2026.9.4 pins patched aiohttp, Pillow and zeroconf
     "mypy>=2.3.1,<3",
     "pre-commit>=4,<5",
     "pytest-cov>=7,<8",
-    "pytest-homeassistant-custom-component>=0.13.340,<0.14",
+    "pytest-homeassistant-custom-component>=0.13.367,<0.14",
     "rich>=15,<16",
-    "syrupy>=5,<6",
+    "syrupy>=6,<7",
     "websockets>=17.1,<18",
 ]
 
@@ -39,12 +37,6 @@ package = false
 python-preference = "only-managed"
 # Floor for contributors; CI pins the exact version in setup-uv.
 required-version = ">=0.12.14"
-# pytest-homeassistant-custom-component copies HA core's test pins, including
-# ast-serialize==0.3.0 for core's own mypy. Our mypy (>=2.3.1) needs >=0.6, and
-# that one pin is what held the lock on an older Home Assistant with a
-# vulnerable zeroconf. Nothing but mypy uses ast-serialize, so overriding it is
-# safe. Drop this once the plugin's pin catches up.
-override-dependencies = ["ast-serialize>=0.6,<1"]
 
 [tool.uv.workspace]
 members = ["packages/aionanit"]

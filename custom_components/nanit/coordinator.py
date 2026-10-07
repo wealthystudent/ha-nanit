@@ -297,6 +297,8 @@ _SL_STORE_VERSION = 1
 _SL_PERSIST_FIELDS = (
     "brightness",
     "light_enabled",
+    "clock_enabled",
+    "clock_brightness",
     "color_r",
     "color_g",
     "sound_on",
@@ -310,7 +312,7 @@ _SL_PERSIST_FIELDS = (
 # Fields that must be float in [0.0, 1.0].
 _UNIT_FLOAT_FIELDS = frozenset({"brightness", "color_r", "color_g", "volume"})
 # Fields that must be bool.
-_BOOL_FIELDS = frozenset({"light_enabled", "sound_on", "power_on"})
+_BOOL_FIELDS = frozenset({"light_enabled", "sound_on", "power_on", "clock_enabled"})
 # Fields that must be finite float (no range constraint).
 _FINITE_FLOAT_FIELDS = frozenset({"temperature_c", "humidity_pct"})
 
@@ -327,6 +329,9 @@ def _clamp_restored_value(field: str, value: Any) -> Any:
 
     if field in _BOOL_FIELDS:
         return value if isinstance(value, bool) else None
+
+    if field == "clock_brightness":
+        return value if type(value) is int and 0 <= value <= 8 else None
 
     if field == "current_track":
         return value if isinstance(value, str) else None

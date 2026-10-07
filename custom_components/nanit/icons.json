@@ -32,6 +32,9 @@
           "on": "mdi:power-plug",
           "off": "mdi:power-plug-off"
         }
+      },
+      "sl_clock_display": {
+        "default": "mdi:clock-outline"
       }
     },
     "light": {
@@ -43,7 +46,11 @@
         }
       }
     },
-    "number": {},
+    "number": {
+      "sl_clock_brightness": {
+        "default": "mdi:brightness-6"
+      }
+    },
     "camera": {
       "camera": {
         "default": "mdi:baby-face-outline"

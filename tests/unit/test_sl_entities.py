@@ -66,6 +66,8 @@ def _sl_coordinator(
     coordinator.sound_light.async_set_power = AsyncMock()
     coordinator.sound_light.async_set_sound_on = AsyncMock()
     coordinator.sound_light.async_set_track = AsyncMock()
+    coordinator.sound_light.async_set_clock_enabled = AsyncMock()
+    coordinator.sound_light.async_set_clock_brightness = AsyncMock()
     return coordinator
 
 
@@ -449,7 +451,7 @@ async def test_switch_async_setup_entry_adds_camera_and_sound_light_switches() -
     await switch_platform.async_setup_entry(MagicMock(), entry, async_add_entities)
 
     entities = async_add_entities.call_args.args[0]
-    assert len(entities) == 4
+    assert len(entities) == 5
     assert any(isinstance(entity, NanitSLPowerSwitch) for entity in entities)
     assert any(isinstance(entity, NanitSLSoundSwitch) for entity in entities)
 
@@ -981,8 +983,8 @@ async def test_number_async_setup_entry_creates_sl_volume() -> None:
     await number_platform.async_setup_entry(MagicMock(), entry, async_add_entities)
 
     entities = async_add_entities.call_args.args[0]
-    # 1 S&L volume (camera volume entity removed)
-    assert len(entities) == 1
+    # S&L volume and clock brightness.
+    assert len(entities) == 2
 
 
 async def test_binary_sensor_async_setup_entry_creates_sl_connectivity() -> None:
@@ -1684,3 +1686,82 @@ def test_sl_charging_sensor() -> None:
 
     entity_unknown = NanitSLChargingSensor(_sl_coordinator(None))
     assert entity_unknown.is_on is None
+
+
+@pytest.mark.parametrize("state", [None, SoundLightFullState()])
+def test_clock_entities_unknown_until_reported(state: SoundLightFullState | None) -> None:
+    from custom_components.nanit.number import NanitSLClockBrightness
+    from custom_components.nanit.switch import NanitSLClockDisplaySwitch
+
+    coordinator = _sl_coordinator(state)
+    assert NanitSLClockDisplaySwitch(coordinator).is_on is None
+    assert NanitSLClockBrightness(coordinator).native_value is None
+
+
+async def test_clock_entities_independent_configuration_controls() -> None:
+    from homeassistant.const import EntityCategory
+
+    from custom_components.nanit.number import NanitSLClockBrightness
+    from custom_components.nanit.switch import NanitSLClockDisplaySwitch
+
+    coordinator = _sl_coordinator(SoundLightFullState(clock_enabled=True, clock_brightness=0))
+    switch = NanitSLClockDisplaySwitch(coordinator)
+    number = NanitSLClockBrightness(coordinator)
+    assert switch.is_on is True
+    assert number.native_value == 0
+    assert switch.entity_category == number.entity_category == EntityCategory.CONFIG
+    assert switch.device_info == number.device_info
+    assert number.native_unit_of_measurement is None
+    assert number.device_class is None
+    assert number.native_min_value == 0
+    assert number.native_max_value == 8
+    assert number.native_step == 1
+    await switch.async_turn_off()
+    await switch.async_turn_on()
+    await number.async_set_native_value(2)
+    assert coordinator.sound_light.async_set_clock_enabled.await_args_list == [
+        ((False,), {}),
+        ((True,), {}),
+    ]
+    coordinator.sound_light.async_set_clock_brightness.assert_awaited_once_with(2)
+    coordinator.sound_light.async_set_power.assert_not_called()
+    coordinator.sound_light.async_set_brightness.assert_not_called()
+
+
+@pytest.mark.parametrize("value", [-1, 9, 1.5, float("nan"), float("inf")])
+async def test_clock_number_rejects_invalid_service_values(value: float) -> None:
+    from homeassistant.exceptions import ServiceValidationError
+
+    from custom_components.nanit.number import NanitSLClockBrightness
+
+    coordinator = _sl_coordinator(SoundLightFullState())
+    with pytest.raises(ServiceValidationError):
+        await NanitSLClockBrightness(coordinator).async_set_native_value(value)
+    coordinator.sound_light.async_set_clock_brightness.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("operation", "translation_key"),
+    [
+        ("on", "sl_clock_display_failed"),
+        ("off", "sl_clock_display_failed"),
+        ("brightness", "sl_clock_brightness_failed"),
+    ],
+)
+async def test_clock_transport_failures_are_translated(
+    operation: str, translation_key: str
+) -> None:
+    from custom_components.nanit.number import NanitSLClockBrightness
+    from custom_components.nanit.switch import NanitSLClockDisplaySwitch
+
+    coordinator = _sl_coordinator(SoundLightFullState())
+    coordinator.sound_light.async_set_clock_enabled.side_effect = NanitTransportError()
+    coordinator.sound_light.async_set_clock_brightness.side_effect = NanitTransportError()
+    with pytest.raises(HomeAssistantError) as exc_info:
+        if operation == "brightness":
+            await NanitSLClockBrightness(coordinator).async_set_native_value(1)
+        elif operation == "on":
+            await NanitSLClockDisplaySwitch(coordinator).async_turn_on()
+        else:
+            await NanitSLClockDisplaySwitch(coordinator).async_turn_off()
+    assert exc_info.value.translation_key == translation_key

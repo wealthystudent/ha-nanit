@@ -1078,6 +1078,10 @@ class SoundLightTransport:
             settings.brightness = float(kwargs["brightness"])
         if "volume" in kwargs:
             settings.volume = float(kwargs["volume"])
+        if "clock_enabled" in kwargs:
+            settings.clock.enabled = kwargs["clock_enabled"]
+        if "clock_brightness" in kwargs:
+            settings.clock.brightness = kwargs["clock_brightness"]
         if "color" in kwargs:
             color_info = kwargs["color"]
             color_data = Color()
@@ -1318,6 +1322,7 @@ class SoundLightTransport:
             # This is the only pattern that successfully returns sensor data
             get_settings = GetSettings()
             get_settings.all = True
+            get_settings.clock = True
             get_settings.temperature = True
             get_settings.humidity = True
 
@@ -1506,6 +1511,19 @@ class SoundLightTransport:
         if settings.HasField("isOn"):
             device_state["is_on"] = settings.isOn
             _LOGGER.debug("Settings[%s] power: %s", source, settings.isOn)
+        if settings.HasField("clock"):
+            clock = settings.clock
+            if clock.HasField("enabled"):
+                device_state["clock_enabled"] = clock.enabled
+            if clock.HasField("brightness"):
+                if 0 <= clock.brightness <= 8:
+                    device_state["clock_brightness"] = clock.brightness
+                else:
+                    _LOGGER.debug(
+                        "Settings[%s] ignoring out-of-range clock brightness: %s",
+                        source,
+                        clock.brightness,
+                    )
         if settings.HasField("sound"):
             sound = settings.sound
             if sound.HasField("noSound") and sound.noSound:

@@ -24,17 +24,17 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x11sound_light.proto\"\\\n\x07Message\x12\x19\n\x07request\x18\x01 \x01(\x0b\x32\x08.Request\x12\x1b\n\x08response\x18\x02 \x01(\x0b\x32\t.Response\x12\x19\n\x07\x62\x61\x63kend\x18\x03 \x01(\x0b\x32\x08.Backend\")\n\x07\x42\x61\x63kend\x12\x1e\n\x06\x64\x65vice\x18\x01 \x01(\x0b\x32\x0e.BackendDevice\".\n\rBackendDevice\x12\x1d\n\x06status\x18\x01 \x01(\x0e\x32\r.DeviceStatus\"\xd9\x01\n\x07Request\x12\n\n\x02id\x18\x01 \x01(\x05\x12\x12\n\tsessionId\x18\xc8\x01 \x01(\t\x12\x19\n\x07network\x18\x02 \x01(\x0b\x32\x08.Network\x12\x1b\n\x08\x66irmware\x18\x03 \x01(\x0b\x32\t.Firmware\x12!\n\x0bgetSettings\x18\x05 \x01(\x0b\x32\x0c.GetSettings\x12\x1b\n\x08settings\x18\x06 \x01(\x0b\x32\t.Settings\x12\x17\n\x06status\x18\n \x01(\x0b\x32\x07.Status\x12\x1d\n\tgetStatus\x18\x0b \x01(\x0b\x32\n.GetStatus\"\xc6\x01\n\x08Response\x12\x11\n\trequestId\x18\x01 \x01(\x05\x12\x12\n\nstatusCode\x18\x02 \x01(\x05\x12\x15\n\rstatusMessage\x18\x03 \x01(\t\x12\x1b\n\x08settings\x18\x04 \x01(\x0b\x32\t.Settings\x12\x1f\n\x08\x66irmware\x18\x06 \x01(\x0b\x32\r.FirmwareInfo\x12%\n\rnetworkStatus\x18\x08 \x01(\x0b\x32\x0e.NetworkStatus\x12\x17\n\x06status\x18\t \x01(\x0b\x32\x07.Status\"V\n\x0bGetSettings\x12\x0b\n\x03\x61ll\x18\x01 \x01(\x08\x12\x13\n\x0bsavedSounds\x18\x07 \x01(\x08\x12\x13\n\x0btemperature\x18\x08 \x01(\x08\x12\x10\n\x08humidity\x18\t \x01(\x08\"\xb0\x01\n\x08Settings\x12\x12\n\nbrightness\x18\x01 \x01(\x02\x12\x15\n\x05\x63olor\x18\x02 \x01(\x0b\x32\x06.Color\x12\x0e\n\x06volume\x18\x03 \x01(\x02\x12\x15\n\x05sound\x18\x04 \x01(\x0b\x32\x06.Sound\x12\x0c\n\x04isOn\x18\x05 \x01(\x08\x12\x1d\n\tsoundList\x18\x06 \x01(\x0b\x32\n.SoundList\x12\x13\n\x0btemperature\x18\x07 \x01(\x02\x12\x10\n\x08humidity\x18\x08 \x01(\x02\"9\n\x05\x43olor\x12\x0f\n\x07noColor\x18\x01 \x01(\x08\x12\x0b\n\x03hue\x18\x02 \x01(\x02\x12\x12\n\nsaturation\x18\x03 \x01(\x02\"\'\n\x05Sound\x12\x0f\n\x07noSound\x18\x01 \x01(\x08\x12\r\n\x05track\x18\x02 \x01(\t\"\x1b\n\tSoundList\x12\x0e\n\x06tracks\x18\x01 \x03(\t\"J\n\x06Status\x12\x19\n\x07\x62\x61ttery\x18\x01 \x01(\x0b\x32\x08.Battery\x12\x13\n\x0btemperature\x18\x02 \x01(\x02\x12\x10\n\x08humidity\x18\x03 \x01(\x02\"\x07\n\x05\x45mpty\"P\n\tGetStatus\x12\x0b\n\x03\x61ll\x18\x01 \x01(\x08\x12\x0f\n\x07\x62\x61ttery\x18\x02 \x01(\x08\x12\x13\n\x0btemperature\x18\x03 \x01(\x08\x12\x10\n\x08humidity\x18\x04 \x01(\x08\":\n\x07\x42\x61ttery\x12\x1b\n\x03soc\x18\x01 \x01(\x0e\x32\x0e.StateOfCharge\x12\x12\n\nisCharging\x18\x02 \x01(\x08\" \n\x08\x46irmware\x12\x14\n\x04info\x18\x02 \x01(\x0b\x32\x06.Empty\",\n\x0c\x46irmwareInfo\x12\x0b\n\x03url\x18\x01 \x01(\t\x12\x0f\n\x07version\x18\x02 \x01(\t\"$\n\x07Network\x12\x19\n\tgetStatus\x18\x08 \x01(\x0b\x32\x06.Empty\"4\n\rNetworkStatus\x12#\n\tcurrentAp\x18\x04 \x01(\x0b\x32\x10.AccessPointInfo\"T\n\x0f\x41\x63\x63\x65ssPointInfo\x12\x0c\n\x04ssid\x18\x01 \x01(\t\x12\r\n\x05\x62ssid\x18\x02 \x01(\t\x12\x0c\n\x04rssi\x18\x05 \x01(\x05\x12\x16\n\x0eprimaryChannel\x18\x06 \x01(\x05*/\n\x0c\x44\x65viceStatus\x12\x10\n\x0c\x44isconnected\x10\x00\x12\r\n\tConnected\x10\x01*G\n\rStateOfCharge\x12\n\n\x06SoCLow\x10\x00\x12\t\n\x05SoC25\x10\x01\x12\t\n\x05SoC50\x10\x02\x12\t\n\x05SoC75\x10\x03\x12\t\n\x05SoC90\x10\x04')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x11sound_light.proto\"\\\n\x07Message\x12\x19\n\x07request\x18\x01 \x01(\x0b\x32\x08.Request\x12\x1b\n\x08response\x18\x02 \x01(\x0b\x32\t.Response\x12\x19\n\x07\x62\x61\x63kend\x18\x03 \x01(\x0b\x32\x08.Backend\")\n\x07\x42\x61\x63kend\x12\x1e\n\x06\x64\x65vice\x18\x01 \x01(\x0b\x32\x0e.BackendDevice\".\n\rBackendDevice\x12\x1d\n\x06status\x18\x01 \x01(\x0e\x32\r.DeviceStatus\"\xd9\x01\n\x07Request\x12\n\n\x02id\x18\x01 \x01(\x05\x12\x12\n\tsessionId\x18\xc8\x01 \x01(\t\x12\x19\n\x07network\x18\x02 \x01(\x0b\x32\x08.Network\x12\x1b\n\x08\x66irmware\x18\x03 \x01(\x0b\x32\t.Firmware\x12!\n\x0bgetSettings\x18\x05 \x01(\x0b\x32\x0c.GetSettings\x12\x1b\n\x08settings\x18\x06 \x01(\x0b\x32\t.Settings\x12\x17\n\x06status\x18\n \x01(\x0b\x32\x07.Status\x12\x1d\n\tgetStatus\x18\x0b \x01(\x0b\x32\n.GetStatus\"\xc6\x01\n\x08Response\x12\x11\n\trequestId\x18\x01 \x01(\x05\x12\x12\n\nstatusCode\x18\x02 \x01(\x05\x12\x15\n\rstatusMessage\x18\x03 \x01(\t\x12\x1b\n\x08settings\x18\x04 \x01(\x0b\x32\t.Settings\x12\x1f\n\x08\x66irmware\x18\x06 \x01(\x0b\x32\r.FirmwareInfo\x12%\n\rnetworkStatus\x18\x08 \x01(\x0b\x32\x0e.NetworkStatus\x12\x17\n\x06status\x18\t \x01(\x0b\x32\x07.Status\"e\n\x0bGetSettings\x12\x0b\n\x03\x61ll\x18\x01 \x01(\x08\x12\x13\n\x0bsavedSounds\x18\x07 \x01(\x08\x12\x13\n\x0btemperature\x18\x08 \x01(\x08\x12\x10\n\x08humidity\x18\t \x01(\x08\x12\r\n\x05\x63lock\x18\x0c \x01(\x08\"\xc7\x01\n\x08Settings\x12\x12\n\nbrightness\x18\x01 \x01(\x02\x12\x15\n\x05\x63olor\x18\x02 \x01(\x0b\x32\x06.Color\x12\x0e\n\x06volume\x18\x03 \x01(\x02\x12\x15\n\x05sound\x18\x04 \x01(\x0b\x32\x06.Sound\x12\x0c\n\x04isOn\x18\x05 \x01(\x08\x12\x1d\n\tsoundList\x18\x06 \x01(\x0b\x32\n.SoundList\x12\x13\n\x0btemperature\x18\x07 \x01(\x02\x12\x10\n\x08humidity\x18\x08 \x01(\x02\x12\x15\n\x05\x63lock\x18\x0b \x01(\x0b\x32\x06.Clock\"B\n\x05\x43lock\x12\x0f\n\x07\x65nabled\x18\x01 \x01(\x08\x12\x14\n\x0cuse12hFormat\x18\x03 \x01(\x08\x12\x12\n\nbrightness\x18\x04 \x01(\x05\"9\n\x05\x43olor\x12\x0f\n\x07noColor\x18\x01 \x01(\x08\x12\x0b\n\x03hue\x18\x02 \x01(\x02\x12\x12\n\nsaturation\x18\x03 \x01(\x02\"\'\n\x05Sound\x12\x0f\n\x07noSound\x18\x01 \x01(\x08\x12\r\n\x05track\x18\x02 \x01(\t\"\x1b\n\tSoundList\x12\x0e\n\x06tracks\x18\x01 \x03(\t\"J\n\x06Status\x12\x19\n\x07\x62\x61ttery\x18\x01 \x01(\x0b\x32\x08.Battery\x12\x13\n\x0btemperature\x18\x02 \x01(\x02\x12\x10\n\x08humidity\x18\x03 \x01(\x02\"\x07\n\x05\x45mpty\"P\n\tGetStatus\x12\x0b\n\x03\x61ll\x18\x01 \x01(\x08\x12\x0f\n\x07\x62\x61ttery\x18\x02 \x01(\x08\x12\x13\n\x0btemperature\x18\x03 \x01(\x08\x12\x10\n\x08humidity\x18\x04 \x01(\x08\":\n\x07\x42\x61ttery\x12\x1b\n\x03soc\x18\x01 \x01(\x0e\x32\x0e.StateOfCharge\x12\x12\n\nisCharging\x18\x02 \x01(\x08\" \n\x08\x46irmware\x12\x14\n\x04info\x18\x02 \x01(\x0b\x32\x06.Empty\",\n\x0c\x46irmwareInfo\x12\x0b\n\x03url\x18\x01 \x01(\t\x12\x0f\n\x07version\x18\x02 \x01(\t\"$\n\x07Network\x12\x19\n\tgetStatus\x18\x08 \x01(\x0b\x32\x06.Empty\"4\n\rNetworkStatus\x12#\n\tcurrentAp\x18\x04 \x01(\x0b\x32\x10.AccessPointInfo\"T\n\x0f\x41\x63\x63\x65ssPointInfo\x12\x0c\n\x04ssid\x18\x01 \x01(\t\x12\r\n\x05\x62ssid\x18\x02 \x01(\t\x12\x0c\n\x04rssi\x18\x05 \x01(\x05\x12\x16\n\x0eprimaryChannel\x18\x06 \x01(\x05*/\n\x0c\x44\x65viceStatus\x12\x10\n\x0c\x44isconnected\x10\x00\x12\r\n\tConnected\x10\x01*G\n\rStateOfCharge\x12\n\n\x06SoCLow\x10\x00\x12\t\n\x05SoC25\x10\x01\x12\t\n\x05SoC50\x10\x02\x12\t\n\x05SoC75\x10\x03\x12\t\n\x05SoC90\x10\x04')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'sound_light_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_DEVICESTATUS']._serialized_start=1508
-  _globals['_DEVICESTATUS']._serialized_end=1555
-  _globals['_STATEOFCHARGE']._serialized_start=1557
-  _globals['_STATEOFCHARGE']._serialized_end=1628
+  _globals['_DEVICESTATUS']._serialized_start=1614
+  _globals['_DEVICESTATUS']._serialized_end=1661
+  _globals['_STATEOFCHARGE']._serialized_start=1663
+  _globals['_STATEOFCHARGE']._serialized_end=1734
   _globals['_MESSAGE']._serialized_start=21
   _globals['_MESSAGE']._serialized_end=113
   _globals['_BACKEND']._serialized_start=115
@@ -46,31 +46,33 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_RESPONSE']._serialized_start=427
   _globals['_RESPONSE']._serialized_end=625
   _globals['_GETSETTINGS']._serialized_start=627
-  _globals['_GETSETTINGS']._serialized_end=713
-  _globals['_SETTINGS']._serialized_start=716
-  _globals['_SETTINGS']._serialized_end=892
-  _globals['_COLOR']._serialized_start=894
-  _globals['_COLOR']._serialized_end=951
-  _globals['_SOUND']._serialized_start=953
-  _globals['_SOUND']._serialized_end=992
-  _globals['_SOUNDLIST']._serialized_start=994
-  _globals['_SOUNDLIST']._serialized_end=1021
-  _globals['_STATUS']._serialized_start=1023
-  _globals['_STATUS']._serialized_end=1097
-  _globals['_EMPTY']._serialized_start=1099
-  _globals['_EMPTY']._serialized_end=1106
-  _globals['_GETSTATUS']._serialized_start=1108
-  _globals['_GETSTATUS']._serialized_end=1188
-  _globals['_BATTERY']._serialized_start=1190
-  _globals['_BATTERY']._serialized_end=1248
-  _globals['_FIRMWARE']._serialized_start=1250
-  _globals['_FIRMWARE']._serialized_end=1282
-  _globals['_FIRMWAREINFO']._serialized_start=1284
-  _globals['_FIRMWAREINFO']._serialized_end=1328
-  _globals['_NETWORK']._serialized_start=1330
-  _globals['_NETWORK']._serialized_end=1366
-  _globals['_NETWORKSTATUS']._serialized_start=1368
-  _globals['_NETWORKSTATUS']._serialized_end=1420
-  _globals['_ACCESSPOINTINFO']._serialized_start=1422
-  _globals['_ACCESSPOINTINFO']._serialized_end=1506
+  _globals['_GETSETTINGS']._serialized_end=728
+  _globals['_SETTINGS']._serialized_start=731
+  _globals['_SETTINGS']._serialized_end=930
+  _globals['_CLOCK']._serialized_start=932
+  _globals['_CLOCK']._serialized_end=998
+  _globals['_COLOR']._serialized_start=1000
+  _globals['_COLOR']._serialized_end=1057
+  _globals['_SOUND']._serialized_start=1059
+  _globals['_SOUND']._serialized_end=1098
+  _globals['_SOUNDLIST']._serialized_start=1100
+  _globals['_SOUNDLIST']._serialized_end=1127
+  _globals['_STATUS']._serialized_start=1129
+  _globals['_STATUS']._serialized_end=1203
+  _globals['_EMPTY']._serialized_start=1205
+  _globals['_EMPTY']._serialized_end=1212
+  _globals['_GETSTATUS']._serialized_start=1214
+  _globals['_GETSTATUS']._serialized_end=1294
+  _globals['_BATTERY']._serialized_start=1296
+  _globals['_BATTERY']._serialized_end=1354
+  _globals['_FIRMWARE']._serialized_start=1356
+  _globals['_FIRMWARE']._serialized_end=1388
+  _globals['_FIRMWAREINFO']._serialized_start=1390
+  _globals['_FIRMWAREINFO']._serialized_end=1434
+  _globals['_NETWORK']._serialized_start=1436
+  _globals['_NETWORK']._serialized_end=1472
+  _globals['_NETWORKSTATUS']._serialized_start=1474
+  _globals['_NETWORKSTATUS']._serialized_end=1526
+  _globals['_ACCESSPOINTINFO']._serialized_start=1528
+  _globals['_ACCESSPOINTINFO']._serialized_end=1612
 # @@protoc_insertion_point(module_scope)

@@ -280,6 +280,19 @@
 # name: TestEntityRegistration.test_number[full]
   list([
     dict({
+      'class': 'NanitSLClockBrightness',
+      'device_class': None,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'speaker_1',
+        ),
+      ]),
+      'entity_category': <EntityCategory.CONFIG: 'config'>,
+      'translation_key': 'sl_clock_brightness',
+      'unique_id': 'speaker_1_sl_clock_brightness',
+    }),
+    dict({
       'class': 'NanitSoundMachineVolume',
       'device_class': None,
       'device_identifiers': list([
@@ -296,6 +309,19 @@
 # ---
 # name: TestEntityRegistration.test_number[speaker_only]
   list([
+    dict({
+      'class': 'NanitSLClockBrightness',
+      'device_class': None,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'speaker_1',
+        ),
+      ]),
+      'entity_category': <EntityCategory.CONFIG: 'config'>,
+      'translation_key': 'sl_clock_brightness',
+      'unique_id': 'speaker_1_sl_clock_brightness',
+    }),
     dict({
       'class': 'NanitSoundMachineVolume',
       'device_class': None,
@@ -667,6 +693,19 @@
       'unique_id': 'cam_1_camera_power',
     }),
     dict({
+      'class': 'NanitSLClockDisplaySwitch',
+      'device_class': None,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'speaker_1',
+        ),
+      ]),
+      'entity_category': <EntityCategory.CONFIG: 'config'>,
+      'translation_key': 'sl_clock_display',
+      'unique_id': 'speaker_1_sl_clock_display',
+    }),
+    dict({
       'class': 'NanitSLSoundSwitch',
       'device_class': <SwitchDeviceClass.SWITCH: 'switch'>,
       'device_identifiers': list([
@@ -696,6 +735,19 @@
 # ---
 # name: TestEntityRegistration.test_switch[speaker_only]
   list([
+    dict({
+      'class': 'NanitSLClockDisplaySwitch',
+      'device_class': None,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'speaker_1',
+        ),
+      ]),
+      'entity_category': <EntityCategory.CONFIG: 'config'>,
+      'translation_key': 'sl_clock_display',
+      'unique_id': 'speaker_1_sl_clock_display',
+    }),
     dict({
       'class': 'NanitSLSoundSwitch',
       'device_class': <SwitchDeviceClass.SWITCH: 'switch'>,

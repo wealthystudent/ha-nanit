@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from homeassistant.components.switch import SwitchDeviceClass, SwitchEntity, SwitchEntityDescription
-from homeassistant.const import STATE_OFF, STATE_ON
+from homeassistant.const import STATE_OFF, STATE_ON, EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -74,6 +74,7 @@ async def async_setup_entry(
     for speaker_data in entry.runtime_data.speakers.values():
         entities.append(NanitSLPowerSwitch(speaker_data.coordinator))
         entities.append(NanitSLSoundSwitch(speaker_data.coordinator))
+        entities.append(NanitSLClockDisplaySwitch(speaker_data.coordinator))
 
     async_add_entities(entities)
 
@@ -287,4 +288,40 @@ class NanitSLSoundSwitch(NanitSoundLightEntity, SwitchEntity):
             raise HomeAssistantError(
                 translation_domain=DOMAIN,
                 translation_key="sl_sound_off_failed",
+            ) from err
+
+
+class NanitSLClockDisplaySwitch(NanitSoundLightEntity, SwitchEntity):
+    """Show or hide the speaker clock independently of its brightness."""
+
+    _attr_translation_key = "sl_clock_display"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, coordinator: NanitSoundLightCoordinator) -> None:
+        """Initialize the clock display switch."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.sound_light.speaker_uid}_sl_clock_display"
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return the reported clock display setting."""
+        if self.coordinator.data is None:
+            return None
+        return self.coordinator.data.clock_enabled
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Show the clock."""
+        await self._async_set_enabled(True)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Hide the clock."""
+        await self._async_set_enabled(False)
+
+    async def _async_set_enabled(self, enabled: bool) -> None:
+        """Send a visibility-only command."""
+        try:
+            await self.coordinator.sound_light.async_set_clock_enabled(enabled)
+        except NanitTransportError as err:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN, translation_key="sl_clock_display_failed"
             ) from err

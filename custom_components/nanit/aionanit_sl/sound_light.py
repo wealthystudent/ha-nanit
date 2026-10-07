@@ -115,7 +115,7 @@ def _command_to_device_fields(kwargs: dict[str, Any]) -> dict[str, Any]:
         if key == "sound":
             if value is not None:
                 fields["current_sound"] = value
-        elif key in ("is_on", "brightness", "volume"):
+        elif key in ("is_on", "brightness", "volume", "clock_enabled", "clock_brightness"):
             fields[key] = value
         elif key == "color":
             if "noColor" in value:
@@ -136,6 +136,8 @@ _VIEW_TO_MODEL: dict[str, tuple[str, ...]] = {
     "is_on": ("power_on",),
     "brightness": ("brightness",),
     "volume": ("volume",),
+    "clock_enabled": ("clock_enabled",),
+    "clock_brightness": ("clock_brightness",),
     "hue": ("color_r",),
     "saturation": ("color_g",),
 }
@@ -420,6 +422,20 @@ class NanitSoundLight:
         }
         self._queue_command(kwargs)
 
+    async def async_set_clock_enabled(self, enabled: bool) -> None:
+        """Show or hide the clock without changing its brightness."""
+        self._queue_command({"clock_enabled": enabled})
+
+    async def async_set_clock_brightness(self, brightness: int) -> None:
+        """Set clock brightness on the device scale without enabling it."""
+        if (
+            isinstance(brightness, bool)
+            or not isinstance(brightness, int)
+            or not 0 <= brightness <= 8
+        ):
+            raise ValueError("Clock brightness must be an integer from 0 to 8")
+        self._queue_command({"clock_brightness": brightness})
+
     async def async_set_sound_on(self, on: bool) -> None:
         """Turn sound on or off.
 
@@ -695,6 +711,9 @@ class NanitSoundLight:
             updates["temperature_c"] = view["temperature"]
         if "humidity" in view:
             updates["humidity_pct"] = view["humidity"]
+        for field in ("clock_enabled", "clock_brightness"):
+            if field in view:
+                updates[field] = view[field]
         # Diagnostics parsed from the GetStatus / Network / Firmware
         # responses; the transport already sanitizes the device strings.
         for field in _DIAGNOSTIC_FIELDS:

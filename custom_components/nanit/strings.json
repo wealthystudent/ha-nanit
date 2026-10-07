@@ -99,6 +99,15 @@
     },
     "sl_track_failed": {
       "message": "Failed to set the sound to {option}"
+    },
+    "sl_clock_display_failed": {
+      "message": "Failed to change clock display"
+    },
+    "sl_clock_brightness_failed": {
+      "message": "Failed to change clock brightness"
+    },
+    "sl_clock_brightness_invalid": {
+      "message": "Clock brightness must be a whole number from 0 to 8"
     }
   },
   "issues": {
@@ -171,11 +180,17 @@
       },
       "sl_sound_switch": {
         "name": "Sound"
+      },
+      "sl_clock_display": {
+        "name": "Clock display"
       }
     },
     "number": {
       "sound_machine_volume": {
         "name": "Volume"
+      },
+      "sl_clock_brightness": {
+        "name": "Clock brightness"
       }
     },
     "light": {

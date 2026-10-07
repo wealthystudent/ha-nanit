@@ -61,6 +61,7 @@ message GetSettings {
     optional bool savedSounds = 7;          // Get saved sounds
     optional bool temperature = 8;          // Get temperature
     optional bool humidity = 9;             // Get humidity
+    optional bool clock = 12;               // Clock display (Sound & Light app 1.11.0)
 }
 
 // Settings for device state and control commands
@@ -73,6 +74,15 @@ message Settings {
     optional SoundList soundList = 6;       // Available sounds list
     optional float temperature = 7;         // Temperature sensor
     optional float humidity = 8;            // Humidity sensor
+    optional Clock clock = 11;              // Independent clock display settings
+}
+
+// Verified against the Sound & Light app 1.11.0.
+// Omit timezone (2) and timestamp (5) to preserve them in partial writes.
+message Clock {
+    optional bool enabled = 1;
+    optional bool use12hFormat = 3;
+    optional int32 brightness = 4;          // App slider: 0..8 inclusive
 }
 
 // Color control data: matches official APK structure exactly

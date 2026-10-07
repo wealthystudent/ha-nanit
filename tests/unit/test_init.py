@@ -267,6 +267,35 @@ async def test_stop_after_unload_does_not_close_again(
     mock_nanit_client.async_close.assert_awaited_once()
 
 
+async def test_camera_devices_registered_before_platforms(
+    hass: HomeAssistant,
+    mock_nanit_client,
+) -> None:
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=mock_entry_data_v2(),
+        version=2,
+        unique_id=MOCK_EMAIL,
+    )
+    entry.add_to_hass(hass)
+    dev_reg = dr.async_get(hass)
+    seen_at_forward: list[bool] = []
+
+    async def _forward(*_args: object) -> bool:
+        seen_at_forward.append(
+            dev_reg.async_get_device_by_identifier((DOMAIN, MOCK_BABY_1.camera_uid), entry.entry_id)
+            is not None
+        )
+        return True
+
+    with patch.object(hass.config_entries, "async_forward_entry_setups", _forward):
+        assert await async_setup_entry(hass, entry)
+
+    # Sound & Light devices link to the camera by registry id, which HA
+    # rejects unless the camera device exists when the platforms run.
+    assert seen_at_forward == [True]
+
+
 async def test_stale_device_removed_when_camera_no_longer_on_account(
     hass: HomeAssistant,
     mock_nanit_client,
@@ -627,6 +656,29 @@ async def test_sl_migration_moves_device_identifier(hass: HomeAssistant) -> None
     migrated = dev_reg.async_get(device.id)
     assert migrated is not None
     assert migrated.identifiers == {(DOMAIN, "spk_4")}
+
+
+async def test_sl_migration_identifier_collision_warns_instead_of_failing(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """On HA before 2026.8 another entry can hold the speaker's identifier.
+
+    The entry-scoped lookup cannot see it there, so the registry raises on
+    the update. Setup must carry on with the legacy device left in place.
+    """
+    entry = _migration_entry(hass)
+    dev_reg = dr.async_get(hass)
+    device = dev_reg.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, "cam_4_sound_light")},
+    )
+    collision = dr.DeviceIdentifierCollisionError({(DOMAIN, "spk_4")}, device)
+
+    with patch.object(dev_reg, "async_update_device", side_effect=collision):
+        await _async_migrate_sl_identities(hass, entry, _migration_hub())
+
+    assert dev_reg.async_get(device.id).identifiers == {(DOMAIN, "cam_4_sound_light")}
+    assert "S&L device identifier spk_4 already exists" in caplog.text
 
 
 async def test_sl_migration_collision_removes_dead_old_entity(hass: HomeAssistant) -> None:

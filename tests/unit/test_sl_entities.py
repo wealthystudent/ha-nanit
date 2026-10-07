@@ -9,7 +9,9 @@ from homeassistant.components.diagnostics import REDACTED
 from homeassistant.components.light import ATTR_BRIGHTNESS, ATTR_HS_COLOR
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import device_registry as dr
 from homeassistant.util.color import brightness_to_value, value_to_brightness
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 _ = sys.modules.setdefault("turbojpeg", MagicMock(TurboJPEG=MagicMock()))
 
@@ -18,7 +20,7 @@ from custom_components.nanit import select as select_platform
 from custom_components.nanit import switch as switch_platform
 from custom_components.nanit.aionanit_sl.exceptions import NanitTransportError
 from custom_components.nanit.aionanit_sl.models import SoundLightFullState
-from custom_components.nanit.const import DEFAULT_SOUND_MACHINE_SOUNDS
+from custom_components.nanit.const import DEFAULT_SOUND_MACHINE_SOUNDS, DOMAIN
 from custom_components.nanit.diagnostics import async_get_config_entry_diagnostics
 from custom_components.nanit.light import (
     _BRIGHTNESS_SCALE,
@@ -1062,15 +1064,59 @@ def test_sl_diagnostic_sensors_stay_available_while_disconnected() -> None:
     assert mode.native_value == "unavailable"
 
 
-def test_sl_entity_device_info() -> None:
+def test_sl_entity_device_info_legacy_ha_links_by_identifier() -> None:
     coordinator = _sl_coordinator(SoundLightFullState())
     entity = NanitSoundLightLight(coordinator)
-    info = entity.device_info
+    with patch("custom_components.nanit.entity.HAS_DEVICE_ID_LINKS", False):
+        info = entity.device_info
 
     assert ("nanit", "speaker_1") in info["identifiers"]
     assert info["name"] == "Nursery Sound & Light"
     assert info["manufacturer"] == "Nanit"
-    assert info["via_device"] == ("nanit", "cam_1")
+    assert info["via_device"] == ("nanit", "cam_1")  # type: ignore[typeddict-item]
+    assert "via_device_id" not in info
+
+
+async def test_sl_entity_device_info_links_camera_by_registry_id(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    entry = MockConfigEntry(domain=DOMAIN)
+    entry.add_to_hass(hass)
+    dev_reg = dr.async_get(hass)
+    camera = dev_reg.async_get_or_create(
+        config_entry_id=entry.entry_id, identifiers={(DOMAIN, "cam_1")}
+    )
+    coordinator = _sl_coordinator(SoundLightFullState())
+    coordinator.config_entry = entry
+    entity = NanitSoundLightLight(coordinator)
+    entity.hass = hass
+
+    info = entity.device_info
+
+    assert info["via_device_id"] == camera.id
+    assert "via_device" not in info
+    # The registry accepts it and links the speaker, without the deprecation
+    # warning that via_device logs on HA 2026.8 and later.
+    speaker = dev_reg.async_get_or_create(config_entry_id=entry.entry_id, **info)
+    assert speaker.via_device_id == camera.id
+    assert "deprecated" not in caplog.text
+
+
+async def test_sl_entity_device_info_skips_link_when_camera_not_registered(
+    hass: HomeAssistant,
+) -> None:
+    entry = MockConfigEntry(domain=DOMAIN)
+    entry.add_to_hass(hass)
+    coordinator = _sl_coordinator(SoundLightFullState())
+    coordinator.config_entry = entry
+    entity = NanitSoundLightLight(coordinator)
+    entity.hass = hass
+
+    info = entity.device_info
+
+    # A dangling via_device_id would make HA reject the entity outright.
+    assert "via_device_id" not in info
+    assert "via_device" not in info
 
 
 def test_sl_entity_device_info_standalone_has_no_via_device() -> None:
@@ -1081,6 +1127,7 @@ def test_sl_entity_device_info_standalone_has_no_via_device() -> None:
 
     assert ("nanit", "speaker_1") in info["identifiers"]
     assert "via_device" not in info
+    assert "via_device_id" not in info
 
 
 # ---------------------------------------------------------------------------

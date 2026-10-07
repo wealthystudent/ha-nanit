@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, cast
 
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -14,6 +15,7 @@ from .coordinator import (
     NanitPushCoordinator,
     NanitSoundLightCoordinator,
 )
+from .device_links import HAS_DEVICE_ID_LINKS, async_get_device
 from .sanitize import display_name
 
 
@@ -79,12 +81,24 @@ class NanitSoundLightEntity(CoordinatorEntity[NanitSoundLightCoordinator]):
             manufacturer="Nanit",
             model="Sound & Light Machine",
         )
-        if self.coordinator.via_camera_uid:
-            # HA 2026.8 dropped via_device from the DeviceInfo type in favor of
-            # via_device_id (a registry id), but still accepts it until 2027.8,
-            # and HA before 2026.8 rejects via_device_id outright. Keep the
-            # identifier form until the version-gated move to via_device_id.
-            cast(dict[str, Any], info)["via_device"] = (DOMAIN, self.coordinator.via_camera_uid)
+        camera_uid = self.coordinator.via_camera_uid
+        if not camera_uid:
+            return info
+        if not HAS_DEVICE_ID_LINKS:
+            # HA before 2026.8 only knows the identifier form (see device_links).
+            cast(dict[str, Any], info)["via_device"] = (DOMAIN, camera_uid)
+            return info
+        # via_device_id must name a registered device, or HA refuses the
+        # entity. async_setup_entry registers every camera device before the
+        # platforms run, so the lookup only misses if the camera is gone.
+        if self.hass is not None:
+            camera_device = async_get_device(
+                dr.async_get(self.hass),
+                (DOMAIN, camera_uid),
+                self.coordinator.config_entry.entry_id,
+            )
+            if camera_device is not None:
+                info["via_device_id"] = camera_device.id
         return info
 
     @property

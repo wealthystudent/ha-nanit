@@ -41,7 +41,7 @@ async def session(request: pytest.FixtureRequest):
 
 @pytest.fixture
 def client(session: FakeSession) -> NanitRestClient:
-    return NanitRestClient(session)  # type: ignore[arg-type]
+    return NanitRestClient(session)
 
 
 class TestLogin:

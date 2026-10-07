@@ -31,8 +31,10 @@ from .const import (
     PLATFORMS,
 )
 from .coordinator import NanitPushCoordinator, NanitSoundLightCoordinator
+from .device_links import async_get_device
 from .frontend import async_register_card
 from .hub import CameraData, NanitHub, SpeakerData
+from .sanitize import display_name
 
 
 @dataclass
@@ -93,6 +95,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: NanitConfigEntry) -> boo
     await _async_migrate_sl_identities(hass, entry, hub)
     _async_remove_stale_devices(hass, entry, hub)
     _async_remove_deprecated_entities(hass, hub)
+
+    _async_register_camera_devices(hass, entry, hub)
 
     await async_register_card(hass)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -207,6 +211,26 @@ _SL_UNIQUE_ID_SUFFIXES: tuple[str, ...] = (
 )
 
 
+def _async_register_camera_devices(
+    hass: HomeAssistant, entry: NanitConfigEntry, hub: NanitHub
+) -> None:
+    """Register each camera's device before any platform adds entities.
+
+    A Sound & Light links to its camera by registry id (via_device_id), which
+    HA rejects unless the camera device already exists. The platforms set up
+    concurrently, so without this a speaker could be added before its camera.
+    The fields match the camera entities' own DeviceInfo.
+    """
+    dev_reg = dr.async_get(hass)
+    for camera_data in hub.camera_data.values():
+        dev_reg.async_get_or_create(
+            config_entry_id=entry.entry_id,
+            identifiers={(DOMAIN, camera_data.camera.uid)},
+            name=display_name(camera_data.baby.name, camera_data.baby.uid),
+            manufacturer="Nanit",
+        )
+
+
 async def _async_migrate_sl_identities(
     hass: HomeAssistant, entry: NanitConfigEntry, hub: NanitHub
 ) -> None:
@@ -258,16 +282,29 @@ async def _async_migrate_sl_identities(
             LOGGER.warning("Removing %s: its migrated unique_id is already taken", entity_id)
             ent_reg.async_remove(entity_id)
 
-        old_device = dev_reg.async_get_device(identifiers={(DOMAIN, f"{camera_uid}_sound_light")})
+        old_device = async_get_device(
+            dev_reg, (DOMAIN, f"{camera_uid}_sound_light"), entry.entry_id
+        )
         if old_device is not None:
-            if dev_reg.async_get_device(identifiers={(DOMAIN, speaker_uid)}) is None:
-                LOGGER.info(
-                    "Migrating S&L device identifier %s_sound_light to %s",
-                    camera_uid,
-                    speaker_uid,
-                )
-                dev_reg.async_update_device(old_device.id, new_identifiers={(DOMAIN, speaker_uid)})
-            else:
+            taken = async_get_device(dev_reg, (DOMAIN, speaker_uid), entry.entry_id) is not None
+            if not taken:
+                # The lookup only sees this entry's devices. HA before 2026.8
+                # keeps identifiers unique across entries, so another Nanit
+                # entry holding the speaker's identifier surfaces here as a
+                # collision instead, which gets the same warning.
+                try:
+                    dev_reg.async_update_device(
+                        old_device.id, new_identifiers={(DOMAIN, speaker_uid)}
+                    )
+                except dr.DeviceIdentifierCollisionError:
+                    taken = True
+                else:
+                    LOGGER.info(
+                        "Migrated S&L device identifier %s_sound_light to %s",
+                        camera_uid,
+                        speaker_uid,
+                    )
+            if taken:
                 LOGGER.warning(
                     "S&L device identifier %s already exists; leaving legacy device %s",
                     speaker_uid,

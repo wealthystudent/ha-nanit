@@ -34,6 +34,7 @@ from .coordinator import NanitPushCoordinator, NanitSoundLightCoordinator
 from .device_links import async_get_device
 from .frontend import async_register_card
 from .hub import CameraData, NanitHub, SpeakerData
+from .log_redaction import async_install_stream_token_filter, async_remove_stream_token_filter
 from .sanitize import display_name
 
 
@@ -95,6 +96,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: NanitConfigEntry) -> boo
     await _async_migrate_sl_identities(hass, entry, hub)
     _async_remove_stale_devices(hass, entry, hub)
     _async_remove_deprecated_entities(hass, hub)
+
+    # Home Assistant's stream and go2rtc logs would otherwise print the
+    # access token that sits in the camera's stream URL.
+    async_install_stream_token_filter(hass, entry.entry_id)
+    entry.async_on_unload(lambda: async_remove_stream_token_filter(hass, entry.entry_id))
 
     _async_register_camera_devices(hass, entry, hub)
 

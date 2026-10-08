@@ -6,7 +6,11 @@
         "description": "Enter your Nanit account credentials. All cameras on this account will be added automatically.",
         "data": {
           "email": "Email",
-          "password": "Password"
+          "password": "Password",
+          "read_only": "Read-only mode"
+        },
+        "data_description": {
+          "read_only": "Only sensors, motion and sound, and the camera picture. Home Assistant gets no control over device settings: no camera power or sleep, night light, volume or Sound & Light controls. You can change this later in the integration's options."
         }
       },
       "mfa": {
@@ -51,6 +55,13 @@
     "step": {
       "init": {
         "title": "Nanit Options",
+        "menu_options": {
+          "device": "Device IP addresses",
+          "read_only": "Read-only mode"
+        }
+      },
+      "device": {
+        "title": "Nanit Options",
         "description": "Select a device to configure its local IP addresses.",
         "data": {
           "device": "Device"
@@ -62,6 +73,13 @@
         "data": {
           "camera_ip": "Camera IP Address",
           "speaker_ip": "Sound & Light Machine IP Address"
+        }
+      },
+      "read_only": {
+        "title": "Read-only mode",
+        "description": "Read-only mode applies to every device on this account. Home Assistant keeps the camera stream, sensors and motion and sound detection, but gets no control over device settings: camera power or sleep, night light, volume and Sound & Light controls are removed, and automations that use them stop working. Turning it off brings them back with the same names and entity IDs.",
+        "data": {
+          "read_only": "Read-only mode"
         }
       }
     }
@@ -108,6 +126,9 @@
     },
     "sl_clock_brightness_invalid": {
       "message": "Clock brightness must be a whole number from 0 to 8"
+    },
+    "read_only": {
+      "message": "This Nanit account is in read-only mode, so Home Assistant can't change the camera. Use the Nanit app, or turn read-only mode off in the integration's options."
     }
   },
   "issues": {

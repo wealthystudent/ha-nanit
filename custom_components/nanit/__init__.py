@@ -5,11 +5,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections.abc import Callable, Coroutine
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_EMAIL, CONF_PASSWORD, EVENT_HOMEASSISTANT_STOP
+from homeassistant.const import CONF_EMAIL, CONF_PASSWORD, EVENT_HOMEASSISTANT_STOP, Platform
 from homeassistant.core import Event, HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import device_registry as dr
@@ -29,6 +29,8 @@ from .const import (
     DOMAIN,
     LOGGER,
     PLATFORMS,
+    READ_ONLY_PLATFORMS,
+    is_read_only,
 )
 from .coordinator import NanitPushCoordinator, NanitSoundLightCoordinator
 from .device_links import async_get_device
@@ -45,6 +47,10 @@ class NanitData:
     hub: NanitHub
     cameras: dict[str, CameraData]
     speakers: dict[str, SpeakerData]
+    # The platforms this setup forwarded. Unload must use these, not the
+    # current options: turning read-only mode on or off changes the options
+    # before the reload unloads the old set.
+    platforms: list[Platform] = field(default_factory=lambda: list(PLATFORMS))
 
 
 type NanitConfigEntry = ConfigEntry[NanitData]
@@ -91,11 +97,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: NanitConfigEntry) -> boo
         await _async_shutdown_hub(hub)
         raise
 
-    entry.runtime_data = NanitData(hub=hub, cameras=hub.camera_data, speakers=hub.speaker_data)
+    read_only = is_read_only(entry)
+    platforms = READ_ONLY_PLATFORMS if read_only else PLATFORMS
+    entry.runtime_data = NanitData(
+        hub=hub,
+        cameras=hub.camera_data,
+        speakers=hub.speaker_data,
+        platforms=list(platforms),
+    )
 
     await _async_migrate_sl_identities(hass, entry, hub)
     _async_remove_stale_devices(hass, entry, hub)
     _async_remove_deprecated_entities(hass, hub)
+    if read_only:
+        _async_remove_control_entities(hass, entry)
 
     # Home Assistant's stream and go2rtc logs would otherwise print the
     # access token that sits in the camera's stream URL.
@@ -104,8 +119,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: NanitConfigEntry) -> boo
 
     _async_register_camera_devices(hass, entry, hub)
 
+    # The card is registered in read-only mode too: skipping it would break an
+    # existing card ("Custom element doesn't exist"), and its controls can't do
+    # anything here (the control entities are gone and the camera refuses
+    # turn_on/turn_off).
     await async_register_card(hass)
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    await hass.config_entries.async_forward_entry_setups(entry, platforms)
 
     # update_listener fires for ANY entry mutation (data OR options).
     # Token refresh persists tokens via async_update_entry(data=...) which
@@ -140,7 +159,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: NanitConfigEntry) -> boo
 
 async def async_unload_entry(hass: HomeAssistant, entry: NanitConfigEntry) -> bool:
     """Unload a config entry."""
-    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    unload_ok = await hass.config_entries.async_unload_platforms(
+        entry, entry.runtime_data.platforms
+    )
     if unload_ok:
         await entry.runtime_data.hub.async_close()
     return unload_ok
@@ -465,6 +486,22 @@ def _async_remove_deprecated_entities(hass: HomeAssistant, hub: NanitHub) -> Non
                     entity_id,
                 )
                 ent_reg.async_remove(entity_id)
+
+
+def _async_remove_control_entities(hass: HomeAssistant, entry: NanitConfigEntry) -> None:
+    """Read-only mode: remove control entities left by an earlier full setup.
+
+    Turning read-only mode on stops the control platforms from loading, but
+    their entities stay in the registry as "unavailable" (and could still be
+    targeted by old automations or scripts). Removing them keeps the entry
+    observe-only. Turning read-only mode off creates them again.
+    """
+    ent_reg = er.async_get(hass)
+    allowed = {platform.value for platform in READ_ONLY_PLATFORMS}
+    for reg_entry in er.async_entries_for_config_entry(ent_reg, entry.entry_id):
+        if reg_entry.domain not in allowed:
+            LOGGER.info("Read-only mode: removing control entity %s", reg_entry.entity_id)
+            ent_reg.async_remove(reg_entry.entity_id)
 
 
 def _make_options_update_listener(

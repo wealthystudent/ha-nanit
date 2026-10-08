@@ -9,6 +9,7 @@ from typing import Any
 
 from homeassistant.components.camera import Camera, CameraEntityFeature
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback, async_get_current_platform
 from homeassistant.helpers.event import async_call_later
 
@@ -16,6 +17,7 @@ from aionanit import NanitCamera
 from aionanit.models import ConnectionState
 
 from . import NanitConfigEntry
+from .const import DOMAIN, is_read_only
 from .coordinator import NanitPushCoordinator
 from .entity import NanitEntity
 from .log_redaction import async_attach_to_camera_stream, async_detach_from_camera_stream
@@ -51,8 +53,9 @@ async def async_setup_entry(
             {},
             "async_reset_stream",
         )
+    read_only = is_read_only(entry)
     async_add_entities(
-        NanitCameraEntity(cam_data.push_coordinator, cam_data.camera)
+        NanitCameraEntity(cam_data.push_coordinator, cam_data.camera, read_only=read_only)
         for cam_data in entry.runtime_data.cameras.values()
     )
 
@@ -68,11 +71,18 @@ class NanitCameraEntity(NanitEntity, Camera):
         self,
         coordinator: NanitPushCoordinator,
         camera: NanitCamera,
+        *,
+        read_only: bool = False,
     ) -> None:
         """Initialize."""
         super().__init__(coordinator)
         Camera.__init__(self)
         self._camera = camera
+        # Read-only mode: no ON_OFF, so Home Assistant never offers to put
+        # the camera to sleep; turn_on/turn_off also refuse if called anyway.
+        self._read_only = read_only
+        if read_only:
+            self._attr_supported_features = CameraEntityFeature.STREAM
         self._prev_is_on: bool | None = None
         self._prev_conn_state: ConnectionState | None = None
         self._attr_unique_id = f"{camera.uid}_camera"
@@ -562,13 +572,23 @@ class NanitCameraEntity(NanitEntity, Camera):
     # On/off
     # ------------------------------------------------------------------
 
+    def _raise_if_read_only(self) -> None:
+        """Refuse a power change when the entry is in read-only mode."""
+        if self._read_only:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="read_only",
+            )
+
     async def async_turn_on(self) -> None:
         """Turn the camera on (disable sleep/standby mode)."""
+        self._raise_if_read_only()
         self._invalidate_stream()
         await self._camera.async_set_settings(sleep_mode=False)
 
     async def async_turn_off(self) -> None:
         """Turn the camera off (enable sleep/standby mode)."""
+        self._raise_if_read_only()
         self._invalidate_stream()
         try:
             await self._camera.async_stop_streaming()

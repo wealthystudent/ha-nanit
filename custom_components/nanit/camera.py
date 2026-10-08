@@ -18,6 +18,7 @@ from aionanit.models import ConnectionState
 from . import NanitConfigEntry
 from .coordinator import NanitPushCoordinator
 from .entity import NanitEntity
+from .log_redaction import async_attach_to_camera_stream, async_detach_from_camera_stream
 
 PARALLEL_UPDATES = 0
 
@@ -124,6 +125,13 @@ class NanitCameraEntity(NanitEntity, Camera):
 
         super()._handle_coordinator_update()
 
+    async def async_added_to_hass(self) -> None:
+        """Mask the access token in this camera's stream log lines."""
+        await super().async_added_to_hass()
+        # Home Assistant logs each camera's stream under its own logger, keyed
+        # by entity_id, and a rename re-runs this with the new id.
+        async_attach_to_camera_stream(self.entity_id)
+
     async def async_will_remove_from_hass(self) -> None:
         """Tear down stream bookkeeping so nothing outlives the entity.
 
@@ -133,6 +141,7 @@ class NanitCameraEntity(NanitEntity, Camera):
         (stopped) camera, which resurrects its WebSocket and redirects the
         camera's push away from the replacement entity's stream.
         """
+        async_detach_from_camera_stream(self.entity_id)
         self._invalidate_stream("entity removal")
         for task in (self._stream_refresh_task, self._stream_keepalive_task):
             if task is not None and not task.done():

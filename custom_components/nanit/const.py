@@ -2,6 +2,7 @@
 
 import logging
 
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 
 DOMAIN = "nanit"
@@ -15,6 +16,14 @@ PLATFORMS = [
     Platform.LIGHT,
     Platform.SELECT,
     Platform.MEDIA_PLAYER,
+    Platform.CAMERA,
+]
+
+# Read-only mode: only the platforms that observe. No platform here controls
+# device settings (camera power/sleep, night light, volume, Sound & Light).
+READ_ONLY_PLATFORMS = [
+    Platform.SENSOR,
+    Platform.BINARY_SENSOR,
     Platform.CAMERA,
 ]
 
@@ -42,6 +51,13 @@ CONF_CAMERA_IPS = "camera_ips"
 CONF_SPEAKER_UID = "speaker_uid"
 CONF_SPEAKER_IP = "speaker_ip"
 CONF_SPEAKER_IPS = "speaker_ips"
+CONF_READ_ONLY = "read_only"
+
+
+def is_read_only(entry: ConfigEntry) -> bool:
+    """Return whether the entry is in read-only mode (no device control at all)."""
+    return entry.options.get(CONF_READ_ONLY, False) is True
+
 
 # Default sound list (used when API doesn't return available_sounds)
 DEFAULT_SOUND_MACHINE_SOUNDS = (

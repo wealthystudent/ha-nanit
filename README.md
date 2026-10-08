@@ -69,6 +69,16 @@ Some entities are disabled by default. Enable them in **Settings → Devices & S
 
 > Coming from [nanit-sound-light](https://github.com/com6056/nanit-sound-light)? That integration has merged into this one. Its [migration guide](https://github.com/com6056/nanit-sound-light/blob/main/MIGRATION.md) maps every entity id.
 
+## Read-only mode (optional)
+
+Turn on **Read-only mode** during setup, or later under **Settings → Devices & Services → Nanit → Configure → Read-only mode**, if Home Assistant should only *watch*. It gives Home Assistant no control over device settings:
+
+- You get the camera stream, temperature and humidity, and motion and sound detection. (Viewing the stream still asks the camera to stream, as it always does.)
+- There are no switches, lights, numbers, selects or media players. Nothing in Home Assistant (dashboards, automations, scripts or a voice assistant) can put the camera to sleep, change the night light or volume, or control a Sound & Light Machine.
+- The camera has no on/off. A direct `camera.turn_off` or `camera.turn_on` call is refused.
+
+Turning it on removes the control entities, so **automations and scripts that use them stop working** while it's on. Turning it off brings them back with the same names and entity IDs, so those automations work again. The dashboard card stays available, but its controls do nothing in this mode. The setting applies to every device on the account.
+
 ## Dashboard Card
 
 A companion Lovelace card is **bundled with the integration** — no HACS frontend dependencies or manual JS installation required. After setup, the card appears in your card picker automatically.

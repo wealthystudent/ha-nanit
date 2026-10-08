@@ -58,7 +58,7 @@ async def async_setup_entry(
 
 
 class NanitCameraEntity(NanitEntity, Camera):
-    """Nanit camera entity — stream via RTMPS, snapshots from cloud."""
+    """Nanit camera entity — stream via RTMPS, snapshots from cloud (stream still as fallback)."""
 
     _attr_translation_key = "camera"
     _attr_entity_registry_enabled_default = True
@@ -547,16 +547,34 @@ class NanitCameraEntity(NanitEntity, Camera):
         await self._async_fetch_snapshot()
 
     async def _async_fetch_snapshot(self) -> bytes | None:
-        """Fetch a snapshot from the cloud and update the cache."""
+        """Fetch a snapshot and update the cache.
+
+        Tries the cloud snapshot first. Some cameras never return one, which leaves
+        the entity (and HomeKit/dashboard thumbnails) without a still image, so fall
+        back to a keyframe from the live stream.
+        """
+        image: bytes | None = None
         try:
             image = await self._camera.async_get_snapshot()
         except Exception:  # noqa: BLE001
-            _LOGGER.debug("Failed to fetch snapshot for %s", self._camera.uid)
-            return None
+            _LOGGER.debug("Failed to fetch cloud snapshot for %s", self._camera.uid)
+        if image is None:
+            image = await self._async_stream_snapshot()
         if image is not None:
             self._cached_snapshot = image
             self._cached_snapshot_at = time.monotonic()
         return image
+
+    async def _async_stream_snapshot(self) -> bytes | None:
+        """Return a still image taken from the live stream, if one is available."""
+        try:
+            stream = self.stream or await self.async_create_stream()
+            if stream is None:
+                return None
+            return await stream.async_get_image(wait_for_next_keyframe=False)
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug("Failed to get a stream still for %s", self._camera.uid)
+            return None
 
     # ------------------------------------------------------------------
     # On/off

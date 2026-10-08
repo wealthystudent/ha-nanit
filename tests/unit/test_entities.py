@@ -458,6 +458,52 @@ async def test_camera_stream_source_returns_url_when_on() -> None:
     assert entity._stream_source_started_at > 0
 
 
+async def test_camera_image_uses_cloud_snapshot_when_available() -> None:
+    coordinator = _push_coordinator(_camera_state(sleep_mode=False))
+    camera = MagicMock(uid="cam_1")
+    camera.async_get_snapshot = AsyncMock(return_value=b"cloud-jpeg")
+    entity = NanitCameraEntity(coordinator, camera)
+    entity.async_create_stream = AsyncMock()
+
+    image = await entity.async_camera_image()
+
+    assert image == b"cloud-jpeg"
+    entity.async_create_stream.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "cloud_snapshot",
+    [AsyncMock(return_value=None), AsyncMock(side_effect=RuntimeError("no snapshot"))],
+    ids=["cloud-returns-none", "cloud-raises"],
+)
+async def test_camera_image_falls_back_to_stream_still(cloud_snapshot: AsyncMock) -> None:
+    coordinator = _push_coordinator(_camera_state(sleep_mode=False))
+    camera = MagicMock(uid="cam_1")
+    camera.async_get_snapshot = cloud_snapshot
+    stream = MagicMock()
+    stream.async_get_image = AsyncMock(return_value=b"stream-jpeg")
+    entity = NanitCameraEntity(coordinator, camera)
+    entity.async_create_stream = AsyncMock(return_value=stream)
+
+    image = await entity.async_camera_image()
+
+    assert image == b"stream-jpeg"
+    stream.async_get_image.assert_awaited_once_with(wait_for_next_keyframe=False)
+    # Cached like a cloud snapshot, so the next request does not touch the stream.
+    assert await entity.async_camera_image() == b"stream-jpeg"
+    stream.async_get_image.assert_awaited_once()
+
+
+async def test_camera_image_none_when_cloud_and_stream_both_fail() -> None:
+    coordinator = _push_coordinator(_camera_state(sleep_mode=False))
+    camera = MagicMock(uid="cam_1")
+    camera.async_get_snapshot = AsyncMock(return_value=None)
+    entity = NanitCameraEntity(coordinator, camera)
+    entity.async_create_stream = AsyncMock(return_value=None)
+
+    assert await entity.async_camera_image() is None
+
+
 async def test_camera_stream_source_returns_none_when_camera_off() -> None:
     coordinator = _push_coordinator(_camera_state(sleep_mode=True))
     camera = MagicMock(uid="cam_1")

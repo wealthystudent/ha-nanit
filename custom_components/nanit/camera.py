@@ -549,9 +549,9 @@ class NanitCameraEntity(NanitEntity, Camera):
     async def _async_fetch_snapshot(self) -> bytes | None:
         """Fetch a snapshot and update the cache.
 
-        Tries the cloud snapshot first. Some cameras never return one, which leaves
-        the entity (and HomeKit/dashboard thumbnails) without a still image, so fall
-        back to a keyframe from the live stream.
+        Tries the cloud snapshot first. For some cameras the cloud has none (the
+        endpoint answers 404 ``not-found``), which leaves dashboard and HomeKit tiles
+        blank, so fall back to a keyframe from a stream that is already live.
         """
         image: bytes | None = None
         try:
@@ -566,11 +566,19 @@ class NanitCameraEntity(NanitEntity, Camera):
         return image
 
     async def _async_stream_snapshot(self) -> bytes | None:
-        """Return a still image taken from the live stream, if one is available."""
+        """Return a still from the live stream, but only if one is already running.
+
+        Never starts a stream: ``Stream.async_get_image`` adds an output and starts the
+        worker (which sends PUT_STREAMING, and the keepalive would then keep the camera
+        pushing). So this only helps while someone is watching, and a stopped stream
+        whose push has lapsed is left alone.
+        """
+        if not self.available or not self.is_on:
+            return None
+        stream = self.stream
+        if stream is None or not stream.outputs():
+            return None
         try:
-            stream = self.stream or await self.async_create_stream()
-            if stream is None:
-                return None
             return await stream.async_get_image(wait_for_next_keyframe=False)
         except Exception:  # noqa: BLE001
             _LOGGER.debug("Failed to get a stream still for %s", self._camera.uid)

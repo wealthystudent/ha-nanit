@@ -32,6 +32,7 @@ from .models import (
     SensorState,
     SensorType,
     SettingsState,
+    SpeakerCandidate,
     StatusState,
     TransportKind,
 )
@@ -94,6 +95,7 @@ __all__ = [
     "SensorState",
     "SensorType",
     "SettingsState",
+    "SpeakerCandidate",
     "StatusState",
     "TokenManager",
     "TransportKind",

@@ -1765,3 +1765,19 @@ async def test_clock_transport_failures_are_translated(
         else:
             await NanitSLClockDisplaySwitch(coordinator).async_turn_off()
     assert exc_info.value.translation_key == translation_key
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [("Living Room", "Living Room"), ("", "Sound & Light er_1")],
+)
+def test_unpaired_speaker_device_is_named_after_the_machine(name: str, expected: str) -> None:
+    """A speaker with no baby takes the machine's own name, not "<baby> Sound & Light"."""
+    coordinator = _sl_coordinator(SoundLightFullState())
+    coordinator.baby = Baby(uid="", name=name, camera_uid="")
+    coordinator.via_camera_uid = None
+
+    info = NanitSoundLightLight(coordinator).device_info
+
+    assert info["name"] == expected
+    assert ("nanit", "speaker_1") in info["identifiers"]

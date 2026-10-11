@@ -11,7 +11,7 @@ import aiohttp
 from .auth import TokenManager
 from .camera import NanitCamera
 from .exceptions import NanitAuthError
-from .models import Baby, CloudEvent
+from .models import Baby, CloudEvent, SpeakerCandidate
 from .rest import NanitRestClient
 
 _LOGGER = logging.getLogger(__name__)
@@ -140,6 +140,15 @@ class NanitClient:
         """
         return await self._async_with_retry(
             lambda token: self._rest.async_get_events(token, baby_uid, limit),
+        )
+
+    async def async_get_speaker_candidates(self, baby_uid: str) -> list[SpeakerCandidate]:
+        """List every Sound & Light Machine on the account with its pairing status.
+
+        Retries once on a mid-token-life 401 by refreshing the token.
+        """
+        return await self._async_with_retry(
+            lambda token: self._rest.async_get_speaker_candidates(token, baby_uid),
         )
 
     async def async_get_device_token(self, speaker_uid: str) -> str:

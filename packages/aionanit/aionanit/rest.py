@@ -13,7 +13,7 @@ from .exceptions import (
     NanitConnectionError,
     NanitMfaRequiredError,
 )
-from .models import Baby, CloudEvent, NetworkInfo
+from .models import Baby, CloudEvent, NetworkInfo, SpeakerCandidate
 
 DEFAULT_BASE_URL = "https://api.nanit.com"
 _DEFAULT_TIMEOUT = aiohttp.ClientTimeout(total=15)
@@ -356,4 +356,41 @@ class NanitRestClient:
                 baby_uid=baby_uid,
             )
             for msg in body.get("messages", [])
+        ]
+
+    async def async_get_speaker_candidates(
+        self,
+        access_token: str,
+        baby_uid: str,
+    ) -> list[SpeakerCandidate]:
+        """List the account's Sound & Light Machines from a baby's pairing view."""
+        try:
+            resp = await self._session.get(
+                f"{self._base_url}/babies/{baby_uid}/candidates/speakers",
+                headers={**NANIT_API_HEADERS, "Authorization": access_token},
+                timeout=_DEFAULT_TIMEOUT,
+            )
+        except (TimeoutError, aiohttp.ClientError) as err:
+            raise NanitConnectionError(str(err) or type(err).__name__) from err
+
+        if resp.status == 401:
+            raise NanitAuthError("Access token invalid")
+
+        _classify_http_error(resp, "Speaker candidates fetch")
+        try:
+            body = await resp.json()
+        except (TimeoutError, aiohttp.ClientError, ValueError) as err:
+            raise NanitConnectionError(f"Invalid speaker candidates response: {err}") from err
+
+        rows = body.get("speakers") if isinstance(body, dict) else None
+        if not isinstance(rows, list):
+            rows = []
+        return [
+            SpeakerCandidate(
+                uid=row["uid"],
+                name=_sanitize_name(row.get("name")),
+                status=row.get("status") or "",
+            )
+            for row in rows
+            if isinstance(row, dict) and isinstance(row.get("uid"), str) and row["uid"]
         ]

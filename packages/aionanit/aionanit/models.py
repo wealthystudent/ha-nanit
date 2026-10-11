@@ -152,3 +152,17 @@ class CloudEvent:
     event_type: str  # "MOTION", "SOUND", etc.
     timestamp: float  # Unix timestamp
     baby_uid: str
+
+
+@dataclass(frozen=True)
+class SpeakerCandidate:
+    """A Sound & Light Machine as the app's pairing view lists it.
+
+    The view is per baby but covers every speaker on the account, which
+    makes it the only way to find a machine no baby is paired with:
+    /babies carries at most one speaker per baby.
+    """
+
+    uid: str
+    name: str
+    status: str  # "currently-coupled", "already-coupled" or "available"

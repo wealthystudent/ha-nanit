@@ -12,7 +12,7 @@ from aionanit.exceptions import (
     NanitConnectionError,
     NanitMfaRequiredError,
 )
-from aionanit.models import Baby, CloudEvent
+from aionanit.models import Baby, CloudEvent, SpeakerCandidate
 from aionanit.rest import DEFAULT_BASE_URL, NanitRestClient
 
 from .fake_http import FakeSession, mock_api
@@ -21,6 +21,7 @@ LOGIN_URL = f"{DEFAULT_BASE_URL}/login"
 REFRESH_URL = f"{DEFAULT_BASE_URL}/tokens/refresh"
 BABIES_URL = f"{DEFAULT_BASE_URL}/babies"
 EVENTS_URL = f"{DEFAULT_BASE_URL}/babies/baby123/messages?limit=20"
+CANDIDATES_URL = f"{DEFAULT_BASE_URL}/babies/baby123/candidates/speakers"
 DEVICE_TOKEN_URL = f"{DEFAULT_BASE_URL}/speakers/spk001/udtokens"
 
 
@@ -672,3 +673,56 @@ class TestHttpErrorClassification:
             m.get(DEVICE_TOKEN_URL, status=404)
             with pytest.raises(NanitConnectionError, match="HTTP 404"):
                 await client.async_get_device_token("token", "spk001")
+
+
+class TestGetSpeakerCandidates:
+    async def test_parses_every_status(self, client: NanitRestClient) -> None:
+        with mock_api() as m:
+            m.get(
+                CANDIDATES_URL,
+                payload={
+                    "speakers": [
+                        {"uid": "spk_a", "name": "Bedroom", "status": "currently-coupled"},
+                        {"uid": "spk_b", "name": "Living Room", "status": "available"},
+                        {"uid": "spk_c", "name": None, "status": "already-coupled"},
+                    ]
+                },
+            )
+            candidates = await client.async_get_speaker_candidates("token123", "baby123")
+
+        assert candidates == [
+            SpeakerCandidate(uid="spk_a", name="Bedroom", status="currently-coupled"),
+            SpeakerCandidate(uid="spk_b", name="Living Room", status="available"),
+            SpeakerCandidate(uid="spk_c", name="", status="already-coupled"),
+        ]
+
+    async def test_skips_rows_without_a_uid(self, client: NanitRestClient) -> None:
+        with mock_api() as m:
+            m.get(
+                CANDIDATES_URL,
+                payload={"speakers": [{"name": "x"}, {"uid": ""}, "junk", {"uid": "spk_b"}]},
+            )
+            candidates = await client.async_get_speaker_candidates("token123", "baby123")
+
+        assert candidates == [SpeakerCandidate(uid="spk_b", name="", status="")]
+
+    async def test_unexpected_shape_is_empty(self, client: NanitRestClient) -> None:
+        with mock_api() as m:
+            m.get(CANDIDATES_URL, payload={"speakers": "nope"})
+            candidates = await client.async_get_speaker_candidates("token123", "baby123")
+
+        assert candidates == []
+
+    async def test_unauthorized(self, client: NanitRestClient) -> None:
+        with mock_api() as m:
+            m.get(CANDIDATES_URL, status=401)
+
+            with pytest.raises(NanitAuthError):
+                await client.async_get_speaker_candidates("bad_token", "baby123")
+
+    async def test_not_found_is_connection_error(self, client: NanitRestClient) -> None:
+        with mock_api() as m:
+            m.get(CANDIDATES_URL, status=404)
+
+            with pytest.raises(NanitConnectionError):
+                await client.async_get_speaker_candidates("token123", "baby123")

@@ -605,7 +605,9 @@ def _migration_entry(hass: HomeAssistant, options: dict | None = None) -> MockCo
     return entry
 
 
-def _migration_hub(babies=None, speaker_uid_map=None, camera_speaker_pairs=None) -> SimpleNamespace:
+def _migration_hub(
+    babies=None, speaker_uid_map=None, camera_speaker_pairs=None, unpaired_speakers=None
+) -> SimpleNamespace:
     babies = babies if babies is not None else [_MIG_BABY]
     speaker_uid_map = speaker_uid_map if speaker_uid_map is not None else {"baby_4": "spk_4"}
     if camera_speaker_pairs is None:
@@ -618,6 +620,7 @@ def _migration_hub(babies=None, speaker_uid_map=None, camera_speaker_pairs=None)
         babies=babies,
         speaker_uid_map=speaker_uid_map,
         camera_speaker_pairs=camera_speaker_pairs,
+        unpaired_speakers=unpaired_speakers if unpaired_speakers is not None else {},
     )
 
 
@@ -878,3 +881,54 @@ def test_manifest_depends_on_stream() -> None:
         ).read_text()
     )
     assert "stream" in manifest["dependencies"]
+
+
+async def test_unpaired_speakers_are_persisted(hass: HomeAssistant) -> None:
+    entry = _migration_entry(hass)
+
+    await _async_migrate_sl_identities(
+        hass, entry, _migration_hub(unpaired_speakers={"spk_9": "Living Room"})
+    )
+
+    assert entry.data["unpaired_speakers"] == {"spk_9": "Living Room"}
+
+
+async def test_stale_sweep_keeps_unpaired_speakers(hass: HomeAssistant) -> None:
+    """A live or persisted unpaired speaker is never swept as stale."""
+    entry = _migration_entry(hass)
+    hass.config_entries.async_update_entry(
+        entry, data={**entry.data, "unpaired_speakers": {"spk_8": "Kitchen"}}
+    )
+    dev_reg = dr.async_get(hass)
+    live = dev_reg.async_get_or_create(
+        config_entry_id=entry.entry_id, identifiers={(DOMAIN, "spk_9")}
+    )
+    stored = dev_reg.async_get_or_create(
+        config_entry_id=entry.entry_id, identifiers={(DOMAIN, "spk_8")}
+    )
+    gone = dev_reg.async_get_or_create(
+        config_entry_id=entry.entry_id, identifiers={(DOMAIN, "spk_0")}
+    )
+
+    _async_remove_stale_devices(
+        hass, entry, _migration_hub(unpaired_speakers={"spk_9": "Living Room"})
+    )
+
+    assert dev_reg.async_get(live.id) is not None
+    assert dev_reg.async_get(stored.id) is not None
+    assert dev_reg.async_get(gone.id) is None
+
+
+async def test_remove_config_entry_device_prunes_unpaired(hass: HomeAssistant) -> None:
+    from custom_components.nanit import async_remove_config_entry_device
+
+    entry = _migration_entry(hass)
+    hass.config_entries.async_update_entry(
+        entry,
+        data={**entry.data, "unpaired_speakers": {"spk_8": "Kitchen", "spk_9": "Living Room"}},
+    )
+    entry.runtime_data = SimpleNamespace(hub=SimpleNamespace(live_device_uids=set()))
+    device = SimpleNamespace(identifiers={(DOMAIN, "spk_8")})
+
+    assert await async_remove_config_entry_device(hass, entry, device) is True
+    assert entry.data["unpaired_speakers"] == {"spk_9": "Living Room"}

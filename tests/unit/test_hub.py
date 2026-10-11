@@ -900,3 +900,111 @@ async def test_camera_stopped_when_setup_fails(hass: HomeAssistant, mock_nanit_c
     cams[MOCK_BABY_1.camera_uid].async_stop.assert_awaited_once()
     assert MOCK_BABY_1.camera_uid in hub.failed_camera_uids
     assert MOCK_BABY_2.camera_uid in hub.camera_data
+
+
+# ---------------------------------------------------------------------------
+# Unpaired speakers (no baby paired, found via the app's pairing view)
+# ---------------------------------------------------------------------------
+
+
+def _candidate(uid: str, status: str, name: str = "Living Room"):
+    from aionanit.models import SpeakerCandidate
+
+    return SpeakerCandidate(uid=uid, name=name, status=status)
+
+
+async def _setup_with_candidates(hass, mock_nanit_client, candidates, entry=None):
+    mock_nanit_client.async_get_babies.return_value = [MOCK_BABY_SPEAKER_ONLY]
+    if isinstance(candidates, BaseException):
+        mock_nanit_client.async_get_speaker_candidates.side_effect = candidates
+    else:
+        mock_nanit_client.async_get_speaker_candidates.return_value = candidates
+    entry = entry or _make_entry(hass)
+    hub = NanitHub(hass, MagicMock(), entry)
+    sl_patch, coord_patch = _speaker_patches()
+    with sl_patch, coord_patch as coord_cls:
+        coord_cls.return_value = MagicMock(async_setup=AsyncMock())
+        await hub.async_setup()
+    return hub, coord_cls
+
+
+async def test_unpaired_speaker_is_set_up(hass: HomeAssistant, mock_nanit_client) -> None:
+    """An available speaker gets its own device next to the paired one."""
+    hub, coord_cls = await _setup_with_candidates(
+        hass,
+        mock_nanit_client,
+        [_candidate("spk_5", "currently-coupled", "Den"), _candidate("spk_9", "available")],
+    )
+
+    mock_nanit_client.async_get_speaker_candidates.assert_awaited_once_with("baby_5")
+    assert set(hub.speaker_data) == {"spk_5", "spk_9"}
+    placeholder = hub.speaker_data["spk_9"].baby
+    assert (placeholder.uid, placeholder.name, placeholder.camera_uid) == ("", "Living Room", "")
+    assert hub.unpaired_speakers == {"spk_9": "Living Room"}
+    assert "spk_9" in hub.live_device_uids
+    vias = [call.kwargs["via_camera_uid"] for call in coord_cls.call_args_list]
+    assert vias == [None, None]
+
+
+async def test_speakers_paired_elsewhere_are_ignored(
+    hass: HomeAssistant, mock_nanit_client
+) -> None:
+    """Only "available" speakers are unpaired, and a baby's own speaker is never doubled."""
+    hub, _ = await _setup_with_candidates(
+        hass,
+        mock_nanit_client,
+        [_candidate("spk_7", "already-coupled"), _candidate("spk_5", "available")],
+    )
+
+    assert set(hub.speaker_data) == {"spk_5"}
+    assert hub.unpaired_speakers == {}
+
+
+async def test_unpaired_lookup_failure_falls_back_to_stored(
+    hass: HomeAssistant, mock_nanit_client
+) -> None:
+    """A failed lookup keeps the last known unpaired speakers and is never fatal."""
+    entry = _make_entry(hass)
+    hass.config_entries.async_update_entry(
+        entry, data={**entry.data, "unpaired_speakers": {"spk_9": "Living Room"}}
+    )
+    hub, _ = await _setup_with_candidates(
+        hass, mock_nanit_client, NanitConnectionError("HTTP 500"), entry=entry
+    )
+
+    assert set(hub.speaker_data) == {"spk_5", "spk_9"}
+    assert hub.unpaired_speakers == {"spk_9": "Living Room"}
+    # Not live: the account did not confirm it this boot.
+    assert "spk_9" not in hub.live_device_uids
+
+
+async def test_unpaired_lookup_auth_error_does_not_force_reauth(
+    hass: HomeAssistant, mock_nanit_client
+) -> None:
+    hub, _ = await _setup_with_candidates(hass, mock_nanit_client, NanitAuthError("nope"))
+
+    assert set(hub.speaker_data) == {"spk_5"}
+    assert hub.unpaired_speakers == {}
+
+
+async def test_unpaired_speaker_failure_keeps_the_rest(
+    hass: HomeAssistant, mock_nanit_client
+) -> None:
+    """An unpaired speaker that fails to start is non-fatal like any other."""
+    mock_nanit_client.async_get_babies.return_value = [MOCK_BABY_SPEAKER_ONLY]
+    mock_nanit_client.async_get_speaker_candidates.return_value = [
+        _candidate("spk_9", "available")
+    ]
+    hub = NanitHub(hass, MagicMock(), _make_entry(hass))
+    sl_patch, coord_patch = _speaker_patches()
+    with sl_patch, coord_patch as coord_cls:
+
+        def _make(*args, **kwargs):
+            baby = args[3]
+            fail = AsyncMock(side_effect=NanitConnectionError("down"))
+            return MagicMock(async_setup=fail if not baby.uid else AsyncMock())
+
+        coord_cls.side_effect = _make
+        await hub.async_setup()
+
+    assert set(hub.speaker_data) == {"spk_5"}

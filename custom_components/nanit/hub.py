@@ -26,11 +26,18 @@ from aionanit.exceptions import (
     NanitAuthError,
     NanitCameraUnavailable,
     NanitConnectionError,
+    NanitError,
 )
 from aionanit.models import Baby
 
 from .aionanit_sl.sound_light import NanitSoundLight
-from .const import CONF_CAMERA_IPS, CONF_REFRESH_TOKEN, CONF_SPEAKER_IPS, DOMAIN
+from .const import (
+    CONF_CAMERA_IPS,
+    CONF_REFRESH_TOKEN,
+    CONF_SPEAKER_IPS,
+    CONF_UNPAIRED_SPEAKERS,
+    DOMAIN,
+)
 from .coordinator import (
     NanitCloudCoordinator,
     NanitNetworkCoordinator,
@@ -60,6 +67,9 @@ _SPEAKER_SETUP_TIMEOUT: float = 60.0
 # Timeout for the raw /babies fetches (matches aionanit's own request
 # timeout; without it the shared HA session's 5 minute default applies).
 _RAW_FETCH_TIMEOUT = aiohttp.ClientTimeout(total=15)
+# Pairing status of a speaker no baby is paired with (the app's
+# AVAILABLE_FOR_COUPLING).
+_UNPAIRED_STATUS = "available"
 
 # Device uids are used as registry identifiers, storage keys, and URL
 # components, so values from the API (or persisted from it) must look like
@@ -122,6 +132,8 @@ class NanitHub:
         self._speaker_uid_map: dict[str, str] = {}
         self._camera_speaker_pairs: dict[str, str] = {}
         self._live_speaker_uids: set[str] = set()
+        self._unpaired_speakers: dict[str, str] = {}
+        self._live_unpaired_uids: set[str] = set()
         self._sound_lights: dict[str, NanitSoundLight] = {}
         self._unsubscribe_tokens: Callable[[], None] | None = None
 
@@ -166,15 +178,21 @@ class NanitHub:
         return self._camera_speaker_pairs
 
     @property
+    def unpaired_speakers(self) -> dict[str, str]:
+        """Return speakers no baby is paired with, speaker_uid → name."""
+        return self._unpaired_speakers
+
+    @property
     def live_device_uids(self) -> set[str]:
         """Return uids of devices the account currently reports.
 
         Camera uids plus speaker uids taken from the live /babies rows
-        only (not the persisted fallback map), for deciding whether a
-        registry device may be deleted by the user.
+        and the live pairing view only (not the persisted fallbacks), for
+        deciding whether a registry device may be deleted by the user.
         """
         live = {baby.camera_uid for baby in self._babies if baby.camera_uid}
         live |= self._live_speaker_uids
+        live |= self._live_unpaired_uids
         return live
 
     async def async_setup(self) -> None:
@@ -209,6 +227,9 @@ class NanitHub:
 
         speaker_uid_map = await self._async_resolve_speaker_uids(babies)
         self._speaker_uid_map = speaker_uid_map
+        self._unpaired_speakers = await self._async_resolve_unpaired_speakers(
+            babies, speaker_uid_map
+        )
         # NOTE: the resolved map is persisted by the identity migration in
         # __init__.py, not here — persisting it early would overwrite the
         # legacy camera-keyed map before the migration has used it.
@@ -244,6 +265,19 @@ class NanitHub:
                     )
                 )
                 owners.append(("speaker", baby))
+
+        # A machine no baby is paired with has no /babies row to hang off.
+        # Its placeholder baby has no uid, which the S&L device name and
+        # the setup-failure log fall back on below.
+        for speaker_uid, name in self._unpaired_speakers.items():
+            placeholder = Baby(uid="", name=name, camera_uid="", speaker_uid=speaker_uid)
+            tasks.append(
+                asyncio.wait_for(
+                    self._setup_speaker(placeholder, speaker_uid, speaker_ips.get(speaker_uid)),
+                    timeout=_SPEAKER_SETUP_TIMEOUT,
+                )
+            )
+            owners.append(("speaker", placeholder))
 
         if not tasks:
             # Babies exist but nothing could even be attempted (no cameras
@@ -466,6 +500,48 @@ class NanitHub:
                 self._live_speaker_uids |= set(speaker_uid_map.values())
 
         return speaker_uid_map
+
+    async def _async_resolve_unpaired_speakers(
+        self, babies: list[Baby], speaker_uid_map: dict[str, str]
+    ) -> dict[str, str]:
+        """Find Sound & Light Machines on the account that no baby is paired with.
+
+        /babies carries at most one speaker per baby, so an unpaired
+        machine never shows up there. The app's pairing view lists every
+        speaker on the account, and an ``available`` one is unpaired.
+
+        Best-effort: if the lookup fails, fall back to the unpaired speakers
+        persisted from the last one that succeeded, so a transient error
+        neither drops a working machine nor lets stale cleanup sweep it.
+        Returns speaker_uid → name, minus anything a baby already claims.
+        """
+        stored_raw = self._entry.data.get(CONF_UNPAIRED_SPEAKERS, {})
+        stored = (
+            {
+                uid: name
+                for uid, name in stored_raw.items()
+                if isinstance(uid, str) and uid and isinstance(name, str)
+            }
+            if isinstance(stored_raw, dict)
+            else {}
+        )
+        self._live_unpaired_uids = set()
+        found: dict[str, str] | None = None
+        baby_uid = next((baby.uid for baby in babies if baby.uid), None)
+        if baby_uid:
+            try:
+                candidates = await self._client.async_get_speaker_candidates(baby_uid)
+            except NanitError as err:
+                # Including auth errors: /babies just succeeded with this
+                # token, and an optional lookup must never force a reauth.
+                _LOGGER.debug("Speaker candidates lookup failed, using stored list: %s", err)
+            else:
+                found = {c.uid: c.name for c in candidates if c.status == _UNPAIRED_STATUS}
+                self._live_unpaired_uids = set(found)
+
+        paired = set(speaker_uid_map.values())
+        result = found if found is not None else stored
+        return {uid: name for uid, name in result.items() if uid not in paired}
 
     async def _setup_camera(
         self,

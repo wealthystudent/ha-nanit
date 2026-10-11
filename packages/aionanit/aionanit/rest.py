@@ -384,7 +384,9 @@ class NanitRestClient:
 
         rows = body.get("speakers") if isinstance(body, dict) else None
         if not isinstance(rows, list):
-            rows = []
+            # Not "no speakers": a caller must be able to tell an unexpected
+            # shape from a real empty list.
+            raise NanitConnectionError("Invalid speaker candidates response: no speakers list")
         return [
             SpeakerCandidate(
                 uid=row["uid"],

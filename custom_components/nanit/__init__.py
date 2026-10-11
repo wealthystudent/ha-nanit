@@ -343,7 +343,9 @@ async def _async_migrate_sl_identities(
     # consumed the legacy camera-keyed shape. Persisting earlier would
     # destroy the pairing a crashed or interrupted first boot still needs.
     stored_map = entry.data.get("speaker_uid_map", {})
-    if hub.speaker_uid_map and hub.speaker_uid_map != stored_map:
+    # An empty map is only written when this setup emptied it on purpose
+    # (speakers moved to unpaired), never after a resolution collapse.
+    if (hub.speaker_uid_map or hub.unpaired_from_map) and hub.speaker_uid_map != stored_map:
         hass.config_entries.async_update_entry(
             entry,
             data={**entry.data, "speaker_uid_map": hub.speaker_uid_map},
@@ -352,7 +354,9 @@ async def _async_migrate_sl_identities(
 
     # Unpaired speakers are persisted for the same reason: a failed lookup
     # on a later boot falls back to this list instead of dropping them.
-    if hub.unpaired_speakers != entry.data.get(CONF_UNPAIRED_SPEAKERS, {}):
+    # Skipped when /babies came back empty: setup never got as far as the
+    # lookup, and writing its empty result would erase the fallback.
+    if hub.babies and hub.unpaired_speakers != entry.data.get(CONF_UNPAIRED_SPEAKERS, {}):
         hass.config_entries.async_update_entry(
             entry,
             data={**entry.data, CONF_UNPAIRED_SPEAKERS: hub.unpaired_speakers},

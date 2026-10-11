@@ -992,9 +992,7 @@ async def test_unpaired_speaker_failure_keeps_the_rest(
 ) -> None:
     """An unpaired speaker that fails to start is non-fatal like any other."""
     mock_nanit_client.async_get_babies.return_value = [MOCK_BABY_SPEAKER_ONLY]
-    mock_nanit_client.async_get_speaker_candidates.return_value = [
-        _candidate("spk_9", "available")
-    ]
+    mock_nanit_client.async_get_speaker_candidates.return_value = [_candidate("spk_9", "available")]
     hub = NanitHub(hass, MagicMock(), _make_entry(hass))
     sl_patch, coord_patch = _speaker_patches()
     with sl_patch, coord_patch as coord_cls:
@@ -1008,3 +1006,133 @@ async def test_unpaired_speaker_failure_keeps_the_rest(
         await hub.async_setup()
 
     assert set(hub.speaker_data) == {"spk_5"}
+
+
+async def test_successful_lookup_merges_with_stored_list(
+    hass: HomeAssistant, mock_nanit_client
+) -> None:
+    """One omission from a live lookup must not drop a known speaker."""
+    entry = _make_entry(hass)
+    hass.config_entries.async_update_entry(
+        entry, data={**entry.data, "unpaired_speakers": {"spk_8": "Kitchen"}}
+    )
+    hub, _ = await _setup_with_candidates(
+        hass, mock_nanit_client, [_candidate("spk_9", "available")], entry=entry
+    )
+
+    assert hub.unpaired_speakers == {"spk_8": "Kitchen", "spk_9": "Living Room"}
+    assert set(hub.speaker_data) == {"spk_5", "spk_8", "spk_9"}
+    # Only the live one counts as live, so the user can still delete spk_8.
+    assert "spk_9" in hub.live_device_uids
+    assert "spk_8" not in hub.live_device_uids
+
+
+async def test_malformed_uids_are_ignored(hass: HomeAssistant, mock_nanit_client) -> None:
+    """Uids become registry ids, file names and URL paths, so they are validated."""
+    entry = _make_entry(hass)
+    hass.config_entries.async_update_entry(
+        entry, data={**entry.data, "unpaired_speakers": {"../etc": "Bad", "spk_8": "Kitchen"}}
+    )
+    hub, _ = await _setup_with_candidates(
+        hass,
+        mock_nanit_client,
+        [_candidate("spk/9", "available"), _candidate("spk_9", "available")],
+        entry=entry,
+    )
+
+    assert hub.unpaired_speakers == {"spk_8": "Kitchen", "spk_9": "Living Room"}
+
+
+async def test_speaker_unpaired_in_the_app_leaves_the_stale_map(
+    hass: HomeAssistant, mock_nanit_client
+) -> None:
+    """A speaker only the persisted map remembers moves to unpaired when the view says so."""
+    entry = _make_entry(hass)
+    hass.config_entries.async_update_entry(
+        entry, data={**entry.data, "speaker_uid_map": {"baby_5": "spk_7"}}
+    )
+    mock_nanit_client.async_get_babies.return_value = [
+        Baby(uid="baby_5", name="Den", camera_uid="", speaker_uid=None)
+    ]
+    mock_nanit_client.async_get_speaker_candidates.return_value = [
+        _candidate("spk_7", "available", "Den machine")
+    ]
+    hub = NanitHub(hass, MagicMock(), entry)
+    sl_patch, coord_patch = _speaker_patches()
+    with sl_patch, coord_patch as coord_cls:
+        coord_cls.return_value = MagicMock(async_setup=AsyncMock())
+        await hub.async_setup()
+
+    assert hub.speaker_uid_map == {}
+    assert hub.unpaired_from_map == {"spk_7"}
+    assert hub.unpaired_speakers == {"spk_7": "Den machine"}
+    assert hub.speaker_data["spk_7"].baby.uid == ""
+
+
+async def test_live_babies_row_wins_over_the_view(hass: HomeAssistant, mock_nanit_client) -> None:
+    """A speaker a live /babies row claims stays paired even if the view disagrees."""
+    hub, _ = await _setup_with_candidates(
+        hass, mock_nanit_client, [_candidate("spk_5", "available")]
+    )
+
+    assert hub.speaker_uid_map == {"baby_5": "spk_5"}
+    assert hub.unpaired_from_map == set()
+    assert hub.unpaired_speakers == {}
+
+
+async def test_lookup_tries_the_next_baby(hass: HomeAssistant, mock_nanit_client) -> None:
+    mock_nanit_client.async_get_babies.return_value = [MOCK_BABY_SPEAKER_ONLY, MOCK_BABY_BOTH]
+    mock_nanit_client.camera.side_effect = lambda **kw: _make_mock_camera(kw["uid"], kw["baby_uid"])
+    mock_nanit_client.async_get_speaker_candidates.side_effect = [
+        NanitConnectionError("HTTP 403"),
+        [_candidate("spk_9", "available")],
+    ]
+    hub = NanitHub(hass, MagicMock(), _make_entry(hass))
+    sl_patch, coord_patch = _speaker_patches()
+    with (
+        patch("custom_components.nanit.hub.NanitPushCoordinator") as push_cls,
+        sl_patch,
+        coord_patch as coord_cls,
+    ):
+        push_cls.return_value = MagicMock(async_setup=AsyncMock())
+        coord_cls.return_value = MagicMock(async_setup=AsyncMock())
+        await hub.async_setup()
+
+    assert mock_nanit_client.async_get_speaker_candidates.await_count == 2
+    assert hub.unpaired_speakers == {"spk_9": "Living Room"}
+    assert "spk_9" in hub.live_device_uids
+
+
+async def test_fallback_to_stored_list_warns(
+    hass: HomeAssistant, mock_nanit_client, caplog: pytest.LogCaptureFixture
+) -> None:
+    entry = _make_entry(hass)
+    hass.config_entries.async_update_entry(
+        entry, data={**entry.data, "unpaired_speakers": {"spk_9": "Living Room"}}
+    )
+    await _setup_with_candidates(
+        hass, mock_nanit_client, NanitConnectionError("HTTP 500"), entry=entry
+    )
+
+    assert "using the 1 from the last lookup" in caplog.text
+
+
+async def test_unnamed_unpaired_speaker_failure_logs_a_real_name(
+    hass: HomeAssistant, mock_nanit_client, caplog: pytest.LogCaptureFixture
+) -> None:
+    mock_nanit_client.async_get_babies.return_value = [MOCK_BABY_SPEAKER_ONLY]
+    mock_nanit_client.async_get_speaker_candidates.return_value = [
+        _candidate("spk_9abcdefgh", "available", "")
+    ]
+    hub = NanitHub(hass, MagicMock(), _make_entry(hass))
+    sl_patch, coord_patch = _speaker_patches()
+    with sl_patch, coord_patch as coord_cls:
+
+        def _make(*args, **kwargs):
+            fail = AsyncMock(side_effect=NanitConnectionError("down"))
+            return MagicMock(async_setup=fail if not args[3].uid else AsyncMock())
+
+        coord_cls.side_effect = _make
+        await hub.async_setup()
+
+    assert "Sound & Light Machine for Sound & Light spk_9abc failed" in caplog.text

@@ -706,12 +706,22 @@ class TestGetSpeakerCandidates:
 
         assert candidates == [SpeakerCandidate(uid="spk_b", name="", status="")]
 
-    async def test_unexpected_shape_is_empty(self, client: NanitRestClient) -> None:
+    async def test_empty_list_is_authoritative(self, client: NanitRestClient) -> None:
         with mock_api() as m:
-            m.get(CANDIDATES_URL, payload={"speakers": "nope"})
+            m.get(CANDIDATES_URL, payload={"speakers": []})
             candidates = await client.async_get_speaker_candidates("token123", "baby123")
 
         assert candidates == []
+
+    @pytest.mark.parametrize("payload", [{"speakers": None}, {"devices": []}, ["x"]])
+    async def test_unexpected_shape_is_connection_error(
+        self, client: NanitRestClient, payload: object
+    ) -> None:
+        with mock_api() as m:
+            m.get(CANDIDATES_URL, payload=payload)
+
+            with pytest.raises(NanitConnectionError):
+                await client.async_get_speaker_candidates("token123", "baby123")
 
     async def test_unauthorized(self, client: NanitRestClient) -> None:
         with mock_api() as m:

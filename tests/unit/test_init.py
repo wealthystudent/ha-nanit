@@ -621,6 +621,7 @@ def _migration_hub(
         speaker_uid_map=speaker_uid_map,
         camera_speaker_pairs=camera_speaker_pairs,
         unpaired_speakers=unpaired_speakers if unpaired_speakers is not None else {},
+        unpaired_from_map=set(),
     )
 
 
@@ -931,4 +932,44 @@ async def test_remove_config_entry_device_prunes_unpaired(hass: HomeAssistant) -
     device = SimpleNamespace(identifiers={(DOMAIN, "spk_8")})
 
     assert await async_remove_config_entry_device(hass, entry, device) is True
+    assert entry.data["unpaired_speakers"] == {"spk_9": "Living Room"}
+
+
+async def test_emptied_speaker_map_is_persisted_when_moved_to_unpaired(
+    hass: HomeAssistant,
+) -> None:
+    """A map emptied on purpose is written, unlike one from a resolution collapse."""
+    entry = _migration_entry(hass)
+    hass.config_entries.async_update_entry(
+        entry, data={**entry.data, "speaker_uid_map": {"baby_4": "spk_4"}}
+    )
+    hub = _migration_hub(speaker_uid_map={}, unpaired_speakers={"spk_4": "Nursery"})
+    hub.unpaired_from_map = {"spk_4"}
+
+    await _async_migrate_sl_identities(hass, entry, hub)
+
+    assert entry.data["speaker_uid_map"] == {}
+    assert entry.data["unpaired_speakers"] == {"spk_4": "Nursery"}
+
+
+async def test_empty_speaker_map_from_a_collapse_is_not_persisted(hass: HomeAssistant) -> None:
+    entry = _migration_entry(hass)
+    hass.config_entries.async_update_entry(
+        entry, data={**entry.data, "speaker_uid_map": {"baby_4": "spk_4"}}
+    )
+
+    await _async_migrate_sl_identities(hass, entry, _migration_hub(speaker_uid_map={}))
+
+    assert entry.data["speaker_uid_map"] == {"baby_4": "spk_4"}
+
+
+async def test_empty_babies_does_not_erase_stored_unpaired(hass: HomeAssistant) -> None:
+    """With no babies the lookup never ran, so its empty result is not written."""
+    entry = _migration_entry(hass)
+    hass.config_entries.async_update_entry(
+        entry, data={**entry.data, "unpaired_speakers": {"spk_9": "Living Room"}}
+    )
+
+    await _async_migrate_sl_identities(hass, entry, _migration_hub(babies=[], speaker_uid_map={}))
+
     assert entry.data["unpaired_speakers"] == {"spk_9": "Living Room"}

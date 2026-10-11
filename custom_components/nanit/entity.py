@@ -16,7 +16,7 @@ from .coordinator import (
     NanitSoundLightCoordinator,
 )
 from .device_links import HAS_DEVICE_ID_LINKS, async_get_device
-from .sanitize import display_name, sanitize_name
+from .sanitize import display_name, speaker_display_name
 
 
 class NanitEntity(CoordinatorEntity[NanitPushCoordinator]):
@@ -81,7 +81,7 @@ class NanitSoundLightEntity(CoordinatorEntity[NanitSoundLightCoordinator]):
         else:
             # Unpaired speaker: the placeholder baby carries the machine's
             # own name from the Nanit app.
-            name = sanitize_name(baby.name) or f"Sound & Light {speaker_uid[-4:]}"
+            name = speaker_display_name(baby.name, speaker_uid)
         info = DeviceInfo(
             identifiers={(DOMAIN, speaker_uid)},
             name=name,

@@ -492,6 +492,7 @@ async def test_async_get_config_entry_diagnostics_redacts_sensitive_fields() -> 
             "password": "secret",
             "access_token": "token",
             "refresh_token": "refresh",
+            "unpaired_speakers": {"spk_9": "Emma's Nursery"},
         },
         options={
             "camera_ip": "192.168.0.10",
@@ -508,6 +509,7 @@ async def test_async_get_config_entry_diagnostics_redacts_sensitive_fields() -> 
     assert result["config_entry_data"]["password"] == REDACTED
     assert result["config_entry_data"]["access_token"] == REDACTED
     assert result["config_entry_data"]["refresh_token"] == REDACTED
+    assert result["config_entry_data"]["unpaired_speakers"] == REDACTED
     assert result["config_entry_options"]["camera_ip"] == REDACTED
     assert result["config_entry_options"]["camera_ips"] == REDACTED
     assert result["config_entry_options"]["speaker_ip"] == REDACTED
@@ -1769,7 +1771,7 @@ async def test_clock_transport_failures_are_translated(
 
 @pytest.mark.parametrize(
     ("name", "expected"),
-    [("Living Room", "Living Room"), ("", "Sound & Light er_1")],
+    [("Living Room", "Living Room"), ("", "Sound & Light speaker_")],
 )
 def test_unpaired_speaker_device_is_named_after_the_machine(name: str, expected: str) -> None:
     """A speaker with no baby takes the machine's own name, not "<baby> Sound & Light"."""

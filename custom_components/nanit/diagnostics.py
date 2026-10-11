@@ -26,6 +26,7 @@ TO_REDACT = {
     "speaker_ips",
     "speaker_uid",
     "speaker_uid_map",
+    "unpaired_speakers",
 }
 
 

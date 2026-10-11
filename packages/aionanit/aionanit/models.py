@@ -136,7 +136,7 @@ class NetworkInfo:
 
 @dataclass(frozen=True)
 class Baby:
-    uid: str
+    uid: str  # "" = placeholder for a speaker no baby is paired with
     name: str
     camera_uid: str  # "" = no camera paired (standalone Sound & Light baby)
     speaker_uid: str | None = None

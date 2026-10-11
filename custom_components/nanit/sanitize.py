@@ -28,3 +28,9 @@ def display_name(value: str | None, uid: str) -> str:
     """Return a sanitized display name with a UID-based fallback for unnamed babies."""
     name = sanitize_name(value)
     return name if name else f"Baby {uid[:8]}"
+
+
+def speaker_display_name(value: str | None, uid: str) -> str:
+    """Return a sanitized speaker name with a UID-based fallback for unnamed machines."""
+    name = sanitize_name(value)
+    return name if name else f"Sound & Light {uid[:8]}"

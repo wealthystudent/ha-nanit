@@ -47,6 +47,8 @@ Use the release zip, not a copy of the repository: the source on `main` carries 
 3. Enter the MFA code sent to your device (use the latest code — they expire quickly).
 4. Done — all devices on your account (cameras and Sound & Light Machines) are discovered automatically.
 
+A Sound & Light Machine that isn't paired to any baby in the Nanit app is picked up too, as its own device named after the machine. This is new, so please open an issue if one shows up but doesn't respond.
+
 ## What you get
 
 **Per camera:**

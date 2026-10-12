@@ -900,3 +900,104 @@ async def test_camera_stopped_when_setup_fails(hass: HomeAssistant, mock_nanit_c
     cams[MOCK_BABY_1.camera_uid].async_stop.assert_awaited_once()
     assert MOCK_BABY_1.camera_uid in hub.failed_camera_uids
     assert MOCK_BABY_2.camera_uid in hub.camera_data
+
+
+async def _setup_moved_speaker(hass, mock_nanit_client, stored_map):
+    """Speaker spk_7 moved from Den (baby_a) to Nursery (baby_b) in the app."""
+    mock_nanit_client.async_get_babies.return_value = [
+        Baby(uid="baby_a", name="Den", camera_uid="", speaker_uid=None),
+        Baby(uid="baby_b", name="Nursery", camera_uid="", speaker_uid="spk_7"),
+    ]
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={**mock_entry_data_v2(), "speaker_uid_map": stored_map},
+        version=2,
+        unique_id=MOCK_EMAIL,
+    )
+    entry.add_to_hass(hass)
+    hub = NanitHub(hass, MagicMock(), entry)
+    sl_patch, coord_patch = _speaker_patches()
+    with sl_patch, coord_patch as coord_cls:
+        coord_cls.return_value = MagicMock(async_setup=AsyncMock())
+        await hub.async_setup()
+    return hub, coord_cls
+
+
+async def test_speaker_moved_between_babies_is_set_up_once(
+    hass: HomeAssistant, mock_nanit_client
+) -> None:
+    """The live row wins, so the stale stored pairing doesn't set the speaker up again."""
+    hub, coord_cls = await _setup_moved_speaker(hass, mock_nanit_client, {"baby_a": "spk_7"})
+
+    assert hub.speaker_uid_map == {"baby_b": "spk_7"}
+    assert coord_cls.call_count == 1
+    assert hub.speaker_data["spk_7"].baby.uid == "baby_b"
+
+
+async def test_speaker_moved_from_a_legacy_camera_keyed_entry_is_set_up_once(
+    hass: HomeAssistant, mock_nanit_client
+) -> None:
+    """Same for the old camera-keyed shape, whose pairing the migration still needs."""
+    mock_nanit_client.camera.side_effect = lambda **kw: _make_mock_camera(kw["uid"], kw["baby_uid"])
+    mock_nanit_client.async_get_babies.return_value = [
+        Baby(uid="baby_a", name="Den", camera_uid="cam_a", speaker_uid=None),
+        Baby(uid="baby_b", name="Nursery", camera_uid="", speaker_uid="spk_7"),
+    ]
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={**mock_entry_data_v2(), "speaker_uid_map": {"cam_a": "spk_7"}},
+        version=2,
+        unique_id=MOCK_EMAIL,
+    )
+    entry.add_to_hass(hass)
+    hub = NanitHub(hass, MagicMock(), entry)
+    sl_patch, coord_patch = _speaker_patches()
+    with (
+        patch("custom_components.nanit.hub.NanitPushCoordinator") as push_cls,
+        sl_patch,
+        coord_patch as coord_cls,
+    ):
+        push_cls.return_value = MagicMock(async_setup=AsyncMock())
+        coord_cls.return_value = MagicMock(async_setup=AsyncMock())
+        await hub.async_setup()
+
+    assert hub.speaker_uid_map == {"baby_b": "spk_7"}
+    assert coord_cls.call_count == 1
+    assert hub.camera_speaker_pairs == {"cam_a": "spk_7"}
+
+
+async def test_stored_pairings_still_fill_in_for_a_missing_row(
+    hass: HomeAssistant, mock_nanit_client
+) -> None:
+    """A stored pairing is still used when no live row claims its speaker."""
+    hub, coord_cls = await _setup_moved_speaker(
+        hass, mock_nanit_client, {"baby_a": "spk_8", "baby_b": "spk_7"}
+    )
+
+    assert hub.speaker_uid_map == {"baby_a": "spk_8", "baby_b": "spk_7"}
+    assert coord_cls.call_count == 2
+
+
+async def test_map_saved_with_the_speaker_under_both_babies_sets_it_up_once(
+    hass: HomeAssistant, mock_nanit_client
+) -> None:
+    """Main persisted both pairings after a move, and the first stored one wins."""
+    mock_nanit_client.async_get_babies.return_value = [
+        Baby(uid="baby_a", name="Den", camera_uid="", speaker_uid=None),
+        Baby(uid="baby_b", name="Nursery", camera_uid="", speaker_uid=None),
+    ]
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={**mock_entry_data_v2(), "speaker_uid_map": {"baby_b": "spk_7", "baby_a": "spk_7"}},
+        version=2,
+        unique_id=MOCK_EMAIL,
+    )
+    entry.add_to_hass(hass)
+    hub = NanitHub(hass, MagicMock(), entry)
+    sl_patch, coord_patch = _speaker_patches()
+    with sl_patch, coord_patch as coord_cls:
+        coord_cls.return_value = MagicMock(async_setup=AsyncMock())
+        await hub.async_setup()
+
+    assert hub.speaker_uid_map == {"baby_b": "spk_7"}
+    assert coord_cls.call_count == 1

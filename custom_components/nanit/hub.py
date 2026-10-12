@@ -445,11 +445,20 @@ class NanitHub:
         if stored:
             baby_uids = {baby.uid for baby in babies}
             by_camera = {baby.camera_uid: baby.uid for baby in babies if baby.camera_uid}
+            # A speaker belongs to one baby. Live rows were added first, so
+            # a stored pairing for a speaker that has since moved to another
+            # baby is skipped instead of setting the speaker up twice.
+            claimed = set(speaker_uid_map.values())
             for key, uid in stored.items():
                 if key in baby_uids:
-                    speaker_uid_map.setdefault(key, uid)
+                    if uid not in claimed and key not in speaker_uid_map:
+                        speaker_uid_map[key] = uid
+                        claimed.add(uid)
                 elif key in by_camera:
-                    speaker_uid_map.setdefault(by_camera[key], uid)
+                    baby_uid = by_camera[key]
+                    if uid not in claimed and baby_uid not in speaker_uid_map:
+                        speaker_uid_map[baby_uid] = uid
+                        claimed.add(uid)
                     self._camera_speaker_pairs.setdefault(key, uid)
                 else:
                     # Legacy camera-keyed entry whose camera is no longer on

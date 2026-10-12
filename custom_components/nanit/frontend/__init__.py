@@ -14,9 +14,7 @@ from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlparse
 
-# Re-exported by homeassistant.components.http without __all__, so strict mypy
-# flags it. The module path is the public one on every supported HA version.
-from homeassistant.components.http import StaticPathConfig  # type: ignore[attr-defined]
+from homeassistant.components.http import StaticPathConfig
 from homeassistant.components.lovelace import LovelaceData
 from homeassistant.components.lovelace.resources import ResourceStorageCollection
 from homeassistant.core import HomeAssistant

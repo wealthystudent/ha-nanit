@@ -724,13 +724,22 @@ async def test_reauth_mfa_connection_error_shows_error(
     assert _as_dict(result_data.get("errors")).get("base") == "cannot_connect"
 
 
+async def _open_device_options(hass: HomeAssistant, entry: MockConfigEntry) -> Any:
+    """Open the options flow and pick the device-IP branch of the menu."""
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result.get("type") is FlowResultType.MENU
+    return await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "device"}
+    )
+
+
 async def test_options_flow_init_no_cameras_aborts(hass: HomeAssistant) -> None:
     hass = await _resolve_hass(hass)
     entry = MockConfigEntry(domain=DOMAIN, options={})
     entry.runtime_data = SimpleNamespace(hub=SimpleNamespace(babies=[], speaker_uid_map={}))
     entry.add_to_hass(hass)
 
-    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await _open_device_options(hass, entry)
 
     assert result.get("type") is FlowResultType.ABORT
     assert result.get("reason") == "no_cameras"
@@ -746,7 +755,7 @@ async def test_options_flow_init_single_camera_goes_to_camera_ip(
     )
     entry.add_to_hass(hass)
 
-    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await _open_device_options(hass, entry)
 
     assert result.get("type") is FlowResultType.FORM
     assert result.get("step_id") == "camera_ip"
@@ -762,10 +771,10 @@ async def test_options_flow_init_multiple_cameras_shows_selector(
     )
     entry.add_to_hass(hass)
 
-    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await _open_device_options(hass, entry)
 
     assert result.get("type") is FlowResultType.FORM
-    assert result.get("step_id") == "init"
+    assert result.get("step_id") == "device"
 
 
 async def test_options_flow_camera_ip_sets_ip(hass: HomeAssistant) -> None:
@@ -776,7 +785,7 @@ async def test_options_flow_camera_ip_sets_ip(hass: HomeAssistant) -> None:
     )
     entry.add_to_hass(hass)
 
-    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await _open_device_options(hass, entry)
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
         {CONF_CAMERA_IP: "192.168.1.25"},
@@ -797,9 +806,9 @@ async def test_options_flow_multi_camera_select_then_set_ip(
     )
     entry.add_to_hass(hass)
 
-    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await _open_device_options(hass, entry)
     assert result.get("type") is FlowResultType.FORM
-    assert result.get("step_id") == "init"
+    assert result.get("step_id") == "device"
 
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
@@ -831,7 +840,7 @@ async def test_options_flow_camera_ip_clears_ip_when_empty(
     )
     entry.add_to_hass(hass)
 
-    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await _open_device_options(hass, entry)
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
         {CONF_CAMERA_IP: ""},
@@ -854,7 +863,7 @@ async def test_options_flow_speaker_only_baby_shows_speaker_field_only(
     )
     entry.add_to_hass(hass)
 
-    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await _open_device_options(hass, entry)
     assert result.get("type") is FlowResultType.FORM
     assert result.get("step_id") == "camera_ip"
     schema_keys = {str(key) for key in _as_dict(result)["data_schema"].schema}
@@ -886,7 +895,7 @@ async def test_options_flow_speaker_ip_saved_by_speaker_uid_and_legacy_key_dropp
     )
     entry.add_to_hass(hass)
 
-    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await _open_device_options(hass, entry)
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
         {CONF_SPEAKER_IP: "192.168.1.51"},
@@ -912,7 +921,7 @@ async def test_options_flow_clearing_speaker_ip_also_drops_legacy_key(
     )
     entry.add_to_hass(hass)
 
-    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await _open_device_options(hass, entry)
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
         {CONF_SPEAKER_IP: ""},
@@ -936,7 +945,7 @@ async def test_options_flow_unresolved_speaker_keeps_legacy_ip(
     entry.runtime_data = SimpleNamespace(hub=SimpleNamespace(babies=[baby], speaker_uid_map={}))
     entry.add_to_hass(hass)
 
-    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await _open_device_options(hass, entry)
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
         {CONF_CAMERA_IP: "192.168.1.91"},
@@ -1092,7 +1101,7 @@ async def test_options_flow_preserves_unrelated_options(hass: HomeAssistant) -> 
     )
     entry.add_to_hass(hass)
 
-    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await _open_device_options(hass, entry)
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
         {CONF_CAMERA_IP: "192.168.1.42"},

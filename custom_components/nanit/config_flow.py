@@ -23,12 +23,14 @@ from .const import (
     CONF_CAMERA_IP,
     CONF_CAMERA_IPS,
     CONF_MFA_CODE,
+    CONF_READ_ONLY,
     CONF_REFRESH_TOKEN,
     CONF_SPEAKER_IP,
     CONF_SPEAKER_IPS,
     CONF_STORE_CREDENTIALS,
     DOMAIN,
     LOGGER,
+    is_read_only,
 )
 from .sanitize import display_name
 
@@ -52,6 +54,7 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
         self._mfa_token: str = ""
         self._access_token: str = ""
         self._refresh_token: str = ""
+        self._read_only: bool = False
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Handle the initial user step — enter credentials."""
@@ -66,6 +69,7 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             self._email = user_input[CONF_EMAIL].strip()
             self._password = user_input[CONF_PASSWORD]
+            self._read_only = bool(user_input.get(CONF_READ_ONLY, False))
             # Abort on an already-configured account BEFORE attempting
             # login: the attempt costs a real authentication round trip
             # and, on MFA accounts, sends the user a code for a flow that
@@ -91,6 +95,7 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
                 {
                     vol.Required(CONF_EMAIL): cv.string,
                     vol.Required(CONF_PASSWORD): cv.string,
+                    vol.Optional(CONF_READ_ONLY, default=False): cv.boolean,
                 }
             ),
             errors=errors,
@@ -254,7 +259,9 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
             CONF_EMAIL: normalized_email,
         }
 
-        return self.async_create_entry(title=title, data=data)
+        # Read-only mode is an option (changeable later), stored only when on.
+        options: dict[str, Any] = {CONF_READ_ONLY: True} if self._read_only else {}
+        return self.async_create_entry(title=title, data=data, options=options)
 
     # ------------------------------------------------------------------
     # Reauth flow
@@ -351,11 +358,13 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class NanitOptionsFlow(OptionsFlow):
-    """Handle Nanit options — configure device IPs for local access.
+    """Handle Nanit options — device IPs for local access, and read-only mode.
 
-    Two-step flow:
-    1. Select which baby's devices to configure (if multiple exist)
-    2. Enter or clear the camera / speaker IP for local connectivity
+    A menu picks one of:
+    - Device IPs, two steps:
+      1. Select which baby's devices to configure (if multiple exist)
+      2. Enter or clear the camera / speaker IP for local connectivity
+    - Read-only mode (account-wide)
 
     Selection is by baby (not camera) so speaker-only babies are
     configurable too. Only the fields for devices the baby actually has
@@ -374,6 +383,33 @@ class NanitOptionsFlow(OptionsFlow):
         return None
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Choose what to configure."""
+        return self.async_show_menu(step_id="init", menu_options=["device", "read_only"])
+
+    async def async_step_read_only(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Turn read-only mode on or off for the whole account."""
+        if user_input is not None:
+            # Merge over the existing options; read-only is stored only when on.
+            new_options: dict[str, Any] = {**self.config_entry.options}
+            new_options.pop(CONF_READ_ONLY, None)
+            if user_input[CONF_READ_ONLY]:
+                new_options[CONF_READ_ONLY] = True
+            return self.async_create_entry(title="", data=new_options)
+
+        return self.async_show_form(
+            step_id="read_only",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_READ_ONLY, default=is_read_only(self.config_entry)
+                    ): cv.boolean,
+                }
+            ),
+        )
+
+    async def async_step_device(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Select which baby's devices to configure."""
         hub = self.config_entry.runtime_data.hub
         babies = hub.babies
@@ -393,7 +429,7 @@ class NanitOptionsFlow(OptionsFlow):
         device_options = {baby.uid: display_name(baby.name, baby.uid) for baby in babies}
 
         return self.async_show_form(
-            step_id="init",
+            step_id="device",
             data_schema=vol.Schema(
                 {
                     vol.Required("device"): vol.In(device_options),

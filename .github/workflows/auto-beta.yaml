@@ -13,10 +13,13 @@ name: Auto Beta Release
 # run cancelled by a burst of merges loses nothing: the next run publishes
 # a beta that contains the cancelled PR and honours its label.
 
+# Runs on the push to main that a merge makes, not on the PR event: a PR from a
+# fork gets a read-only token under pull_request, so tagging failed with a 403.
+# A push always has the write token. The merged PR is found from the "(#N)" in
+# the squash commit subject, the same way earlier PRs in the train are.
 on:
-  pull_request:
+  push:
     branches: [main]
-    types: [closed]
 
 concurrency:
   group: auto-beta
@@ -27,12 +30,6 @@ permissions: {}
 jobs:
   beta-release:
     name: Create Beta Release
-    if: >-
-      github.event.pull_request.merged == true && (
-        contains(github.event.pull_request.labels.*.name, 'release:patch') ||
-        contains(github.event.pull_request.labels.*.name, 'release:minor') ||
-        contains(github.event.pull_request.labels.*.name, 'release:major')
-      )
     runs-on: ubuntu-latest
     permissions:
       contents: write # create the tag
@@ -44,12 +41,29 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Determine bump from every labelled PR since the last stable
-        id: bump
+      - name: Check the merged PR for a release label
+        id: pr
         env:
           GH_TOKEN: ${{ github.token }}
-          SHA: ${{ github.event.pull_request.merge_commit_sha }}
-          LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
+          SHA: ${{ github.sha }}
+        run: |
+          release=false
+          n=$(git log -1 --format=%s "${SHA}" | sed -nE 's/.*\(#([0-9]+)\)$/\1/p')
+          if [ -n "${n}" ]; then
+            labels=$(gh pr view "${n}" --repo "${GITHUB_REPOSITORY}" --json labels --jq '[.labels[].name]')
+            if grep -qE '"release:(patch|minor|major)"' <<< "${labels}"; then
+              release=true
+            fi
+          fi
+          echo "release=${release}" >> "$GITHUB_OUTPUT"
+          echo "Merged PR: ${n:-none}, release label: ${release}"
+
+      - name: Determine bump from every labelled PR since the last stable
+        id: bump
+        if: steps.pr.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
         run: |
           latest_stable=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' \
             | { grep -v '-' || true; } \
@@ -57,7 +71,7 @@ jobs:
             | tail -1)
           range="${latest_stable:+${latest_stable}..}${SHA}"
 
-          labels="${LABELS}"
+          labels=""
           for n in $(git log --format=%s "${range}" | sed -nE 's/.*\(#([0-9]+)\)$/\1/p'); do
             labels+=$(gh pr view "${n}" --repo "${GITHUB_REPOSITORY}" --json labels --jq '[.labels[].name]')
           done
@@ -74,6 +88,7 @@ jobs:
 
       - name: Compute next beta version
         id: version
+        if: steps.pr.outputs.release == 'true'
         env:
           BUMP: ${{ steps.bump.outputs.type }}
         run: |
@@ -115,13 +130,15 @@ jobs:
           echo "Computed: ${tag}"
 
       - name: Tag merge commit
+        if: steps.pr.outputs.release == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
-          SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          SHA: ${{ github.sha }}
         run: gh api "repos/${GITHUB_REPOSITORY}/git/refs" -f "ref=refs/tags/${TAG}" -f "sha=${SHA}"
 
       - name: Publish beta
+        if: steps.pr.outputs.release == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}

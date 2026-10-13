@@ -7,7 +7,7 @@ import logging
 import time
 from typing import Any
 
-from homeassistant.components.camera import Camera, CameraEntityFeature
+from homeassistant.components.camera import Camera, CameraEntityFeature, StreamType
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback, async_get_current_platform
@@ -107,6 +107,7 @@ class NanitCameraEntity(NanitEntity, Camera):
         # Open WebRTC sessions. go2rtc pulls the RTMPS source itself, so these
         # viewers never appear in HA's own Stream outputs.
         self._webrtc_sessions: set[str] = set()
+        self._provider_refresh_task: asyncio.Task[None] | None = None
 
     @property
     def is_on(self) -> bool:
@@ -146,6 +147,25 @@ class NanitCameraEntity(NanitEntity, Camera):
             # watched streams recover well inside HA's 30s demux timeout.
             self._handle_stream_keepalive()
 
+        if (
+            conn_state is ConnectionState.CONNECTED
+            and prev_conn_state is not ConnectionState.CONNECTED
+            and StreamType.WEB_RTC not in self.camera_capabilities.frontend_stream_types
+            and (self._provider_refresh_task is None or self._provider_refresh_task.done())
+        ):
+            # HA picks the WebRTC provider (go2rtc) once, when the entity is
+            # added, by asking for a stream source. That needs the camera's
+            # control session; when the entity is added before it connects,
+            # the camera would stay HLS-only until the next restart.
+            _LOGGER.debug(
+                "Camera %s connected without a WebRTC provider; checking again",
+                self._camera.uid,
+            )
+            self._provider_refresh_task = self.hass.async_create_task(
+                self.async_refresh_providers(),
+                name=f"nanit_refresh_webrtc_providers_{self._camera.uid}",
+            )
+
         super()._handle_coordinator_update()
 
     async def async_added_to_hass(self) -> None:
@@ -170,12 +190,14 @@ class NanitCameraEntity(NanitEntity, Camera):
             self._stream_refresh_task,
             self._stream_keepalive_task,
             self._stream_start_task,
+            self._provider_refresh_task,
         ):
             if task is not None and not task.done():
                 task.cancel()
         self._stream_refresh_task = None
         self._stream_keepalive_task = None
         self._stream_start_task = None
+        self._provider_refresh_task = None
         self._webrtc_sessions.clear()
         await super().async_will_remove_from_hass()
 

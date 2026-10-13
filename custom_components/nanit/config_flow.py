@@ -33,9 +33,10 @@ from .const import (
 )
 from .sanitize import display_name
 
-# Home Assistant 2026.10 serves probatio under the voluptuous name at runtime
-# and types its flow schemas with it. Older versions only ship voluptuous, so
-# the import stays voluptuous and only the type checker sees probatio.
+# Home Assistant types its flow schemas with probatio from 2026.10. At runtime
+# it has aliased voluptuous to probatio since 2026.9, and older versions ship
+# real voluptuous, so the import stays voluptuous and only the type checker
+# sees probatio.
 if TYPE_CHECKING:
     import probatio as vol
 else:

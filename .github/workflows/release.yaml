@@ -28,10 +28,14 @@ concurrency:
 
 permissions: {}
 
+# Every job has a timeout, so a hung step fails the release in minutes instead
+# of holding it for GitHub's six hour default. The CI gate's jobs take theirs
+# from ci.yaml.
 jobs:
   resolve:
     name: Resolve Release
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       actions: read # read the release-stable environment's protection rules
@@ -106,6 +110,8 @@ jobs:
     needs: resolve
     if: needs.resolve.outputs.is_stable == 'true'
     runs-on: ubuntu-latest
+    # Counts from when the job starts, which is after the approval.
+    timeout-minutes: 10
     environment: release-stable
     permissions: {}
     steps:
@@ -131,6 +137,7 @@ jobs:
     needs: [resolve, ci-gate]
     if: ${{ !cancelled() && needs.ci-gate.result == 'success' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
@@ -183,6 +190,7 @@ jobs:
     needs: [resolve, build]
     if: ${{ !cancelled() && needs.build.result == 'success' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     environment:
       name: pypi
       url: https://pypi.org/project/aionanit/
@@ -205,6 +213,7 @@ jobs:
     needs: [resolve, publish-pypi]
     if: ${{ !cancelled() && needs.publish-pypi.result == 'success' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
       pull-requests: read

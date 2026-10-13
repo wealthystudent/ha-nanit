@@ -31,6 +31,7 @@ jobs:
   beta-release:
     name: Create Beta Release
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write # create the tag
       actions: write # dispatch release.yaml

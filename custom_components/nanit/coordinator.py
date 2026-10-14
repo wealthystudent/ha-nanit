@@ -49,6 +49,27 @@ _LOGGER = logging.getLogger(__name__)
 # If the WebSocket reconnects within this window, entities never go unavailable.
 _AVAILABILITY_GRACE_SECONDS: float = 30.0
 
+# Consecutive failed polls a cloud-polled coordinator rides out on its last
+# good data before its entities go unavailable. Nanit's REST API regularly
+# answers a single request with HTTP 5xx or times out; without this, one such
+# blip flips motion/sound to "Unavailable" for a poll interval and the Wi-Fi
+# diagnostics for five minutes. The push coordinator has its own grace period.
+_MAX_TOLERATED_POLL_FAILURES: int = 2
+
+
+def _ride_out_failed_poll(name: str, failed_polls: int, err: Exception) -> bool:
+    """Return True when a failed poll should keep the coordinator's last data."""
+    if failed_polls > _MAX_TOLERATED_POLL_FAILURES:
+        return False
+    _LOGGER.debug(
+        "Transient Nanit cloud failure for %s (%d/%d), keeping last data: %s",
+        name,
+        failed_polls,
+        _MAX_TOLERATED_POLL_FAILURES,
+        err,
+    )
+    return True
+
 
 class NanitPushCoordinator(DataUpdateCoordinator[CameraState]):
     """Push-based coordinator that receives state updates from NanitCamera.subscribe().
@@ -180,13 +201,13 @@ class NanitCloudCoordinator(DataUpdateCoordinator[list[CloudEvent]]):
         )
         self._hub = hub
         self.baby = baby
+        self._failed_polls: int = 0
 
     async def _async_update_data(self) -> list[CloudEvent]:
         """Fetch cloud events from the Nanit API."""
         try:
             client = self._hub.client
             events = await client.async_get_events(self.baby.uid)
-            return events
         except NanitAuthError as err:
             raise ConfigEntryAuthFailed(
                 translation_domain=DOMAIN,
@@ -194,11 +215,20 @@ class NanitCloudCoordinator(DataUpdateCoordinator[list[CloudEvent]]):
                 translation_placeholders={"error": str(err)},
             ) from err
         except NanitConnectionError as err:
+            self._failed_polls += 1
+            # Event on/off state is derived from timestamps against a window,
+            # so serving the previous list for a poll or two is harmless.
+            if self.data is not None and _ride_out_failed_poll(
+                self.name, self._failed_polls, err
+            ):
+                return self.data
             raise UpdateFailed(
                 translation_domain=DOMAIN,
                 translation_key="cloud_fetch_failed",
                 translation_placeholders={"error": str(err)},
             ) from err
+        self._failed_polls = 0
+        return events
 
 
 class NanitNetworkCoordinator(DataUpdateCoordinator[NetworkInfo | None]):
@@ -227,6 +257,10 @@ class NanitNetworkCoordinator(DataUpdateCoordinator[NetworkInfo | None]):
         )
         self._hub = hub
         self.baby = baby
+        self._failed_polls: int = 0
+        # None is a valid result (camera missing from /babies), so track
+        # whether a poll has ever succeeded instead of testing self.data.
+        self._has_polled: bool = False
 
     async def _async_update_data(self) -> NetworkInfo | None:
         """Fetch network info from the Nanit API.
@@ -247,11 +281,16 @@ class NanitNetworkCoordinator(DataUpdateCoordinator[NetworkInfo | None]):
                 translation_placeholders={"error": str(err)},
             ) from err
         except NanitConnectionError as err:
+            self._failed_polls += 1
+            if self._has_polled and _ride_out_failed_poll(self.name, self._failed_polls, err):
+                return self.data
             raise UpdateFailed(
                 translation_domain=DOMAIN,
                 translation_key="cloud_fetch_failed",
                 translation_placeholders={"error": str(err)},
             ) from err
+        self._failed_polls = 0
+        self._has_polled = True
 
         # Check if any previously-failed camera has come back online.
         # camera_connected is sourced from the Nanit cloud's own "connected"

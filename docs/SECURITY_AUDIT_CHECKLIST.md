@@ -44,6 +44,7 @@ Run through the full checklist against all changes since the last release tag.
 | `aionanit/ws/protocol.py` | [14. Protobuf/Deserialization](#14-deserialization--protobuf-security) |
 | `aionanit/parsers.py` | [14. Protobuf/Deserialization](#14-deserialization--protobuf-security) |
 | `aionanit/models.py` | [7. XSS](#7-cross-site-scripting-xss) |
+| `aionanit/local_stream/*` (LAN RTMP(S) receiver, loopback HTTP-FLV) | [3. Input Validation](#3-input-validation--injection), [5. Network](#5-network-security), [13. Media/Streaming](#13-media--streaming-security), [16. Async Safety](#16-async--concurrency-safety) |
 | `.github/workflows/*` | [10. Supply Chain](#10-supply-chain--dependency-risks), [17. CI/CD Security](#17-cicd-pipeline-security) |
 | `tests/*` | [18. Test Security](#18-test-security) |
 

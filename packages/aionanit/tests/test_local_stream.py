@@ -1041,3 +1041,62 @@ class TestServerLimits:
         finally:
             await session.close()
             await pub.close()
+
+
+# ----------------------------------------------------------------------
+# A real demuxer reads the FLV (PyAV, the library HA's stream worker uses)
+# ----------------------------------------------------------------------
+
+
+def _demux(url: str, packets: int) -> tuple[list[str], list[tuple[str, int]]]:
+    import av
+
+    container = av.open(url, timeout=10)
+    try:
+        codecs = sorted(stream.codec_context.name for stream in container.streams)
+        seen: list[tuple[str, int]] = []
+        for packet in container.demux():
+            if packet.dts is None:
+                continue
+            seen.append((packet.stream.type, int(packet.dts)))
+            if len(seen) >= packets:
+                break
+        return codecs, seen
+    finally:
+        container.close()
+
+
+class TestRealDemuxer:
+    async def test_pyav_reads_cold_start_and_late_join(self) -> None:
+        pytest.importorskip("av")
+        server = await _start_server()
+        try:
+            ch = server.register("cam1", KEY)
+            publishers = _wire_start(server, ch)
+            loop = asyncio.get_running_loop()
+            url = server.flv_url("cam1")
+
+            async def feed() -> None:
+                # Keep media flowing so both readers get packets.
+                while not publishers:
+                    await asyncio.sleep(0.01)
+                pub = publishers[0]
+                for i in range(1, 40):
+                    pub.media(8, BASE_TS + 23 * i, AAC_FRAME)
+                    if i % 4 == 0:
+                        pub.media(9, BASE_TS + 100 * (i // 4), INTERFRAME)
+                    await asyncio.sleep(0.02)
+
+            feeder = asyncio.ensure_future(feed())
+            codecs, seen = await loop.run_in_executor(None, _demux, url, 6)
+            assert codecs == ["aac", "h264"]
+            video = [dts for kind, dts in seen if kind == "video"]
+            assert video == sorted(video)
+            # A second reader joins live, primed from the GOP cache.
+            codecs, seen = await loop.run_in_executor(None, _demux, url, 3)
+            assert codecs == ["aac", "h264"]
+            assert seen[0][0] == "video"
+            await feeder
+            assert len(publishers) == 1
+        finally:
+            await server.async_stop()

@@ -95,6 +95,17 @@ class Subscription:
         """Stop receiving tags."""
         self._channel.unsubscribe(self)
 
+    def __aiter__(self) -> Subscription:
+        """Iterate tags until the subscription closes."""
+        return self
+
+    async def __anext__(self) -> Tag:
+        """Return the next tag, ending iteration once closed."""
+        tag = await self.get()
+        if tag is None:
+            raise StopAsyncIteration
+        return tag
+
 
 class StreamChannel:
     """State for one camera's local stream."""
@@ -306,6 +317,11 @@ class StreamChannel:
             _LOGGER.debug("Local stream start failed for %s", self.camera_uid, exc_info=True)
             return False
         return started and self.publishing
+
+    def cancel_start(self) -> None:
+        """Cancel a camera start in flight (its owner is going away)."""
+        if self._start_task is not None and not self._start_task.done():
+            self._start_task.cancel()
 
     def close(self) -> None:
         """Tear the channel down."""

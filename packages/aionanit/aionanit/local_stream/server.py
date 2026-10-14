@@ -34,6 +34,7 @@ TLS_HANDSHAKE_TIMEOUT = 10.0
 MAX_PENDING_CONNECTIONS = 8
 MAX_PENDING_PER_PEER = 2
 WRITE_TIMEOUT = 10.0
+MAX_TRACKED_PEERS = 256
 HEADER_WAIT = 10.0
 CLOSE_TIMEOUT = 2.0
 APP_NAME = "nanit"
@@ -91,7 +92,7 @@ class _RtmpConnection(asyncio.Protocol):
             out = self._session.feed(data)
         except RtmpError as err:
             _LOGGER.debug("Closing RTMP connection from %s: %s", self._peer, err)
-            self._server.protocol_failures += 1
+            self._server.record_failure(self._peer)
             self._failed = True
             self.abort()
             return
@@ -134,7 +135,7 @@ class _RtmpConnection(asyncio.Protocol):
         self._deadline = None
         if not self._session.publishing:
             _LOGGER.debug("RTMP connection from %s never published", self._peer)
-            self._server.protocol_failures += 1
+            self._server.record_failure(self._peer)
             self.abort()
             return
         idle = time.monotonic() - self._last_data
@@ -170,6 +171,7 @@ class _Acceptor(asyncio.Protocol):
         server.last_connection_at = time.monotonic()
         peername = transport.get_extra_info("peername")
         peer = str(peername[0]) if peername else None
+        server._count(server.attempts_by_peer, peer)
         # Evict rather than refuse: the newest connection is the likeliest
         # to be the camera retrying, the oldest to be a stale or idle one.
         same_peer = [c for c in server._pending if c.peer == peer]
@@ -225,6 +227,10 @@ class LocalStreamServer:
         self.connection_attempts = 0
         self.protocol_failures = 0
         self.last_connection_at: float | None = None
+        # Per peer address, so a caller can tell its camera's connections
+        # from a scanner's or another camera's. Bounded.
+        self.attempts_by_peer: dict[str, int] = {}
+        self.failures_by_peer: dict[str, int] = {}
 
     @property
     def tls(self) -> bool:
@@ -255,9 +261,14 @@ class LocalStreamServer:
         # No HEAD: it would start the camera without anyone watching.
         app.router.add_get("/nanit/{name}", self._handle_flv, allow_head=False)
         self._runner = web.AppRunner(app, access_log=None, handle_signals=False)
-        await self._runner.setup()
-        site = web.TCPSite(self._runner, "127.0.0.1", 0)
-        await site.start()
+        try:
+            await self._runner.setup()
+            site = web.TCPSite(self._runner, "127.0.0.1", 0)
+            await site.start()
+        except BaseException:
+            # Don't leave the ingest bound, or the next try moves ports.
+            await self.async_stop()
+            raise
         self.http_port = int(self._runner.addresses[0][1])
         _LOGGER.debug(
             "Local stream server on port %d (%s), FLV on 127.0.0.1:%d",
@@ -337,6 +348,18 @@ class LocalStreamServer:
     # Internals
     # ------------------------------------------------------------------
 
+    def _count(self, table: dict[str, int], peer: str | None) -> None:
+        if peer is None:
+            return
+        if peer not in table and len(table) >= MAX_TRACKED_PEERS:
+            table.pop(next(iter(table)))
+        table[peer] = table.get(peer, 0) + 1
+
+    def record_failure(self, peer: str | None) -> None:
+        """Count a connection that failed TLS or RTMP, or never published."""
+        self.protocol_failures += 1
+        self._count(self.failures_by_peer, peer)
+
     def _evict(self, conn: _RtmpConnection) -> None:
         _LOGGER.debug("Evicting pending RTMP connection from %s", conn.peer)
         self._pending.discard(conn)
@@ -357,7 +380,7 @@ class LocalStreamServer:
             )
         except (OSError, ssl.SSLError, TimeoutError, ConnectionError) as err:
             _LOGGER.debug("TLS handshake with %s failed: %s", peer, err)
-            self.protocol_failures += 1
+            self.record_failure(peer)
             self._pending.discard(conn)
             transport.abort()
             return

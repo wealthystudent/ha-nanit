@@ -218,6 +218,10 @@ class RtmpSession:
             pos += 4
 
         starting = stream.buffer is None
+        if not starting and fmt <= 1 and (length != stream.length or type_id != stream.type_id):
+            # FFmpeg's reader refuses this too ("RTMP packet size mismatch"),
+            # and allowing it would let a publisher dodge the size cap.
+            raise RtmpError("message header changed mid-message")
         if starting and length > MAX_MESSAGE_SIZE:
             raise RtmpError(f"message of {length} bytes exceeds the limit")
         have = 0 if stream.buffer is None else len(stream.buffer)
@@ -229,16 +233,19 @@ class RtmpSession:
         if starting:
             value = ext if ts_field == _TS_EXTENDED else ts_field
             if fmt == 0:
+                # The spec and FFmpeg's reader reuse an absolute timestamp
+                # as the delta for a following format 3 message.
                 stream.timestamp = value
-                stream.delta = 0
+                stream.delta = value
             elif fmt in (1, 2):
                 stream.delta = value
                 stream.timestamp = (stream.timestamp + value) & 0xFFFFFFFF
             else:
                 stream.timestamp = (stream.timestamp + stream.delta) & 0xFFFFFFFF
             stream.buffer = bytearray()
-        stream.ts_field = ts_field
-        stream.length, stream.type_id, stream.stream_id = length, type_id, stream_id
+            # Header fields are only taken when a message starts, as FFmpeg does.
+            stream.ts_field = ts_field
+            stream.length, stream.type_id, stream.stream_id = length, type_id, stream_id
         self._streams[csid] = stream
 
         assert stream.buffer is not None

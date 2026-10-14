@@ -19,6 +19,19 @@ FILE_HEADER = b"FLV\x01\x05\x00\x00\x00\x09" + b"\x00\x00\x00\x00"
 _TS_MASK = 0xFFFFFFFF
 
 
+def ts_since(timestamp: int, base: int) -> int:
+    """Return ``timestamp - base`` in milliseconds, wrap-safe, never negative.
+
+    RTMP timestamps are 32 bit and wrap, so the difference is read as a
+    signed 32 bit value. A tag slightly older than ``base`` (audio muxed just
+    ahead of the keyframe) comes out as 0 instead of about 49.7 days.
+    """
+    diff = (timestamp - base) & _TS_MASK
+    if diff >= 1 << 31:
+        return 0
+    return diff
+
+
 @dataclass(frozen=True, slots=True)
 class Tag:
     """One FLV tag: type, timestamp in milliseconds, body."""
@@ -63,7 +76,7 @@ class Tag:
         ``base`` is subtracted from the timestamp (mod 2**32) so every
         subscriber's stream starts near zero whatever the camera's clock is.
         """
-        ts = (self.timestamp - base) & _TS_MASK
+        ts = ts_since(self.timestamp, base)
         size = len(self.body)
         header = struct.pack(
             ">B3s3sB3s",

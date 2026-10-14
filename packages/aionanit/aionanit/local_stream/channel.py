@@ -16,7 +16,7 @@ import time
 from collections import deque
 from collections.abc import Awaitable, Callable
 
-from .flv import TAG_AUDIO, TAG_SCRIPT, TAG_VIDEO, Tag
+from .flv import TAG_AUDIO, TAG_SCRIPT, TAG_VIDEO, Tag, ts_since
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -67,6 +67,14 @@ class Subscription:
         self._bytes += len(tag.body)
         self._wakeup.set()
         return self._bytes <= MAX_SUBSCRIBER_BYTES
+
+    def _offer_header(self, tag: Tag) -> None:
+        """Queue a codec configuration change, ahead of any keyframe gate."""
+        if self.closed or (self.audio_only and tag.kind != TAG_AUDIO):
+            return
+        self._queue.append(tag)
+        self._bytes += len(tag.body)
+        self._wakeup.set()
 
     def _close(self) -> None:
         self.closed = True
@@ -119,6 +127,7 @@ class StreamChannel:
         self._published = asyncio.Event()
         self._headers_ready = asyncio.Event()
         self._start_task: asyncio.Future[bool] | None = None
+        self._closed = False
         self._grace_handle: asyncio.TimerHandle | None = None
 
     # ------------------------------------------------------------------
@@ -186,12 +195,18 @@ class StreamChannel:
         if tag.kind == TAG_SCRIPT:
             self.metadata = tag
             return
-        if tag.is_avc_header:
-            self.avc_header = tag
-            self._headers_ready.set()
-            return
-        if tag.is_aac_header:
-            self.aac_header = tag
+        if tag.is_avc_header or tag.is_aac_header:
+            previous = self.avc_header if tag.is_avc_header else self.aac_header
+            if tag.is_avc_header:
+                self.avc_header = tag
+                self._headers_ready.set()
+            else:
+                self.aac_header = tag
+            if previous is None or previous.body != tag.body:
+                # A late or changed configuration has to reach readers that
+                # already got their head, or their decoder never sees it.
+                for sub in list(self._subscribers):
+                    sub._offer_header(tag)
             return
         if tag.kind not in (TAG_AUDIO, TAG_VIDEO):
             return
@@ -210,7 +225,7 @@ class StreamChannel:
             return
         self._gop.append(tag)
         self._gop_bytes += len(tag.body)
-        age = (tag.timestamp - self._gop[0].timestamp) & 0xFFFFFFFF
+        age = ts_since(tag.timestamp, self._gop[0].timestamp)
         if self._gop_bytes > MAX_GOP_BYTES or age > MAX_GOP_MILLIS:
             self._gop = []
             self._gop_bytes = 0
@@ -263,7 +278,7 @@ class StreamChannel:
         with contextlib.suppress(TimeoutError):
             async with asyncio.timeout(timeout):
                 await self._headers_ready.wait()
-        return self.avc_header is not None
+        return self.avc_header is not None and not self._closed
 
     async def ensure_publishing(self) -> bool:
         """Make sure the camera is pushing, starting it once for all callers.
@@ -281,6 +296,12 @@ class StreamChannel:
             self._start_task = task
         try:
             started = await asyncio.shield(task)
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if task.cancelled() and (current is None or not current.cancelling()):
+                # The channel closed under us, not our caller being cancelled.
+                return False
+            raise
         except Exception:
             _LOGGER.debug("Local stream start failed for %s", self.camera_uid, exc_info=True)
             return False
@@ -288,6 +309,10 @@ class StreamChannel:
 
     def close(self) -> None:
         """Tear the channel down."""
+        self._closed = True
+        # Wake handlers waiting for headers, or stop() waits on them.
+        self._headers_ready.set()
+        self._published.set()
         if self._grace_handle is not None:
             self._grace_handle.cancel()
             self._grace_handle = None

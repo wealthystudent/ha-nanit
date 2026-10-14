@@ -26,11 +26,14 @@ from .rtmp import RtmpError, RtmpSession
 
 _LOGGER = logging.getLogger(__name__)
 
-HANDSHAKE_TIMEOUT = 10.0
 PRE_PUBLISH_TIMEOUT = 15.0
 IDLE_TIMEOUT = 30.0
 TLS_HANDSHAKE_TIMEOUT = 10.0
+# Connections that have not published yet (TLS handshakes included). When
+# full, the oldest is evicted, so idle sockets can't lock the camera out.
 MAX_PENDING_CONNECTIONS = 8
+MAX_PENDING_PER_PEER = 2
+WRITE_TIMEOUT = 10.0
 HEADER_WAIT = 10.0
 CLOSE_TIMEOUT = 2.0
 APP_NAME = "nanit"
@@ -45,7 +48,12 @@ class _RtmpConnection(asyncio.Protocol):
         self._server = server
         self._peer = peer
         self._id = next(_ids)
+        self.accepted_at = time.monotonic()
+        self.peer = peer
+        self._failed = False
         self._transport: asyncio.BaseTransport | None = None
+        # The accepted socket, so a connection evicted mid-TLS can be closed.
+        self.raw: asyncio.BaseTransport | None = None
         self._channel: StreamChannel | None = None
         self._session = RtmpSession(self._authorize, self._published, self._tag)
         self._deadline: asyncio.TimerHandle | None = None
@@ -55,10 +63,12 @@ class _RtmpConnection(asyncio.Protocol):
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
         self._transport = transport
+        if self._failed:
+            self.abort()
+            return
         if self._session.publishing:
             self._server._connections.add(self)
         else:
-            self._server._pending.add(self)
             self._arm(PRE_PUBLISH_TIMEOUT)
         if self._unsent and isinstance(transport, asyncio.WriteTransport):
             transport.write(bytes(self._unsent))
@@ -82,6 +92,7 @@ class _RtmpConnection(asyncio.Protocol):
         except RtmpError as err:
             _LOGGER.debug("Closing RTMP connection from %s: %s", self._peer, err)
             self._server.protocol_failures += 1
+            self._failed = True
             self.abort()
             return
         if out:
@@ -139,7 +150,8 @@ class _RtmpConnection(asyncio.Protocol):
             self._transport.close()
 
     def abort(self) -> None:
-        transport = self._transport
+        self._failed = True
+        transport = self._transport or self.raw
         if isinstance(transport, asyncio.WriteTransport):
             transport.abort()
         elif transport is not None:
@@ -158,11 +170,17 @@ class _Acceptor(asyncio.Protocol):
         server.last_connection_at = time.monotonic()
         peername = transport.get_extra_info("peername")
         peer = str(peername[0]) if peername else None
+        # Evict rather than refuse: the newest connection is the likeliest
+        # to be the camera retrying, the oldest to be a stale or idle one.
+        same_peer = [c for c in server._pending if c.peer == peer]
+        if len(same_peer) >= MAX_PENDING_PER_PEER:
+            server._evict(min(same_peer, key=lambda c: c.accepted_at))
         if len(server._pending) >= MAX_PENDING_CONNECTIONS:
-            _LOGGER.debug("Refusing RTMP connection from %s, too many pending", peer)
-            transport.close()
-            return
+            server._evict(min(server._pending, key=lambda c: c.accepted_at))
         conn = _RtmpConnection(server, peer)
+        conn.raw = transport
+        # Counted from accept, so TLS handshakes in flight are capped too.
+        server._pending.add(conn)
         if server._ssl_context is None:
             transport.set_protocol(conn)
             conn.connection_made(transport)
@@ -234,7 +252,8 @@ class LocalStreamServer:
             raise last_error
 
         app = web.Application()
-        app.router.add_get("/nanit/{name}", self._handle_flv)
+        # No HEAD: it would start the camera without anyone watching.
+        app.router.add_get("/nanit/{name}", self._handle_flv, allow_head=False)
         self._runner = web.AppRunner(app, access_log=None, handle_signals=False)
         await self._runner.setup()
         site = web.TCPSite(self._runner, "127.0.0.1", 0)
@@ -318,6 +337,11 @@ class LocalStreamServer:
     # Internals
     # ------------------------------------------------------------------
 
+    def _evict(self, conn: _RtmpConnection) -> None:
+        _LOGGER.debug("Evicting pending RTMP connection from %s", conn.peer)
+        self._pending.discard(conn)
+        conn.abort()
+
     async def _start_tls(
         self, transport: asyncio.Transport, conn: _RtmpConnection, peer: str | None
     ) -> None:
@@ -334,12 +358,21 @@ class LocalStreamServer:
         except (OSError, ssl.SSLError, TimeoutError, ConnectionError) as err:
             _LOGGER.debug("TLS handshake with %s failed: %s", peer, err)
             self.protocol_failures += 1
+            self._pending.discard(conn)
             transport.abort()
             return
-        if tls_transport is None:
-            transport.abort()
+        if tls_transport is None or conn not in self._pending:
+            # Evicted while handshaking, or the handshake produced nothing.
+            self._pending.discard(conn)
+            (tls_transport or transport).abort()
             return
         conn.connection_made(tls_transport)
+
+    @staticmethod
+    async def _write(response: web.StreamResponse, data: bytes) -> None:
+        """Write to a reader, giving up on one that stopped reading."""
+        async with asyncio.timeout(WRITE_TIMEOUT):
+            await response.write(data)
 
     async def _handle_flv(self, request: web.Request) -> web.StreamResponse:
         peer = request.remote
@@ -378,13 +411,17 @@ class LocalStreamServer:
             for header in (channel.avc_header, channel.aac_header):
                 if header is not None:
                     head += Tag(header.kind, 0, header.body).encode()
-            await response.write(head)
+            await self._write(response, head)
             base: int | None = None
             while (tag := await sub.get()) is not None:
+                if tag.is_avc_header or tag.is_aac_header:
+                    # A configuration change, written at the current position.
+                    await self._write(response, Tag(tag.kind, 0, tag.body).encode())
+                    continue
                 if base is None:
                     base = tag.timestamp
-                await response.write(tag.encode(base))
-        except ConnectionResetError:
+                await self._write(response, tag.encode(base))
+        except (ConnectionResetError, TimeoutError):
             pass
         finally:
             sub.close()

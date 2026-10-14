@@ -9,6 +9,7 @@ import random
 import ssl
 import struct
 import time
+from collections import deque
 from pathlib import Path
 
 import aiohttp
@@ -666,3 +667,377 @@ class TestTls:
             assert server.connection_attempts == 1
         finally:
             await server.async_stop()
+
+
+# ----------------------------------------------------------------------
+# FFmpeg's own chunking, ported from FFmpeg 4.1 rtmppkt.c / rtmpproto.c
+# ----------------------------------------------------------------------
+
+
+class _FFWriter:
+    """Python port of FFmpeg 4.1 ff_rtmp_packet_write."""
+
+    def __init__(self, chunk_size: int = 128) -> None:
+        self.prev: dict[int, dict[str, int]] = {}
+        self.chunk_size = chunk_size
+
+    def write(
+        self, ch: int, kind: int, ts: int, extra: int, data: bytes, *, force_full: bool = False
+    ) -> bytes:
+        if force_full and ch in self.prev:
+            self.prev[ch]["channel_id"] = 0
+        p = self.prev.get(
+            ch, {"channel_id": 0, "extra": 0, "timestamp": 0, "type": 0, "size": 0, "ts_field": 0}
+        )
+        use_delta = bool(p["channel_id"]) and extra == p["extra"] and ts >= p["timestamp"]
+        timestamp = ts - p["timestamp"] if use_delta else ts
+        ts_field = 0xFFFFFF if timestamp >= 0xFFFFFF else timestamp
+        mode = 0
+        if use_delta:
+            if kind == p["type"] and len(data) == p["size"]:
+                mode = 3 if ts_field == p["ts_field"] else 2
+            else:
+                mode = 1
+        out = bytearray([ch | (mode << 6)])
+        if mode != 3:
+            out += ts_field.to_bytes(3, "big")
+            if mode != 2:
+                out += len(data).to_bytes(3, "big") + bytes([kind])
+                if mode == 0:
+                    out += struct.pack("<I", extra)
+        if ts_field == 0xFFFFFF:
+            out += struct.pack(">I", timestamp)
+        self.prev[ch] = {
+            "channel_id": ch,
+            "type": kind,
+            "size": len(data),
+            "timestamp": ts,
+            "ts_field": ts_field,
+            "extra": extra,
+        }
+        off = 0
+        while off < len(data):
+            n = min(self.chunk_size, len(data) - off)
+            out += data[off : off + n]
+            off += n
+            if off < len(data):
+                out += bytes([0xC0 | ch])
+                if ts_field == 0xFFFFFF:
+                    out += struct.pack(">I", timestamp)
+        return bytes(out)
+
+    def media(self, kind: int, ts: int, body: bytes) -> bytes:
+        """Mimic rtmp_write's channel choice and forced full header."""
+        ch = 6 if kind == TAG_VIDEO else 4
+        force = (kind in (TAG_AUDIO, TAG_VIDEO) and ts == 0) or kind == TAG_SCRIPT
+        return self.write(ch, kind, ts, 1, body, force_full=force)
+
+
+class TestFfmpegShapedFeed:
+    def test_camera_sequence_through_ffmpegs_writer(self) -> None:
+        rec = _Recorder()
+        session = rec.session()
+        session.feed(_handshake() + _publish_stream())
+        # FFmpeg echoes our SetChunkSize(4096) and switches to it.
+        session.feed(chunk_message(2, 1, 0, 0, struct.pack(">I", 4096), 128))
+        writer = _FFWriter(4096)
+        meta = amf0.encode_all("@setDataFrame", "onMetaData", {"width": 1920.0})
+        big_keyframe = bytes([0x17, 1, 0, 0, 0]) + b"\x00" * 20000
+        seq = [
+            (TAG_SCRIPT, 0, meta),
+            (TAG_VIDEO, 0, AVC_HEADER),
+            (TAG_AUDIO, 0, AAC_HEADER),
+            (TAG_VIDEO, BASE_TS, big_keyframe),
+        ]
+        t_audio = t_video = BASE_TS
+        for i in range(30):
+            t_audio += 23 if i % 3 else 24
+            seq.append((TAG_AUDIO, t_audio, AAC_FRAME))
+            if i % 4 == 0:
+                t_video += 100
+                seq.append((TAG_VIDEO, t_video, bytes([0x27, 1, 0, 0, 0]) + b"\x01" * 5000))
+        seq.sort(key=lambda item: item[1])
+        session.feed(b"".join(writer.media(k, t, b) for k, t, b in seq))
+        got = [(t.kind, t.timestamp, len(t.body)) for t in rec.tags]
+        want = [(k, t, len(b) - (16 if k == TAG_SCRIPT else 0)) for k, t, b in seq]
+        assert got == want
+
+    def test_format3_after_format0_reuses_the_timestamp_as_delta(self) -> None:
+        rec = _Recorder()
+        session = rec.session()
+        session.feed(_handshake() + _publish_stream())
+        writer = _FFWriter(128)
+        data = writer.write(4, TAG_AUDIO, 23, 1, AAC_FRAME) + writer.write(
+            4, TAG_AUDIO, 46, 1, AAC_FRAME
+        )
+        assert data[12 + len(AAC_FRAME)] >> 6 == 3  # FFmpeg emitted format 3
+        session.feed(data)
+        assert [t.timestamp for t in rec.tags] == [23, 46]
+
+    def test_size_change_mid_message_is_refused(self) -> None:
+        session = _Recorder().session()
+        session.feed(_handshake() + _publish_stream())
+        first = bytes([6]) + (5).to_bytes(3, "big") + (1000).to_bytes(3, "big") + bytes([9])
+        first += struct.pack("<I", 1) + b"\x17\x01" + b"\x00" * 126
+        bigger = bytes([0x40 | 6]) + (0).to_bytes(3, "big")
+        bigger += (2_000_000).to_bytes(3, "big") + bytes([9]) + b"\x00" * 128
+        with pytest.raises(RtmpError):
+            session.feed(first + bigger)
+
+    def test_media_on_another_stream_is_ignored(self) -> None:
+        rec = _Recorder()
+        session = rec.session()
+        session.feed(_handshake() + _publish_stream())
+        session.feed(chunk_message(6, 9, 2, 5, KEYFRAME, 128))
+        assert rec.tags == []
+
+
+# ----------------------------------------------------------------------
+# Channel: GOP cache, gating, timestamps
+# ----------------------------------------------------------------------
+
+
+def _live_channel() -> StreamChannel:
+    ch = StreamChannel("cam1", KEY)
+    ch.publish_started(1, "10.0.0.5", lambda: None)
+    ch.tag_received(1, Tag(TAG_VIDEO, 0, AVC_HEADER))
+    return ch
+
+
+class TestChannel:
+    async def test_mid_gop_subscriber_starts_at_the_next_keyframe(self) -> None:
+        ch = StreamChannel("cam1", KEY)
+        ch.publish_started(1, None, lambda: None)
+        sub = ch.subscribe()  # nothing cached yet
+        ch.tag_received(1, Tag(TAG_VIDEO, BASE_TS + 100, INTERFRAME))
+        ch.tag_received(1, Tag(TAG_AUDIO, BASE_TS + 110, AAC_FRAME))
+        ch.tag_received(1, Tag(TAG_VIDEO, BASE_TS + 200, KEYFRAME))
+        first = await sub.get()
+        assert first is not None
+        assert first.body == KEYFRAME
+
+    async def test_second_keyframe_resets_the_cache(self) -> None:
+        ch = _live_channel()
+        ch.tag_received(1, Tag(TAG_VIDEO, BASE_TS, KEYFRAME))
+        ch.tag_received(1, Tag(TAG_VIDEO, BASE_TS + 100, INTERFRAME))
+        second = KEYFRAME + b"\x09"
+        ch.tag_received(1, Tag(TAG_VIDEO, BASE_TS + 200, second))
+        sub = ch.subscribe()
+        first = await sub.get()
+        assert first is not None
+        assert first.body == second
+        assert sub._queue == deque()
+
+    async def test_old_gop_is_dropped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(channel, "MAX_GOP_MILLIS", 150)
+        ch = _live_channel()
+        ch.tag_received(1, Tag(TAG_VIDEO, BASE_TS, KEYFRAME))
+        ch.tag_received(1, Tag(TAG_VIDEO, BASE_TS + 200, INTERFRAME))
+        sub = ch.subscribe()
+        assert not sub._queue
+
+    async def test_audio_just_before_the_keyframe_keeps_the_gop(self) -> None:
+        ch = _live_channel()
+        ch.tag_received(1, Tag(TAG_VIDEO, BASE_TS, KEYFRAME))
+        ch.tag_received(1, Tag(TAG_AUDIO, BASE_TS - 10, AAC_FRAME))
+        sub = ch.subscribe()
+        assert len(sub._queue) == 2
+        assert Tag(TAG_AUDIO, BASE_TS - 10, AAC_FRAME).encode(BASE_TS)[4:8] == b"\x00" * 4
+
+    async def test_slow_subscriber_is_dropped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(channel, "MAX_SUBSCRIBER_BYTES", 1000)
+        ch = _live_channel()
+        sub = ch.subscribe()
+        for i in range(10):
+            ch.tag_received(1, Tag(TAG_VIDEO, BASE_TS + i, KEYFRAME))
+        assert sub.closed
+        assert ch.consumer_count == 0
+
+    async def test_new_publisher_closes_existing_subscribers(self) -> None:
+        ch = _live_channel()
+        sub = ch.subscribe()
+        ch.publish_started(2, None, lambda: None)
+        assert sub.closed
+
+    async def test_late_aac_header_reaches_existing_subscribers(self) -> None:
+        ch = _live_channel()
+        ch.tag_received(1, Tag(TAG_VIDEO, BASE_TS, KEYFRAME))
+        sub = ch.subscribe()
+        ch.tag_received(1, Tag(TAG_AUDIO, 0, AAC_HEADER))
+        bodies = [(await sub.get()) for _ in range(2)]
+        assert [t.body for t in bodies if t is not None] == [KEYFRAME, AAC_HEADER]
+
+    async def test_close_during_start_returns_false(self) -> None:
+        ch = StreamChannel("cam1", KEY)
+        started = asyncio.Event()
+
+        async def slow() -> bool:
+            started.set()
+            await asyncio.sleep(30)
+            return True
+
+        ch.start_callback = slow
+        waiter = asyncio.ensure_future(ch.ensure_publishing())
+        await started.wait()
+        ch.close()
+        assert await waiter is False
+
+
+# ----------------------------------------------------------------------
+# Server: caps, timeouts, gates
+# ----------------------------------------------------------------------
+
+
+async def _idle_connect(port: int) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+    return await asyncio.open_connection("127.0.0.1", port)
+
+
+async def _closed_by_server(reader: asyncio.StreamReader) -> bool:
+    """Return True once the server closes, whatever it sent before."""
+    try:
+        async with asyncio.timeout(5):
+            await reader.read()  # reads to EOF
+    except TimeoutError:
+        return False
+    except ConnectionError:
+        return True
+    return True
+
+
+class TestServerLimits:
+    async def test_same_peer_evicts_its_oldest_pending(self) -> None:
+        server = await _start_server()
+        try:
+            r1, w1 = await _idle_connect(server.rtmp_port)
+            _r2, w2 = await _idle_connect(server.rtmp_port)
+            _r3, w3 = await _idle_connect(server.rtmp_port)
+            assert await _closed_by_server(r1)
+            assert len(server._pending) == 2
+            for w in (w1, w2, w3):
+                w.close()
+        finally:
+            await server.async_stop()
+
+    async def test_full_pending_cap_evicts_and_lets_the_camera_in(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from aionanit.local_stream import server as server_mod
+
+        monkeypatch.setattr(server_mod, "MAX_PENDING_PER_PEER", 100)
+        monkeypatch.setattr(server_mod, "MAX_PENDING_CONNECTIONS", 3)
+        server = await _start_server()
+        try:
+            ch = server.register("cam1", KEY)
+            idle = [await _idle_connect(server.rtmp_port) for _ in range(3)]
+            pub = Publisher(server.rtmp_port, KEY)
+            await pub.publish()
+            assert await ch.wait_for_publish(5)
+            assert await _closed_by_server(idle[0][0])
+            for _, w in idle:
+                w.close()
+            await pub.close()
+        finally:
+            await server.async_stop()
+
+    async def test_tls_handshakes_count_against_the_cap(self, tmp_path: Path) -> None:
+        from aionanit.local_stream import server as server_mod
+
+        server = await _start_server(_self_signed(tmp_path))
+        try:
+            conns = [await _idle_connect(server.rtmp_port) for _ in range(12)]
+            await asyncio.sleep(0.1)
+            assert len(server._pending) <= server_mod.MAX_PENDING_PER_PEER
+            for _, w in conns:
+                w.close()
+        finally:
+            await server.async_stop()
+
+    async def test_idle_connection_times_out(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from aionanit.local_stream import server as server_mod
+
+        monkeypatch.setattr(server_mod, "PRE_PUBLISH_TIMEOUT", 0.2)
+        server = await _start_server()
+        try:
+            reader, writer = await _idle_connect(server.rtmp_port)
+            assert await _closed_by_server(reader)
+            assert server.protocol_failures == 1
+            writer.close()
+        finally:
+            await server.async_stop()
+
+    async def test_silent_publisher_times_out(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from aionanit.local_stream import server as server_mod
+
+        monkeypatch.setattr(server_mod, "IDLE_TIMEOUT", 0.3)
+        server = await _start_server()
+        try:
+            ch = server.register("cam1", KEY)
+            pub = Publisher(server.rtmp_port, KEY)
+            await pub.publish()
+            assert await ch.wait_for_publish(5)
+            assert pub.reader is not None
+            assert await _closed_by_server(pub.reader)
+            await pub.close()
+        finally:
+            await server.async_stop()
+
+    async def test_head_does_not_start_the_camera(self) -> None:
+        server = await _start_server()
+        try:
+            ch = server.register("cam1", KEY)
+            publishers = _wire_start(server, ch)
+            async with aiohttp.ClientSession() as session:
+                async with session.head(server.flv_url("cam1")) as resp:
+                    assert resp.status == 405
+            assert publishers == []
+        finally:
+            await server.async_stop()
+
+    async def test_head_of_stream_waits_for_the_avc_header(self) -> None:
+        server = await _start_server()
+        try:
+            ch = server.register("cam1", KEY)
+            pub = Publisher(server.rtmp_port, KEY)
+
+            async def start() -> bool:
+                await pub.publish()
+                pub.media(9, BASE_TS, KEYFRAME)  # media before any header
+                return await ch.wait_for_publish(5)
+
+            ch.start_callback = start
+            async with aiohttp.ClientSession() as session:
+                async with session.get(server.flv_url("cam1")) as resp:
+                    with pytest.raises(TimeoutError):
+                        async with asyncio.timeout(0.5):
+                            await resp.content.readexactly(1)
+                    pub.media(9, BASE_TS, AVC_HEADER)
+                    pub.media(9, BASE_TS + 100, KEYFRAME)
+                    async with asyncio.timeout(5):
+                        head = await resp.content.readexactly(13 + 11 + len(AVC_HEADER) + 4)
+            assert head.startswith(flv.FILE_HEADER)
+            assert head[13 + 11 : 13 + 11 + len(AVC_HEADER)] == AVC_HEADER
+            await pub.close()
+        finally:
+            await server.async_stop()
+
+    async def test_stop_while_waiting_for_headers_is_fast(self) -> None:
+        server = await _start_server()
+        ch = server.register("cam1", KEY)
+        pub = Publisher(server.rtmp_port, KEY)
+
+        async def start() -> bool:
+            await pub.publish()
+            return await ch.wait_for_publish(5)
+
+        ch.start_callback = start
+        session = aiohttp.ClientSession()
+        try:
+            resp = await session.get(server.flv_url("cam1"))
+            await asyncio.sleep(0.2)
+            started = time.monotonic()
+            await server.async_stop()
+            assert time.monotonic() - started < 1.0
+            resp.close()
+        finally:
+            await session.close()
+            await pub.close()

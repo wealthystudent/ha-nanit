@@ -438,7 +438,8 @@ class LocalStreamServer:
             base: int | None = None
             while (tag := await sub.get()) is not None:
                 if tag.is_avc_header or tag.is_aac_header:
-                    # A configuration change, written at the current position.
+                    # A configuration change. FFmpeg's FLV reader takes a
+                    # sequence header as new extradata whatever its timestamp.
                     await self._write(response, Tag(tag.kind, 0, tag.body).encode())
                     continue
                 if base is None:

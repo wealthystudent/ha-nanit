@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import datetime
 import random
+import socket
 import ssl
 import struct
 import time
@@ -1100,3 +1101,193 @@ class TestRealDemuxer:
             assert len(publishers) == 1
         finally:
             await server.async_stop()
+
+
+# ----------------------------------------------------------------------
+# Round-2 survivors
+# ----------------------------------------------------------------------
+
+
+def test_ts_since_boundary() -> None:
+    assert flv.ts_since(1000 + (1 << 31) - 1, 1000) == (1 << 31) - 1
+    assert flv.ts_since(1000 + (1 << 31), 1000) == 0
+
+
+def test_type_change_mid_message_is_refused() -> None:
+    session = _Recorder().session()
+    session.feed(_handshake() + _publish_stream())
+    first = bytes([6]) + (5).to_bytes(3, "big") + (300).to_bytes(3, "big") + bytes([9])
+    first += struct.pack("<I", 1) + b"\x17\x01" + b"\x00" * 126
+    other = bytes([0x40 | 6]) + (0).to_bytes(3, "big") + (300).to_bytes(3, "big") + bytes([8])
+    with pytest.raises(RtmpError):
+        session.feed(first + other + b"\x00" * 128)
+
+
+def test_header_fields_are_taken_only_when_a_message_starts() -> None:
+    rec = _Recorder()
+    session = rec.session()
+    session.feed(_handshake() + _publish_stream())
+    body = b"\x27\x01" + b"\x00" * 198  # 200 bytes, two chunks at 128
+    start = bytes([6]) + (1000).to_bytes(3, "big") + len(body).to_bytes(3, "big") + bytes([9])
+    start += struct.pack("<I", 1) + body[:128]
+    # A format 2 chunk mid-message carrying a different timestamp delta.
+    middle = bytes([0x80 | 6]) + (77).to_bytes(3, "big") + body[128:]
+    session.feed(start + middle)
+    session.feed(chunk_message(6, 9, 1, 2000, INTERFRAME, 128))
+    assert [t.timestamp for t in rec.tags] == [1000, 2000]
+    assert rec.tags[0].body == body
+
+
+async def test_close_wakes_publish_waiters() -> None:
+    ch = StreamChannel("cam1", KEY)
+    waiter = asyncio.ensure_future(ch.wait_for_publish(30))
+    await asyncio.sleep(0)
+    ch.close()
+    async with asyncio.timeout(1):
+        assert await waiter is False
+
+
+async def test_close_makes_header_waiters_give_up() -> None:
+    ch = _live_channel()
+    ch.close()
+    assert await ch.wait_for_headers(1) is False
+
+
+async def test_subscription_iterates_until_closed() -> None:
+    ch = _live_channel()
+    ch.tag_received(1, Tag(TAG_VIDEO, BASE_TS, KEYFRAME))
+    sub = ch.subscribe()
+    ch.tag_received(1, Tag(TAG_VIDEO, BASE_TS + 100, INTERFRAME))
+    seen = []
+
+    async def collect() -> None:
+        async for tag in sub:
+            seen.append(tag.body)
+
+    task = asyncio.ensure_future(collect())
+    await asyncio.sleep(0.01)
+    sub.close()
+    async with asyncio.timeout(1):
+        await task
+    assert seen == [KEYFRAME, INTERFRAME]
+
+
+async def test_unchanged_header_is_not_resent_but_a_change_is() -> None:
+    ch = _live_channel()
+    ch.tag_received(1, Tag(TAG_AUDIO, 0, AAC_HEADER))
+    ch.tag_received(1, Tag(TAG_VIDEO, BASE_TS, KEYFRAME))
+    sub = ch.subscribe()
+    ch.tag_received(1, Tag(TAG_AUDIO, 0, AAC_HEADER))  # same config again
+    ch.tag_received(1, Tag(TAG_VIDEO, 0, AVC_HEADER))  # same config again
+    assert [t.body for t in sub._queue] == [KEYFRAME]
+    changed = AAC_HEADER[:-1] + b"\x10"
+    ch.tag_received(1, Tag(TAG_AUDIO, 0, changed))
+    assert [t.body for t in sub._queue] == [KEYFRAME, changed]
+
+
+class TestServerRound2:
+    async def test_connections_and_failures_are_counted_per_peer(self) -> None:
+        server = await _start_server()
+        try:
+            server.register("cam1", KEY)
+            pub = Publisher(server.rtmp_port, "wrong")
+            await pub.publish()
+            assert pub.reader is not None
+            assert await _closed_by_server(pub.reader)
+            await pub.close()
+            assert server.attempts_by_peer == {"127.0.0.1": 1}
+            assert server.failures_by_peer == {"127.0.0.1": 1}
+        finally:
+            await server.async_stop()
+
+    async def test_tracked_peers_are_bounded(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from aionanit.local_stream import server as server_mod
+
+        monkeypatch.setattr(server_mod, "MAX_TRACKED_PEERS", 3)
+        server = LocalStreamServer(port=0)
+        for i in range(10):
+            server.record_failure(f"10.0.0.{i}")
+        assert len(server.failures_by_peer) == 3
+        assert server.protocol_failures == 10
+
+    async def test_eviction_mid_tls_closes_the_socket(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from aionanit.local_stream import server as server_mod
+
+        monkeypatch.setattr(server_mod, "MAX_PENDING_PER_PEER", 1)
+        server = await _start_server(_self_signed(tmp_path))
+        try:
+            first_reader, first_writer = await _idle_connect(server.rtmp_port)
+            _r, second_writer = await _idle_connect(server.rtmp_port)
+            assert await _closed_by_server(first_reader)
+            first_writer.close()
+            second_writer.close()
+        finally:
+            await server.async_stop()
+
+    async def test_stalled_reader_is_dropped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from aionanit.local_stream import server as server_mod
+
+        monkeypatch.setattr(server_mod, "WRITE_TIMEOUT", 0.2)
+        server = await _start_server()
+        try:
+            ch = server.register("cam1", KEY)
+            publishers = _wire_start(server, ch)
+            # Read the response headers, then stop reading while media flows.
+            reader, writer = await asyncio.open_connection("127.0.0.1", server.http_port)
+            path = server.flv_url("cam1").split(str(server.http_port), 1)[1]
+            writer.write(f"GET {path} HTTP/1.1\r\nHost: x\r\n\r\n".encode())
+            await writer.drain()
+            await reader.readuntil(b"\r\n\r\n")
+            async with asyncio.timeout(5):
+                while not ch.consumer_count:
+                    await asyncio.sleep(0.01)
+            big = bytes([0x27, 1, 0, 0, 0]) + b"\x01" * 200_000
+            for i in range(60):
+                publishers[0].media(9, BASE_TS + 100 * (i + 2), big)
+                await asyncio.sleep(0.01)
+            async with asyncio.timeout(5):
+                while ch.consumer_count:
+                    await asyncio.sleep(0.05)
+            writer.close()
+        finally:
+            await server.async_stop()
+
+    async def test_header_change_reaches_an_http_reader(self) -> None:
+        server = await _start_server()
+        try:
+            ch = server.register("cam1", KEY)
+            publishers = _wire_start(server, ch)
+            changed = AAC_HEADER[:-1] + b"\x10"
+            async with (
+                aiohttp.ClientSession() as session,
+                session.get(server.flv_url("cam1")) as resp,
+            ):
+                data = b""
+                async with asyncio.timeout(5):
+                    while len(data) < 13 or len(_parse_flv(data)) < 6:
+                        data += await resp.content.read(65536)
+                    publishers[0].media(8, BASE_TS + 400, changed)
+                    publishers[0].media(9, BASE_TS + 500, INTERFRAME)
+                    while not any(body == changed for _, _, body in _parse_flv(data)):
+                        data += await resp.content.read(65536)
+        finally:
+            await server.async_stop()
+
+    async def test_http_start_failure_releases_the_ingest(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from aiohttp import web
+
+        async def boom(self: object) -> None:
+            raise OSError("no loopback")
+
+        monkeypatch.setattr(web.TCPSite, "start", boom)
+        server = LocalStreamServer(port=0, host="127.0.0.1")
+        with pytest.raises(OSError, match="no loopback"):
+            await server.async_start()
+        port = server.rtmp_port
+        probe = socket.socket()
+        probe.bind(("127.0.0.1", port))  # the port is free again
+        probe.close()

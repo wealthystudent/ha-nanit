@@ -1291,3 +1291,31 @@ class TestServerRound2:
         probe = socket.socket()
         probe.bind(("127.0.0.1", port))  # the port is free again
         probe.close()
+
+
+async def test_on_publish_fires_for_every_accepted_publisher() -> None:
+    ch = StreamChannel("cam1", KEY)
+    calls: list[int] = []
+    ch.on_publish = lambda: calls.append(1)
+    ch.publish_started(1, None, lambda: None)
+    ch.publish_started(2, None, lambda: None)
+    assert calls == [1, 1]
+
+
+async def test_eviction_mid_tls_is_not_a_protocol_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from aionanit.local_stream import server as server_mod
+
+    monkeypatch.setattr(server_mod, "MAX_PENDING_PER_PEER", 1)
+    server = await _start_server(_self_signed(tmp_path))
+    try:
+        first_reader, first_writer = await _idle_connect(server.rtmp_port)
+        _r, second_writer = await _idle_connect(server.rtmp_port)
+        assert await _closed_by_server(first_reader)
+        await asyncio.sleep(0.05)
+        assert server.protocol_failures == 0
+        first_writer.close()
+        second_writer.close()
+    finally:
+        await server.async_stop()

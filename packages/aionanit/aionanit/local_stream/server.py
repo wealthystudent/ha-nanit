@@ -380,7 +380,10 @@ class LocalStreamServer:
             )
         except (OSError, ssl.SSLError, TimeoutError, ConnectionError) as err:
             _LOGGER.debug("TLS handshake with %s failed: %s", peer, err)
-            self.record_failure(peer)
+            if conn in self._pending:
+                # An eviction aborts the handshake too, and that is not the
+                # peer failing the protocol.
+                self.record_failure(peer)
             self._pending.discard(conn)
             transport.abort()
             return

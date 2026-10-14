@@ -119,6 +119,9 @@ class StreamChannel:
         # (camera asleep, cloud cooldown, local streaming paused).
         self.accepting = True
         self.on_consumers_changed: Callable[[int], None] | None = None
+        # Called on every accepted publish, including one nobody asked for
+        # (a camera still pushing across a restart).
+        self.on_publish: Callable[[], None] | None = None
 
         self.publisher_peer: str | None = None
         self.last_publish_at: float | None = None
@@ -180,6 +183,8 @@ class StreamChannel:
         self._gop_bytes = 0
         self._headers_ready.clear()
         self._published.set()
+        if self.on_publish is not None:
+            self.on_publish()
 
     def publish_ended(self, publisher_id: int) -> None:
         """Forget ``publisher_id`` if it is still the publisher."""

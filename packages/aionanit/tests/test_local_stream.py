@@ -1319,3 +1319,29 @@ async def test_eviction_mid_tls_is_not_a_protocol_failure(
         second_writer.close()
     finally:
         await server.async_stop()
+
+
+async def test_peer_reset_mid_tls_is_a_protocol_failure(tmp_path: Path) -> None:
+    server = await _start_server(_self_signed(tmp_path))
+    try:
+        reader, writer = await _idle_connect(server.rtmp_port)
+        writer.write(b"\x16\x03\x01\x00\x05hello")  # a broken ClientHello
+        await writer.drain()
+        writer.transport.abort()
+        async with asyncio.timeout(15):
+            while server.protocol_failures == 0:
+                await asyncio.sleep(0.05)
+        assert not server._pending
+    finally:
+        await server.async_stop()
+
+
+async def test_failing_publish_callback_keeps_the_connection() -> None:
+    ch = StreamChannel("cam1", KEY)
+
+    def broken() -> None:
+        raise RuntimeError("owner bug")
+
+    ch.on_publish = broken
+    ch.publish_started(1, None, lambda: None)
+    assert ch.publishing

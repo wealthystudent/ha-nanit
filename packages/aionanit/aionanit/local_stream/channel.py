@@ -184,7 +184,11 @@ class StreamChannel:
         self._headers_ready.clear()
         self._published.set()
         if self.on_publish is not None:
-            self.on_publish()
+            try:
+                self.on_publish()
+            except Exception:
+                # A bug in the owner must not kill the camera's connection.
+                _LOGGER.exception("Local stream publish callback failed")
 
     def publish_ended(self, publisher_id: int) -> None:
         """Forget ``publisher_id`` if it is still the publisher."""

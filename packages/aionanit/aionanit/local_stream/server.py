@@ -388,7 +388,11 @@ class LocalStreamServer:
             transport.abort()
             return
         if tls_transport is None or conn not in self._pending:
-            # Evicted while handshaking, or the handshake produced nothing.
+            # start_tls returns None rather than raising when the socket goes
+            # away mid-handshake. That is a failure only if the peer did it,
+            # not if we evicted it.
+            if conn in self._pending:
+                self.record_failure(peer)
             self._pending.discard(conn)
             (tls_transport or transport).abort()
             return

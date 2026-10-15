@@ -138,7 +138,7 @@
   "issues": {
     "camera_connection_failed": {
       "title": "Nanit camera failed to connect",
-      "description": "Camera **{camera_name}** could not be reached. It will be retried on next reload.\n\nError: {error}"
+      "description": "Camera **{camera_name}** could not be reached. It will be retried once Nanit reports it online.\n\nError: {error}"
     }
   },
   "entity": {

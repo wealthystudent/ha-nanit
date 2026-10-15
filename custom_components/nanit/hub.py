@@ -392,18 +392,44 @@ class NanitHub:
             )
             # The network coordinators re-read the device list every few
             # minutes and check failed cameras as they go. Without one (every
-            # camera failed, leaving only Sound & Light Machines), poll here.
-            if not any(cd.network_coordinator for cd in self._camera_data.values()):
+            # camera failed, leaving only Sound & Light Machines), poll here,
+            # unless every failed camera has already had its one reload.
+            if (
+                not any(cd.network_coordinator for cd in self._camera_data.values())
+                and self._failed_camera_uids - self._reload_attempted_uids()
+            ):
                 self._unsubscribe_failed_check = async_track_time_interval(
                     self._hass,
                     self._async_check_failed_cameras,
                     _FAILED_CAMERA_CHECK_INTERVAL,
                 )
+                # Also on unload, in case setup fails after the hub is up.
+                self._entry.async_on_unload(self._cancel_failed_check)
+
+    @callback
+    def _cancel_failed_check(self) -> None:
+        if self._unsubscribe_failed_check is not None:
+            self._unsubscribe_failed_check()
+            self._unsubscribe_failed_check = None
+
+    def _reload_attempted_uids(self) -> set[str]:
+        # Tracked in hass.data so the marker survives the reload itself.
+        attempted: set[str] = self._hass.data.setdefault(DOMAIN, {}).setdefault(
+            f"auto_reload_attempted_{self._entry.entry_id}", set()
+        )
+        return attempted
 
     async def _async_check_failed_cameras(self, _now: datetime) -> None:
         """Fetch the device list and reload if a failed camera is back."""
         try:
             babies = await self.async_get_babies_tolerant()
+        except NanitAuthError as err:
+            # Nothing else on an entry without a working camera polls the
+            # cloud, so this is where an expired login has to surface.
+            _LOGGER.warning("Nanit login expired while checking failed cameras: %s", err)
+            self._cancel_failed_check()
+            self._entry.async_start_reauth(self._hass)
+            return
         except NanitError as err:
             _LOGGER.debug("Could not check failed cameras: %s", err)
             return
@@ -422,11 +448,8 @@ class NanitHub:
         # One reload attempt per camera per HA run: if setup still fails
         # after the reload, the camera lands back in failed_camera_uids
         # and retrying every poll would bounce the entry (and every
-        # healthy camera's stream) forever. Tracked in hass.data so the
-        # marker survives the reload itself.
-        attempted: set[str] = self._hass.data.setdefault(DOMAIN, {}).setdefault(
-            f"auto_reload_attempted_{self._entry.entry_id}", set()
-        )
+        # healthy camera's stream) forever.
+        attempted = self._reload_attempted_uids()
         recovered = [
             b
             for b in babies
@@ -799,9 +822,7 @@ class NanitHub:
 
     async def async_close(self) -> None:
         """Stop all devices and clean up."""
-        if self._unsubscribe_failed_check is not None:
-            self._unsubscribe_failed_check()
-            self._unsubscribe_failed_check = None
+        self._cancel_failed_check()
         await self._client.async_close()
         self._camera_data.clear()
         self._speaker_data.clear()

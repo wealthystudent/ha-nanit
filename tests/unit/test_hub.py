@@ -370,12 +370,16 @@ async def test_offline_camera_gets_a_shorter_setup_wait(
 
 
 async def _setup_with_failed_camera(
-    hass: HomeAssistant, mock_nanit_client: MagicMock, *, network_starts: bool
+    hass: HomeAssistant,
+    mock_nanit_client: MagicMock,
+    *,
+    network_starts: bool,
+    entry: MockConfigEntry | None = None,
 ) -> NanitHub:
     """Set up two cameras where the first fails to connect."""
     mock_nanit_client.async_get_babies.return_value = [MOCK_BABY_1, MOCK_BABY_2]
     mock_nanit_client.camera.side_effect = lambda **kw: _make_mock_camera(kw["uid"], kw["baby_uid"])
-    hub = NanitHub(hass, MagicMock(), _make_entry(hass))
+    hub = NanitHub(hass, MagicMock(), entry or _make_entry(hass))
 
     def push_factory(_hass, _entry, camera, _baby):
         mock = MagicMock()
@@ -418,6 +422,85 @@ async def test_failed_camera_is_checked_without_a_network_coordinator(
         await hass.async_block_till_done()
         fetch.assert_awaited_once()
         reload.assert_awaited_once()
+    await hub.async_close()
+
+
+async def test_failed_camera_check_waits_for_the_failed_camera(
+    hass: HomeAssistant, mock_nanit_client
+) -> None:
+    """No reload while the failed camera is still offline, whatever the healthy one reports."""
+    hub = await _setup_with_failed_camera(hass, mock_nanit_client, network_starts=False)
+    offline = Baby(
+        uid=MOCK_BABY_1.uid,
+        name=MOCK_BABY_1.name,
+        camera_uid=MOCK_BABY_1.camera_uid,
+        camera_connected=False,
+    )
+    fetch = AsyncMock(return_value=[offline, _online(MOCK_BABY_2)])
+    try:
+        with (
+            patch.object(hub, "async_get_babies_tolerant", fetch),
+            patch.object(hass.config_entries, "async_reload", AsyncMock()) as reload,
+        ):
+            async_fire_time_changed(hass, dt_util.utcnow() + timedelta(minutes=6))
+            await hass.async_block_till_done()
+            fetch.assert_awaited_once()
+            reload.assert_not_awaited()
+    finally:
+        await hub.async_close()
+
+
+async def test_failed_camera_check_starts_reauth_on_auth_error(
+    hass: HomeAssistant, mock_nanit_client
+) -> None:
+    """An expired login found by the check prompts reauth and stops the poll."""
+    hub = await _setup_with_failed_camera(hass, mock_nanit_client, network_starts=False)
+    fetch = AsyncMock(side_effect=NanitAuthError("expired"))
+    try:
+        with (
+            patch.object(hub, "async_get_babies_tolerant", fetch),
+            patch.object(hub._entry, "async_start_reauth") as reauth,
+        ):
+            async_fire_time_changed(hass, dt_util.utcnow() + timedelta(minutes=6))
+            await hass.async_block_till_done()
+            async_fire_time_changed(hass, dt_util.utcnow() + timedelta(minutes=12))
+            await hass.async_block_till_done()
+        reauth.assert_called_once()
+        fetch.assert_awaited_once()
+    finally:
+        await hub.async_close()
+
+
+async def test_failed_camera_check_skipped_after_its_reload(
+    hass: HomeAssistant, mock_nanit_client
+) -> None:
+    """A camera that already had its one reload this run gets no further polling."""
+    entry = _make_entry(hass)
+    hass.data.setdefault(DOMAIN, {})[f"auto_reload_attempted_{entry.entry_id}"] = {
+        MOCK_BABY_1.camera_uid
+    }
+    hub = await _setup_with_failed_camera(
+        hass, mock_nanit_client, network_starts=False, entry=entry
+    )
+    fetch = AsyncMock(return_value=[])
+    with patch.object(hub, "async_get_babies_tolerant", fetch):
+        async_fire_time_changed(hass, dt_util.utcnow() + timedelta(minutes=6))
+        await hass.async_block_till_done()
+    fetch.assert_not_awaited()
+    await hub.async_close()
+
+
+async def test_entry_unload_stops_the_failed_camera_check(
+    hass: HomeAssistant, mock_nanit_client
+) -> None:
+    """The poll is also tied to the entry, in case setup fails after the hub is up."""
+    hub = await _setup_with_failed_camera(hass, mock_nanit_client, network_starts=False)
+    await hub._entry._async_process_on_unload(hass)  # what HA runs when setup fails
+    fetch = AsyncMock(return_value=[])
+    with patch.object(hub, "async_get_babies_tolerant", fetch):
+        async_fire_time_changed(hass, dt_util.utcnow() + timedelta(minutes=6))
+        await hass.async_block_till_done()
+    fetch.assert_not_awaited()
     await hub.async_close()
 
 

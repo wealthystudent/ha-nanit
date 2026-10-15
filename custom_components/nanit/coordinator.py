@@ -252,9 +252,6 @@ class NanitNetworkCoordinator(DataUpdateCoordinator[NetworkInfo | None]):
                 translation_placeholders={"error": str(err)},
             ) from err
 
-        # Reuse this poll's device list to check on cameras that failed setup.
-        self._hub.async_reload_recovered_cameras(babies)
-
         for baby in babies:
             if baby.camera_uid == self.baby.camera_uid:
                 return baby.network

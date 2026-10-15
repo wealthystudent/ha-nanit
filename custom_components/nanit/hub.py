@@ -66,8 +66,8 @@ _CAMERA_SETUP_TIMEOUT: float = 60.0
 # still gets a chance, in case the cloud status is stale.
 _OFFLINE_CAMERA_SETUP_TIMEOUT: float = 10.0
 
-# How often the hub checks Nanit's device list for a failed camera coming
-# back, when no camera's network coordinator is polling it already.
+# How often the hub checks Nanit's device list for a camera that failed
+# setup coming back online.
 _FAILED_CAMERA_CHECK_INTERVAL = timedelta(minutes=5)
 
 # Same idea for a Sound & Light Machine. Its async_start returns once the
@@ -386,18 +386,13 @@ class NanitHub:
 
         if failed_cameras:
             _LOGGER.warning(
-                "Some cameras failed to connect: %s. They will be retried once Nanit "
-                "reports them online.",
+                "Some cameras failed to connect: %s. They will be retried when Nanit "
+                "reports them online or on the next reload.",
                 ", ".join(failed_cameras),
             )
-            # The network coordinators re-read the device list every few
-            # minutes and check failed cameras as they go. Without one (every
-            # camera failed, leaving only Sound & Light Machines), poll here,
-            # unless every failed camera has already had its one reload.
-            if (
-                not any(cd.network_coordinator for cd in self._camera_data.values())
-                and self._failed_camera_uids - self._reload_attempted_uids()
-            ):
+            # Poll Nanit's device list for a failed camera coming back, unless
+            # every failed camera has already had its one reload this run.
+            if self._failed_camera_uids - self._reload_attempted_uids():
                 self._unsubscribe_failed_check = async_track_time_interval(
                     self._hass,
                     self._async_check_failed_cameras,
@@ -437,10 +432,10 @@ class NanitHub:
             return
         if self._unsubscribe_failed_check is None:
             return  # the hub closed during the fetch
-        self.async_reload_recovered_cameras(babies)
+        self._async_reload_recovered_cameras(babies)
 
     @callback
-    def async_reload_recovered_cameras(self, babies: list[Baby]) -> None:
+    def _async_reload_recovered_cameras(self, babies: list[Baby]) -> None:
         """Reload the entry if Nanit reports a camera that failed setup online.
 
         camera_connected is the Nanit cloud's own "connected" field, so no

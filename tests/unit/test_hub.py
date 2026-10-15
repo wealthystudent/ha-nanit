@@ -145,6 +145,7 @@ async def test_setup_partial_failure(hass: HomeAssistant, mock_nanit_client) -> 
 
     assert len(hub.camera_data) == 1
     assert MOCK_BABY_2.camera_uid in hub.camera_data
+    await hub.async_close()  # stops the failed camera check
 
 
 async def test_setup_all_cameras_fail_raises(hass: HomeAssistant, mock_nanit_client) -> None:
@@ -321,6 +322,7 @@ async def test_setup_camera_timeout_treated_as_connection_failure(
 
     assert len(hub.camera_data) == 1
     assert MOCK_BABY_2.camera_uid in hub.camera_data
+    await hub.async_close()  # stops the failed camera check
 
 
 @pytest.mark.parametrize(
@@ -367,6 +369,7 @@ async def test_offline_camera_gets_a_shorter_setup_wait(
     assert (baby.camera_uid in hub.camera_data) is connects
     assert (baby.camera_uid in hub.failed_camera_uids) is not connects
     assert MOCK_BABY_2.camera_uid in hub.camera_data
+    await hub.async_close()  # stops the failed camera check
 
 
 async def _setup_with_failed_camera(
@@ -412,7 +415,7 @@ def _online(baby: Baby) -> Baby:
 async def test_failed_camera_is_checked_without_a_network_coordinator(
     hass: HomeAssistant, mock_nanit_client
 ) -> None:
-    """With no network coordinator polling, the hub checks failed cameras itself (#170)."""
+    """The hub checks failed cameras itself, even with no network coordinator (#170)."""
     hub = await _setup_with_failed_camera(hass, mock_nanit_client, network_starts=False)
     fetch = AsyncMock(return_value=[_online(MOCK_BABY_1), MOCK_BABY_2])
     with (
@@ -563,17 +566,27 @@ async def test_entry_unload_stops_the_failed_camera_check(
     await hub.async_close()
 
 
-async def test_failed_camera_check_skipped_when_a_network_coordinator_polls(
+async def test_failed_camera_is_checked_alongside_network_coordinators(
     hass: HomeAssistant, mock_nanit_client
 ) -> None:
-    """A running network coordinator already checks failed cameras, so no extra poll."""
+    """The hub checks failed cameras even when other cameras' coordinators are running.
+
+    A network coordinator only polls while one of its sensors is enabled, so it
+    can't be relied on for this.
+    """
     hub = await _setup_with_failed_camera(hass, mock_nanit_client, network_starts=True)
     fetch = AsyncMock(return_value=[_online(MOCK_BABY_1), MOCK_BABY_2])
-    with patch.object(hub, "async_get_babies_tolerant", fetch):
-        async_fire_time_changed(hass, dt_util.utcnow() + timedelta(minutes=6))
-        await hass.async_block_till_done()
-    fetch.assert_not_awaited()
-    await hub.async_close()
+    try:
+        with (
+            patch.object(hub, "async_get_babies_tolerant", fetch),
+            patch.object(hass.config_entries, "async_reload", AsyncMock()) as reload,
+        ):
+            async_fire_time_changed(hass, dt_util.utcnow() + timedelta(minutes=6))
+            await hass.async_block_till_done()
+            fetch.assert_awaited_once()
+            reload.assert_awaited_once()
+    finally:
+        await hub.async_close()
 
 
 async def test_failed_camera_check_survives_a_fetch_error(
@@ -637,6 +650,7 @@ async def test_failed_camera_uids_populated(hass: HomeAssistant, mock_nanit_clie
 
     assert MOCK_BABY_1.camera_uid in hub.failed_camera_uids
     assert MOCK_BABY_2.camera_uid not in hub.failed_camera_uids
+    await hub.async_close()  # stops the failed camera check
 
 
 async def test_failed_camera_uid_logs_cloud_status(
@@ -1151,6 +1165,7 @@ async def test_camera_stopped_when_setup_times_out(hass: HomeAssistant, mock_nan
     cams[MOCK_BABY_1.camera_uid].async_stop.assert_awaited_once()
     cams[MOCK_BABY_2.camera_uid].async_stop.assert_not_awaited()
     assert MOCK_BABY_2.camera_uid in hub.camera_data
+    await hub.async_close()  # stops the failed camera check
 
 
 async def test_camera_stopped_when_setup_fails(hass: HomeAssistant, mock_nanit_client) -> None:
@@ -1190,6 +1205,7 @@ async def test_camera_stopped_when_setup_fails(hass: HomeAssistant, mock_nanit_c
     cams[MOCK_BABY_1.camera_uid].async_stop.assert_awaited_once()
     assert MOCK_BABY_1.camera_uid in hub.failed_camera_uids
     assert MOCK_BABY_2.camera_uid in hub.camera_data
+    await hub.async_close()  # stops the failed camera check
 
 
 async def _setup_moved_speaker(hass, mock_nanit_client, stored_map):

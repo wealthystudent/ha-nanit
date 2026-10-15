@@ -32,7 +32,6 @@ from aionanit.models import Baby
 
 from .aionanit_sl.sound_light import NanitSoundLight
 from .const import (
-    CONF_CAMERA_IPS,
     CONF_REFRESH_TOKEN,
     CONF_SPEAKER_IPS,
     CONF_UNPAIRED_SPEAKERS,
@@ -240,8 +239,10 @@ class NanitHub:
         # __init__.py, not here — persisting it early would overwrite the
         # legacy camera-keyed map before the migration has used it.
 
-        # Per-device IP configuration from options
-        camera_ips: dict[str, str] = self._entry.options.get(CONF_CAMERA_IPS, {})
+        # Per-device IP configuration from options. Only Sound & Light
+        # Machines have a usable local socket: the camera's rejects the
+        # integration's token on current firmware (#176), so cameras always
+        # use the relay.
         speaker_ips: dict[str, str] = self._entry.options.get(CONF_SPEAKER_IPS, {})
 
         # Create coordinators for every device on the account
@@ -251,7 +252,7 @@ class NanitHub:
             if baby.camera_uid:
                 tasks.append(
                     asyncio.wait_for(
-                        self._setup_camera(baby, camera_ips.get(baby.camera_uid)),
+                        self._setup_camera(baby),
                         timeout=_CAMERA_SETUP_TIMEOUT,
                     )
                 )
@@ -597,17 +598,12 @@ class NanitHub:
         merged = {**stored, **(found or {})}
         return {uid: name for uid, name in merged.items() if uid not in paired}
 
-    async def _setup_camera(
-        self,
-        baby: Baby,
-        camera_ip: str | None,
-    ) -> None:
+    async def _setup_camera(self, baby: Baby) -> None:
         """Create a camera instance and its coordinators for a single baby."""
         camera = self._client.camera(
             uid=baby.camera_uid,
             baby_uid=baby.uid,
-            prefer_local=camera_ip is not None,
-            local_ip=camera_ip,
+            prefer_local=False,
         )
 
         try:

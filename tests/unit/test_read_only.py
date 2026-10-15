@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,9 +28,10 @@ from custom_components.nanit import async_setup_entry, async_unload_entry
 from custom_components.nanit.binary_sensor import NanitCameraPowerSensor
 from custom_components.nanit.camera import NanitCameraEntity
 from custom_components.nanit.const import (
-    CONF_CAMERA_IP,
     CONF_CAMERA_IPS,
     CONF_READ_ONLY,
+    CONF_SPEAKER_IP,
+    CONF_SPEAKER_IPS,
     DOMAIN,
     PLATFORMS,
     READ_ONLY_PLATFORMS,
@@ -39,6 +41,8 @@ from custom_components.nanit.switch import SWITCHES
 
 from .conftest import MOCK_BABY_1, MOCK_EMAIL, MOCK_PASSWORD, mock_entry_data_v2
 from .test_via_device_e2e import camera_fails, nanit_env  # noqa: F401  (shared fixtures)
+
+Baby = importlib.import_module("aionanit.models").Baby
 
 pytestmark = [
     pytest.mark.filterwarnings("ignore::pytest.PytestRemovedIn9Warning"),
@@ -503,18 +507,22 @@ async def test_options_menu_turns_read_only_off(hass: HomeAssistant) -> None:
 
 
 async def test_options_ip_edit_keeps_read_only_on(hass: HomeAssistant) -> None:
-    entry = _options_entry(hass, {CONF_CAMERA_IPS: {}, CONF_READ_ONLY: True})
+    entry = _options_entry(hass, {CONF_READ_ONLY: True})
+    baby = Baby(uid="baby_1", name="Nursery", camera_uid="cam_1", speaker_uid="spk_1")
+    entry.runtime_data = SimpleNamespace(
+        hub=SimpleNamespace(babies=[baby], speaker_uid_map={"baby_1": "spk_1"})
+    )
 
     result = await _open(hass, entry, "device")
     assert result.get("step_id") == "camera_ip"
     assert CONF_READ_ONLY not in {str(k) for k in _as_dict(result)["data_schema"].schema}
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {CONF_CAMERA_IP: "192.168.1.25"}
+        result["flow_id"], {CONF_SPEAKER_IP: "192.168.1.25"}
     )
 
     result_data = _as_dict(result)
     assert result_data["data"][CONF_READ_ONLY] is True
-    assert result_data["data"][CONF_CAMERA_IPS] == {MOCK_BABY_1.camera_uid: "192.168.1.25"}
+    assert result_data["data"][CONF_SPEAKER_IPS] == {"spk_1": "192.168.1.25"}
 
 
 # ---------------------------------------------------------------------------

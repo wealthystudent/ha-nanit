@@ -138,15 +138,11 @@ How each piece of data reaches Home Assistant:
 - **Sound & Light state** (power, sound, light, volume) arrives as push updates over the speaker's WebSocket, local or relay. A light 30 second poll reconciles state and refreshes battery and WiFi diagnostics. The firmware version is requested with the poll until known, then left alone.
 - **Video** streams on demand over RTMPS when a viewer opens the camera.
 
-## Local connection (optional)
+## Local connection
 
-For faster response times, you can connect directly to your camera over LAN:
+The Sound & Light Machine is controlled over your network when it can be. It is discovered on the LAN automatically (mDNS), and the local connection is preferred whenever the speaker is reachable, with the cloud relay as fallback. If discovery doesn't find it, set its IP under **Settings → Devices & Services → Nanit → Configure → Sound & Light IP address**, which takes precedence over discovery.
 
-**Settings → Devices & Services → Nanit → Configure** → select device → enter its local IP address.
-
-The integration will use your local network for sensors and controls, falling back to cloud for auth and events.
-
-The Sound & Light Machine needs no configuration for this: it is discovered on the LAN automatically (mDNS) and the local connection is preferred whenever the speaker is reachable, with the cloud relay as fallback. A manually configured speaker IP takes precedence over discovery.
+The camera is always controlled through Nanit's relay. Current camera firmware doesn't accept the integration on its local port, so there is no camera IP option.
 
 One thing worth knowing: the speaker accepts a single local client at a time. If the Nanit phone app on the same network holds the local slot, the integration uses the cloud relay and takes the local slot back automatically when it frees up.
 
@@ -158,7 +154,7 @@ One thing worth knowing: the speaker accepts a single local client at a time. If
 | Stream not playing | Verify HA can reach `rtmps://media-secured.nanit.com`. The Stream integration is pulled in automatically; on installs without `default_config:` an older version left it out, and the picture silently fell back to still images. |
 | Stream frozen or stale | Run the `nanit.reset_stream` action on the camera entity (the dashboard card does this automatically when it detects a stall). |
 | Sensors unavailable | WebSocket reconnects automatically. Try reloading the integration if it persists. |
-| Local connection failing | Confirm the camera IP is correct and port 442 is reachable from HA. |
+| Sound & Light not using the local connection | Check that it's on the same network as HA, or set its IP in the options. The Nanit app on the same network can hold the speaker's only local slot. |
 | Re-authentication required | Session expired — click the notification to re-enter credentials. |
 | Other issues | Check **Settings → System → Logs** (filter for `nanit`) or download diagnostics from the integration page. |
 

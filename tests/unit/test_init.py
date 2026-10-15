@@ -17,6 +17,7 @@ from custom_components.nanit.const import (
     CONF_CAMERA_IP,
     CONF_CAMERA_IPS,
     CONF_CAMERA_UID,
+    CONF_SPEAKER_IPS,
     DOMAIN,
 )
 
@@ -480,14 +481,40 @@ async def test_deprecated_entity_removal_skipped_when_not_present(
 # --- Migration tests ---
 
 
-async def test_migrate_v1_to_v2_moves_camera_ip_to_options(hass: HomeAssistant) -> None:
+async def test_migrate_v1_drops_the_camera_ip(hass: HomeAssistant) -> None:
+    """A v1 camera IP moves to options in 2.0 and is dropped again in 2.3 (#176)."""
     entry = MockConfigEntry(domain=DOMAIN, data=mock_entry_data_v1(), version=1, unique_id="cam_1")
     entry.add_to_hass(hass)
 
     assert await async_migrate_entry(hass, entry)
     assert entry.version == 2
-    assert entry.options[CONF_CAMERA_IPS] == {"cam_1": "192.168.1.10"}
+    assert CONF_CAMERA_IPS not in entry.options
     assert CONF_CAMERA_IP not in entry.data
+
+
+async def test_migrate_v2_3_drops_saved_camera_ips_and_keeps_speaker_ips(
+    hass: HomeAssistant,
+) -> None:
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=mock_entry_data_v2(),
+        options={
+            CONF_CAMERA_IPS: {"cam_1": "192.168.1.10"},
+            CONF_SPEAKER_IPS: {"spk_1": "192.168.1.20"},
+            "read_only": True,
+        },
+        version=2,
+        minor_version=2,
+        unique_id=MOCK_EMAIL,
+    )
+    entry.add_to_hass(hass)
+
+    assert await async_migrate_entry(hass, entry)
+    assert entry.minor_version == 3
+    assert dict(entry.options) == {
+        CONF_SPEAKER_IPS: {"spk_1": "192.168.1.20"},
+        "read_only": True,
+    }
 
 
 async def test_migrate_v1_to_v2_removes_baby_camera_fields(hass: HomeAssistant) -> None:
@@ -542,14 +569,14 @@ async def test_migrate_v2_2_scrubs_stored_password(hass: HomeAssistant) -> None:
 
     assert await async_migrate_entry(hass, entry)
     assert entry.version == 2
-    assert entry.minor_version == 2
+    assert entry.minor_version == 3
     assert "password" not in entry.data
     assert "store_credentials" not in entry.data
     assert entry.data[CONF_ACCESS_TOKEN] == mock_entry_data_v2()[CONF_ACCESS_TOKEN]
 
 
 async def test_migrate_v2_2_clean_entry_only_bumps_minor(hass: HomeAssistant) -> None:
-    """An entry without stored credentials migrates to 2.2 unchanged."""
+    """An entry without stored credentials migrates to the latest minor unchanged."""
     entry = MockConfigEntry(
         domain=DOMAIN,
         data=mock_entry_data_v2(),
@@ -560,18 +587,18 @@ async def test_migrate_v2_2_clean_entry_only_bumps_minor(hass: HomeAssistant) ->
     entry.add_to_hass(hass)
 
     assert await async_migrate_entry(hass, entry)
-    assert entry.minor_version == 2
+    assert entry.minor_version == 3
     assert dict(entry.data) == mock_entry_data_v2()
 
 
 async def test_migrate_v1_also_scrubs_stored_password(hass: HomeAssistant) -> None:
-    """A v1 entry runs both migrations in one pass and ends clean at 2.2."""
+    """A v1 entry runs every migration in one pass and ends clean at 2.3."""
     entry = MockConfigEntry(domain=DOMAIN, data=mock_entry_data_v1(), version=1, unique_id="cam_1")
     entry.add_to_hass(hass)
 
     assert await async_migrate_entry(hass, entry)
     assert entry.version == 2
-    assert entry.minor_version == 2
+    assert entry.minor_version == 3
     assert "password" not in entry.data
     assert "store_credentials" not in entry.data
 
@@ -586,7 +613,6 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 
 from custom_components.nanit import _async_migrate_sl_identities, _async_remove_stale_devices
-from custom_components.nanit.const import CONF_SPEAKER_IPS
 
 Baby = importlib.import_module("aionanit.models").Baby
 

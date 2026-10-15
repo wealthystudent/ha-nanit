@@ -163,7 +163,8 @@ async def test_setup_all_cameras_fail_raises(hass: HomeAssistant, mock_nanit_cli
             pass
 
 
-async def test_setup_reads_camera_ips_from_options(hass: HomeAssistant, mock_nanit_client) -> None:
+async def test_cameras_never_try_a_local_connection(hass: HomeAssistant, mock_nanit_client) -> None:
+    """Cameras use the relay even if an old camera IP is still saved (#176)."""
     entry = _make_entry(hass, options={CONF_CAMERA_IPS: {"cam_1": "10.0.0.8"}})
     hub = NanitHub(hass, MagicMock(), entry)
 
@@ -178,7 +179,7 @@ async def test_setup_reads_camera_ips_from_options(hass: HomeAssistant, mock_nan
         await hub.async_setup()
 
     mock_nanit_client.camera.assert_called_once_with(
-        uid="cam_1", baby_uid="baby_1", prefer_local=True, local_ip="10.0.0.8"
+        uid="cam_1", baby_uid="baby_1", prefer_local=False
     )
 
 

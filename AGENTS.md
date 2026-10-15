@@ -48,7 +48,7 @@ docs/                      ← Security checklist, connection reliability, testi
 |------|---------|
 | `__init__.py` | Entry setup/unload/migrate, `NanitData` dataclass |
 | `hub.py` | `NanitHub` lifecycle, `CameraData` per-camera grouping |
-| `config_flow.py` | Credentials + MFA, reauth, per-camera IP options |
+| `config_flow.py` | Credentials + MFA, reauth, options (Sound & Light IP, read-only) |
 | `coordinator.py` | `NanitPushCoordinator` (WebSocket push) + `NanitCloudCoordinator` (polling) |
 | `entity.py` | `NanitEntity` base class with availability logic |
 | `camera.py`, `sensor.py`, `binary_sensor.py`, `switch.py`, `number.py` | Entity platforms |

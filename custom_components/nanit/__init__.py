@@ -222,6 +222,15 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
         hass.config_entries.async_update_entry(config_entry, data=new_data, minor_version=2)
         LOGGER.info("Migrated Nanit config entry to version 2.2 (stored password removed)")
 
+    if config_entry.version == 2 and config_entry.minor_version < 3:
+        # The camera IP option is gone (#176): current firmware rejects the
+        # integration's token on the camera's local socket, so a saved IP only
+        # kept a probe retrying the 403 every 5 minutes. Speaker IPs stay.
+        new_options = {**config_entry.options}
+        new_options.pop(CONF_CAMERA_IPS, None)
+        hass.config_entries.async_update_entry(config_entry, options=new_options, minor_version=3)
+        LOGGER.info("Migrated Nanit config entry to version 2.3 (camera IP option removed)")
+
     return True
 
 

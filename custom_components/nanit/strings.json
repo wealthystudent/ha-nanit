@@ -56,22 +56,21 @@
       "init": {
         "title": "Nanit Options",
         "menu_options": {
-          "device": "Device IP addresses",
+          "device": "Sound & Light IP address",
           "read_only": "Read-only mode"
         }
       },
       "device": {
         "title": "Nanit Options",
-        "description": "Select a device to configure its local IP addresses.",
+        "description": "Select whose Sound & Light Machine to configure.",
         "data": {
           "device": "Device"
         }
       },
       "camera_ip": {
-        "title": "Device IPs for {camera_name}",
-        "description": "Enter local IP addresses for **{camera_name}** for local-first connectivity. Leave blank to use cloud only.",
+        "title": "Sound & Light IP for {camera_name}",
+        "description": "Enter the local IP address of **{camera_name}**'s Sound & Light Machine to use it over your network. Leave blank to find it automatically.",
         "data": {
-          "camera_ip": "Camera IP Address",
           "speaker_ip": "Sound & Light Machine IP Address"
         }
       },
@@ -82,6 +81,9 @@
           "read_only": "Read-only mode"
         }
       }
+    },
+    "abort": {
+      "no_speakers": "No Sound & Light Machine to configure. Machines that aren't paired with a baby are found automatically."
     }
   },
   "exceptions": {

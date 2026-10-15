@@ -19,7 +19,6 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from aionanit.models import Baby
 from custom_components.nanit import config_flow as nanit_config_flow
 from custom_components.nanit.const import (
-    CONF_CAMERA_IP,
     CONF_CAMERA_IPS,
     CONF_MFA_CODE,
     CONF_REFRESH_TOKEN,
@@ -733,25 +732,30 @@ async def _open_device_options(hass: HomeAssistant, entry: MockConfigEntry) -> A
     )
 
 
-async def test_options_flow_init_no_cameras_aborts(hass: HomeAssistant) -> None:
+_BABY_WITH_SPEAKER = Baby(uid="baby_1", name="Nursery", camera_uid="cam_1", speaker_uid="spk_1")
+_BABY_2_WITH_SPEAKER = Baby(uid="baby_2", name="Playroom", camera_uid="cam_2", speaker_uid="spk_2")
+
+
+async def test_options_flow_no_speakers_aborts(hass: HomeAssistant) -> None:
+    """Only Sound & Light Machines take a local IP, so no speaker means nothing to set."""
     hass = await _resolve_hass(hass)
     entry = MockConfigEntry(domain=DOMAIN, options={})
-    entry.runtime_data = SimpleNamespace(hub=SimpleNamespace(babies=[], speaker_uid_map={}))
+    entry.runtime_data = SimpleNamespace(
+        hub=SimpleNamespace(babies=[MOCK_BABY_1], speaker_uid_map={})
+    )
     entry.add_to_hass(hass)
 
     result = await _open_device_options(hass, entry)
 
     assert result.get("type") is FlowResultType.ABORT
-    assert result.get("reason") == "no_cameras"
+    assert result.get("reason") == "no_speakers"
 
 
-async def test_options_flow_init_single_camera_goes_to_camera_ip(
-    hass: HomeAssistant,
-) -> None:
+async def test_options_flow_single_speaker_goes_to_ip_step(hass: HomeAssistant) -> None:
     hass = await _resolve_hass(hass)
     entry = MockConfigEntry(domain=DOMAIN, options={})
     entry.runtime_data = SimpleNamespace(
-        hub=SimpleNamespace(babies=[MOCK_BABY_1], speaker_uid_map={})
+        hub=SimpleNamespace(babies=[_BABY_WITH_SPEAKER], speaker_uid_map={"baby_1": "spk_1"})
     )
     entry.add_to_hass(hass)
 
@@ -759,50 +763,20 @@ async def test_options_flow_init_single_camera_goes_to_camera_ip(
 
     assert result.get("type") is FlowResultType.FORM
     assert result.get("step_id") == "camera_ip"
+    schema_keys = {str(key) for key in _as_dict(result)["data_schema"].schema}
+    assert schema_keys == {CONF_SPEAKER_IP}
 
 
-async def test_options_flow_init_multiple_cameras_shows_selector(
+async def test_options_flow_selector_lists_only_babies_with_a_speaker(
     hass: HomeAssistant,
 ) -> None:
     hass = await _resolve_hass(hass)
     entry = MockConfigEntry(domain=DOMAIN, options={})
     entry.runtime_data = SimpleNamespace(
-        hub=SimpleNamespace(babies=[MOCK_BABY_1, MOCK_BABY_2], speaker_uid_map={})
-    )
-    entry.add_to_hass(hass)
-
-    result = await _open_device_options(hass, entry)
-
-    assert result.get("type") is FlowResultType.FORM
-    assert result.get("step_id") == "device"
-
-
-async def test_options_flow_camera_ip_sets_ip(hass: HomeAssistant) -> None:
-    hass = await _resolve_hass(hass)
-    entry = MockConfigEntry(domain=DOMAIN, options={CONF_CAMERA_IPS: {}})
-    entry.runtime_data = SimpleNamespace(
-        hub=SimpleNamespace(babies=[MOCK_BABY_1], speaker_uid_map={})
-    )
-    entry.add_to_hass(hass)
-
-    result = await _open_device_options(hass, entry)
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        {CONF_CAMERA_IP: "192.168.1.25"},
-    )
-
-    result_data = _as_dict(result)
-    assert result_data.get("type") is FlowResultType.CREATE_ENTRY
-    assert result_data["data"][CONF_CAMERA_IPS] == {MOCK_BABY_1.camera_uid: "192.168.1.25"}
-
-
-async def test_options_flow_multi_camera_select_then_set_ip(
-    hass: HomeAssistant,
-) -> None:
-    hass = await _resolve_hass(hass)
-    entry = MockConfigEntry(domain=DOMAIN, options={CONF_CAMERA_IPS: {}})
-    entry.runtime_data = SimpleNamespace(
-        hub=SimpleNamespace(babies=[MOCK_BABY_1, MOCK_BABY_2], speaker_uid_map={})
+        hub=SimpleNamespace(
+            babies=[_BABY_WITH_SPEAKER, MOCK_BABY_2, _BABY_2_WITH_SPEAKER],
+            speaker_uid_map={"baby_1": "spk_1", "baby_2": "spk_2"},
+        )
     )
     entry.add_to_hass(hass)
 
@@ -811,44 +785,30 @@ async def test_options_flow_multi_camera_select_then_set_ip(
     assert result.get("step_id") == "device"
 
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        {"device": MOCK_BABY_2.uid},
+        result["flow_id"], {"device": "baby_2"}
     )
-    assert result.get("type") is FlowResultType.FORM
     assert result.get("step_id") == "camera_ip"
-
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        {CONF_CAMERA_IP: "192.168.1.26"},
+        result["flow_id"], {CONF_SPEAKER_IP: "192.168.1.26"}
     )
-
     result_data = _as_dict(result)
     assert result_data.get("type") is FlowResultType.CREATE_ENTRY
-    assert result_data["data"][CONF_CAMERA_IPS] == {MOCK_BABY_2.camera_uid: "192.168.1.26"}
+    assert result_data["data"][CONF_SPEAKER_IPS] == {"spk_2": "192.168.1.26"}
 
 
-async def test_options_flow_camera_ip_clears_ip_when_empty(
-    hass: HomeAssistant,
-) -> None:
+async def test_options_flow_selector_skips_a_camera_only_baby(hass: HomeAssistant) -> None:
+    """With one speaker baby among camera-only ones, the selector is skipped."""
     hass = await _resolve_hass(hass)
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        options={CONF_CAMERA_IPS: {MOCK_BABY_1.camera_uid: "192.168.1.30"}},
-    )
+    entry = MockConfigEntry(domain=DOMAIN, options={})
     entry.runtime_data = SimpleNamespace(
-        hub=SimpleNamespace(babies=[MOCK_BABY_1], speaker_uid_map={})
+        hub=SimpleNamespace(
+            babies=[MOCK_BABY_2, _BABY_WITH_SPEAKER], speaker_uid_map={"baby_1": "spk_1"}
+        )
     )
     entry.add_to_hass(hass)
 
     result = await _open_device_options(hass, entry)
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        {CONF_CAMERA_IP: ""},
-    )
-
-    result_data = _as_dict(result)
-    assert result_data.get("type") is FlowResultType.CREATE_ENTRY
-    assert result_data["data"][CONF_CAMERA_IPS] == {}
+    assert result.get("step_id") == "camera_ip"
 
 
 async def test_options_flow_speaker_only_baby_shows_speaker_field_only(
@@ -877,7 +837,7 @@ async def test_options_flow_speaker_only_baby_shows_speaker_field_only(
     result_data = _as_dict(result)
     assert result_data.get("type") is FlowResultType.CREATE_ENTRY
     assert result_data["data"][CONF_SPEAKER_IPS] == {"spk_9": "192.168.1.40"}
-    assert result_data["data"][CONF_CAMERA_IPS] == {}
+    assert CONF_CAMERA_IPS not in result_data["data"]
 
 
 async def test_options_flow_speaker_ip_saved_by_speaker_uid_and_legacy_key_dropped(
@@ -932,10 +892,10 @@ async def test_options_flow_clearing_speaker_ip_also_drops_legacy_key(
     assert result_data["data"][CONF_SPEAKER_IPS] == {}
 
 
-async def test_options_flow_unresolved_speaker_keeps_legacy_ip(
+async def test_options_flow_unresolved_speaker_leaves_options_alone(
     hass: HomeAssistant,
 ) -> None:
-    """Saving camera options must not discard a legacy speaker IP the hub still uses."""
+    """A baby whose speaker can't be resolved offers nothing and keeps its legacy IP."""
     hass = await _resolve_hass(hass)
     baby = Baby(uid="baby_1", name="Nursery", camera_uid="cam_1", speaker_uid=None)
     entry = MockConfigEntry(
@@ -946,14 +906,10 @@ async def test_options_flow_unresolved_speaker_keeps_legacy_ip(
     entry.add_to_hass(hass)
 
     result = await _open_device_options(hass, entry)
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        {CONF_CAMERA_IP: "192.168.1.91"},
-    )
 
-    result_data = _as_dict(result)
-    assert result_data.get("type") is FlowResultType.CREATE_ENTRY
-    assert result_data["data"][CONF_SPEAKER_IPS] == {"cam_1": "192.168.1.90"}
+    assert result.get("type") is FlowResultType.ABORT
+    assert result.get("reason") == "no_speakers"
+    assert entry.options[CONF_SPEAKER_IPS] == {"cam_1": "192.168.1.90"}
 
 
 async def test_credentials_duplicate_email_different_case_aborts(
@@ -1092,25 +1048,22 @@ async def test_reauth_entry_without_stored_email_succeeds_and_adopts(
 async def test_options_flow_preserves_unrelated_options(hass: HomeAssistant) -> None:
     """An IP edit must merge into existing options, not replace them."""
     hass = await _resolve_hass(hass)
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        options={CONF_CAMERA_IPS: {}, "future_option": "keep-me"},
-    )
+    entry = MockConfigEntry(domain=DOMAIN, options={"future_option": "keep-me"})
     entry.runtime_data = SimpleNamespace(
-        hub=SimpleNamespace(babies=[MOCK_BABY_1], speaker_uid_map={})
+        hub=SimpleNamespace(babies=[_BABY_WITH_SPEAKER], speaker_uid_map={"baby_1": "spk_1"})
     )
     entry.add_to_hass(hass)
 
     result = await _open_device_options(hass, entry)
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
-        {CONF_CAMERA_IP: "192.168.1.42"},
+        {CONF_SPEAKER_IP: "192.168.1.42"},
     )
 
     result_data = _as_dict(result)
     assert result_data.get("type") is FlowResultType.CREATE_ENTRY
     assert result_data["data"]["future_option"] == "keep-me"
-    assert result_data["data"][CONF_CAMERA_IPS] == {MOCK_BABY_1.camera_uid: "192.168.1.42"}
+    assert result_data["data"][CONF_SPEAKER_IPS] == {"spk_1": "192.168.1.42"}
 
 
 async def test_credentials_duplicate_of_legacy_camera_uid_entry_aborts(

@@ -115,7 +115,7 @@ just dev restart
 ### 6.2 — Check the options flow skips cameras
 
 1. Go to **Settings → Devices & Services → Nanit → Configure → Sound & Light IP address**
-2. Without a Sound & Light Machine paired to a baby, the flow stops with "This account has no Sound & Light Machine paired with a baby." With one, only that baby is offered.
+2. Without a Sound & Light Machine paired to a baby, the flow stops with "This account has no Sound & Light Machine paired with a baby." With one, the selector is skipped and that baby's IP form opens straight away. With more than one, only babies that have a machine are listed.
 
 - [ ] Clone Camera never appears in the options flow
 

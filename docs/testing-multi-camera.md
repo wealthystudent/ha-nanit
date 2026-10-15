@@ -101,7 +101,7 @@ This part used to point the clone at your real camera through the camera IP opti
 
 ## Part 6 — Test isolation
 
-Verify that the two cameras operate independently.
+Verify that the clone doesn't affect the real camera.
 
 ### 6.1 — Restart HA
 
@@ -109,18 +109,15 @@ Verify that the two cameras operate independently.
 just dev restart
 ```
 
-- [ ] Both cameras reconnect after restart
-- [ ] Both still have live sensor data
+- [ ] Real camera reconnects after restart and has live sensor data
+- [ ] Clone camera still shows unavailable
 
-### 6.2 — Test the options flow with the real camera
+### 6.2 — Check the options flow skips cameras
 
-1. Go to **Settings → Devices & Services → Nanit → Configure**
-2. Select your **real camera** from the dropdown
-3. Set or change its local IP
-4. Submit — HA reloads
-5. Real camera still works with the new IP
+1. Go to **Settings → Devices & Services → Nanit → Configure → Sound & Light IP address**
+2. Without a Sound & Light Machine paired to a baby, the flow stops with "This account has no Sound & Light Machine paired with a baby." With one, only that baby is offered.
 
-- [ ] Options flow lets you configure each camera independently
+- [ ] Clone Camera never appears in the options flow
 
 ---
 

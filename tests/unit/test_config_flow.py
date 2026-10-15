@@ -1108,8 +1108,6 @@ def test_config_flow_minor_version_matches_the_latest_migration() -> None:
 
 def test_options_flow_reasons_are_translated() -> None:
     """Abort and error keys the options flow uses exist under options in both files."""
-    from pathlib import Path
-
     base = Path(nanit_config_flow.__file__).parent
     for name in ("strings.json", "translations/en.json"):
         options = json.loads((base / name).read_text())["options"]

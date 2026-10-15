@@ -58,6 +58,12 @@ _LOGGER = logging.getLogger(__name__)
 # that is powered off) from blocking the entire integration indefinitely.
 _CAMERA_SETUP_TIMEOUT: float = 60.0
 
+# Shorter wait for a camera Nanit's device list reports offline. Setup
+# waits for every device, so a long timeout on a camera that is almost
+# certainly unreachable only holds up the rest of the account (#170). It
+# still gets a chance, in case the cloud status is stale.
+_OFFLINE_CAMERA_SETUP_TIMEOUT: float = 10.0
+
 # Same idea for a Sound & Light Machine. Its async_start returns once the
 # transports are launched (connects continue in the background), so this
 # is a safety net rather than an expected wait.
@@ -250,10 +256,12 @@ class NanitHub:
         owners: list[tuple[str, Baby]] = []
         for baby in babies:
             if baby.camera_uid:
+                # getattr: Baby objects from older aionanit wheels lack the field.
+                offline = getattr(baby, "camera_connected", None) is False
                 tasks.append(
                     asyncio.wait_for(
                         self._setup_camera(baby),
-                        timeout=_CAMERA_SETUP_TIMEOUT,
+                        timeout=_OFFLINE_CAMERA_SETUP_TIMEOUT if offline else _CAMERA_SETUP_TIMEOUT,
                     )
                 )
                 owners.append(("camera", baby))

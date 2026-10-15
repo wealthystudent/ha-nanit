@@ -321,6 +321,52 @@ async def test_setup_camera_timeout_treated_as_connection_failure(
     assert MOCK_BABY_2.camera_uid in hub.camera_data
 
 
+@pytest.mark.parametrize(
+    ("camera_connected", "connects"),
+    [(False, False), (True, True), (None, True)],
+)
+async def test_offline_camera_gets_a_shorter_setup_wait(
+    hass: HomeAssistant, mock_nanit_client, camera_connected: bool | None, connects: bool
+) -> None:
+    """A camera the cloud reports offline doesn't hold up setup for the full wait (#170)."""
+    from aionanit.models import Baby
+
+    baby = Baby(
+        uid=MOCK_BABY_1.uid,
+        name=MOCK_BABY_1.name,
+        camera_uid=MOCK_BABY_1.camera_uid,
+        camera_connected=camera_connected,
+    )
+    mock_nanit_client.async_get_babies.return_value = [baby, MOCK_BABY_2]
+    mock_nanit_client.camera.side_effect = lambda **kw: _make_mock_camera(kw["uid"], kw["baby_uid"])
+
+    entry = _make_entry(hass)
+    hub = NanitHub(hass, MagicMock(), entry)
+
+    async def _slow_connect() -> None:
+        await asyncio.sleep(0.2)
+
+    def push_factory(_hass, _entry, camera, _baby):
+        mock = MagicMock()
+        mock.async_setup = _slow_connect if camera.uid == baby.camera_uid else AsyncMock()
+        return mock
+
+    with (
+        patch("custom_components.nanit.hub.NanitPushCoordinator", side_effect=push_factory),
+        patch("custom_components.nanit.hub.NanitCloudCoordinator") as cloud_cls,
+        patch("custom_components.nanit.hub.NanitNetworkCoordinator") as net_cls,
+        patch("custom_components.nanit.hub._CAMERA_SETUP_TIMEOUT", 5.0),
+        patch("custom_components.nanit.hub._OFFLINE_CAMERA_SETUP_TIMEOUT", 0.01),
+    ):
+        cloud_cls.return_value = MagicMock(async_config_entry_first_refresh=AsyncMock())
+        net_cls.return_value = MagicMock(async_config_entry_first_refresh=AsyncMock())
+        await hub.async_setup()
+
+    assert (baby.camera_uid in hub.camera_data) is connects
+    assert (baby.camera_uid in hub.failed_camera_uids) is not connects
+    assert MOCK_BABY_2.camera_uid in hub.camera_data
+
+
 async def test_failed_camera_uids_populated(hass: HomeAssistant, mock_nanit_client) -> None:
     """Cameras that fail to connect are tracked in failed_camera_uids."""
     mock_nanit_client.async_get_babies.return_value = [MOCK_BABY_1, MOCK_BABY_2]

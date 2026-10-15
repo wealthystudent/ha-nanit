@@ -375,15 +375,16 @@ async def _setup_with_failed_camera(
     *,
     network_starts: bool,
     entry: MockConfigEntry | None = None,
+    failing: frozenset[str] = frozenset({MOCK_BABY_1.camera_uid}),
 ) -> NanitHub:
-    """Set up two cameras where the first fails to connect."""
-    mock_nanit_client.async_get_babies.return_value = [MOCK_BABY_1, MOCK_BABY_2]
+    """Set up three cameras where the ``failing`` ones fail to connect."""
+    mock_nanit_client.async_get_babies.return_value = [MOCK_BABY_1, MOCK_BABY_2, MOCK_BABY_3]
     mock_nanit_client.camera.side_effect = lambda **kw: _make_mock_camera(kw["uid"], kw["baby_uid"])
     hub = NanitHub(hass, MagicMock(), entry or _make_entry(hass))
 
     def push_factory(_hass, _entry, camera, _baby):
         mock = MagicMock()
-        if camera.uid == MOCK_BABY_1.camera_uid:
+        if camera.uid in failing:
             mock.async_setup = AsyncMock(side_effect=NanitConnectionError("offline"))
         else:
             mock.async_setup = AsyncMock()
@@ -400,7 +401,7 @@ async def _setup_with_failed_camera(
         cloud_cls.return_value = MagicMock(async_config_entry_first_refresh=AsyncMock())
         net_cls.return_value = MagicMock(async_config_entry_first_refresh=network_refresh)
         await hub.async_setup()
-    assert hub.failed_camera_uids == {MOCK_BABY_1.camera_uid}
+    assert hub.failed_camera_uids == failing
     return hub
 
 
@@ -465,7 +466,7 @@ async def test_failed_camera_check_starts_reauth_on_auth_error(
             await hass.async_block_till_done()
             async_fire_time_changed(hass, dt_util.utcnow() + timedelta(minutes=12))
             await hass.async_block_till_done()
-        reauth.assert_called_once()
+        reauth.assert_called_once_with(hass)
         fetch.assert_awaited_once()
     finally:
         await hub.async_close()
@@ -488,6 +489,64 @@ async def test_failed_camera_check_skipped_after_its_reload(
         await hass.async_block_till_done()
     fetch.assert_not_awaited()
     await hub.async_close()
+
+
+async def test_failed_camera_check_keeps_polling_the_camera_not_yet_reloaded(
+    hass: HomeAssistant, mock_nanit_client
+) -> None:
+    """With two failed cameras and one already reloaded, the other is still checked."""
+    entry = _make_entry(hass)
+    hass.data.setdefault(DOMAIN, {})[f"auto_reload_attempted_{entry.entry_id}"] = {
+        MOCK_BABY_1.camera_uid
+    }
+    hub = await _setup_with_failed_camera(
+        hass,
+        mock_nanit_client,
+        network_starts=False,
+        entry=entry,
+        failing=frozenset({MOCK_BABY_1.camera_uid, MOCK_BABY_2.camera_uid}),
+    )
+    fetch = AsyncMock(return_value=[_online(MOCK_BABY_2)])
+    try:
+        with (
+            patch.object(hub, "async_get_babies_tolerant", fetch),
+            patch.object(hass.config_entries, "async_reload", AsyncMock()) as reload,
+        ):
+            async_fire_time_changed(hass, dt_util.utcnow() + timedelta(minutes=6))
+            await hass.async_block_till_done()
+            fetch.assert_awaited_once()
+            reload.assert_awaited_once()
+    finally:
+        await hub.async_close()
+
+
+@pytest.mark.parametrize("auth_fails", [False, True])
+async def test_failed_camera_check_ignores_a_fetch_that_outlives_the_hub(
+    hass: HomeAssistant, mock_nanit_client, auth_fails: bool
+) -> None:
+    """A fetch still running when the hub closes neither reloads nor starts reauth."""
+    hub = await _setup_with_failed_camera(hass, mock_nanit_client, network_starts=False)
+    gate = asyncio.Event()
+
+    async def _slow_fetch() -> list[Baby]:
+        await gate.wait()
+        if auth_fails:
+            raise NanitAuthError("expired")
+        return [_online(MOCK_BABY_1), MOCK_BABY_2]
+
+    with (
+        patch.object(hub, "async_get_babies_tolerant", side_effect=_slow_fetch) as fetch,
+        patch.object(hass.config_entries, "async_reload", AsyncMock()) as reload,
+        patch.object(hub._entry, "async_start_reauth") as reauth,
+    ):
+        async_fire_time_changed(hass, dt_util.utcnow() + timedelta(minutes=6))
+        await asyncio.sleep(0)
+        assert fetch.called
+        await hub.async_close()
+        gate.set()
+        await hass.async_block_till_done()
+    reload.assert_not_awaited()
+    reauth.assert_not_called()
 
 
 async def test_entry_unload_stops_the_failed_camera_check(

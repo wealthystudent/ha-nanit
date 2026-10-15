@@ -424,6 +424,8 @@ class NanitHub:
         try:
             babies = await self.async_get_babies_tolerant()
         except NanitAuthError as err:
+            if self._unsubscribe_failed_check is None:
+                return  # the hub closed during the fetch
             # Nothing else on an entry without a working camera polls the
             # cloud, so this is where an expired login has to surface.
             _LOGGER.warning("Nanit login expired while checking failed cameras: %s", err)
@@ -433,6 +435,8 @@ class NanitHub:
         except NanitError as err:
             _LOGGER.debug("Could not check failed cameras: %s", err)
             return
+        if self._unsubscribe_failed_check is None:
+            return  # the hub closed during the fetch
         self.async_reload_recovered_cameras(babies)
 
     @callback

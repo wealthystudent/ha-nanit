@@ -175,7 +175,7 @@ Full checklist: [`docs/SECURITY_AUDIT_CHECKLIST.md`](docs/SECURITY_AUDIT_CHECKLI
 
 Follow [Home Assistant developer docs](https://developers.home-assistant.io/) (latest version). Minimum HA: **2025.12+**.
 
-- **Config flow**: Credentials → MFA → reauth support. Options flow for per-camera settings.
+- **Config flow**: Credentials → MFA → reauth support. Options flow for Sound & Light IPs and read-only mode.
 - **Runtime data**: Use `ConfigEntry.runtime_data` (typed as `NanitData`) — not `hass.data`.
 - **Push coordinator**: `DataUpdateCoordinator.async_set_updated_data()` for WebSocket push data. Do NOT poll.
 - **Polling coordinator**: `DataUpdateCoordinator` with `update_interval` for cloud events.

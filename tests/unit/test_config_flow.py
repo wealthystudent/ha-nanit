@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from collections.abc import Iterator
 from pathlib import Path
@@ -42,7 +43,7 @@ async def _resolve_hass(hass: Any) -> HomeAssistant:
 from .conftest import (
     MOCK_ACCESS_TOKEN,
     MOCK_BABY_1,
-    MOCK_BABY_2,
+    MOCK_BABY_3,
     MOCK_EMAIL,
     MOCK_MFA_TOKEN,
     MOCK_PASSWORD,
@@ -774,7 +775,7 @@ async def test_options_flow_selector_lists_only_babies_with_a_speaker(
     entry = MockConfigEntry(domain=DOMAIN, options={})
     entry.runtime_data = SimpleNamespace(
         hub=SimpleNamespace(
-            babies=[_BABY_WITH_SPEAKER, MOCK_BABY_2, _BABY_2_WITH_SPEAKER],
+            babies=[_BABY_WITH_SPEAKER, MOCK_BABY_3, _BABY_2_WITH_SPEAKER],
             speaker_uid_map={"baby_1": "spk_1", "baby_2": "spk_2"},
         )
     )
@@ -783,6 +784,8 @@ async def test_options_flow_selector_lists_only_babies_with_a_speaker(
     result = await _open_device_options(hass, entry)
     assert result.get("type") is FlowResultType.FORM
     assert result.get("step_id") == "device"
+    selector = _as_dict(result)["data_schema"].schema["device"]
+    assert set(selector.container) == {"baby_1", "baby_2"}
 
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"device": "baby_2"}
@@ -802,7 +805,7 @@ async def test_options_flow_selector_skips_a_camera_only_baby(hass: HomeAssistan
     entry = MockConfigEntry(domain=DOMAIN, options={})
     entry.runtime_data = SimpleNamespace(
         hub=SimpleNamespace(
-            babies=[MOCK_BABY_2, _BABY_WITH_SPEAKER], speaker_uid_map={"baby_1": "spk_1"}
+            babies=[MOCK_BABY_3, _BABY_WITH_SPEAKER], speaker_uid_map={"baby_1": "spk_1"}
         )
     )
     entry.add_to_hass(hass)
@@ -1096,3 +1099,19 @@ async def test_credentials_duplicate_of_legacy_camera_uid_entry_aborts(
     result_data = _as_dict(result)
     assert result_data.get("type") is FlowResultType.ABORT
     assert result_data.get("reason") == "already_configured"
+
+
+def test_config_flow_minor_version_matches_the_latest_migration() -> None:
+    """HA only runs async_migrate_entry when this differs from the entry's minor."""
+    assert nanit_config_flow.NanitConfigFlow.MINOR_VERSION == 3
+
+
+def test_options_flow_reasons_are_translated() -> None:
+    """Abort and error keys the options flow uses exist under options in both files."""
+    from pathlib import Path
+
+    base = Path(nanit_config_flow.__file__).parent
+    for name in ("strings.json", "translations/en.json"):
+        options = json.loads((base / name).read_text())["options"]
+        assert "no_speakers" in options["abort"]
+        assert "invalid_ip" in options["error"]

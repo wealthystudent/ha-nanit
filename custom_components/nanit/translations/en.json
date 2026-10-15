@@ -47,8 +47,7 @@
       "already_configured": "This Nanit account is already configured",
       "already_in_progress": "Configuration flow is already in progress",
       "reauth_successful": "Re-authentication successful",
-      "reauth_email_mismatch": "The email address does not match the original account. Please use the same email.",
-      "no_cameras": "No devices found on this Nanit account"
+      "reauth_email_mismatch": "The email address does not match the original account. Please use the same email."
     }
   },
   "options": {
@@ -64,7 +63,7 @@
         "title": "Nanit Options",
         "description": "Select whose Sound & Light Machine to configure.",
         "data": {
-          "device": "Device"
+          "device": "Baby"
         }
       },
       "camera_ip": {
@@ -82,8 +81,11 @@
         }
       }
     },
+    "error": {
+      "invalid_ip": "Invalid IP address"
+    },
     "abort": {
-      "no_speakers": "No Sound & Light Machine to configure. Machines that aren't paired with a baby are found automatically."
+      "no_speakers": "This account has no Sound & Light Machine paired with a baby. Unpaired machines are found automatically and need no address."
     }
   },
   "exceptions": {

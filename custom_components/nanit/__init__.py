@@ -178,6 +178,8 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
     unique_id = email (account-level).
     v2.2 drops password persistence: any stored password is scrubbed from
     entry.data (it was never read by anything — reauth always prompts).
+    v2.3 drops the camera IP option: any saved camera IPs are removed from
+    options (#176).
     """
     LOGGER.debug("Migrating Nanit config entry from version %s", config_entry.version)
 
@@ -577,7 +579,7 @@ def _make_options_update_listener(
     HA fires update_listener for any entry mutation (data or options). Token
     refresh persists new tokens via async_update_entry(data=...) — this must
     not cause a reload. By comparing against a snapshot of the previous options,
-    we ensure only genuine options changes (e.g. camera IP updates) reload.
+    we ensure only genuine options changes (e.g. speaker IP updates) reload.
     """
 
     async def _listener(hass: HomeAssistant, entry: NanitConfigEntry) -> None:

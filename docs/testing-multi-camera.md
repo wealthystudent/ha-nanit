@@ -93,37 +93,9 @@ Wait ~15 seconds for HA to restart.
 
 ---
 
-## Part 5 — Connect the clone to your real camera
+## Part 5 — Clone stays unavailable
 
-Make the clone device actually connect to your physical camera via its local IP.
-
-### 5.1 — Open the options flow
-
-1. Go to **Settings → Devices & Services → Nanit**
-2. Click the **Configure** button (gear icon)
-3. You should see a **camera selector dropdown** with both cameras listed
-4. Select **Clone Camera**
-5. Click **Submit**
-
-### 5.2 — Enter your camera's local IP
-
-1. Enter your camera's LAN IP address (e.g. `192.168.1.x`, port 442)
-2. Click **Submit**
-3. HA will reload the integration
-
-### 5.3 — Verify both devices have live data
-
-1. Go to **Settings → Devices & Services → Nanit**
-2. Click on **Clone Camera**
-3. The local sensors should now have live data:
-
-- [ ] Temperature shows a value
-- [ ] Humidity shows a value
-- [ ] Night light switch works (toggle it — the physical light turns on/off)
-- [ ] Camera power switch works
-- [ ] Camera stream works (click the camera entity → you see video)
-
-> **Note:** Motion and sound sensors will still show unavailable on the clone — that's expected. Those come from the Nanit cloud API which doesn't know about `clone_cam`.
+This part used to point the clone at your real camera through the camera IP option. That option is gone, since current camera firmware rejects the integration on its local port (#176), so the clone keeps showing unavailable. Skip to Part 6 and run its checks against your real camera.
 
 ---
 

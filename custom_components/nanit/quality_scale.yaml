@@ -92,7 +92,7 @@ rules:
   icon-translations: done
   reconfiguration-flow:
     status: exempt
-    comment: Camera IPs are configured via the options flow. Account credentials are updated via reauth.
+    comment: Sound & Light IPs and read-only mode are configured via the options flow. Account credentials are updated via reauth.
   repair-issues: done
   stale-devices: done
 

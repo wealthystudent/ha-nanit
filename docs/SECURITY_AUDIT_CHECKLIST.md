@@ -136,7 +136,7 @@ Run through the full checklist against all changes since the last release tag.
 - [ ] No `hass.async_render()` or `Template().async_render()` called with externally-sourced template strings
 - [ ] Template rendering only uses integration-controlled template strings, never API response data
 
-**ha-nanit specific**: Config flow accepts camera IPs in options flow. Validate IP format strictly. API response data (baby names, camera names) flows into entity attributes — sanitize before use.
+**ha-nanit specific**: Options flow accepts Sound & Light IPs. Validate IP format strictly. API response data (baby names, camera names) flows into entity attributes — sanitize before use.
 
 ---
 
@@ -564,7 +564,7 @@ Document any intentional security tradeoffs here with justification:
 
 | Risk | Justification | Mitigation |
 |---|---|---|
-| `ssl.CERT_NONE` for local camera connections (port 442) | Nanit cameras use self-signed TLS certificates. No CA-signed option available. | Connection is LAN-only. IP must be explicitly configured by user in options flow. |
+| `ssl.CERT_NONE` for local camera connections (port 442) | Nanit cameras use self-signed TLS certificates. No CA-signed option available. | The integration no longer opens a local camera socket: the camera IP option was removed (#176) and cameras always use the relay. The code path stays in aionanit for tools and is LAN-only. |
 | `ssl.CERT_NONE` for the Sound & Light local socket (port 442), with the endpoint auto-discovered via mDNS | The speaker presents a self-signed certificate, and the official app connects with trust-all TLS too. mDNS discovery is what makes local work with zero configuration. | The socket carries only the per-speaker device token, never the account access token (that goes only to `remote.nanit.com` over verified TLS). Discovery requires an exact `UID` TXT match when the advertisement carries one, and non-private addresses are rejected, so a spoofed record cannot route the token off the LAN. A LAN attacker who impersonates the speaker gains only that one device's local-control token, which they could also obtain by holding the speaker's single local-client slot. A manually configured speaker IP bypasses discovery entirely. |
 | `websockets>=13.0,<16` version range rather than an exact pin | Exact pins conflict with Home Assistant's own dependency resolution for shared runtime packages (same treatment as `aionanit>=`). | Canonical, widely-used package; lower bound holds the API we use, upper bound excludes future majors. Dev/CI pins mirror the range. |
 | `aionanit>=1.0.13` range pinning in manifest.json | Library is maintained in-repo and published to PyPI by the same maintainers. | Consider switching to exact pinning for releases. Monitor PyPI for unauthorized publishes. |

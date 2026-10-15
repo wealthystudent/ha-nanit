@@ -51,6 +51,7 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
 
     VERSION = 2
     # 2.2 drops password persistence (the stored password was never read).
+    # 2.3 drops the camera IP option (#176).
     MINOR_VERSION = 3
 
     def __init__(self) -> None:
@@ -467,12 +468,9 @@ class NanitOptionsFlow(OptionsFlow):
                     errors[CONF_SPEAKER_IP] = "invalid_ip"
 
             if not errors:
-                # Merge with existing speaker IPs, keyed by speaker_uid.
-                # When the speaker is resolvable this session, also drop the
-                # legacy camera_uid-keyed entry so a cleared IP can't be
-                # resurrected by the hub's legacy-read fallback. When it
-                # isn't (no speaker field was shown), leave the legacy
-                # entry alone — the hub may still be using it.
+                # Merge with existing speaker IPs, keyed by speaker_uid. Also
+                # drop the legacy camera_uid-keyed entry so a cleared IP can't
+                # be resurrected by the hub's legacy-read fallback.
                 current_speaker_ips = dict(self.config_entry.options.get(CONF_SPEAKER_IPS, {}))
                 if camera_uid:
                     current_speaker_ips.pop(camera_uid, None)

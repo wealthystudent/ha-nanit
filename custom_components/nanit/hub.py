@@ -386,8 +386,8 @@ class NanitHub:
 
         if failed_cameras:
             _LOGGER.warning(
-                "Some cameras failed to connect: %s. They will be retried when Nanit "
-                "reports them online or on the next reload.",
+                "Some cameras failed to connect: %s. They are retried the first time Nanit "
+                "reports them online, and on any reload.",
                 ", ".join(failed_cameras),
             )
             # Poll Nanit's device list for a failed camera coming back, unless

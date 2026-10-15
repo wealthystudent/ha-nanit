@@ -228,12 +228,7 @@ class NanitNetworkCoordinator(DataUpdateCoordinator[NetworkInfo | None]):
         self.baby = baby
 
     async def _async_update_data(self) -> NetworkInfo | None:
-        """Fetch network info from the Nanit API.
-
-        Also checks if any cameras that failed to connect during setup now
-        report as connected in the Nanit cloud. If so, triggers a config entry
-        reload so HA re-runs setup and registers the camera's entities.
-        """
+        """Fetch network info from the Nanit API."""
         try:
             # The hub's tolerant fetch parses camera-less baby rows (mixed
             # accounts), including on published aionanit wheels whose strict

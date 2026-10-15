@@ -11,6 +11,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.nanit.const import DOMAIN
 from custom_components.nanit.coordinator import NanitNetworkCoordinator
+from custom_components.nanit.hub import NanitHub
 
 from .conftest import MOCK_EMAIL, mock_entry_data_v2
 
@@ -28,18 +29,22 @@ def _make_entry(hass: HomeAssistant) -> MockConfigEntry:
     return entry
 
 
-def _make_hub(babies: list[object], failed: set[str]) -> MagicMock:
-    hub = MagicMock()
-    hub.failed_camera_uids = failed
+def _make_hub(
+    hass: HomeAssistant, entry: MockConfigEntry, babies: list[object], failed: set[str]
+) -> NanitHub:
+    hub = NanitHub(hass, MagicMock(), entry)
+    hub.failed_camera_uids.update(failed)
     hub.async_get_babies_tolerant = AsyncMock(return_value=babies)
     return hub
 
 
-async def test_recovered_camera_schedules_reload_once(hass: HomeAssistant) -> None:
+async def test_recovered_camera_schedules_reload_once(
+    hass: HomeAssistant, mock_nanit_client: MagicMock
+) -> None:
     """A recovered camera triggers one reload — repeat polls must not bounce the entry."""
     baby = Baby(uid="baby_1", name="Nursery", camera_uid="cam_1", camera_connected=True)
     entry = _make_entry(hass)
-    hub = _make_hub([baby], {"cam_1"})
+    hub = _make_hub(hass, entry, [baby], {"cam_1"})
     coordinator = NanitNetworkCoordinator(hass, entry, hub, baby)
 
     with patch.object(hass.config_entries, "async_reload", AsyncMock()) as mock_reload:
@@ -54,12 +59,14 @@ async def test_recovered_camera_schedules_reload_once(hass: HomeAssistant) -> No
         assert mock_reload.await_count == 1
 
 
-async def test_recovery_check_dedupes_across_coordinators(hass: HomeAssistant) -> None:
+async def test_recovery_check_dedupes_across_coordinators(
+    hass: HomeAssistant, mock_nanit_client: MagicMock
+) -> None:
     """Per-camera coordinators share the attempted-reload marker."""
     baby_1 = Baby(uid="baby_1", name="Nursery", camera_uid="cam_1", camera_connected=True)
     baby_2 = Baby(uid="baby_2", name="Bedroom", camera_uid="cam_2", camera_connected=True)
     entry = _make_entry(hass)
-    hub = _make_hub([baby_1, baby_2], {"cam_1"})
+    hub = _make_hub(hass, entry, [baby_1, baby_2], {"cam_1"})
     coordinator_1 = NanitNetworkCoordinator(hass, entry, hub, baby_1)
     coordinator_2 = NanitNetworkCoordinator(hass, entry, hub, baby_2)
 
@@ -70,7 +77,9 @@ async def test_recovery_check_dedupes_across_coordinators(hass: HomeAssistant) -
         assert mock_reload.await_count == 1
 
 
-async def test_recovery_check_handles_null_baby_name(hass: HomeAssistant) -> None:
+async def test_recovery_check_handles_null_baby_name(
+    hass: HomeAssistant, mock_nanit_client: MagicMock
+) -> None:
     """A recovered camera with a null name must not crash the poll."""
     baby = SimpleNamespace(
         uid="baby_1",
@@ -80,7 +89,7 @@ async def test_recovery_check_handles_null_baby_name(hass: HomeAssistant) -> Non
         camera_connected=True,
     )
     entry = _make_entry(hass)
-    hub = _make_hub([baby], {"cam_1"})
+    hub = _make_hub(hass, entry, [baby], {"cam_1"})
     coordinator = NanitNetworkCoordinator(hass, entry, hub, baby)
 
     with patch.object(hass.config_entries, "async_reload", AsyncMock()) as mock_reload:
@@ -90,12 +99,12 @@ async def test_recovery_check_handles_null_baby_name(hass: HomeAssistant) -> Non
 
 
 async def test_recovery_check_tolerates_legacy_baby_without_connected_field(
-    hass: HomeAssistant,
+    hass: HomeAssistant, mock_nanit_client: MagicMock
 ) -> None:
     """A Baby from an aionanit wheel without camera_connected must not crash the poll."""
     baby = SimpleNamespace(uid="baby_1", name="Nursery", camera_uid="cam_1", network=None)
     entry = _make_entry(hass)
-    hub = _make_hub([baby], {"cam_1"})
+    hub = _make_hub(hass, entry, [baby], {"cam_1"})
     coordinator = NanitNetworkCoordinator(hass, entry, hub, baby)
 
     with patch.object(hass.config_entries, "async_reload", AsyncMock()) as mock_reload:

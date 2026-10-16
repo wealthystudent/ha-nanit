@@ -7,11 +7,12 @@ import logging
 import time
 from typing import Any
 
-from homeassistant.components.camera import Camera, CameraEntityFeature
+from homeassistant.components.camera import Camera, CameraEntityFeature, StreamType
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback, async_get_current_platform
 from homeassistant.helpers.event import async_call_later
+from webrtc_models import RTCIceCandidateInit
 
 from aionanit import NanitCamera
 from aionanit.models import ConnectionState
@@ -29,9 +30,16 @@ _LOGGER = logging.getLogger(__name__)
 _STREAM_START_ATTEMPTS = 3
 _STREAM_RETRY_DELAY = 2.0
 _STREAM_SOURCE_MAX_AGE = 45 * 60
+# Rotation is deferred while only WebRTC viewers are open, but never past this
+# age: URLs are built from a token with >= 55 min left, so a session that was
+# never closed must not keep an expired URL cached for new viewers.
+_STREAM_ROTATION_DEFER_LIMIT = 55 * 60
 # Nanit stops the camera's RTMPS push ~20 minutes after the last
 # PUT_STREAMING; keepalives must land well inside that window.
 _STREAM_KEEPALIVE_INTERVAL = 5 * 60
+# How long stream_source() waits for the PUT_STREAMING ACK before returning
+# the URL anyway. Must stay below HA's 10s CAMERA_STREAM_SOURCE_TIMEOUT.
+_STREAM_START_WAIT = 8.0
 _STREAM_STOP_TIMEOUT = 5.0
 _SNAPSHOT_CACHE_TTL = 60.0
 _SNAPSHOT_PREFETCH_AGE = 30.0
@@ -94,6 +102,12 @@ class NanitCameraEntity(NanitEntity, Camera):
         self._cancel_stream_keepalive_timer: CALLBACK_TYPE | None = None
         self._stream_refresh_task: asyncio.Task[None] | None = None
         self._stream_keepalive_task: asyncio.Task[bool] | None = None
+        self._stream_start_task: asyncio.Task[bool] | None = None
+        self._stream_start_url: str | None = None
+        # Open WebRTC sessions. go2rtc pulls the RTMPS source itself, so these
+        # viewers never appear in HA's own Stream outputs.
+        self._webrtc_sessions: set[str] = set()
+        self._provider_refresh_task: asyncio.Task[None] | None = None
 
     @property
     def is_on(self) -> bool:
@@ -133,6 +147,25 @@ class NanitCameraEntity(NanitEntity, Camera):
             # watched streams recover well inside HA's 30s demux timeout.
             self._handle_stream_keepalive()
 
+        if (
+            conn_state is ConnectionState.CONNECTED
+            and prev_conn_state is not ConnectionState.CONNECTED
+            and StreamType.WEB_RTC not in self.camera_capabilities.frontend_stream_types
+            and (self._provider_refresh_task is None or self._provider_refresh_task.done())
+        ):
+            # HA picks the WebRTC provider (go2rtc) once, when the entity is
+            # added, by asking for a stream source. That needs the camera's
+            # control session; when the entity is added before it connects,
+            # the camera would stay HLS-only until the next restart.
+            _LOGGER.debug(
+                "Camera %s connected without a WebRTC provider; checking again",
+                self._camera.uid,
+            )
+            self._provider_refresh_task = self.hass.async_create_task(
+                self.async_refresh_providers(),
+                name=f"nanit_refresh_webrtc_providers_{self._camera.uid}",
+            )
+
         super()._handle_coordinator_update()
 
     async def async_added_to_hass(self) -> None:
@@ -153,11 +186,19 @@ class NanitCameraEntity(NanitEntity, Camera):
         """
         async_detach_from_camera_stream(self.entity_id)
         self._invalidate_stream("entity removal")
-        for task in (self._stream_refresh_task, self._stream_keepalive_task):
+        for task in (
+            self._stream_refresh_task,
+            self._stream_keepalive_task,
+            self._stream_start_task,
+            self._provider_refresh_task,
+        ):
             if task is not None and not task.done():
                 task.cancel()
         self._stream_refresh_task = None
         self._stream_keepalive_task = None
+        self._stream_start_task = None
+        self._provider_refresh_task = None
+        self._webrtc_sessions.clear()
         await super().async_will_remove_from_hass()
 
     def _invalidate_stream(self, reason: str = "state change") -> None:
@@ -222,13 +263,46 @@ class NanitCameraEntity(NanitEntity, Camera):
         if stream_age >= _STREAM_SOURCE_MAX_AGE:
             self._refresh_or_expire_stream_source(f"stream source age {stream_age:.0f}s")
 
+    async def async_on_webrtc_candidate(
+        self, session_id: str, candidate: RTCIceCandidateInit
+    ) -> None:
+        """Count the WebRTC session as a stream consumer, then forward the candidate.
+
+        Every browser session trickles at least one ICE candidate, so this is
+        the first per-session hook HA offers without implementing the offer
+        itself (overriding the offer would mark the camera as native WebRTC
+        and bypass go2rtc). The session stops counting in close_webrtc_session.
+        """
+        if session_id not in self._webrtc_sessions:
+            self._webrtc_sessions.add(session_id)
+            _LOGGER.debug(
+                "WebRTC session %s opened on camera %s (%d open)",
+                session_id,
+                self._camera.uid,
+                len(self._webrtc_sessions),
+            )
+        await super().async_on_webrtc_candidate(session_id, candidate)
+
     @callback
     def close_webrtc_session(self, session_id: str) -> None:
         """Close a WebRTC session, ignoring duplicate go2rtc close callbacks."""
+        if session_id in self._webrtc_sessions:
+            self._webrtc_sessions.discard(session_id)
+            _LOGGER.debug(
+                "WebRTC session %s closed on camera %s (%d open)",
+                session_id,
+                self._camera.uid,
+                len(self._webrtc_sessions),
+            )
         try:
             super().close_webrtc_session(session_id)
         except KeyError:
             _LOGGER.debug("WebRTC session %s was already closed", session_id)
+
+    def _stream_has_outputs(self) -> bool:
+        """Return True when HA's own Stream (HLS/recorder) has consumers."""
+        stream = self.stream
+        return stream is not None and bool(stream.outputs())
 
     # ------------------------------------------------------------------
     # Streaming
@@ -272,7 +346,9 @@ class NanitCameraEntity(NanitEntity, Camera):
                 _LOGGER.warning("Failed to build RTMPS stream URL", exc_info=True)
                 return None
 
-            if not await self._async_start_streaming_safe(source):
+            # None means the ACK is still outstanding: the send finishes in
+            # the background, so the URL is still the one the camera gets.
+            if await self._async_request_stream_start(source) is False:
                 return None
 
             self._cached_stream_source = source
@@ -289,11 +365,53 @@ class NanitCameraEntity(NanitEntity, Camera):
             self._camera.uid,
             source_age,
         )
-        if not await self._async_start_streaming_safe(source):
+        if await self._async_request_stream_start(source) is False:
             return None
         # PUT_STREAMING just went out — restart the keepalive countdown.
         self._schedule_stream_keepalive_timer()
         return source
+
+    async def _async_request_stream_start(self, rtmps_url: str) -> bool | None:
+        """Send a best-effort PUT_STREAMING, waiting at most _STREAM_START_WAIT.
+
+        Returns True once the camera ACKed, False when every attempt failed,
+        and None when the ACK is still outstanding; the send and its retries
+        then finish in the background.
+
+        Viewer-initiated starts used to force-reconnect the control WebSocket
+        on a late ACK. That stops the camera's RTMPS push for every viewer
+        (the reason keepalives are best-effort), re-enters the resume path on
+        the reconnect transition, and kept stream_source() blocked for 40s+
+        per attempt, far past HA's 10s stream-source timeout. A dead session
+        is still recovered by aionanit's health check, whose reconnect lands
+        in _handle_stream_keepalive to resume the push.
+        """
+        hass = getattr(self, "hass", None)
+        if hass is None:
+            return await self._async_start_streaming_safe(rtmps_url, reconnect_on_failure=False)
+
+        task = self._stream_start_task
+        if task is None or task.done() or self._stream_start_url != rtmps_url:
+            if task is not None and not task.done():
+                # A superseded URL must not be re-sent after the new one.
+                task.cancel()
+            task = hass.async_create_task(
+                self._async_start_streaming_safe(rtmps_url, reconnect_on_failure=False),
+                name=f"nanit_stream_start_{self._camera.uid}",
+            )
+            self._stream_start_task = task
+            self._stream_start_url = rtmps_url
+
+        done, _ = await asyncio.wait((task,), timeout=_STREAM_START_WAIT)
+        if not done or task.cancelled():
+            _LOGGER.debug(
+                "PUT_STREAMING ACK for camera %s still pending after %.0fs; "
+                "returning the stream URL",
+                self._camera.uid,
+                _STREAM_START_WAIT,
+            )
+            return None
+        return task.result()
 
     def _schedule_stream_expiry_timer(self, delay: float = _STREAM_SOURCE_MAX_AGE) -> None:
         """Schedule backend stream invalidation so token expiry is not update-dependent."""
@@ -344,7 +462,9 @@ class NanitCameraEntity(NanitEntity, Camera):
         continuously watched stream starves at that mark, trips HA's 30s
         demux timeout ("Immediate exit requested"), and drops frames until
         frontend recovery re-requests the stream. Only streams with active
-        consumers are kept alive — an idle camera is left to lapse.
+        consumers are kept alive — an idle camera is left to lapse. WebRTC
+        viewers count: once WebRTC plays, the frontend drops its HLS player,
+        so HA's Stream has no outputs while go2rtc is still pulling.
 
         Also invoked directly on reconnect transitions to resume the push
         immediately; the pending timer is cancelled so it cannot double up.
@@ -360,17 +480,38 @@ class NanitCameraEntity(NanitEntity, Camera):
             self._cancel_stream_keepalive_timer = None
         source = self._cached_stream_source
         if source is None:
+            _LOGGER.debug("Stream keepalive for camera %s: no cached source", self._camera.uid)
             return
-        stream = self.stream
+        has_outputs = self._stream_has_outputs()
+        data = self.coordinator.data
         if (
+            data is not None
+            and data.connection.state is not ConnectionState.CONNECTED
+            and (has_outputs or self._webrtc_sessions)
+        ):
+            # The send would only add inline reconnects on top of aionanit's
+            # own reconnect loop (e.g. while the Nanit relay answers 503). The
+            # CONNECTED transition calls this handler again to resume the push.
+            _LOGGER.debug(
+                "Stream keepalive for camera %s waits for the camera to reconnect",
+                self._camera.uid,
+            )
+        elif (
             self.is_on
-            and stream is not None
-            and stream.outputs()
+            and (has_outputs or self._webrtc_sessions)
             and (self._stream_keepalive_task is None or self._stream_keepalive_task.done())
         ):
             self._stream_keepalive_task = self.hass.async_create_task(
                 self._async_start_streaming_safe(source, reconnect_on_failure=False),
                 name=f"nanit_stream_keepalive_{self._camera.uid}",
+            )
+        else:
+            _LOGGER.debug(
+                "Stream keepalive for camera %s skipped (on: %s, HLS outputs: %s, WebRTC sessions: %d)",
+                self._camera.uid,
+                self.is_on,
+                has_outputs,
+                len(self._webrtc_sessions),
             )
         self._schedule_stream_keepalive_timer()
 
@@ -405,6 +546,27 @@ class NanitCameraEntity(NanitEntity, Camera):
         if hass is None:
             self._expire_stream_source()
             return
+        if (
+            self.is_on
+            and self._webrtc_sessions
+            and not self._stream_has_outputs()
+            and time.monotonic() - self._stream_source_started_at < _STREAM_ROTATION_DEFER_LIMIT
+        ):
+            # go2rtc keeps pulling the URL it was handed and only asks for a
+            # new one on the next WebRTC offer, so rotating now could move the
+            # camera's push away from the open viewers, and dropping the cache
+            # would stop the keepalive (the push then lapses ~20 minutes
+            # later). Keep both and check again once the viewers are gone.
+            if self._cancel_stream_expiry_timer is None:
+                _LOGGER.debug(
+                    "Deferring RTMPS source rotation for camera %s after %s: "
+                    "%d WebRTC session(s) open",
+                    self._camera.uid,
+                    reason,
+                    len(self._webrtc_sessions),
+                )
+                self._schedule_stream_expiry_timer(_STREAM_KEEPALIVE_INTERVAL)
+            return
         self._stream_refresh_task = hass.async_create_task(
             self._async_refresh_stream_source(reason),
             name=f"nanit_stream_source_refresh_{self._camera.uid}",
@@ -429,7 +591,7 @@ class NanitCameraEntity(NanitEntity, Camera):
                 _LOGGER.warning("Failed to renew RTMPS stream URL", exc_info=True)
                 self._expire_stream_source()
                 return
-            if not await self._async_start_streaming_safe(source):
+            if await self._async_request_stream_start(source) is False:
                 self._expire_stream_source()
                 return
             _LOGGER.debug(

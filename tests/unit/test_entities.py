@@ -454,7 +454,9 @@ async def test_camera_stream_source_returns_url_when_on() -> None:
 
     assert source == "rtmps://stream-url"
     camera.async_get_stream_rtmps_url.assert_awaited_once()
-    camera.async_start_streaming.assert_awaited_once_with(rtmps_url="rtmps://stream-url")
+    camera.async_start_streaming.assert_awaited_once_with(
+        rtmps_url="rtmps://stream-url", reconnect_on_failure=False
+    )
     assert entity._stream_source_started_at > 0
 
 

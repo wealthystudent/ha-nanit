@@ -35,7 +35,6 @@ from aionanit.models import Baby, CameraEvent, CameraState, CloudEvent, NetworkI
 from .aionanit_sl.models import SoundLightEvent, SoundLightEventKind, SoundLightFullState
 from .aionanit_sl.sound_light import NanitSoundLight
 from .const import CLOUD_POLL_INTERVAL, DOMAIN, NETWORK_POLL_INTERVAL
-from .sanitize import display_name
 
 if TYPE_CHECKING:
     from aionanit import NanitCamera
@@ -229,12 +228,7 @@ class NanitNetworkCoordinator(DataUpdateCoordinator[NetworkInfo | None]):
         self.baby = baby
 
     async def _async_update_data(self) -> NetworkInfo | None:
-        """Fetch network info from the Nanit API.
-
-        Also checks if any cameras that failed to connect during setup now
-        report as connected in the Nanit cloud. If so, triggers a config entry
-        reload so HA re-runs setup and registers the camera's entities.
-        """
+        """Fetch network info from the Nanit API."""
         try:
             # The hub's tolerant fetch parses camera-less baby rows (mixed
             # accounts), including on published aionanit wheels whose strict
@@ -252,39 +246,6 @@ class NanitNetworkCoordinator(DataUpdateCoordinator[NetworkInfo | None]):
                 translation_key="cloud_fetch_failed",
                 translation_placeholders={"error": str(err)},
             ) from err
-
-        # Check if any previously-failed camera has come back online.
-        # camera_connected is sourced from the Nanit cloud's own "connected"
-        # field — no extra probe needed (getattr: published aionanit 1.8.7
-        # wheels predate the field).
-        failed = self._hub.failed_camera_uids
-        if failed:
-            # One reload attempt per camera per HA run: if setup still fails
-            # after the reload, the camera lands back in failed_camera_uids
-            # and retrying every poll would bounce the entry (and every
-            # healthy camera's stream) forever. Tracked in hass.data so the
-            # marker survives the reload itself.
-            attempted: set[str] = self.hass.data.setdefault(DOMAIN, {}).setdefault(
-                f"auto_reload_attempted_{self.config_entry.entry_id}", set()
-            )
-            recovered = [
-                b
-                for b in babies
-                if b.camera_uid in failed
-                and b.camera_uid not in attempted
-                and getattr(b, "camera_connected", None) is True
-            ]
-            if recovered:
-                attempted.update(b.camera_uid for b in recovered)
-                names = ", ".join(display_name(b.name, b.uid) for b in recovered)
-                _LOGGER.info(
-                    "Previously offline camera(s) now connected per Nanit cloud: %s. "
-                    "Reloading integration to register entities.",
-                    names,
-                )
-                self.hass.async_create_task(
-                    self.hass.config_entries.async_reload(self.config_entry.entry_id)
-                )
 
         for baby in babies:
             if baby.camera_uid == self.baby.camera_uid:

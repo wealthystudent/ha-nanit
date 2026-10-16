@@ -14,6 +14,7 @@ import logging
 import re
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
@@ -21,6 +22,7 @@ from homeassistant.const import CONF_ACCESS_TOKEN
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers.event import async_track_time_interval
 
 from aionanit.exceptions import (
     NanitAuthError,
@@ -57,6 +59,16 @@ _LOGGER = logging.getLogger(__name__)
 # during hub setup.  Prevents an unreachable camera (e.g. a travel camera
 # that is powered off) from blocking the entire integration indefinitely.
 _CAMERA_SETUP_TIMEOUT: float = 60.0
+
+# Shorter wait for a camera Nanit's device list reports offline. Setup
+# waits for every device, so a long timeout on a camera that is almost
+# certainly unreachable only holds up the rest of the account (#170). It
+# still gets a chance, in case the cloud status is stale.
+_OFFLINE_CAMERA_SETUP_TIMEOUT: float = 10.0
+
+# How often the hub checks Nanit's device list for a camera that failed
+# setup coming back online.
+_FAILED_CAMERA_CHECK_INTERVAL = timedelta(minutes=5)
 
 # Same idea for a Sound & Light Machine. Its async_start returns once the
 # transports are launched (connects continue in the background), so this
@@ -136,6 +148,7 @@ class NanitHub:
         self._unpaired_from_map: set[str] = set()
         self._sound_lights: dict[str, NanitSoundLight] = {}
         self._unsubscribe_tokens: Callable[[], None] | None = None
+        self._unsubscribe_failed_check: Callable[[], None] | None = None
 
     @property
     def client(self) -> NanitClient:
@@ -250,10 +263,12 @@ class NanitHub:
         owners: list[tuple[str, Baby]] = []
         for baby in babies:
             if baby.camera_uid:
+                # getattr: Baby objects from older aionanit wheels lack the field.
+                offline = getattr(baby, "camera_connected", None) is False
                 tasks.append(
                     asyncio.wait_for(
                         self._setup_camera(baby),
-                        timeout=_CAMERA_SETUP_TIMEOUT,
+                        timeout=_OFFLINE_CAMERA_SETUP_TIMEOUT if offline else _CAMERA_SETUP_TIMEOUT,
                     )
                 )
                 owners.append(("camera", baby))
@@ -371,9 +386,85 @@ class NanitHub:
 
         if failed_cameras:
             _LOGGER.warning(
-                "Some cameras failed to connect: %s. They will be retried on next reload.",
+                "Some cameras failed to connect: %s. They are retried the first time Nanit "
+                "reports them online, and on any reload.",
                 ", ".join(failed_cameras),
             )
+            # Poll Nanit's device list for a failed camera coming back, unless
+            # every failed camera has already had its one reload this run.
+            if self._failed_camera_uids - self._reload_attempted_uids():
+                self._unsubscribe_failed_check = async_track_time_interval(
+                    self._hass,
+                    self._async_check_failed_cameras,
+                    _FAILED_CAMERA_CHECK_INTERVAL,
+                )
+                # Also on unload, in case setup fails after the hub is up.
+                self._entry.async_on_unload(self._cancel_failed_check)
+
+    @callback
+    def _cancel_failed_check(self) -> None:
+        if self._unsubscribe_failed_check is not None:
+            self._unsubscribe_failed_check()
+            self._unsubscribe_failed_check = None
+
+    def _reload_attempted_uids(self) -> set[str]:
+        # Tracked in hass.data so the marker survives the reload itself.
+        attempted: set[str] = self._hass.data.setdefault(DOMAIN, {}).setdefault(
+            f"auto_reload_attempted_{self._entry.entry_id}", set()
+        )
+        return attempted
+
+    async def _async_check_failed_cameras(self, _now: datetime) -> None:
+        """Fetch the device list and reload if a failed camera is back."""
+        try:
+            babies = await self.async_get_babies_tolerant()
+        except NanitAuthError as err:
+            if self._unsubscribe_failed_check is None:
+                return  # the hub closed during the fetch
+            # Nothing else on an entry without a working camera polls the
+            # cloud, so this is where an expired login has to surface.
+            _LOGGER.warning("Nanit login expired while checking failed cameras: %s", err)
+            self._cancel_failed_check()
+            self._entry.async_start_reauth(self._hass)
+            return
+        except NanitError as err:
+            _LOGGER.debug("Could not check failed cameras: %s", err)
+            return
+        if self._unsubscribe_failed_check is None:
+            return  # the hub closed during the fetch
+        self._async_reload_recovered_cameras(babies)
+
+    @callback
+    def _async_reload_recovered_cameras(self, babies: list[Baby]) -> None:
+        """Reload the entry if Nanit reports a camera that failed setup online.
+
+        camera_connected is the Nanit cloud's own "connected" field, so no
+        extra probe is needed (getattr: older aionanit wheels lack the field).
+        """
+        failed = self._failed_camera_uids
+        if not failed:
+            return
+        # One reload attempt per camera per HA run: if setup still fails
+        # after the reload, the camera lands back in failed_camera_uids
+        # and retrying every poll would bounce the entry (and every
+        # healthy camera's stream) forever.
+        attempted = self._reload_attempted_uids()
+        recovered = [
+            b
+            for b in babies
+            if b.camera_uid in failed
+            and b.camera_uid not in attempted
+            and getattr(b, "camera_connected", None) is True
+        ]
+        if not recovered:
+            return
+        attempted.update(b.camera_uid for b in recovered)
+        _LOGGER.info(
+            "Previously offline camera(s) now connected per Nanit cloud: %s. "
+            "Reloading integration to register entities.",
+            ", ".join(display_name(b.name, b.uid) for b in recovered),
+        )
+        self._hass.async_create_task(self._hass.config_entries.async_reload(self._entry.entry_id))
 
     async def async_get_babies_tolerant(self) -> list[Baby]:
         """Fetch babies, tolerating rows without a camera.
@@ -730,6 +821,7 @@ class NanitHub:
 
     async def async_close(self) -> None:
         """Stop all devices and clean up."""
+        self._cancel_failed_check()
         await self._client.async_close()
         self._camera_data.clear()
         self._speaker_data.clear()

@@ -10,6 +10,7 @@ import pytest
 
 from aionanit.auth import TokenManager
 from aionanit.camera import (
+    STREAM_LIMIT_STATUS,
     NanitCamera,
     _parse_control,
     _parse_control_from_proto,
@@ -1279,6 +1280,27 @@ class TestTimeoutForceReconnect:
 
         cam._async_reconnect.assert_not_awaited()
         cam._transport.async_send.assert_awaited_once()
+
+    async def test_start_streaming_returns_the_camera_status(self) -> None:
+        """A declined start returns the status instead of raising."""
+        cam, *_ = _make_camera()
+        url = "rtmps://media-secured.nanit.com/nanit/baby.token"
+        for code in (200, STREAM_LIMIT_STATUS):
+            cam._send_request = AsyncMock(
+                return_value=Response(
+                    request_id=1,
+                    request_type=RequestType.PUT_STREAMING,
+                    status_code=code,
+                    status_message="Forbidden: Number of Mobile App connections above limit",
+                )
+            )
+            assert await cam.async_start_streaming(rtmps_url=url) == code
+
+    async def test_start_streaming_without_a_status_returns_none(self) -> None:
+        cam, *_ = _make_camera()
+        cam._send_request = AsyncMock(return_value=None)
+        url = "rtmps://media-secured.nanit.com/nanit/baby.token"
+        assert await cam.async_start_streaming(rtmps_url=url) is None
 
     async def test_start_streaming_passes_reconnect_flag_through(self) -> None:
         """async_start_streaming forwards reconnect_on_failure to _send_request."""

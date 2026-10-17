@@ -95,6 +95,11 @@ Playback = proto.Playback
 Soundtrack = proto.Soundtrack
 
 _DEFAULT_REQUEST_TIMEOUT: float = 10.0
+
+# PUT_STREAMING status while the camera already serves as many app streams
+# as it allows ("Number of Mobile App connections above limit"). Seen with
+# this client's own live push and with two other clients streaming.
+STREAM_LIMIT_STATUS = 403
 _LOCAL_PROBE_INTERVAL: float = 300.0  # 5 minutes
 _MAX_LOCAL_FAILURES_BEFORE_CLOUD: int = 3
 _STALE_CONNECTION_THRESHOLD: float = 300.0  # 5 min — reconnect before send
@@ -518,7 +523,7 @@ class NanitCamera:
         *,
         rtmps_url: str | None = None,
         reconnect_on_failure: bool = True,
-    ) -> None:
+    ) -> int | None:
         """Send PUT_STREAMING with status=STARTED to camera.
 
         With ``reconnect_on_failure=False`` the send is best-effort: a late
@@ -526,6 +531,13 @@ class NanitCamera:
         WebSocket. Background keepalives need this because a control-session
         reconnect itself stops the camera's RTMPS push — the exact failure a
         keepalive exists to prevent.
+
+        Returns the camera's status code, or None if the response carried
+        none. A declined request does not raise: the camera answers 403
+        (``STREAM_LIMIT_STATUS``) while it already serves as many app streams
+        as it allows, this client's own live push included, and a cloud URL
+        still plays then if another client keeps the cloud stream running.
+        Callers that need the push itself, like a local receiver, check it.
         """
         if rtmps_url is None:
             rtmps_url = await self.async_get_stream_rtmps_url()
@@ -540,7 +552,7 @@ class NanitCamera:
             self._transport.transport_kind.name if self._transport.connected else "disconnected",
         )
         try:
-            await self._send_request(
+            response = await self._send_request(
                 RequestType.PUT_STREAMING,
                 streaming=streaming,
                 reconnect_on_failure=reconnect_on_failure,
@@ -552,8 +564,19 @@ class NanitCamera:
                 err,
             )
             raise
-        else:
+        status = getattr(response, "status_code", None)
+        if not isinstance(status, int):
+            return None
+        if status == 200:
             _LOGGER.debug("PUT_STREAMING succeeded for camera %s", self._uid)
+        else:
+            _LOGGER.debug(
+                "Camera %s declined PUT_STREAMING: %s %s",
+                self._uid,
+                status,
+                getattr(response, "status_message", ""),
+            )
+        return status
 
     async def async_stop_streaming(self) -> None:
         """Send PUT_STREAMING with status=STOPPED to camera."""

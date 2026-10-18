@@ -784,6 +784,7 @@ async def test_failures_warn_once_per_streak(
         for _ in range(4):
             await _fail_once(hass, entity)
         assert warnings() == 1
+        assert "up to every 60 minutes" in caplog.text
 
         # A success ends the streak, and a new streak warns again.
         grab.side_effect = None

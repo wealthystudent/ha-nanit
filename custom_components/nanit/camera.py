@@ -582,7 +582,7 @@ class NanitCameraEntity(NanitEntity, Camera):
 
         With stream stills on, a failed cloud fetch may also start a
         background frame grab from the live stream (see
-        ``_async_maybe_start_stream_still``). The request never waits for it.
+        ``_maybe_start_stream_still``). The request never waits for it.
         """
         if not self.is_on:
             return None
@@ -726,8 +726,8 @@ class NanitCameraEntity(NanitEntity, Camera):
         here.
 
         WebRTC (go2rtc) and HomeKit viewers do not use that stream, so for
-        them the ffmpeg path runs and re-sends PUT_STREAMING for the same
-        cached URL, which is harmless.
+        them the ffmpeg path runs and re-sends PUT_STREAMING, usually for the
+        URL already cached.
 
         Cancelling this task cannot stop an ffmpeg read already under way,
         because Home Assistant shields that call. ha-ffmpeg's own 15 second

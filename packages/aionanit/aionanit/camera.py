@@ -535,9 +535,10 @@ class NanitCamera:
         Returns the camera's status code, or None if the response carried
         none. A declined request does not raise: the camera answers 403
         (``STREAM_LIMIT_STATUS``) while it already serves as many app streams
-        as it allows, this client's own live push included, and a cloud URL
-        still plays then if another client keeps the cloud stream running.
-        Callers that need the push itself, like a local receiver, check it.
+        as it allows, this client's own live push included, and the push
+        carries on. A cloud URL may still play then, if another client keeps
+        a cloud stream running. Callers that need the push itself, like a
+        local receiver, check it.
         """
         if rtmps_url is None:
             rtmps_url = await self.async_get_stream_rtmps_url()

@@ -133,6 +133,12 @@ async def test_old_cache_starts_one_grab_and_returns_cached_image(hass: HomeAssi
         assert results == [OLD_IMAGE] * 5
         assert entity._stream_still_task is task
 
+        # Still one at a time when a grab outlasts the retry delay.
+        assert entity._stream_still_attempt_at is not None
+        entity._stream_still_attempt_at -= camera_module._STREAM_STILL_RETRY_DELAY
+        assert await entity.async_camera_image() == OLD_IMAGE
+        assert entity._stream_still_task is task
+
         release.set()
         await _settle(hass, entity)
 

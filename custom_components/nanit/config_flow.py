@@ -426,7 +426,7 @@ class NanitOptionsFlow(OptionsFlow):
     ) -> ConfigFlowResult:
         """Turn stills from the live stream on or off for the whole account."""
         if user_input is not None:
-            # Merge over the existing options; the flag is stored only when on.
+            # Merge over the existing options. The flag is stored only when on.
             new_options: dict[str, Any] = {**self.config_entry.options}
             new_options.pop(CONF_STREAM_STILLS, None)
             if user_input[CONF_STREAM_STILLS]:

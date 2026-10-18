@@ -4,16 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 import time
+from collections.abc import Coroutine
 from typing import Any
 
 from homeassistant.components.camera import Camera, CameraEntityFeature
 from homeassistant.components.ffmpeg import async_get_image as ffmpeg_get_image
+from homeassistant.components.ffmpeg import get_ffmpeg_manager
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback, async_get_current_platform
 from homeassistant.helpers.event import async_call_later
 from homeassistant.util import dt as dt_util
+from homeassistant.util.system_info import is_official_image
 
 from aionanit import NanitCamera
 from aionanit.models import ConnectionState
@@ -43,11 +47,16 @@ _SNAPSHOT_PREFETCH_AGE = 30.0
 # the camera to stream, and it keeps pushing for ~20 minutes afterwards.
 _STREAM_STILL_MAX_AGE = 10 * 60
 # Wait at least this long after a grab started before starting another, so a
-# failing stream is not retried on every image request.
+# failing stream is not retried on every image request. The wait doubles with
+# each failure in a row, up to _STREAM_STILL_MAX_AGE, and resets on success.
 _STREAM_STILL_RETRY_DELAY = 60.0
-# Bound on the ffmpeg frame read. ffmpeg's own read timeout (15s) kills the
-# process first; this only guards against the call never returning.
+# Failures in a row before one warning is logged for the streak.
+_STREAM_STILL_WARN_AFTER = 3
+# Bound on the frame read. ffmpeg's own read timeout (15s) kills the process
+# first, so this only guards against the call never returning.
 _STREAM_STILL_TIMEOUT = 20.0
+# hass.data key for the shared, once-per-run check for the ffmpeg binary.
+_FFMPEG_CHECK = f"{DOMAIN}_stream_still_ffmpeg_check"
 
 
 async def async_setup_entry(
@@ -121,6 +130,7 @@ class NanitCameraEntity(NanitEntity, Camera):
         self._still_info = still_info if still_info is not None else StreamStillInfo()
         self._stream_still_task: asyncio.Task[None] | None = None
         self._stream_still_attempt_at: float | None = None
+        self._stream_still_failures = 0
 
     @property
     def is_on(self) -> bool:
@@ -145,6 +155,7 @@ class NanitCameraEntity(NanitEntity, Camera):
 
         if prev_on is not None and prev_on != cur_on:
             # Camera power changed — invalidate cached stream.
+            self._cancel_stream_still()
             self._invalidate_stream("power state change")
         else:
             self._invalidate_stream_if_expired()
@@ -609,14 +620,18 @@ class NanitCameraEntity(NanitEntity, Camera):
     # Stills from the live stream (opt-in)
     # ------------------------------------------------------------------
 
+    def _stream_still_retry_delay(self) -> float:
+        """Return the wait after the last attempt, doubled per failure in a row."""
+        doublings = max(self._stream_still_failures - 1, 0)
+        return float(min(_STREAM_STILL_RETRY_DELAY * 2**doublings, _STREAM_STILL_MAX_AGE))
+
     @callback
     def _maybe_start_stream_still(self) -> None:
         """Start one background frame grab if the cached image is too old.
 
         Called only after the cloud snapshot failed. At most one grab runs
-        per camera, an attempt is not repeated within
-        ``_STREAM_STILL_RETRY_DELAY``, and a camera that is asleep or
-        unreachable is left alone.
+        per camera, an attempt is not repeated within the retry delay, and a
+        camera that is asleep or unreachable is left alone.
         """
         if not self._stream_stills:
             return
@@ -632,7 +647,7 @@ class NanitCameraEntity(NanitEntity, Camera):
             return
         if (
             self._stream_still_attempt_at is not None
-            and now - self._stream_still_attempt_at < _STREAM_STILL_RETRY_DELAY
+            and now - self._stream_still_attempt_at < self._stream_still_retry_delay()
         ):
             return
         self._stream_still_attempt_at = now
@@ -643,43 +658,97 @@ class NanitCameraEntity(NanitEntity, Camera):
             eager_start=False,
         )
 
+    @callback
+    def _cancel_stream_still(self) -> None:
+        """Cancel a running grab, e.g. because the camera is going to sleep."""
+        task = self._stream_still_task
+        if task is not None and not task.done():
+            task.cancel()
+        self._stream_still_task = None
+
+    async def _async_ffmpeg_found(self) -> bool:
+        """Return whether the ffmpeg binary exists, checked once per run.
+
+        Home Assistant OS and Container ship ffmpeg. A Core install may not,
+        and without this check every grab would send PUT_STREAMING for
+        nothing and ha-ffmpeg would log an error. The check is shared by all
+        cameras, so a missing binary is reported once.
+        """
+        check: asyncio.Task[bool] | None = self.hass.data.get(_FFMPEG_CHECK)
+        if check is None:
+            check = self.hass.async_create_task(
+                _async_check_ffmpeg(self.hass), name="nanit_stream_still_ffmpeg_check"
+            )
+            self.hass.data[_FFMPEG_CHECK] = check
+        return await asyncio.shield(check)
+
+    def _stream_still_failed(self, reason: str) -> None:
+        """Count a failed grab, and warn once when failures keep coming."""
+        self._stream_still_failures += 1
+        _LOGGER.debug("No still from camera %s: %s", self._camera.uid, reason)
+        if self._stream_still_failures == _STREAM_STILL_WARN_AFTER:
+            _LOGGER.warning(
+                "Stills from the live stream keep failing for camera %s (last: %s). "
+                "Retrying less often, up to every %.0f minutes",
+                self._camera.uid,
+                reason,
+                _STREAM_STILL_MAX_AGE / 60,
+            )
+
     async def _async_grab_stream_still(self) -> None:
         """Read one frame from the live stream into the snapshot cache.
 
-        The frame is read with a one-shot ffmpeg process, not through Home
-        Assistant's stream worker, so nothing keeps running afterwards.
-        ``stream_source()`` sends PUT_STREAMING like a viewer would. Its
-        keepalive renews the push only while a stream has outputs, so a grab
-        leaves the camera to stop pushing on its own about 20 minutes later.
-        PUT_STREAMING STOPPED is never sent: it is camera-wide and would cut
-        off anyone watching. The source URL carries an access token and is
-        never logged here.
+        With a viewer already watching, the frame comes from Home Assistant's
+        running stream and nothing is sent to the camera. Otherwise it is read
+        with a one-shot ffmpeg process, not through the stream worker, so
+        nothing keeps running afterwards. ``stream_source()`` sends
+        PUT_STREAMING like a viewer would. Its keepalive renews the push only
+        while a stream has outputs, so a grab leaves the camera to stop
+        pushing on its own about 20 minutes later. PUT_STREAMING STOPPED is
+        never sent, because it is camera-wide and would cut off anyone
+        watching. The source URL carries an access token and is never logged
+        here.
+
+        Cancelling this task cannot stop an ffmpeg read already under way,
+        because Home Assistant shields that call. ha-ffmpeg's own 15 second
+        read timeout bounds it.
         """
+        stream = self.stream
+        if stream is not None and stream.outputs():
+            await self._async_read_still(stream.async_get_image(), "the running stream")
+            return
+
+        if not await self._async_ffmpeg_found():
+            return
         source = await self.stream_source()
         if source is None:
-            _LOGGER.debug("No stream source for a still from camera %s", self._camera.uid)
+            self._stream_still_failed("no stream source")
             return
+        if not self.is_on:
+            # Put to sleep while the source was being prepared.
+            return
+        await self._async_read_still(ffmpeg_get_image(self.hass, source), "ffmpeg")
+
+    async def _async_read_still(self, read: Coroutine[Any, Any, bytes | None], via: str) -> None:
+        """Await one frame read and store a frame in the snapshot cache."""
         try:
             async with asyncio.timeout(_STREAM_STILL_TIMEOUT):
-                image = await ffmpeg_get_image(self.hass, source)
+                image = await read
         except TimeoutError:
-            _LOGGER.debug("Timed out reading a still from camera %s", self._camera.uid)
+            self._stream_still_failed(f"timed out reading a frame from {via}")
             return
         except Exception as err:  # noqa: BLE001
             # The type only: the message or traceback could carry the URL.
-            _LOGGER.debug(
-                "Failed to read a still from camera %s: %s",
-                self._camera.uid,
-                type(err).__name__,
-            )
+            self._stream_still_failed(f"{type(err).__name__} reading a frame from {via}")
             return
         if not image:
-            _LOGGER.debug("No frame read for a still from camera %s", self._camera.uid)
+            self._stream_still_failed(f"no frame from {via}")
             return
         self._cached_snapshot = image
         self._cached_snapshot_at = time.monotonic()
         self._still_info.last_taken = dt_util.utcnow()
-        _LOGGER.debug("Took a still from the live stream of camera %s", self._camera.uid)
+        self._stream_still_failures = 0
+        _LOGGER.debug("Took a still of camera %s from %s", self._camera.uid, via)
 
     # ------------------------------------------------------------------
     # On/off
@@ -696,15 +765,42 @@ class NanitCameraEntity(NanitEntity, Camera):
     async def async_turn_on(self) -> None:
         """Turn the camera on (disable sleep/standby mode)."""
         self._raise_if_read_only()
+        self._cancel_stream_still()
         self._invalidate_stream()
         await self._camera.async_set_settings(sleep_mode=False)
 
     async def async_turn_off(self) -> None:
         """Turn the camera off (enable sleep/standby mode)."""
         self._raise_if_read_only()
+        # A grab still waiting on its stream source would otherwise resume
+        # after the STOPPED below and send PUT_STREAMING to a sleeping camera.
+        self._cancel_stream_still()
         self._invalidate_stream()
         try:
             await self._camera.async_stop_streaming()
         except Exception:
             _LOGGER.debug("Failed to stop streaming before sleep", exc_info=True)
         await self._camera.async_set_settings(sleep_mode=True)
+
+
+async def _async_check_ffmpeg(hass: HomeAssistant) -> bool:
+    """Look for the ffmpeg binary, and warn once if it is missing."""
+    try:
+        binary = get_ffmpeg_manager(hass).binary
+    except ValueError:
+        binary = "ffmpeg"
+        found = False
+    else:
+        found = await hass.async_add_executor_job(_ffmpeg_binary_exists, binary)
+    if not found:
+        _LOGGER.warning(
+            "Stills from the live stream need FFmpeg, and %s was not found. "
+            "Home Assistant OS and Container include it. Install FFmpeg or turn the option off",
+            binary,
+        )
+    return found
+
+
+def _ffmpeg_binary_exists(binary: str) -> bool:
+    """Return whether the binary can run (blocking, run in the executor)."""
+    return is_official_image() or shutil.which(binary) is not None

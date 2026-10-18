@@ -83,7 +83,7 @@
       },
       "stream_stills": {
         "title": "Stills from the live stream",
-        "description": "Nanit's cloud currently returns no still picture, so the camera's picture (and HomeKit or dashboard tiles) stays empty until someone opens the live view. With this on, when the cloud has no picture and the last one is more than about 10 minutes old, Home Assistant starts the camera's stream briefly and keeps one frame. The camera keeps streaming for about 20 minutes after each one, so something that keeps asking for a picture (HomeKit, an always-on dashboard tile) keeps the camera streaming much of the time. Nothing is taken while the camera is asleep. Applies to every camera on this account.",
+        "description": "Fills the camera's picture (HomeKit tiles, picture cards) from the live stream when Nanit's cloud has no still, as it currently has none. When a picture is asked for and the last one is more than about 10 minutes old, Home Assistant starts the camera's stream briefly and keeps one frame. The camera then keeps streaming for about 20 minutes and holds one of its stream slots (it allows about two), so an always-visible tile keeps it streaming and leaves one fewer phone able to watch live. Nothing is taken while the camera is asleep. Needs FFmpeg, which Home Assistant OS and Container include. Applies to every camera on this account, and changing it reloads the integration.",
         "data": {
           "stream_stills": "Stills from the live stream"
         }

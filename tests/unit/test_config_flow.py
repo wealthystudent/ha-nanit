@@ -1113,3 +1113,9 @@ def test_options_flow_reasons_are_translated() -> None:
         options = json.loads((base / name).read_text())["options"]
         assert "no_speakers" in options["abort"]
         assert "invalid_ip" in options["error"]
+
+
+def test_translations_match_strings_byte_for_byte() -> None:
+    """translations/en.json is a copy of strings.json and must not drift."""
+    base = Path(nanit_config_flow.__file__).parent
+    assert (base / "translations" / "en.json").read_bytes() == (base / "strings.json").read_bytes()

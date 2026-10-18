@@ -84,16 +84,22 @@ Turning it on removes the control entities, so **automations and scripts that us
 
 ## Stills from the live stream (optional)
 
-Nanit's cloud currently returns no still picture for the camera, so the camera's picture in Home Assistant, and anything built on it such as a HomeKit camera tile or a picture card, stays empty ("No Response" in HomeKit) until someone opens the live view.
+Turn on **Settings → Devices & Services → Nanit → Configure → Stills from the live stream** to fill the camera's picture from its live stream. Nanit's cloud currently returns no still picture, so without it the camera's picture in Home Assistant, and anything built on it such as a HomeKit camera tile or a picture card, stays empty ("No Response" in HomeKit) until someone opens the live view.
 
-Turn on **Settings → Devices & Services → Nanit → Configure → Stills from the live stream** to fill that gap. It is off by default, and it changes nothing while the cloud picture works:
+How it works:
 
 - When something asks for a picture, the cloud has none, and the last picture is more than about 10 minutes old, Home Assistant starts the camera's stream briefly and keeps a single frame. Until that frame arrives, the previous picture (or none) is shown.
-- Nothing is taken while the camera is asleep or unreachable.
-- The trade-off: the camera keeps streaming for about 20 minutes after each still. Something that keeps asking for a picture, like HomeKit or a dashboard that is always on screen, therefore keeps the camera streaming much of the time.
-- It works in read-only mode, since it only watches.
+- If someone is already watching in Home Assistant, the frame comes from that stream and nothing extra is asked of the camera.
+- Nothing is taken while the camera is asleep or unreachable. If stills keep failing, Home Assistant retries less often, up to every 10 minutes, and logs one warning.
+- It is off by default, and it changes nothing while the cloud picture works. It works in read-only mode, since it only watches.
 
-The setting applies to every camera on the account.
+What it costs:
+
+- The camera keeps streaming for about 20 minutes after each still. Something that keeps asking for a picture, like HomeKit or a dashboard that is always on screen, therefore keeps the camera streaming much of the time.
+- While it streams, it holds one of the camera's stream slots (it allows about two), so one fewer phone can watch live in the Nanit app.
+- It needs FFmpeg. Home Assistant OS and Container include it. On a Core install without FFmpeg, nothing is sent to the camera and one warning is logged.
+
+The setting applies to every camera on the account, and changing it reloads the integration.
 
 ## Dashboard Card
 

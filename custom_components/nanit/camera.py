@@ -8,18 +8,21 @@ import time
 from typing import Any
 
 from homeassistant.components.camera import Camera, CameraEntityFeature
+from homeassistant.components.ffmpeg import async_get_image as ffmpeg_get_image
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback, async_get_current_platform
 from homeassistant.helpers.event import async_call_later
+from homeassistant.util import dt as dt_util
 
 from aionanit import NanitCamera
 from aionanit.models import ConnectionState
 
 from . import NanitConfigEntry
-from .const import DOMAIN, is_read_only
+from .const import DOMAIN, is_read_only, is_stream_stills
 from .coordinator import NanitPushCoordinator
 from .entity import NanitEntity
+from .hub import StreamStillInfo
 from .log_redaction import async_attach_to_camera_stream, async_detach_from_camera_stream
 
 PARALLEL_UPDATES = 0
@@ -35,6 +38,16 @@ _STREAM_KEEPALIVE_INTERVAL = 5 * 60
 _STREAM_STOP_TIMEOUT = 5.0
 _SNAPSHOT_CACHE_TTL = 60.0
 _SNAPSHOT_PREFETCH_AGE = 30.0
+# Stream stills (opt-in): when the cloud snapshot fails, a cached image older
+# than this is replaced by one frame read from the live stream. Each grab asks
+# the camera to stream, and it keeps pushing for ~20 minutes afterwards.
+_STREAM_STILL_MAX_AGE = 10 * 60
+# Wait at least this long after a grab started before starting another, so a
+# failing stream is not retried on every image request.
+_STREAM_STILL_RETRY_DELAY = 60.0
+# Bound on the ffmpeg frame read. ffmpeg's own read timeout (15s) kills the
+# process first; this only guards against the call never returning.
+_STREAM_STILL_TIMEOUT = 20.0
 
 
 async def async_setup_entry(
@@ -54,8 +67,15 @@ async def async_setup_entry(
             "async_reset_stream",
         )
     read_only = is_read_only(entry)
+    stream_stills = is_stream_stills(entry)
     async_add_entities(
-        NanitCameraEntity(cam_data.push_coordinator, cam_data.camera, read_only=read_only)
+        NanitCameraEntity(
+            cam_data.push_coordinator,
+            cam_data.camera,
+            read_only=read_only,
+            stream_stills=stream_stills,
+            still_info=cam_data.stream_still,
+        )
         for cam_data in entry.runtime_data.cameras.values()
     )
 
@@ -73,6 +93,8 @@ class NanitCameraEntity(NanitEntity, Camera):
         camera: NanitCamera,
         *,
         read_only: bool = False,
+        stream_stills: bool = False,
+        still_info: StreamStillInfo | None = None,
     ) -> None:
         """Initialize."""
         super().__init__(coordinator)
@@ -94,6 +116,11 @@ class NanitCameraEntity(NanitEntity, Camera):
         self._cancel_stream_keepalive_timer: CALLBACK_TYPE | None = None
         self._stream_refresh_task: asyncio.Task[None] | None = None
         self._stream_keepalive_task: asyncio.Task[bool] | None = None
+        # Opt-in stills from the live stream when the cloud snapshot fails.
+        self._stream_stills = stream_stills
+        self._still_info = still_info if still_info is not None else StreamStillInfo()
+        self._stream_still_task: asyncio.Task[None] | None = None
+        self._stream_still_attempt_at: float | None = None
 
     @property
     def is_on(self) -> bool:
@@ -153,11 +180,16 @@ class NanitCameraEntity(NanitEntity, Camera):
         """
         async_detach_from_camera_stream(self.entity_id)
         self._invalidate_stream("entity removal")
-        for task in (self._stream_refresh_task, self._stream_keepalive_task):
+        for task in (
+            self._stream_refresh_task,
+            self._stream_keepalive_task,
+            self._stream_still_task,
+        ):
             if task is not None and not task.done():
                 task.cancel()
         self._stream_refresh_task = None
         self._stream_keepalive_task = None
+        self._stream_still_task = None
         await super().async_will_remove_from_hass()
 
     def _invalidate_stream(self, reason: str = "state change") -> None:
@@ -531,6 +563,10 @@ class NanitCameraEntity(NanitEntity, Camera):
 
         A background prefetch is scheduled when the cache reaches
         ``_SNAPSHOT_PREFETCH_AGE`` so subsequent requests hit a warm cache.
+
+        With stream stills on, a failed cloud fetch may also start a
+        background frame grab from the live stream (see
+        ``_async_maybe_start_stream_still``). The request never waits for it.
         """
         if not self.is_on:
             return None
@@ -550,6 +586,7 @@ class NanitCameraEntity(NanitEntity, Camera):
         if fresh is not None:
             return fresh
 
+        self._maybe_start_stream_still()
         return self._cached_snapshot
 
     async def _async_refresh_snapshot(self) -> None:
@@ -567,6 +604,82 @@ class NanitCameraEntity(NanitEntity, Camera):
             self._cached_snapshot = image
             self._cached_snapshot_at = time.monotonic()
         return image
+
+    # ------------------------------------------------------------------
+    # Stills from the live stream (opt-in)
+    # ------------------------------------------------------------------
+
+    @callback
+    def _maybe_start_stream_still(self) -> None:
+        """Start one background frame grab if the cached image is too old.
+
+        Called only after the cloud snapshot failed. At most one grab runs
+        per camera, an attempt is not repeated within
+        ``_STREAM_STILL_RETRY_DELAY``, and a camera that is asleep or
+        unreachable is left alone.
+        """
+        if not self._stream_stills:
+            return
+        if self._stream_still_task is not None and not self._stream_still_task.done():
+            return
+        if not self.is_on or not self.available:
+            return
+        now = time.monotonic()
+        if (
+            self._cached_snapshot is not None
+            and now - self._cached_snapshot_at < _STREAM_STILL_MAX_AGE
+        ):
+            return
+        if (
+            self._stream_still_attempt_at is not None
+            and now - self._stream_still_attempt_at < _STREAM_STILL_RETRY_DELAY
+        ):
+            return
+        self._stream_still_attempt_at = now
+        # Not eager: the image request must never run any of the grab inline.
+        self._stream_still_task = self.hass.async_create_background_task(
+            self._async_grab_stream_still(),
+            name=f"nanit_stream_still_{self._camera.uid}",
+            eager_start=False,
+        )
+
+    async def _async_grab_stream_still(self) -> None:
+        """Read one frame from the live stream into the snapshot cache.
+
+        The frame is read with a one-shot ffmpeg process, not through Home
+        Assistant's stream worker, so nothing keeps running afterwards.
+        ``stream_source()`` sends PUT_STREAMING like a viewer would. Its
+        keepalive renews the push only while a stream has outputs, so a grab
+        leaves the camera to stop pushing on its own about 20 minutes later.
+        PUT_STREAMING STOPPED is never sent: it is camera-wide and would cut
+        off anyone watching. The source URL carries an access token and is
+        never logged here.
+        """
+        source = await self.stream_source()
+        if source is None:
+            _LOGGER.debug("No stream source for a still from camera %s", self._camera.uid)
+            return
+        try:
+            async with asyncio.timeout(_STREAM_STILL_TIMEOUT):
+                image = await ffmpeg_get_image(self.hass, source)
+        except TimeoutError:
+            _LOGGER.debug("Timed out reading a still from camera %s", self._camera.uid)
+            return
+        except Exception as err:  # noqa: BLE001
+            # The type only: the message or traceback could carry the URL.
+            _LOGGER.debug(
+                "Failed to read a still from camera %s: %s",
+                self._camera.uid,
+                type(err).__name__,
+            )
+            return
+        if not image:
+            _LOGGER.debug("No frame read for a still from camera %s", self._camera.uid)
+            return
+        self._cached_snapshot = image
+        self._cached_snapshot_at = time.monotonic()
+        self._still_info.last_taken = dt_util.utcnow()
+        _LOGGER.debug("Took a still from the live stream of camera %s", self._camera.uid)
 
     # ------------------------------------------------------------------
     # On/off

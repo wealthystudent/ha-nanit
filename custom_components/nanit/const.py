@@ -54,11 +54,18 @@ CONF_SPEAKER_IPS = "speaker_ips"
 # speaker_uid → name for machines no baby is paired with (entry data).
 CONF_UNPAIRED_SPEAKERS = "unpaired_speakers"
 CONF_READ_ONLY = "read_only"
+# Stills from the live stream when the cloud snapshot fails (off by default).
+CONF_STREAM_STILLS = "stream_stills"
 
 
 def is_read_only(entry: ConfigEntry) -> bool:
     """Return whether the entry is in read-only mode (no device control at all)."""
     return entry.options.get(CONF_READ_ONLY, False) is True
+
+
+def is_stream_stills(entry: ConfigEntry) -> bool:
+    """Return whether camera stills may be taken from the live stream."""
+    return entry.options.get(CONF_STREAM_STILLS, False) is True
 
 
 # Default sound list (used when API doesn't return available_sounds)

@@ -25,9 +25,11 @@ from .const import (
     CONF_SPEAKER_IP,
     CONF_SPEAKER_IPS,
     CONF_STORE_CREDENTIALS,
+    CONF_STREAM_STILLS,
     DOMAIN,
     LOGGER,
     is_read_only,
+    is_stream_stills,
 )
 from .sanitize import display_name
 
@@ -365,13 +367,14 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class NanitOptionsFlow(OptionsFlow):
-    """Handle Nanit options: Sound & Light IPs and read-only mode.
+    """Handle Nanit options: Sound & Light IPs, read-only mode and stream stills.
 
     A menu picks one of:
     - Sound & Light IP, two steps:
       1. Select whose machine to configure (if more than one baby has one)
       2. Enter or clear the machine's IP for local connectivity
     - Read-only mode (account-wide)
+    - Stills from the live stream (account-wide)
 
     Only babies with a Sound & Light Machine are offered, since the camera's
     local port rejects the integration on current firmware (#176). Speaker
@@ -391,7 +394,9 @@ class NanitOptionsFlow(OptionsFlow):
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Choose what to configure."""
-        return self.async_show_menu(step_id="init", menu_options=["device", "read_only"])
+        return self.async_show_menu(
+            step_id="init", menu_options=["device", "read_only", "stream_stills"]
+        )
 
     async def async_step_read_only(
         self, user_input: dict[str, Any] | None = None
@@ -411,6 +416,29 @@ class NanitOptionsFlow(OptionsFlow):
                 {
                     vol.Required(
                         CONF_READ_ONLY, default=is_read_only(self.config_entry)
+                    ): cv.boolean,
+                }
+            ),
+        )
+
+    async def async_step_stream_stills(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Turn stills from the live stream on or off for the whole account."""
+        if user_input is not None:
+            # Merge over the existing options; the flag is stored only when on.
+            new_options: dict[str, Any] = {**self.config_entry.options}
+            new_options.pop(CONF_STREAM_STILLS, None)
+            if user_input[CONF_STREAM_STILLS]:
+                new_options[CONF_STREAM_STILLS] = True
+            return self.async_create_entry(title="", data=new_options)
+
+        return self.async_show_form(
+            step_id="stream_stills",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_STREAM_STILLS, default=is_stream_stills(self.config_entry)
                     ): cv.boolean,
                 }
             ),

@@ -82,6 +82,19 @@ Turn on **Read-only mode** during setup, or later under **Settings → Devices &
 
 Turning it on removes the control entities, so **automations and scripts that use them stop working** while it's on. Turning it off brings them back with the same names and entity IDs, so those automations work again. **Turning it off also removes the Camera Power sensor, so automations that use it stop working**; switch them to the power switch. The dashboard card stays available and still shows "Camera Off" while the camera is asleep, but its controls do nothing in this mode. The setting applies to every device on the account.
 
+## Stills from the live stream (optional)
+
+Nanit's cloud currently returns no still picture for the camera, so the camera's picture in Home Assistant, and anything built on it such as a HomeKit camera tile or a picture card, stays empty ("No Response" in HomeKit) until someone opens the live view.
+
+Turn on **Settings → Devices & Services → Nanit → Configure → Stills from the live stream** to fill that gap. It is off by default, and it changes nothing while the cloud picture works:
+
+- When something asks for a picture, the cloud has none, and the last picture is more than about 10 minutes old, Home Assistant starts the camera's stream briefly and keeps a single frame. Until that frame arrives, the previous picture (or none) is shown.
+- Nothing is taken while the camera is asleep or unreachable.
+- The trade-off: the camera keeps streaming for about 20 minutes after each still. Something that keeps asking for a picture, like HomeKit or a dashboard that is always on screen, therefore keeps the camera streaming much of the time.
+- It works in read-only mode, since it only watches.
+
+The setting applies to every camera on the account.
+
 ## Dashboard Card
 
 A companion Lovelace card is **bundled with the integration** — no HACS frontend dependencies or manual JS installation required. After setup, the card appears in your card picker automatically.

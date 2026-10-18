@@ -11,7 +11,8 @@ a logger does not apply to records from its child loggers, so it has to sit on t
 that prints the URL. For the stream worker that is a per-camera logger: Home Assistant creates
 each camera's stream with ``stream_label=<entity_id>`` and logs it under
 ``homeassistant.components.stream.stream.<entity_id>``, so each camera entity attaches the filter
-to its own stream logger. go2rtc relays its output through one fixed logger, covered globally.
+to its own stream logger. go2rtc relays its output through one fixed logger, covered globally,
+and so does ha-ffmpeg, which logs its command line when a still is read from the stream.
 """
 
 from __future__ import annotations
@@ -28,6 +29,9 @@ from .const import DOMAIN
 STREAM_LOGGERS = (
     "homeassistant.components.stream",
     "homeassistant.components.go2rtc.server",
+    # ha-ffmpeg logs each ffmpeg command line, input URL included, when the
+    # camera takes a still from the live stream.
+    "haffmpeg.core",
 )
 
 # The baby uid has no dots, and the token is a JWT: base64url segments joined by

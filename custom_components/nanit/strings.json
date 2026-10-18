@@ -56,7 +56,8 @@
         "title": "Nanit Options",
         "menu_options": {
           "device": "Sound & Light IP address",
-          "read_only": "Read-only mode"
+          "read_only": "Read-only mode",
+          "stream_stills": "Stills from the live stream"
         }
       },
       "device": {
@@ -78,6 +79,13 @@
         "description": "Read-only mode applies to every device on this account. Home Assistant keeps the camera stream, sensors and motion and sound detection, but gets no control over device settings: camera power or sleep, night light, volume and Sound & Light controls are removed, and automations that use them stop working. Turning it off brings them back with the same names and entity IDs.",
         "data": {
           "read_only": "Read-only mode"
+        }
+      },
+      "stream_stills": {
+        "title": "Stills from the live stream",
+        "description": "Nanit's cloud currently returns no still picture, so the camera's picture (and HomeKit or dashboard tiles) stays empty until someone opens the live view. With this on, when the cloud has no picture and the last one is more than about 10 minutes old, Home Assistant starts the camera's stream briefly and keeps one frame. The camera keeps streaming for about 20 minutes after each one, so something that keeps asking for a picture (HomeKit, an always-on dashboard tile) keeps the camera streaming much of the time. Nothing is taken while the camera is asleep. Applies to every camera on this account.",
+        "data": {
+          "stream_stills": "Stills from the live stream"
         }
       }
     },

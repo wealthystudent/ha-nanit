@@ -302,6 +302,7 @@ async def test_grab_timeout_keeps_cache_and_allows_a_later_retry(hass: HomeAssis
         assert entity._stream_still_task is not None
         assert entity._stream_still_task.done()
         assert entity._cached_snapshot == OLD_IMAGE
+        assert entity._stream_still_failures == 1
 
         entity._stream_still_attempt_at = None
         await entity.async_camera_image()
@@ -320,6 +321,7 @@ async def test_no_stream_source_skips_the_frame_read(hass: HomeAssistant) -> Non
 
     grab.assert_not_awaited()
     assert entity._cached_snapshot == OLD_IMAGE
+    assert entity._stream_still_failures == 1
 
 
 async def test_grab_never_stops_the_camera_stream(hass: HomeAssistant) -> None:
@@ -584,8 +586,12 @@ async def test_missing_ffmpeg_sends_nothing_and_warns_once(
         r for r in caplog.records if r.levelno == logging.WARNING and "need FFmpeg" in r.message
     ]
     assert len(warnings) == 1
+    assert "restart Home Assistant" in warnings[0].message
     # Checked once for the whole run, not once per camera or per request.
     ffmpeg_present.assert_called_once_with("ffmpeg")
+    # A missing binary is not a failed still, so it never backs off or warns twice.
+    assert first._stream_still_failures == 0
+    assert second._stream_still_failures == 0
 
 
 async def test_ffmpeg_integration_not_set_up_counts_as_missing(
@@ -719,14 +725,15 @@ async def _fail_once(hass: HomeAssistant, entity: NanitCameraEntity) -> None:
     await _settle(hass, entity)
 
 
-def test_retry_delay_doubles_and_caps_at_ten_minutes(hass: HomeAssistant) -> None:
+def test_retry_delay_doubles_and_caps_at_an_hour(hass: HomeAssistant) -> None:
     entity, _, _ = _entity(hass)
     delays = []
-    for failures in range(8):
+    for failures in (*range(11), 1000):
         entity._stream_still_failures = failures
         delays.append(entity._stream_still_retry_delay())
 
-    assert delays == [60, 60, 120, 240, 480, 600, 600, 600]
+    # The cap sits well past the camera's ~20 minute push after each attempt.
+    assert delays == [60, 60, 120, 240, 480, 960, 1920, 3600, 3600, 3600, 3600, 3600]
 
 
 async def test_failures_back_off_and_success_resets(hass: HomeAssistant) -> None:
@@ -846,3 +853,134 @@ async def test_watched_stream_failure_counts_as_a_failure(hass: HomeAssistant) -
     assert entity._stream_still_failures == 1
     assert entity._cached_snapshot == OLD_IMAGE
     camera.async_start_streaming.assert_not_awaited()
+
+
+async def test_persistent_failure_backs_off_to_an_hour(hass: HomeAssistant) -> None:
+    entity, camera, _ = _entity(hass)
+
+    with patch(GRAB, new=AsyncMock(return_value=None)):
+        for _ in range(8):
+            await _fail_once(hass, entity)
+
+    assert camera.async_start_streaming.await_count == 8
+    assert entity._stream_still_retry_delay() == 3600
+
+
+async def test_cloud_snapshot_success_ends_the_failure_streak(hass: HomeAssistant) -> None:
+    entity, camera, _ = _entity(hass)
+    with patch(GRAB, new=AsyncMock(return_value=None)):
+        for _ in range(4):
+            await _fail_once(hass, entity)
+    assert entity._stream_still_failures == 4
+
+    camera.async_get_snapshot = AsyncMock(return_value=b"cloud-image")
+    entity._cached_snapshot_at -= camera_module._SNAPSHOT_CACHE_TTL
+    assert await entity.async_camera_image() == b"cloud-image"
+
+    assert entity._stream_still_failures == 0
+
+
+async def test_turn_on_cancels_a_running_grab(hass: HomeAssistant) -> None:
+    entity, camera, _ = _entity(hass)
+    camera.async_set_settings = AsyncMock()
+    release = asyncio.Event()
+
+    async def slow_url() -> str:
+        await release.wait()
+        return URL
+
+    camera.async_get_stream_rtmps_url = AsyncMock(side_effect=slow_url)
+
+    with patch(GRAB, new=AsyncMock(return_value=NEW_IMAGE)) as grab:
+        await entity.async_camera_image()
+        for _ in range(5):
+            await asyncio.sleep(0)
+        task = entity._stream_still_task
+        assert task is not None
+
+        await entity.async_turn_on()
+        release.set()
+        await _settle(hass, entity)
+
+    assert task.cancelled()
+    camera.async_start_streaming.assert_not_awaited()
+    grab.assert_not_awaited()
+
+
+async def test_asleep_when_the_task_runs_is_not_a_failure(hass: HomeAssistant) -> None:
+    entity, camera, _ = _entity(hass)
+
+    with patch(GRAB, new=AsyncMock(return_value=NEW_IMAGE)) as grab:
+        await entity.async_camera_image()
+        # The task is not eager, so it runs after the camera went to sleep.
+        entity.coordinator.data = _camera_state(sleep_mode=True)
+        await _settle(hass, entity)
+
+    grab.assert_not_awaited()
+    camera.async_get_stream_rtmps_url.assert_not_awaited()
+    camera.async_start_streaming.assert_not_awaited()
+    assert entity._stream_still_failures == 0
+
+
+async def test_cancelling_a_grab_during_the_check_keeps_the_shared_check(
+    hass: HomeAssistant,
+) -> None:
+    """The check is shared by all cameras, so one cancelled grab must not cancel it."""
+    release = asyncio.Event()
+
+    async def slow_check(_hass: HomeAssistant) -> bool:
+        await release.wait()
+        return True
+
+    entity, _, _ = _entity(hass)
+    with (
+        patch.object(camera_module, "_async_check_ffmpeg", side_effect=slow_check),
+        patch(GRAB, new=AsyncMock(return_value=NEW_IMAGE)) as grab,
+    ):
+        await entity.async_camera_image()
+        for _ in range(5):
+            await asyncio.sleep(0)
+        task = entity._stream_still_task
+        assert task is not None
+        entity._cancel_stream_still()
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert task.cancelled()
+        release.set()
+        await _settle(hass, entity)
+
+        entity._stream_still_attempt_at = None
+        await entity.async_camera_image()
+        await _settle(hass, entity)
+
+    grab.assert_awaited_once()
+    assert entity._cached_snapshot == NEW_IMAGE
+
+
+async def test_a_check_that_raises_is_retried_later(hass: HomeAssistant) -> None:
+    """A check that could not run is not cached as "no ffmpeg" until a restart."""
+    entity, camera, _ = _entity(hass)
+
+    with (
+        patch.object(
+            camera_module, "_async_check_ffmpeg", side_effect=RuntimeError("executor gone")
+        ),
+        patch(GRAB, new=AsyncMock(return_value=NEW_IMAGE)) as grab,
+    ):
+        await entity.async_camera_image()
+        await _settle(hass, entity)
+        task = entity._stream_still_task
+        assert task is not None
+        assert task.exception() is None
+
+    grab.assert_not_awaited()
+    camera.async_start_streaming.assert_not_awaited()
+    assert entity._stream_still_failures == 0
+
+    with patch(GRAB, new=AsyncMock(return_value=NEW_IMAGE)) as grab:
+        entity._stream_still_attempt_at = None
+        await entity.async_camera_image()
+        await _settle(hass, entity)
+
+    grab.assert_awaited_once()
+    assert entity._cached_snapshot == NEW_IMAGE

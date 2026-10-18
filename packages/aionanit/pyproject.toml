@@ -16,6 +16,10 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    # Test-only: PyAV demuxes the served FLV, cryptography makes the TLS
+    # tests' self-signed certificate. Home Assistant ships both at runtime.
+    "av>=14,<20",
+    "cryptography>=44,<51",
     "grpcio-tools>=1.80,<2",
     "pytest>=9,<10",
     "pytest-asyncio>=1.3,<2",

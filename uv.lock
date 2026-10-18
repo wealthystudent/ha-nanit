@@ -225,6 +225,8 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
+    { name = "av" },
+    { name = "cryptography" },
     { name = "grpcio-tools" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -234,6 +236,8 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.9.0,<4" },
+    { name = "av", marker = "extra == 'dev'", specifier = ">=14,<20" },
+    { name = "cryptography", marker = "extra == 'dev'", specifier = ">=44,<51" },
     { name = "grpcio-tools", marker = "extra == 'dev'", specifier = ">=1.80,<2" },
     { name = "protobuf", specifier = ">=6,<8" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9,<10" },

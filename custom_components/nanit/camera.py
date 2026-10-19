@@ -8,7 +8,6 @@ import shlex
 import shutil
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
 from typing import Any
 
 from homeassistant.components.camera import Camera, CameraEntityFeature
@@ -67,21 +66,9 @@ _STREAM_STILL_WARN_AFTER = 3
 # stays well under it. Going lower ends a slow but working read early. A warm
 # read takes about 5s in total.
 _STREAM_STILL_STALL_TIMEOUT = 10.0
-# Bound on each frame read. ffmpeg and then ha-ffmpeg stop a read themselves
+# Bound on the frame read. ffmpeg and then ha-ffmpeg stop a read themselves
 # well before this, so it only guards against a call that never returns.
 _STREAM_STILL_TIMEOUT = 20.0
-# After a first read misses, wait this long, send PUT_STREAMING again, and
-# read once more. With two Nanit Home displays also on the camera (it streams
-# to two apps at once), reads 0.3s and 25s after a cold PUT got nothing, and a
-# new grab with a new PUT 60s later got a frame 5s after it. A refused PUT
-# starts no push, so reading the same URL again could not help. That cause is
-# likely but unconfirmed, since the PUT's status is not reported here, and a
-# late start or a display giving up its slot fits too. With one display off
-# and the camera just reconnected, one PUT after half an hour idle gave a
-# frame 5s later with no retry.
-_STREAM_STILL_COLD_START_DELAY = 10.0
-# Patched in tests to observe the cold start wait without slowing the suite.
-_sleep = asyncio.sleep
 # hass.data key for the shared, once-per-run check for the ffmpeg binary.
 _FFMPEG_CHECK = f"{DOMAIN}_stream_still_ffmpeg_check"
 
@@ -735,10 +722,10 @@ class NanitCameraEntity(NanitEntity, Camera):
     async def _async_run_stream_still(self) -> None:
         """Run one grab, and start the retry delay when it ends.
 
-        A grab can take a minute or more (two reads, the wait between, and
-        a PUT_STREAMING before each read, which retries on a slow camera), so
-        the delay counts from its end rather than its start. The in-flight
-        task check keeps grabs from overlapping meanwhile.
+        A grab can take most of a minute (PUT_STREAMING retries on a slow
+        camera, then the read), so the delay counts from its end rather than
+        its start. The in-flight task check keeps grabs from overlapping
+        meanwhile.
         """
         try:
             await self._async_grab_stream_still()
@@ -761,8 +748,7 @@ class NanitCameraEntity(NanitEntity, Camera):
 
         WebRTC (go2rtc) and HomeKit viewers do not use that stream, so for
         them the ffmpeg path runs and re-sends PUT_STREAMING, usually for the
-        URL already cached. A read that misses sends it once more before its
-        retry.
+        URL already cached.
 
         Cancelling this task cannot stop an ffmpeg read already under way,
         because Home Assistant shields that call. ffmpeg's stall timeout and
@@ -785,68 +771,7 @@ class NanitCameraEntity(NanitEntity, Camera):
         if not self.is_on:
             # Put to sleep while the source was being prepared.
             return
-        await self._async_read_ffmpeg_still(source)
-
-    async def _async_read_ffmpeg_still(self, source: str) -> None:
-        """Read a frame with ffmpeg, trying once more after a cold start miss.
-
-        A read that returns no frame or raises is tried again after
-        ``_STREAM_STILL_COLD_START_DELAY``, after a second PUT_STREAMING. If
-        that PUT fails or there is no source, the grab ends as one failure. A
-        read that stalls ends as no frame through ffmpeg's own stall timeout,
-        and is tried again like any other miss. Only a call that
-        outlives ``_STREAM_STILL_TIMEOUT`` is not tried again, since it is
-        stuck rather than early. Two misses count as one failure.
-        """
-        first = await self._async_read_frame(lambda: self._ffmpeg_read(source), "ffmpeg")
-        if isinstance(first, bytes):
-            self._store_stream_still(first, "ffmpeg")
-            return
-        if first.timed_out:
-            self._stream_still_failed(first.reason)
-            return
-        _LOGGER.debug(
-            "No still from camera %s on the first try (%s), trying once more",
-            self._camera.uid,
-            first.reason,
-        )
-        await _sleep(_STREAM_STILL_COLD_START_DELAY)
-        if not self.is_on:
-            # Put to sleep during the wait. Not a failure.
-            return
-        retry_source = await self._async_put_for_still_retry()
-        if retry_source is None:
-            self._stream_still_failed("no stream source for the second read")
-            return
-        if not self.is_on:
-            # Put to sleep while the source was being prepared.
-            return
-        second = await self._async_read_frame(lambda: self._ffmpeg_read(retry_source), "ffmpeg")
-        if isinstance(second, bytes):
-            self._store_stream_still(second, "ffmpeg")
-            return
-        self._stream_still_failed(second.reason)
-
-    async def _async_put_for_still_retry(self) -> str | None:
-        """Send PUT_STREAMING again before the second read, and return the source.
-
-        The URL cached now is used, not the one the first read had, in case a
-        viewer's stream replaced it during the wait. While it is still valid it
-        is re-sent best-effort, like a keepalive, so a late ACK cannot force a
-        control reconnect, which would stop the push on that URL. A send that
-        fails ends the grab as one failure, and the next grab comes after the
-        retry delay. Otherwise ``stream_source()`` builds a fresh URL.
-        """
-        source = self._cached_stream_source
-        if (
-            source is not None
-            and self._stream_source_started_at != 0.0
-            and time.monotonic() - self._stream_source_started_at < _STREAM_SOURCE_MAX_AGE
-        ):
-            if await self._async_start_streaming_safe(source, reconnect_on_failure=False):
-                return source
-            return None
-        return await self.stream_source()
+        await self._async_read_still(lambda: self._ffmpeg_read(source), "ffmpeg")
 
     def _ffmpeg_read(self, source: str) -> Awaitable[bytes | None]:
         """Start a one-frame ffmpeg read of ``source`` that ends on its own if it stalls.
@@ -860,31 +785,20 @@ class NanitCameraEntity(NanitEntity, Camera):
     async def _async_read_still(
         self, read: Callable[[], Awaitable[bytes | None]], via: str
     ) -> None:
-        """Read one frame, store it on success, and count a failure otherwise."""
-        result = await self._async_read_frame(read, via)
-        if isinstance(result, bytes):
-            self._store_stream_still(result, via)
-        else:
-            self._stream_still_failed(result.reason)
-
-    async def _async_read_frame(
-        self, read: Callable[[], Awaitable[bytes | None]], via: str
-    ) -> bytes | _ReadMiss:
-        """Await one bounded frame read, returning the frame or why there is none."""
+        """Await one bounded frame read and store a frame in the snapshot cache."""
         try:
             async with asyncio.timeout(_STREAM_STILL_TIMEOUT):
                 image = await read()
         except TimeoutError:
-            return _ReadMiss(f"timed out reading a frame from {via}", timed_out=True)
+            self._stream_still_failed(f"timed out reading a frame from {via}")
+            return
         except Exception as err:  # noqa: BLE001
             # The type only: the message or traceback could carry the URL.
-            return _ReadMiss(f"{type(err).__name__} reading a frame from {via}")
+            self._stream_still_failed(f"{type(err).__name__} reading a frame from {via}")
+            return
         if not image:
-            return _ReadMiss(f"no frame from {via}")
-        return image
-
-    def _store_stream_still(self, image: bytes, via: str) -> None:
-        """Put a frame in the snapshot cache and end any failure streak."""
+            self._stream_still_failed(f"no frame from {via}")
+            return
         self._cached_snapshot = image
         self._cached_snapshot_at = time.monotonic()
         self._still_info.last_taken = dt_util.utcnow()
@@ -922,14 +836,6 @@ class NanitCameraEntity(NanitEntity, Camera):
         except Exception:
             _LOGGER.debug("Failed to stop streaming before sleep", exc_info=True)
         await self._camera.async_set_settings(sleep_mode=True)
-
-
-@dataclass(frozen=True)
-class _ReadMiss:
-    """Why a frame read returned no frame."""
-
-    reason: str
-    timed_out: bool = False
 
 
 async def _async_check_ffmpeg(hass: HomeAssistant) -> bool:

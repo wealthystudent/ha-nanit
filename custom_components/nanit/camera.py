@@ -51,8 +51,8 @@ _STREAM_STILL_MAX_AGE = 10 * 60
 # failing stream is not retried on every image request. The wait doubles with
 # each failure in a row, up to _STREAM_STILL_RETRY_CAP, and resets on success.
 _STREAM_STILL_RETRY_DELAY = 60.0
-# Every failed attempt still sends PUT_STREAMING, and the camera then pushes
-# for ~20 minutes. A cap well past that lets a camera that never yields a
+# Every failed ffmpeg attempt still sends PUT_STREAMING, and the camera then
+# pushes for ~20 minutes. A cap well past that lets a camera that never yields a
 # still stop streaming for most of the time.
 _STREAM_STILL_RETRY_CAP = 60 * 60
 _STREAM_STILL_MAX_DOUBLINGS = 6

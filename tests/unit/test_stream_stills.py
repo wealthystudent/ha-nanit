@@ -702,6 +702,32 @@ async def test_power_change_cancels_a_running_grab(hass: HomeAssistant) -> None:
     grab.assert_not_awaited()
 
 
+async def test_a_grab_cancelled_after_its_put_still_starts_the_retry_delay(
+    hass: HomeAssistant,
+) -> None:
+    """The PUT already went out, so a cancelled grab must not let the next one start at once."""
+    entity, camera, _ = _entity(hass)
+    reading = asyncio.Event()
+
+    async def read_forever(_hass: HomeAssistant, source: str) -> bytes:
+        reading.set()
+        await asyncio.Event().wait()
+        return NEW_IMAGE
+
+    with patch(GRAB, new=AsyncMock(side_effect=read_forever)):
+        await entity.async_camera_image()
+        await asyncio.wait_for(reading.wait(), 5)
+        task = entity._stream_still_task
+        assert task is not None
+        entity._cancel_stream_still()
+        await _settle(hass, entity)
+
+    assert task.cancelled()
+    camera.async_start_streaming.assert_awaited_once()
+    assert entity._stream_still_finished_at is not None
+    assert entity._stream_still_failures == 0
+
+
 async def test_camera_asleep_after_the_source_skips_the_frame_read(hass: HomeAssistant) -> None:
     """Asleep by the time the source is ready (no update seen yet): no ffmpeg."""
     entity, camera, _ = _entity(hass)
@@ -860,6 +886,9 @@ async def test_watched_stream_failure_counts_as_a_failure(hass: HomeAssistant) -
     assert entity._stream_still_failures == 1
     assert entity._cached_snapshot == OLD_IMAGE
     camera.async_start_streaming.assert_not_awaited()
+    # A failed still leaves the viewer's stream alone.
+    assert entity.stream is stream
+    stream.stop.assert_not_called()
 
 
 async def test_persistent_failure_backs_off_to_an_hour(hass: HomeAssistant) -> None:

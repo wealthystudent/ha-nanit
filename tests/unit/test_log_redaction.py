@@ -100,7 +100,8 @@ def test_filter_redacts_an_ffmpeg_command_line(
     hass: HomeAssistant, token_filter: None, caplog: pytest.LogCaptureFixture
 ) -> None:
     caplog.set_level(logging.DEBUG, logger="haffmpeg.core")
-    argv = ["ffmpeg", "-i", URL, "-an", "-frames:v", "1", "-c:v", "mjpeg", "-f", "image2pipe", "-"]
+    argv = ["ffmpeg", "-rw_timeout", "10000000", "-i", URL, "-an", "-frames:v", "1"]
+    argv += ["-c:v", "mjpeg", "-f", "image2pipe", "-"]
 
     logging.getLogger("haffmpeg.core").debug("Start FFmpeg with %s", str(argv))
 

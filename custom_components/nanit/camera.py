@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shlex
 import shutil
 import time
 from collections.abc import Awaitable, Callable
@@ -58,13 +59,20 @@ _STREAM_STILL_RETRY_CAP = 60 * 60
 _STREAM_STILL_MAX_DOUBLINGS = 6
 # Failures in a row before one warning is logged for the streak.
 _STREAM_STILL_WARN_AFTER = 3
-# Bound on each frame read. ha-ffmpeg stops a read itself after 15s (it kills
-# ffmpeg and returns no frame), so this only guards against a call that never
-# returns. With the one retry below, a grab's reads take at most 2 x 20s + 10s.
+# ffmpeg gives up on its own once the input sends nothing for this long, which
+# a stream that is not being served yet does. It has to stay under ha-ffmpeg's
+# 15s read timeout, whose kill path logs a "Task exception was never retrieved"
+# error with a traceback.
+_STREAM_STILL_STALL_TIMEOUT = 10.0
+# Bound on each frame read. ffmpeg and then ha-ffmpeg stop a read themselves
+# well before this, so it only guards against a call that never returns. With
+# the one retry below, a grab's reads take at most 2 x 20s + 10s.
 _STREAM_STILL_TIMEOUT = 20.0
-# Right after a fresh PUT_STREAMING, Nanit's cloud may not serve the camera's
-# push yet, and ffmpeg gives up after a few seconds with no frame. The ffmpeg
-# read is tried once more after this wait, without sending PUT_STREAMING again.
+# After a camera has been idle, the first PUT_STREAMING often gets no frame
+# served at all. On the real camera a read 25s later still got nothing, while
+# a read right after a second PUT_STREAMING got a frame in about 5s. So after
+# this wait the source is asked for again, which re-sends PUT_STREAMING
+# (usually for the cached URL), and the frame is read once more.
 _STREAM_STILL_COLD_START_DELAY = 10.0
 # Patched in tests to observe the cold start wait without slowing the suite.
 _sleep = asyncio.sleep
@@ -749,8 +757,8 @@ class NanitCameraEntity(NanitEntity, Camera):
         URL already cached.
 
         Cancelling this task cannot stop an ffmpeg read already under way,
-        because Home Assistant shields that call. ha-ffmpeg's own 15 second
-        read timeout bounds it.
+        because Home Assistant shields that call. ffmpeg's stall timeout and
+        ha-ffmpeg's own 15 second read timeout bound it.
         """
         if not self.is_on:
             # Put to sleep before the task ran. Not a failure.
@@ -775,13 +783,15 @@ class NanitCameraEntity(NanitEntity, Camera):
         """Read a frame with ffmpeg, trying once more after a cold start miss.
 
         A read that returns no frame or raises is tried again after
-        ``_STREAM_STILL_COLD_START_DELAY``, using the same source, so no
-        second PUT_STREAMING goes out. That includes ha-ffmpeg's own 15
-        second read timeout, which comes back as no frame. Only a call that
+        ``_STREAM_STILL_COLD_START_DELAY``. Before that second read the source
+        is asked for again, which sends a second PUT_STREAMING, since on the
+        real camera a second PUT is what got a frame served after a cold
+        start. A read that stalls ends as no frame through ffmpeg's own stall
+        timeout, and is tried again like any other miss. Only a call that
         outlives ``_STREAM_STILL_TIMEOUT`` is not tried again, since it is
         stuck rather than early. Two misses count as one failure.
         """
-        first = await self._async_read_frame(lambda: ffmpeg_get_image(self.hass, source), "ffmpeg")
+        first = await self._async_read_frame(lambda: self._ffmpeg_read(source), "ffmpeg")
         if isinstance(first, bytes):
             self._store_stream_still(first, "ffmpeg")
             return
@@ -797,11 +807,27 @@ class NanitCameraEntity(NanitEntity, Camera):
         if not self.is_on:
             # Put to sleep during the wait. Not a failure.
             return
-        second = await self._async_read_frame(lambda: ffmpeg_get_image(self.hass, source), "ffmpeg")
+        retry_source = await self.stream_source()
+        if retry_source is None:
+            self._stream_still_failed("no stream source")
+            return
+        if not self.is_on:
+            # Put to sleep while the source was being prepared.
+            return
+        second = await self._async_read_frame(lambda: self._ffmpeg_read(retry_source), "ffmpeg")
         if isinstance(second, bytes):
             self._store_stream_still(second, "ffmpeg")
             return
         self._stream_still_failed(second.reason)
+
+    def _ffmpeg_read(self, source: str) -> Awaitable[bytes | None]:
+        """Start a one-frame ffmpeg read of ``source`` that ends on its own if it stalls.
+
+        ha-ffmpeg takes input options in the same string as the input, so the
+        URL is quoted to stay one argument whatever it holds.
+        """
+        stall_us = int(_STREAM_STILL_STALL_TIMEOUT * 1_000_000)
+        return ffmpeg_get_image(self.hass, f"-rw_timeout {stall_us} -i {shlex.quote(source)}")
 
     async def _async_read_still(
         self, read: Callable[[], Awaitable[bytes | None]], via: str

@@ -1107,9 +1107,8 @@ async def test_no_source_for_the_retry_is_one_failure(hass: HomeAssistant) -> No
     assert entity._cached_snapshot == OLD_IMAGE
 
 
-async def test_failed_retry_put_is_one_failure_without_a_second_read(
-    hass: HomeAssistant,
-) -> None:
+async def test_retry_put_without_an_ack_still_reads(hass: HomeAssistant) -> None:
+    """A best-effort PUT that gets no ACK may still have reached the camera."""
     entity, camera, _ = _entity(hass)
     grab = AsyncMock(side_effect=[None, NEW_IMAGE])
 
@@ -1123,14 +1122,14 @@ async def test_failed_retry_put_is_one_failure_without_a_second_read(
         await entity.async_camera_image()
         await _settle(hass, entity)
 
-    assert grab.await_count == 1
+    assert [call.args[1] for call in grab.await_args_list] == [FFMPEG_INPUT, FFMPEG_INPUT]
     # One PUT for the first read, then every attempt of the best-effort retry PUT.
     assert camera.async_start_streaming.await_count == 1 + camera_module._STREAM_START_ATTEMPTS
-    assert entity._stream_still_failures == 1
-    assert entity._cached_snapshot == OLD_IMAGE
+    assert entity._stream_still_failures == 0
+    assert entity._cached_snapshot == NEW_IMAGE
 
 
-async def test_reads_log_the_time_since_the_first_put(
+async def test_reads_log_the_time_since_each_put(
     hass: HomeAssistant, caplog: pytest.LogCaptureFixture
 ) -> None:
     entity, _, _ = _entity(hass)
@@ -1140,9 +1139,12 @@ async def test_reads_log_the_time_since_the_first_put(
         await entity.async_camera_image()
         await _settle(hass, entity)
 
-    assert "ffmpeg read 1 for camera cam_1 ended" in caplog.text
-    assert "after the first PUT_STREAMING: no frame from ffmpeg" in caplog.text
-    assert "after the first PUT_STREAMING: frame" in caplog.text
+    lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("ffmpeg read")]
+    assert len(lines) == 2
+    assert lines[0].startswith("ffmpeg read 1 for camera cam_1 ended")
+    assert lines[0].endswith("after the first PUT_STREAMING: no frame from ffmpeg")
+    assert lines[1].startswith("ffmpeg read 2 for camera cam_1 ended")
+    assert lines[1].endswith("after the second: frame")
     assert URL not in caplog.text
 
 
@@ -1170,9 +1172,12 @@ async def test_asleep_while_the_retry_source_is_prepared_skips_the_read(
     assert entity._stream_still_failures == 0
 
 
-def test_ffmpeg_input_ends_a_stalled_read_before_ha_ffmpeg_does() -> None:
-    """ha-ffmpeg's 15s read timeout logs an error with a traceback when it fires."""
-    assert camera_module._STREAM_STILL_STALL_TIMEOUT < 15
+def test_stall_timeout_leaves_room_under_ha_ffmpegs_timeout() -> None:
+    """ha-ffmpeg's 15s read timeout logs an error with a traceback when it fires.
+
+    The stall timer only starts once the connect stops sending, so it needs room.
+    """
+    assert camera_module._STREAM_STILL_STALL_TIMEOUT <= 10
     assert camera_module._STREAM_STILL_STALL_TIMEOUT < camera_module._STREAM_STILL_TIMEOUT
 
 

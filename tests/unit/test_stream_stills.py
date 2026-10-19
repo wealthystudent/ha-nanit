@@ -1161,6 +1161,8 @@ async def test_turn_off_during_the_cold_start_wait(hass: HomeAssistant) -> None:
     camera.async_start_streaming.assert_awaited_once()
     assert entity._stream_still_failures == 0
     assert entity._cached_snapshot == OLD_IMAGE
+    # The retry delay starts from the cancelled grab too, since it already sent a PUT.
+    assert entity._stream_still_finished_at is not None
 
 
 async def test_removal_during_the_cold_start_wait(hass: HomeAssistant) -> None:

@@ -47,7 +47,7 @@ _SNAPSHOT_PREFETCH_AGE = 30.0
 # than this is replaced by one frame read from the live stream. Each grab asks
 # the camera to stream, and it keeps pushing for ~20 minutes afterwards.
 _STREAM_STILL_MAX_AGE = 10 * 60
-# Wait at least this long after a grab started before starting another, so a
+# Wait at least this long after a grab ended before starting another, so a
 # failing stream is not retried on every image request. The wait doubles with
 # each failure in a row, up to _STREAM_STILL_RETRY_CAP, and resets on success.
 _STREAM_STILL_RETRY_DELAY = 60.0

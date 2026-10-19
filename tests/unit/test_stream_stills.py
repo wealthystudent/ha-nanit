@@ -1027,6 +1027,9 @@ async def test_cold_start_miss_is_read_again_after_a_second_put(
     waits: list[float] = []
 
     async def record_sleep(delay: float) -> None:
+        # The first read and its PUT are done, the second PUT comes after the wait.
+        assert grab.await_count == 1
+        assert camera.async_start_streaming.await_count == 1
         waits.append(delay)
 
     with (
@@ -1040,12 +1043,13 @@ async def test_cold_start_miss_is_read_again_after_a_second_put(
     assert grab.await_count == 2
     assert all(call.args == (hass, FFMPEG_INPUT) for call in grab.await_args_list)
     assert waits == [4.5]
-    # The cached URL is reused, so the second PUT carries the same URL.
+    # The cached URL is reused, and the second PUT is best-effort like a keepalive,
+    # so a late ACK cannot force a control reconnect that stops the push.
     camera.async_get_stream_rtmps_url.assert_awaited_once()
-    assert camera.async_start_streaming.await_count == 2
-    assert all(
-        call.kwargs == {"rtmps_url": URL} for call in camera.async_start_streaming.await_args_list
-    )
+    assert [call.kwargs for call in camera.async_start_streaming.await_args_list] == [
+        {"rtmps_url": URL},
+        {"rtmps_url": URL, "reconnect_on_failure": False},
+    ]
     assert entity._cached_snapshot == NEW_IMAGE
     assert info.last_taken is not None
     assert entity._stream_still_failures == 0
@@ -1101,6 +1105,45 @@ async def test_no_source_for_the_retry_is_one_failure(hass: HomeAssistant) -> No
     assert grab.await_count == 1
     assert entity._stream_still_failures == 1
     assert entity._cached_snapshot == OLD_IMAGE
+
+
+async def test_failed_retry_put_is_one_failure_without_a_second_read(
+    hass: HomeAssistant,
+) -> None:
+    entity, camera, _ = _entity(hass)
+    grab = AsyncMock(side_effect=[None, NEW_IMAGE])
+
+    async def put(**kwargs: object) -> None:
+        if kwargs.get("reconnect_on_failure") is False:
+            raise RuntimeError("no ACK")
+
+    camera.async_start_streaming = AsyncMock(side_effect=put)
+
+    with patch(GRAB, new=grab), patch.object(camera_module, "_STREAM_RETRY_DELAY", 0):
+        await entity.async_camera_image()
+        await _settle(hass, entity)
+
+    assert grab.await_count == 1
+    # One PUT for the first read, then every attempt of the best-effort retry PUT.
+    assert camera.async_start_streaming.await_count == 1 + camera_module._STREAM_START_ATTEMPTS
+    assert entity._stream_still_failures == 1
+    assert entity._cached_snapshot == OLD_IMAGE
+
+
+async def test_reads_log_the_time_since_the_first_put(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    entity, _, _ = _entity(hass)
+    caplog.set_level(logging.DEBUG, logger="custom_components.nanit.camera")
+
+    with patch(GRAB, new=AsyncMock(side_effect=[None, NEW_IMAGE])):
+        await entity.async_camera_image()
+        await _settle(hass, entity)
+
+    assert "ffmpeg read 1 for camera cam_1 ended" in caplog.text
+    assert "after the first PUT_STREAMING: no frame from ffmpeg" in caplog.text
+    assert "after the first PUT_STREAMING: frame" in caplog.text
+    assert URL not in caplog.text
 
 
 async def test_asleep_while_the_retry_source_is_prepared_skips_the_read(

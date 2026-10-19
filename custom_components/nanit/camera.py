@@ -59,20 +59,24 @@ _STREAM_STILL_RETRY_CAP = 60 * 60
 _STREAM_STILL_MAX_DOUBLINGS = 6
 # Failures in a row before one warning is logged for the streak.
 _STREAM_STILL_WARN_AFTER = 3
-# ffmpeg gives up on its own once the input sends nothing for this long, which
-# a stream that is not being served yet does. It has to stay under ha-ffmpeg's
-# 15s read timeout, whose kill path logs a "Task exception was never retrieved"
-# error with a traceback.
+# ffmpeg gives up on its own once the input has sent nothing for this long,
+# which a stream that is not being served yet does. ha-ffmpeg's own 15s read
+# timeout ends a read too, but its kill path logs a "Task exception was never
+# retrieved" error with a traceback. The stall timer counts from the last byte
+# received, so a slow connect can still leave ha-ffmpeg's timeout to fire
+# first. Going lower ends a slow but working read early. A warm read takes
+# about 5s in total.
 _STREAM_STILL_STALL_TIMEOUT = 10.0
 # Bound on each frame read. ffmpeg and then ha-ffmpeg stop a read themselves
-# well before this, so it only guards against a call that never returns. With
-# the one retry below, a grab's reads take at most 2 x 20s + 10s.
+# well before this, so it only guards against a call that never returns.
 _STREAM_STILL_TIMEOUT = 20.0
-# After a camera has been idle, the first PUT_STREAMING often gets no frame
-# served at all. On the real camera a read 25s later still got nothing, while
-# a read right after a second PUT_STREAMING got a frame in about 5s. So after
-# this wait the source is asked for again, which re-sends PUT_STREAMING
-# (usually for the cached URL), and the frame is read once more.
+# A camera idle for half an hour gave a frame about 5s after one PUT_STREAMING
+# when it had a free stream slot. With two Nanit apps also on the camera,
+# whose limit is two, reads 0.3s and 25s after the PUT got nothing, and a read
+# right after a later PUT got a frame. A PUT the camera refuses starts no
+# push, so reading the same URL again cannot help, and the retry sends
+# PUT_STREAMING again (usually for the cached URL) after this wait before
+# reading once more.
 _STREAM_STILL_COLD_START_DELAY = 10.0
 # Patched in tests to observe the cold start wait without slowing the suite.
 _sleep = asyncio.sleep
@@ -729,8 +733,9 @@ class NanitCameraEntity(NanitEntity, Camera):
     async def _async_run_stream_still(self) -> None:
         """Run one grab, and start the retry delay when it ends.
 
-        A grab can take most of a minute (two reads and the wait between),
-        so the delay counts from its end rather than its start. The in-flight
+        A grab can take a minute or more (two reads, the wait between, and
+        a PUT_STREAMING before each read, which retries on a slow camera), so
+        the delay counts from its end rather than its start. The in-flight
         task check keeps grabs from overlapping meanwhile.
         """
         try:
@@ -754,7 +759,8 @@ class NanitCameraEntity(NanitEntity, Camera):
 
         WebRTC (go2rtc) and HomeKit viewers do not use that stream, so for
         them the ffmpeg path runs and re-sends PUT_STREAMING, usually for the
-        URL already cached.
+        URL already cached. A read that misses sends it once more before its
+        retry.
 
         Cancelling this task cannot stop an ffmpeg read already under way,
         because Home Assistant shields that call. ffmpeg's stall timeout and
@@ -777,21 +783,20 @@ class NanitCameraEntity(NanitEntity, Camera):
         if not self.is_on:
             # Put to sleep while the source was being prepared.
             return
-        await self._async_read_ffmpeg_still(source)
+        await self._async_read_ffmpeg_still(source, put_at=time.monotonic())
 
-    async def _async_read_ffmpeg_still(self, source: str) -> None:
+    async def _async_read_ffmpeg_still(self, source: str, *, put_at: float) -> None:
         """Read a frame with ffmpeg, trying once more after a cold start miss.
 
         A read that returns no frame or raises is tried again after
-        ``_STREAM_STILL_COLD_START_DELAY``. Before that second read the source
-        is asked for again, which sends a second PUT_STREAMING, since on the
-        real camera a second PUT is what got a frame served after a cold
-        start. A read that stalls ends as no frame through ffmpeg's own stall
-        timeout, and is tried again like any other miss. Only a call that
+        ``_STREAM_STILL_COLD_START_DELAY``, after a second PUT_STREAMING. A
+        read that stalls ends as no frame through ffmpeg's own stall timeout,
+        and is tried again like any other miss. Only a call that
         outlives ``_STREAM_STILL_TIMEOUT`` is not tried again, since it is
         stuck rather than early. Two misses count as one failure.
         """
         first = await self._async_read_frame(lambda: self._ffmpeg_read(source), "ffmpeg")
+        self._log_ffmpeg_read(1, first, put_at)
         if isinstance(first, bytes):
             self._store_stream_still(first, "ffmpeg")
             return
@@ -807,18 +812,48 @@ class NanitCameraEntity(NanitEntity, Camera):
         if not self.is_on:
             # Put to sleep during the wait. Not a failure.
             return
-        retry_source = await self.stream_source()
+        retry_source = await self._async_put_for_still_retry()
         if retry_source is None:
-            self._stream_still_failed("no stream source")
+            self._stream_still_failed("no stream source for the second read")
             return
         if not self.is_on:
             # Put to sleep while the source was being prepared.
             return
         second = await self._async_read_frame(lambda: self._ffmpeg_read(retry_source), "ffmpeg")
+        self._log_ffmpeg_read(2, second, put_at)
         if isinstance(second, bytes):
             self._store_stream_still(second, "ffmpeg")
             return
         self._stream_still_failed(second.reason)
+
+    async def _async_put_for_still_retry(self) -> str | None:
+        """Send PUT_STREAMING again before the second read, and return the source.
+
+        While the cached URL is still valid it is re-sent best-effort, like a
+        keepalive, so a late ACK cannot force a control reconnect, which would
+        stop the push this grab just started and anyone else's. Otherwise
+        ``stream_source()`` builds a fresh one.
+        """
+        source = self._cached_stream_source
+        if (
+            source is not None
+            and self._stream_source_started_at != 0.0
+            and time.monotonic() - self._stream_source_started_at < _STREAM_SOURCE_MAX_AGE
+        ):
+            if await self._async_start_streaming_safe(source, reconnect_on_failure=False):
+                return source
+            return None
+        return await self.stream_source()
+
+    def _log_ffmpeg_read(self, attempt: int, result: bytes | _ReadMiss, put_at: float) -> None:
+        """Log how long after the first PUT_STREAMING a read ended, and how."""
+        _LOGGER.debug(
+            "ffmpeg read %d for camera %s ended %.1fs after the first PUT_STREAMING: %s",
+            attempt,
+            self._camera.uid,
+            time.monotonic() - put_at,
+            "frame" if isinstance(result, bytes) else result.reason,
+        )
 
     def _ffmpeg_read(self, source: str) -> Awaitable[bytes | None]:
         """Start a one-frame ffmpeg read of ``source`` that ends on its own if it stalls.

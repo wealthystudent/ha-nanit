@@ -6,7 +6,8 @@ import asyncio
 import logging
 import shutil
 import time
-from collections.abc import Coroutine
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any
 
 from homeassistant.components.camera import Camera, CameraEntityFeature
@@ -57,9 +58,14 @@ _STREAM_STILL_RETRY_CAP = 60 * 60
 _STREAM_STILL_MAX_DOUBLINGS = 6
 # Failures in a row before one warning is logged for the streak.
 _STREAM_STILL_WARN_AFTER = 3
-# Bound on the frame read. ffmpeg's own read timeout (15s) kills the process
-# first, so this only guards against the call never returning.
+# Bound on each frame read. ffmpeg's own read timeout (15s) kills the process
+# first, so this only guards against the call never returning. With the one
+# retry below, a grab's reads take at most 2 x 20s + 5s.
 _STREAM_STILL_TIMEOUT = 20.0
+# Right after a fresh PUT_STREAMING, Nanit's cloud may not serve the camera's
+# push yet, and ffmpeg gives up at once with no frame. The ffmpeg read is tried
+# once more after this wait, without sending PUT_STREAMING again.
+_STREAM_STILL_COLD_START_DELAY = 5.0
 # hass.data key for the shared, once-per-run check for the ffmpeg binary.
 _FFMPEG_CHECK = f"{DOMAIN}_stream_still_ffmpeg_check"
 
@@ -738,7 +744,7 @@ class NanitCameraEntity(NanitEntity, Camera):
             return
         stream = self.stream
         if stream is not None and stream.outputs():
-            await self._async_read_still(stream.async_get_image(), "the running stream")
+            await self._async_read_still(stream.async_get_image, "the running stream")
             return
 
         if not await self._async_ffmpeg_found():
@@ -750,23 +756,67 @@ class NanitCameraEntity(NanitEntity, Camera):
         if not self.is_on:
             # Put to sleep while the source was being prepared.
             return
-        await self._async_read_still(ffmpeg_get_image(self.hass, source), "ffmpeg")
+        await self._async_read_ffmpeg_still(source)
 
-    async def _async_read_still(self, read: Coroutine[Any, Any, bytes | None], via: str) -> None:
-        """Await one frame read and store a frame in the snapshot cache."""
+    async def _async_read_ffmpeg_still(self, source: str) -> None:
+        """Read a frame with ffmpeg, trying once more after a cold start miss.
+
+        A read that returns no frame or raises is tried again after
+        ``_STREAM_STILL_COLD_START_DELAY``, using the same source, so no
+        second PUT_STREAMING goes out. A timeout is not retried, because
+        ffmpeg already waited its full 15 seconds. Two misses count as one
+        failure.
+        """
+        first = await self._async_read_frame(lambda: ffmpeg_get_image(self.hass, source), "ffmpeg")
+        if isinstance(first, bytes):
+            self._store_stream_still(first, "ffmpeg")
+            return
+        if first.timed_out:
+            self._stream_still_failed(first.reason)
+            return
+        _LOGGER.debug(
+            "No still from camera %s on the first try (%s), trying once more",
+            self._camera.uid,
+            first.reason,
+        )
+        await asyncio.sleep(_STREAM_STILL_COLD_START_DELAY)
+        if not self.is_on:
+            # Put to sleep during the wait. Not a failure.
+            return
+        second = await self._async_read_frame(lambda: ffmpeg_get_image(self.hass, source), "ffmpeg")
+        if isinstance(second, bytes):
+            self._store_stream_still(second, "ffmpeg")
+            return
+        self._stream_still_failed(second.reason)
+
+    async def _async_read_still(
+        self, read: Callable[[], Awaitable[bytes | None]], via: str
+    ) -> None:
+        """Read one frame, store it on success, and count a failure otherwise."""
+        result = await self._async_read_frame(read, via)
+        if isinstance(result, bytes):
+            self._store_stream_still(result, via)
+        else:
+            self._stream_still_failed(result.reason)
+
+    async def _async_read_frame(
+        self, read: Callable[[], Awaitable[bytes | None]], via: str
+    ) -> bytes | _ReadMiss:
+        """Await one bounded frame read, returning the frame or why there is none."""
         try:
             async with asyncio.timeout(_STREAM_STILL_TIMEOUT):
-                image = await read
+                image = await read()
         except TimeoutError:
-            self._stream_still_failed(f"timed out reading a frame from {via}")
-            return
+            return _ReadMiss(f"timed out reading a frame from {via}", timed_out=True)
         except Exception as err:  # noqa: BLE001
             # The type only: the message or traceback could carry the URL.
-            self._stream_still_failed(f"{type(err).__name__} reading a frame from {via}")
-            return
+            return _ReadMiss(f"{type(err).__name__} reading a frame from {via}")
         if not image:
-            self._stream_still_failed(f"no frame from {via}")
-            return
+            return _ReadMiss(f"no frame from {via}")
+        return image
+
+    def _store_stream_still(self, image: bytes, via: str) -> None:
+        """Put a frame in the snapshot cache and end any failure streak."""
         self._cached_snapshot = image
         self._cached_snapshot_at = time.monotonic()
         self._still_info.last_taken = dt_util.utcnow()
@@ -804,6 +854,14 @@ class NanitCameraEntity(NanitEntity, Camera):
         except Exception:
             _LOGGER.debug("Failed to stop streaming before sleep", exc_info=True)
         await self._camera.async_set_settings(sleep_mode=True)
+
+
+@dataclass(frozen=True)
+class _ReadMiss:
+    """Why a frame read returned no frame."""
+
+    reason: str
+    timed_out: bool = False
 
 
 async def _async_check_ffmpeg(hass: HomeAssistant) -> bool:

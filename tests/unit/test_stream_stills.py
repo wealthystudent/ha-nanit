@@ -62,6 +62,13 @@ def ffmpeg_present() -> Iterator[MagicMock]:
         yield exists
 
 
+@pytest.fixture(autouse=True)
+def no_cold_start_wait() -> Iterator[None]:
+    """Skip the wait before the second ffmpeg read."""
+    with patch.object(camera_module, "_STREAM_STILL_COLD_START_DELAY", 0):
+        yield
+
+
 def _camera_mock() -> MagicMock:
     camera = MagicMock(uid="cam_1")
     camera.async_get_snapshot = AsyncMock(side_effect=RuntimeError("404"))
@@ -263,7 +270,7 @@ async def test_grab_success_updates_cache_and_diagnostics_info(hass: HomeAssista
 async def test_grab_failure_keeps_cache_and_allows_a_later_retry(
     hass: HomeAssistant, grab: AsyncMock
 ) -> None:
-    entity, _, info = _entity(hass)
+    entity, camera, info = _entity(hass)
     cached_at = entity._cached_snapshot_at
 
     with patch(GRAB, new=grab):
@@ -276,14 +283,18 @@ async def test_grab_failure_keeps_cache_and_allows_a_later_retry(
         # Not retried on every request...
         await entity.async_camera_image()
         await _settle(hass, entity)
-        assert grab.await_count == 1
+        # One grab: two ffmpeg reads (the cold start retry) and one PUT.
+        assert grab.await_count == 2
+        assert camera.async_start_streaming.await_count == 1
+        assert entity._stream_still_failures == 1
 
         # ...but once the retry delay has passed.
         assert entity._stream_still_attempt_at is not None
         entity._stream_still_attempt_at -= camera_module._STREAM_STILL_RETRY_DELAY
         await entity.async_camera_image()
         await _settle(hass, entity)
-        assert grab.await_count == 2
+        assert grab.await_count == 4
+        assert camera.async_start_streaming.await_count == 2
 
 
 async def test_grab_timeout_keeps_cache_and_allows_a_later_retry(hass: HomeAssistant) -> None:
@@ -737,7 +748,7 @@ def test_retry_delay_doubles_and_caps_at_an_hour(hass: HomeAssistant) -> None:
 
 
 async def test_failures_back_off_and_success_resets(hass: HomeAssistant) -> None:
-    entity, _, _ = _entity(hass)
+    entity, camera, _ = _entity(hass)
     grab = AsyncMock(return_value=None)
 
     with patch(GRAB, new=grab):
@@ -750,12 +761,12 @@ async def test_failures_back_off_and_success_resets(hass: HomeAssistant) -> None
         entity._stream_still_attempt_at -= 2 * 60
         await entity.async_camera_image()
         await _settle(hass, entity)
-        assert grab.await_count == 3
+        assert camera.async_start_streaming.await_count == 3
 
         entity._stream_still_attempt_at -= 2 * 60
         await entity.async_camera_image()
         await _settle(hass, entity)
-        assert grab.await_count == 4
+        assert camera.async_start_streaming.await_count == 4
 
         grab.return_value = NEW_IMAGE
         await _fail_once(hass, entity)
@@ -985,3 +996,109 @@ async def test_a_check_that_raises_is_retried_later(hass: HomeAssistant) -> None
 
     grab.assert_awaited_once()
     assert entity._cached_snapshot == NEW_IMAGE
+
+
+# ---------------------------------------------------------------------------
+# One more ffmpeg read after a cold start miss
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "first",
+    [None, b"", RuntimeError("Connection refused")],
+    ids=["none", "empty", "error"],
+)
+async def test_cold_start_miss_is_read_again_without_a_second_put(
+    hass: HomeAssistant, first: object
+) -> None:
+    entity, camera, info = _entity(hass)
+    grab = AsyncMock(side_effect=[first, NEW_IMAGE])
+
+    waits: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def record_sleep(delay: float, *args: Any) -> None:
+        waits.append(delay)
+        await real_sleep(0)
+
+    with (
+        patch(GRAB, new=grab),
+        patch.object(camera_module, "_STREAM_STILL_COLD_START_DELAY", 4.5),
+        patch.object(camera_module.asyncio, "sleep", new=record_sleep),
+    ):
+        await entity.async_camera_image()
+        await _settle(hass, entity)
+
+    assert grab.await_count == 2
+    assert all(call.args == (hass, URL) for call in grab.await_args_list)
+    assert waits.count(4.5) == 1
+    camera.async_get_stream_rtmps_url.assert_awaited_once()
+    camera.async_start_streaming.assert_awaited_once()
+    assert entity._cached_snapshot == NEW_IMAGE
+    assert info.last_taken is not None
+    assert entity._stream_still_failures == 0
+
+
+async def test_two_misses_count_as_one_failure(hass: HomeAssistant) -> None:
+    entity, camera, _ = _entity(hass)
+    grab = AsyncMock(side_effect=[None, RuntimeError("still nothing")])
+
+    with patch(GRAB, new=grab):
+        await entity.async_camera_image()
+        await _settle(hass, entity)
+
+    assert grab.await_count == 2
+    camera.async_start_streaming.assert_awaited_once()
+    assert entity._stream_still_failures == 1
+    assert entity._cached_snapshot == OLD_IMAGE
+
+
+async def test_a_timed_out_read_is_not_read_again(hass: HomeAssistant) -> None:
+    """ffmpeg already waited its full read timeout, so a second try would not help."""
+    entity, _, _ = _entity(hass)
+
+    async def hang(_hass: HomeAssistant, source: str) -> bytes:
+        await asyncio.sleep(3600)
+        return NEW_IMAGE
+
+    with (
+        patch(GRAB, new=AsyncMock(side_effect=hang)) as grab,
+        patch.object(camera_module, "_STREAM_STILL_TIMEOUT", 0.01),
+    ):
+        await entity.async_camera_image()
+        await _settle(hass, entity)
+
+    assert grab.await_count == 1
+    assert entity._stream_still_failures == 1
+
+
+async def test_asleep_before_the_second_read_skips_it(hass: HomeAssistant) -> None:
+    entity, camera, _ = _entity(hass)
+
+    async def miss_then_sleep(_hass: HomeAssistant, source: str) -> None:
+        entity.coordinator.data = _camera_state(sleep_mode=True)
+
+    with patch(GRAB, new=AsyncMock(side_effect=miss_then_sleep)) as grab:
+        await entity.async_camera_image()
+        await _settle(hass, entity)
+
+    assert grab.await_count == 1
+    assert entity._stream_still_failures == 0
+    camera.async_start_streaming.assert_awaited_once()
+
+
+async def test_running_stream_read_is_not_retried(hass: HomeAssistant) -> None:
+    entity, _, _ = _entity(hass)
+    stream = MagicMock()
+    stream.outputs.return_value = {"hls": MagicMock()}
+    stream.async_get_image = AsyncMock(side_effect=[None, NEW_IMAGE])
+    entity.stream = stream
+
+    with patch(GRAB, new=AsyncMock(return_value=NEW_IMAGE)) as grab:
+        await entity.async_camera_image()
+        await _settle(hass, entity)
+
+    stream.async_get_image.assert_awaited_once()
+    grab.assert_not_awaited()
+    assert entity._stream_still_failures == 1
+    assert entity._cached_snapshot == OLD_IMAGE

@@ -70,14 +70,15 @@ _STREAM_STILL_STALL_TIMEOUT = 10.0
 # Bound on each frame read. ffmpeg and then ha-ffmpeg stop a read themselves
 # well before this, so it only guards against a call that never returns.
 _STREAM_STILL_TIMEOUT = 20.0
-# Before the retry, PUT_STREAMING is sent again. With two Nanit Home displays
-# also on the camera (it streams to two apps at once), reads 0.3s and 25s
-# after a cold PUT got nothing, and a new grab with a new PUT 60s later got a
-# frame 5s after it. A refused PUT starts no push, so reading the same URL
-# again could not help. That cause is likely but unconfirmed, since the PUT's
-# status is not reported here, and a late start or a display giving up its
-# slot fits too. With one display off and the camera just reconnected, one PUT
-# after half an hour idle gave a frame 5s later with no retry.
+# After a first read misses, wait this long, send PUT_STREAMING again, and
+# read once more. With two Nanit Home displays also on the camera (it streams
+# to two apps at once), reads 0.3s and 25s after a cold PUT got nothing, and a
+# new grab with a new PUT 60s later got a frame 5s after it. A refused PUT
+# starts no push, so reading the same URL again could not help. That cause is
+# likely but unconfirmed, since the PUT's status is not reported here, and a
+# late start or a display giving up its slot fits too. With one display off
+# and the camera just reconnected, one PUT after half an hour idle gave a
+# frame 5s later with no retry.
 _STREAM_STILL_COLD_START_DELAY = 10.0
 # Patched in tests to observe the cold start wait without slowing the suite.
 _sleep = asyncio.sleep
@@ -790,7 +791,8 @@ class NanitCameraEntity(NanitEntity, Camera):
         """Read a frame with ffmpeg, trying once more after a cold start miss.
 
         A read that returns no frame or raises is tried again after
-        ``_STREAM_STILL_COLD_START_DELAY``, after a second PUT_STREAMING. A
+        ``_STREAM_STILL_COLD_START_DELAY``, after a second PUT_STREAMING. If
+        that PUT fails or there is no source, the grab ends as one failure. A
         read that stalls ends as no frame through ffmpeg's own stall timeout,
         and is tried again like any other miss. Only a call that
         outlives ``_STREAM_STILL_TIMEOUT`` is not tried again, since it is
@@ -814,7 +816,7 @@ class NanitCameraEntity(NanitEntity, Camera):
             return
         retry_source = await self._async_put_for_still_retry()
         if retry_source is None:
-            self._stream_still_failed("no PUT_STREAMING for the second read")
+            self._stream_still_failed("no stream source for the second read")
             return
         if not self.is_on:
             # Put to sleep while the source was being prepared.

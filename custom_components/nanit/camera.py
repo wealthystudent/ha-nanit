@@ -58,14 +58,16 @@ _STREAM_STILL_RETRY_CAP = 60 * 60
 _STREAM_STILL_MAX_DOUBLINGS = 6
 # Failures in a row before one warning is logged for the streak.
 _STREAM_STILL_WARN_AFTER = 3
-# Bound on each frame read. ffmpeg's own read timeout (15s) kills the process
-# first, so this only guards against the call never returning. With the one
-# retry below, a grab's reads take at most 2 x 20s + 5s.
+# Bound on each frame read. ha-ffmpeg stops a read itself after 15s (it kills
+# ffmpeg and returns no frame), so this only guards against a call that never
+# returns. With the one retry below, a grab's reads take at most 2 x 20s + 10s.
 _STREAM_STILL_TIMEOUT = 20.0
 # Right after a fresh PUT_STREAMING, Nanit's cloud may not serve the camera's
-# push yet, and ffmpeg gives up at once with no frame. The ffmpeg read is tried
-# once more after this wait, without sending PUT_STREAMING again.
-_STREAM_STILL_COLD_START_DELAY = 5.0
+# push yet, and ffmpeg gives up after a few seconds with no frame. The ffmpeg
+# read is tried once more after this wait, without sending PUT_STREAMING again.
+_STREAM_STILL_COLD_START_DELAY = 10.0
+# Patched in tests to observe the cold start wait without slowing the suite.
+_sleep = asyncio.sleep
 # hass.data key for the shared, once-per-run check for the ffmpeg binary.
 _FFMPEG_CHECK = f"{DOMAIN}_stream_still_ffmpeg_check"
 
@@ -140,7 +142,7 @@ class NanitCameraEntity(NanitEntity, Camera):
         self._stream_stills = stream_stills
         self._still_info = still_info if still_info is not None else StreamStillInfo()
         self._stream_still_task: asyncio.Task[None] | None = None
-        self._stream_still_attempt_at: float | None = None
+        self._stream_still_finished_at: float | None = None
         self._stream_still_failures = 0
 
     @property
@@ -643,8 +645,8 @@ class NanitCameraEntity(NanitEntity, Camera):
         """Start one background frame grab if the cached image is too old.
 
         Called only after the cloud snapshot failed. At most one grab runs
-        per camera, an attempt is not repeated within the retry delay, and a
-        camera that is asleep or unreachable is left alone.
+        per camera, the next one waits out the retry delay after the last one
+        ended, and a camera that is asleep or unreachable is left alone.
         """
         if not self._stream_stills:
             return
@@ -659,14 +661,13 @@ class NanitCameraEntity(NanitEntity, Camera):
         ):
             return
         if (
-            self._stream_still_attempt_at is not None
-            and now - self._stream_still_attempt_at < self._stream_still_retry_delay()
+            self._stream_still_finished_at is not None
+            and now - self._stream_still_finished_at < self._stream_still_retry_delay()
         ):
             return
-        self._stream_still_attempt_at = now
         # Not eager: the image request must never run any of the grab inline.
         self._stream_still_task = self.hass.async_create_background_task(
-            self._async_grab_stream_still(),
+            self._async_run_stream_still(),
             name=f"nanit_stream_still_{self._camera.uid}",
             eager_start=False,
         )
@@ -717,6 +718,18 @@ class NanitCameraEntity(NanitEntity, Camera):
                 _STREAM_STILL_RETRY_CAP / 60,
             )
 
+    async def _async_run_stream_still(self) -> None:
+        """Run one grab, and start the retry delay when it ends.
+
+        A grab can take most of a minute (two reads and the wait between),
+        so the delay counts from its end rather than its start. The in-flight
+        task check keeps grabs from overlapping meanwhile.
+        """
+        try:
+            await self._async_grab_stream_still()
+        finally:
+            self._stream_still_finished_at = time.monotonic()
+
     async def _async_grab_stream_still(self) -> None:
         """Read one frame from the live stream into the snapshot cache.
 
@@ -763,9 +776,10 @@ class NanitCameraEntity(NanitEntity, Camera):
 
         A read that returns no frame or raises is tried again after
         ``_STREAM_STILL_COLD_START_DELAY``, using the same source, so no
-        second PUT_STREAMING goes out. A timeout is not retried, because
-        ffmpeg already waited its full 15 seconds. Two misses count as one
-        failure.
+        second PUT_STREAMING goes out. That includes ha-ffmpeg's own 15
+        second read timeout, which comes back as no frame. Only a call that
+        outlives ``_STREAM_STILL_TIMEOUT`` is not tried again, since it is
+        stuck rather than early. Two misses count as one failure.
         """
         first = await self._async_read_frame(lambda: ffmpeg_get_image(self.hass, source), "ffmpeg")
         if isinstance(first, bytes):
@@ -779,7 +793,7 @@ class NanitCameraEntity(NanitEntity, Camera):
             self._camera.uid,
             first.reason,
         )
-        await asyncio.sleep(_STREAM_STILL_COLD_START_DELAY)
+        await _sleep(_STREAM_STILL_COLD_START_DELAY)
         if not self.is_on:
             # Put to sleep during the wait. Not a failure.
             return

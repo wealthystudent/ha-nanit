@@ -489,6 +489,7 @@ class LocalStreamEntry:
             "paused": self.paused,
             "paused_reason": self.paused_reason,
             "connection_attempts": self.server.connection_attempts,
+            "rejected_connections": self.server.rejected_connections,
             "protocol_failures": self.server.protocol_failures,
             "cameras": [cam.diagnostics() for cam in self.cameras.values()],
         }

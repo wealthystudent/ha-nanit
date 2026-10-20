@@ -51,6 +51,7 @@ class _FakeServer:
         self.rtmp_port = 1935
         self.tls = True
         self.connection_attempts = 0
+        self.rejected_connections = 0
         self.protocol_failures = 0
         self.attempts_by_peer: dict[str, int] = {}
         self.failures_by_peer: dict[str, int] = {}
@@ -1922,3 +1923,30 @@ async def test_options_form_defaults_off_with_an_external_go2rtc(
         assert key.default() is False
     finally:
         hass.data.pop("go2rtc", None)
+
+
+@pytest.mark.parametrize(
+    ("url", "external"),
+    [
+        ("http://localhost:1984/", False),
+        ("http://127.0.0.1:1984/", False),
+        ("http://[::1]:1984/", False),
+        ("http://go2rtc:1984/", True),
+        ("http://192.168.1.20:1984/", True),
+        ("not a url", False),
+    ],
+)
+async def test_go2rtc_on_the_same_host_is_not_external(
+    hass: HomeAssistant, managed_go2rtc: None, url: str, external: bool
+) -> None:
+    hass.data["go2rtc"] = SimpleNamespace(url=url)
+    try:
+        assert const_module.uses_external_go2rtc(hass) is external
+    finally:
+        hass.data.pop("go2rtc", None)
+
+
+def test_diagnostics_count_rejected_connections(hass: HomeAssistant) -> None:
+    owner = _local_entry(hass, _entry(hass))
+    owner.server.rejected_connections = 3
+    assert owner.diagnostics()["rejected_connections"] == 3

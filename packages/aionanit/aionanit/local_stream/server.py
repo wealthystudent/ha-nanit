@@ -193,7 +193,18 @@ class _Acceptor(asyncio.Protocol):
         if not peer_is_local(peer):
             # Not counted as an attempt, so it can't disguise a camera's miss.
             server.rejected_connections += 1
-            _LOGGER.debug("Dropped a connection from %s, which is not a local address", peer)
+            server._count(server.rejected_by_peer, peer)
+            # Once per address: a camera whose address is rewritten on the way
+            # (CGNAT, a VPN) would otherwise look like one that never connected.
+            level = (
+                logging.WARNING if server.rejected_by_peer.get(peer or "") == 1 else logging.DEBUG
+            )
+            _LOGGER.log(
+                level,
+                "Dropped a connection from %s, which is not a private, link-local or "
+                "loopback address",
+                peer,
+            )
             cast("asyncio.Transport", transport).abort()
             return
         server.connection_attempts += 1
@@ -259,6 +270,7 @@ class LocalStreamServer:
         # from a scanner's or another camera's. Bounded.
         self.attempts_by_peer: dict[str, int] = {}
         self.failures_by_peer: dict[str, int] = {}
+        self.rejected_by_peer: dict[str, int] = {}
 
     @property
     def tls(self) -> bool:

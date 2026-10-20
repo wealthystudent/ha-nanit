@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import datetime
+import logging
 import random
 import socket
 import ssl
@@ -1373,8 +1374,11 @@ def test_peer_is_local(peer: str | None, allowed: bool) -> None:
     assert server_module.peer_is_local(peer) is allowed
 
 
-def test_a_non_local_peer_is_dropped_before_anything_runs() -> None:
+def test_a_non_local_peer_is_dropped_before_anything_runs(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     server = LocalStreamServer(port=0)
+    caplog.set_level(logging.DEBUG, logger="aionanit.local_stream.server")
 
     class _Transport:
         aborted = False
@@ -1396,6 +1400,11 @@ def test_a_non_local_peer_is_dropped_before_anything_runs() -> None:
 
     assert transport.aborted
     assert server.rejected_connections == 1
+    # Warned once per address, so a rewritten camera address is visible.
+    server_module._Acceptor(server).connection_made(_Transport())  # type: ignore[arg-type]
+    assert server.rejected_connections == 2
+    levels = [r.levelno for r in caplog.records if "Dropped a connection" in r.getMessage()]
+    assert levels == [logging.WARNING, logging.DEBUG]
     # Not an attempt, so it can't disguise a camera's miss.
     assert server.connection_attempts == 0
     assert server.attempts_by_peer == {}

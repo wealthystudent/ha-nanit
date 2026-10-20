@@ -929,7 +929,8 @@ class NanitCameraEntity(NanitEntity, Camera):
         try:
             url, _host = await local.async_publish_url()
         except Exception as err:  # noqa: BLE001
-            # Same as the first start: nothing to advertise this time.
+            # Nothing to advertise this time. The camera is still pushing, so
+            # unlike the first start this is not a miss, and the next tick retries.
             _LOGGER.debug("Nanit local keepalive has no address to advertise: %s", err)
             return False
         return await self._async_start_streaming_safe(url, reconnect_on_failure=False)

@@ -1,6 +1,8 @@
 """Constants for the Nanit integration."""
 
+import ipaddress
 import logging
+from urllib.parse import urlsplit
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
@@ -85,18 +87,29 @@ def _ha_managed_go2rtc_url() -> str | None:
 
 
 def uses_external_go2rtc(hass: HomeAssistant) -> bool:
-    """Return True if Home Assistant's go2rtc points at a server of its own.
+    """Return True if Home Assistant's go2rtc points at a server on another host.
 
     That server can't reach the loopback FLV the receiver serves, so local
-    streaming would only move its WebRTC viewers to HLS. This reads go2rtc's
-    runtime data, a Home Assistant internal, so anything unexpected counts
-    as the built-in server.
+    streaming would only move its WebRTC viewers to HLS. A server on HA's own
+    host (localhost) can. This reads go2rtc's runtime data, a Home Assistant
+    internal, so anything unexpected counts as the built-in server.
     """
     managed = _ha_managed_go2rtc_url()
     if managed is None:
         return False
     url = getattr(hass.data.get("go2rtc"), "url", None)
-    return isinstance(url, str) and url != managed
+    if not isinstance(url, str) or url == managed:
+        return False
+    try:
+        host = urlsplit(url).hostname
+    except ValueError:
+        return False
+    if host is None or host == "localhost":
+        return False
+    try:
+        return not ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return True
 
 
 def local_stream_default(hass: HomeAssistant) -> bool:

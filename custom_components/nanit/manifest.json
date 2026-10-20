@@ -2,6 +2,7 @@
   "domain": "nanit",
   "name": "Nanit",
   "after_dependencies": [
+    "go2rtc",
     "zeroconf"
   ],
   "codeowners": [

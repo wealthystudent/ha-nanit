@@ -35,7 +35,6 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 from homeassistant.components.network import async_get_source_ip
-from homeassistant.components.network.util import async_get_source_ip as async_get_routed_ip
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.event import async_call_later
@@ -51,7 +50,16 @@ from .const import (
     CONF_LOCAL_STREAM_PORT,
     DEFAULT_LOCAL_STREAM_PORT,
     DOMAIN,
+    local_stream_default,
 )
+
+# The routing table's own answer for one target is a Home Assistant internal.
+# If a release moves or renames it, only the advertised address loses it,
+# rather than the whole integration failing to import.
+try:
+    from homeassistant.components.network.util import async_get_source_ip as _ha_routed_ip
+except ImportError:  # pragma: no cover - depends on the Home Assistant version
+    _ha_routed_ip = None  # type: ignore[assignment]
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -90,9 +98,23 @@ LEARN_MORE_URL = "https://github.com/wealthystudent/ha-nanit#local-streaming"
 _TLS_DIR = "nanit_local_stream"
 
 
-def local_stream_enabled(entry: ConfigEntry) -> bool:
-    """Return whether local streaming is on for the entry (default on)."""
-    return entry.options.get(CONF_LOCAL_STREAM, True) is not False
+def async_get_routed_ip(target: str) -> str | None:
+    """Return the address the routing table uses to reach ``target``, if known."""
+    if _ha_routed_ip is None:
+        return None
+    try:
+        return _ha_routed_ip(target)
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.debug("Could not look up the route to %s: %s", target, err)
+        return None
+
+
+def local_stream_enabled(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Return whether local streaming is on for the entry."""
+    value = entry.options.get(CONF_LOCAL_STREAM)
+    if value is None:
+        return local_stream_default(hass)
+    return value is not False
 
 
 # ----------------------------------------------------------------------
@@ -564,7 +586,7 @@ async def async_setup_local_stream(
     A receiver that cannot bind raises a repair issue and leaves the entry
     on the cloud stream rather than failing setup.
     """
-    if not local_stream_enabled(entry):
+    if not local_stream_enabled(hass, entry):
         for issue in (ISSUE_PORT_IN_USE, ISSUE_UNREACHABLE, ISSUE_PROTOCOL):
             ir.async_delete_issue(hass, DOMAIN, f"{issue}_{entry.entry_id}")
         state = entry.data.get(ENTRY_DATA_KEY)

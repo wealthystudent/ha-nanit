@@ -4,6 +4,7 @@ import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
+from homeassistant.core import HomeAssistant
 
 DOMAIN = "nanit"
 LOGGER = logging.getLogger(__package__)
@@ -72,6 +73,35 @@ def is_read_only(entry: ConfigEntry) -> bool:
 def is_stream_stills(entry: ConfigEntry) -> bool:
     """Return whether camera stills may be taken from the live stream."""
     return entry.options.get(CONF_STREAM_STILLS, False) is True
+
+
+def _ha_managed_go2rtc_url() -> str | None:
+    """Return the URL Home Assistant gives its built-in go2rtc, if go2rtc imports."""
+    try:
+        from homeassistant.components.go2rtc.const import HA_MANAGED_URL
+    except ImportError:
+        return None
+    return HA_MANAGED_URL
+
+
+def uses_external_go2rtc(hass: HomeAssistant) -> bool:
+    """Return True if Home Assistant's go2rtc points at a server of its own.
+
+    That server can't reach the loopback FLV the receiver serves, so local
+    streaming would only move its WebRTC viewers to HLS. This reads go2rtc's
+    runtime data, a Home Assistant internal, so anything unexpected counts
+    as the built-in server.
+    """
+    managed = _ha_managed_go2rtc_url()
+    if managed is None:
+        return False
+    url = getattr(hass.data.get("go2rtc"), "url", None)
+    return isinstance(url, str) and url != managed
+
+
+def local_stream_default(hass: HomeAssistant) -> bool:
+    """Return the setting's default: on, unless go2rtc uses an external server."""
+    return not uses_external_go2rtc(hass)
 
 
 # Default sound list (used when API doesn't return available_sounds)

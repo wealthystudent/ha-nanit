@@ -34,6 +34,7 @@ from .const import (
     LOGGER,
     is_read_only,
     is_stream_stills,
+    local_stream_default,
 )
 from .sanitize import display_name
 
@@ -430,7 +431,8 @@ class NanitOptionsFlow(OptionsFlow):
             data_schema=vol.Schema(
                 {
                     vol.Required(
-                        CONF_LOCAL_STREAM, default=options.get(CONF_LOCAL_STREAM, True)
+                        CONF_LOCAL_STREAM,
+                        default=options.get(CONF_LOCAL_STREAM, local_stream_default(self.hass)),
                     ): cv.boolean,
                     vol.Required(
                         CONF_LOCAL_STREAM_PORT,

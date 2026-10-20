@@ -25,6 +25,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from aionanit.camera import STREAM_LIMIT_STATUS
 from aionanit.local_stream import StreamChannel
 from aionanit.models import ConnectionState
+from custom_components.nanit import const as const_module
 from custom_components.nanit import local_stream as ls
 from custom_components.nanit.camera import NanitCameraEntity
 from custom_components.nanit.const import (
@@ -1813,3 +1814,111 @@ async def test_idle_drop_stops_the_discarded_stream(hass: HomeAssistant) -> None
     entity._handle_local_cooldown_end()
     await hass.async_block_till_done()
     stream.stop.assert_awaited_once()
+
+
+async def test_keepalive_without_an_address_ends_quietly(hass: HomeAssistant) -> None:
+    """No source IP must not kill the keepalive task with an unretrieved exception."""
+    local = _local_entry(hass, _entry(hass)).camera("cam_1")
+    entity, camera = _entity(hass, local)
+    with patch.object(
+        type(local), "async_publish_url", AsyncMock(side_effect=RuntimeError("no source ip"))
+    ):
+        assert await entity._async_local_keepalive() is False
+    camera.async_start_streaming.assert_not_awaited()
+
+
+def test_routed_ip_falls_back_when_the_helper_is_gone_or_fails() -> None:
+    with patch.object(ls, "_ha_routed_ip", None):
+        assert ls.async_get_routed_ip("10.30.0.9") is None
+    with patch.object(ls, "_ha_routed_ip", MagicMock(side_effect=TypeError("signature"))):
+        assert ls.async_get_routed_ip("10.30.0.9") is None
+    with patch.object(ls, "_ha_routed_ip", MagicMock(return_value="10.30.0.2")):
+        assert ls.async_get_routed_ip("10.30.0.9") == "10.30.0.2"
+
+
+async def test_advertised_host_uses_the_public_helper_without_a_route(
+    hass: HomeAssistant,
+) -> None:
+    owner = _local_entry(hass, _entry(hass))
+    owner.camera("cam_1").channel.publisher_peer = "10.30.0.9"
+    with (
+        patch.object(ls, "_ha_routed_ip", None),
+        patch.object(ls, "async_get_source_ip", AsyncMock(return_value=HOST)),
+    ):
+        assert await owner.async_advertised_host() == HOST
+
+
+@pytest.fixture
+def managed_go2rtc() -> Any:
+    """Stand in for go2rtc's constant, which needs go2rtc's client library to import."""
+    with patch.object(
+        const_module, "_ha_managed_go2rtc_url", return_value="http://localhost:11984/"
+    ):
+        yield
+
+
+@pytest.mark.parametrize(
+    ("go2rtc_url", "option", "enabled"),
+    [
+        (None, None, True),
+        ("http://localhost:11984/", None, True),
+        ("http://192.168.1.20:1984/", None, False),
+        ("http://192.168.1.20:1984/", True, True),
+        (None, False, False),
+    ],
+    ids=["no-go2rtc", "built-in", "external", "external-turned-on", "turned-off"],
+)
+async def test_default_is_off_only_with_an_external_go2rtc(
+    hass: HomeAssistant,
+    managed_go2rtc: None,
+    go2rtc_url: str | None,
+    option: bool | None,
+    enabled: bool,
+) -> None:
+    options = {} if option is None else {CONF_LOCAL_STREAM: option}
+    entry = _entry(hass, options)
+    if go2rtc_url is not None:
+        hass.data["go2rtc"] = SimpleNamespace(url=go2rtc_url)
+    try:
+        assert ls.local_stream_enabled(hass, entry) is enabled
+    finally:
+        hass.data.pop("go2rtc", None)
+
+
+async def test_unexpected_go2rtc_data_counts_as_the_built_in_server(
+    hass: HomeAssistant, managed_go2rtc: None
+) -> None:
+    hass.data["go2rtc"] = object()
+    try:
+        assert ls.local_stream_enabled(hass, _entry(hass)) is True
+    finally:
+        hass.data.pop("go2rtc", None)
+
+
+async def test_go2rtc_that_does_not_import_counts_as_the_built_in_server(
+    hass: HomeAssistant,
+) -> None:
+    """Core without go2rtc's client library, or a release that moved its constants."""
+    hass.data["go2rtc"] = SimpleNamespace(url="http://192.168.1.20:1984/")
+    try:
+        with patch.object(const_module, "_ha_managed_go2rtc_url", return_value=None):
+            assert ls.local_stream_enabled(hass, _entry(hass)) is True
+    finally:
+        hass.data.pop("go2rtc", None)
+
+
+async def test_options_form_defaults_off_with_an_external_go2rtc(
+    hass: HomeAssistant, managed_go2rtc: None
+) -> None:
+    entry = _entry(hass)
+    hass.data["go2rtc"] = SimpleNamespace(url="http://192.168.1.20:1984/")
+    try:
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {"next_step_id": "local_stream"}
+        )
+        assert result["type"] is FlowResultType.FORM
+        key = next(k for k in result["data_schema"].schema if str(k) == CONF_LOCAL_STREAM)
+        assert key.default() is False
+    finally:
+        hass.data.pop("go2rtc", None)

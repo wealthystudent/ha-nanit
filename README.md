@@ -166,9 +166,9 @@ One thing worth knowing: the speaker accepts a single local client at a time. If
 
 ## Local streaming
 
-Local streaming is on by default. When someone opens the camera, Home Assistant asks the camera to send its video and audio straight to Home Assistant over your network, instead of through the Nanit cloud. Control still goes through Nanit's relay as before. The video is encrypted (RTMPS, with a certificate Home Assistant creates for itself), which keeps it from being read on your network but doesn't authenticate either end. Home Assistant re-serves it to its own players, so the live view, WebRTC and HLS all work the same.
+Local streaming is on by default, unless Home Assistant's go2rtc uses an external server (see below). When someone opens the camera, Home Assistant asks the camera to send its video and audio straight to Home Assistant over your network, instead of through the Nanit cloud. Control still goes through Nanit's relay as before. The video is encrypted (RTMPS, with a certificate Home Assistant creates for itself), which keeps it from being read on your network but doesn't authenticate either end. Home Assistant re-serves it to its own players, so the live view, WebRTC and HLS all work the same.
 
-The camera has to be able to reach Home Assistant on TCP port 1935. This is a port on your local network only, nothing is opened to the internet.
+The camera has to be able to reach Home Assistant on TCP port 1935. Home Assistant only accepts connections on it from local addresses (private, link-local or loopback), so even a host with a public IPv6 address doesn't take them from the internet.
 
 On Home Assistant OS there is nothing to do. On Container or Core with host networking, allow TCP 1935 if the host runs a firewall (firewalld, ufw), for example `sudo firewall-cmd --permanent --add-port=1935/tcp && sudo firewall-cmd --reload`. With Docker bridge networking, publish the port (`-p 1935:1935`) and set **Advertised address** to the host's LAN IP in the options. If the camera is on another network or VLAN, allow it to reach Home Assistant on TCP 1935 in your router. If Home Assistant has its own address on the camera's network, set **Advertised address** to that address instead.
 
@@ -180,7 +180,7 @@ Good to know:
 
 - The camera only streams to a few Nanit apps or devices at a time (two in testing), and Home Assistant counts as one. When other apps already use them all, Home Assistant falls back to the cloud stream and tries local again later, waiting longer each time the camera is still busy, up to six hours.
 - The camera keeps sending video for a while after the last viewer leaves, like the cloud stream.
-- If you use an external go2rtc server (`go2rtc: url:` in your configuration) rather than the one built into Home Assistant, it can't reach the local stream, so WebRTC falls back to HLS.
+- If you use an external go2rtc server (`go2rtc: url:` in your configuration) rather than the one built into Home Assistant, it can't reach the local stream, so WebRTC would fall back to HLS. Local streaming therefore starts off on those setups. You can still turn it on in the options.
 - A camera that falls back to the cloud while it is being watched stays on the cloud until it has been idle for about 20 minutes, because Home Assistant's own cloud stream holds one of the camera's slots until then. Enabling **Preload camera stream** keeps the camera streaming around the clock, so a preloaded camera that falls back stays on the cloud until preloading stops long enough for the camera to go idle.
 
 ## Troubleshooting

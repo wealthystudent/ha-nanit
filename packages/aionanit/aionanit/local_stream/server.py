@@ -17,6 +17,7 @@ import logging
 import secrets
 import ssl
 import time
+from typing import cast
 
 from aiohttp import web
 
@@ -38,6 +39,26 @@ MAX_TRACKED_PEERS = 256
 HEADER_WAIT = 10.0
 CLOSE_TIMEOUT = 2.0
 APP_NAME = "nanit"
+
+
+def peer_is_local(peer: str | None) -> bool:
+    """Return True for a loopback, link-local or private peer address.
+
+    Cameras push from the local network. A host with a global IPv6 address
+    behind a permissive router can still be reached from the internet, so
+    anything else is dropped before TLS or RTMP parsing runs. An IPv4-mapped
+    IPv6 address is judged by its IPv4 part.
+    """
+    if not peer:
+        return False
+    try:
+        addr = ipaddress.ip_address(peer.split("%", 1)[0])
+    except ValueError:
+        return False
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        addr = addr.ipv4_mapped
+    return addr.is_private or addr.is_link_local or addr.is_loopback
+
 
 _ids = itertools.count(1)
 
@@ -167,10 +188,16 @@ class _Acceptor(asyncio.Protocol):
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
         server = self._server
-        server.connection_attempts += 1
-        server.last_connection_at = time.monotonic()
         peername = transport.get_extra_info("peername")
         peer = str(peername[0]) if peername else None
+        if not peer_is_local(peer):
+            # Not counted as an attempt, so it can't disguise a camera's miss.
+            server.rejected_connections += 1
+            _LOGGER.debug("Dropped a connection from %s, which is not a local address", peer)
+            cast("asyncio.Transport", transport).abort()
+            return
+        server.connection_attempts += 1
+        server.last_connection_at = time.monotonic()
         server._count(server.attempts_by_peer, peer)
         # Evict rather than refuse: the newest connection is the likeliest
         # to be the camera retrying, the oldest to be a stale or idle one.
@@ -225,6 +252,7 @@ class LocalStreamServer:
         self.rtmp_port = 0
         self.http_port = 0
         self.connection_attempts = 0
+        self.rejected_connections = 0
         self.protocol_failures = 0
         self.last_connection_at: float | None = None
         # Per peer address, so a caller can tell its camera's connections

@@ -77,28 +77,17 @@ def is_stream_stills(entry: ConfigEntry) -> bool:
     return entry.options.get(CONF_STREAM_STILLS, False) is True
 
 
-def _ha_managed_go2rtc_url() -> str | None:
-    """Return the URL Home Assistant gives its built-in go2rtc, if go2rtc imports."""
-    try:
-        from homeassistant.components.go2rtc.const import HA_MANAGED_URL
-    except ImportError:
-        return None
-    return HA_MANAGED_URL
-
-
 def uses_external_go2rtc(hass: HomeAssistant) -> bool:
-    """Return True if Home Assistant's go2rtc points at a server on another host.
+    """Return True if Home Assistant's go2rtc URL is not on localhost.
 
-    That server can't reach the loopback FLV the receiver serves, so local
-    streaming would only move its WebRTC viewers to HLS. A server on HA's own
-    host (localhost) can. This reads go2rtc's runtime data, a Home Assistant
-    internal, so anything unexpected counts as the built-in server.
+    A server elsewhere can't reach the loopback FLV the receiver serves, so
+    local streaming would only move its WebRTC viewers to HLS. The built-in
+    server and one on HA's own host use a localhost URL and can. This reads
+    go2rtc's runtime data, a Home Assistant internal, so anything unexpected
+    counts as the built-in server.
     """
-    managed = _ha_managed_go2rtc_url()
-    if managed is None:
-        return False
     url = getattr(hass.data.get("go2rtc"), "url", None)
-    if not isinstance(url, str) or url == managed:
+    if not isinstance(url, str):
         return False
     try:
         host = urlsplit(url).hostname

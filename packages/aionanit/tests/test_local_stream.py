@@ -1409,3 +1409,27 @@ def test_a_non_local_peer_is_dropped_before_anything_runs(
     assert server.connection_attempts == 0
     assert server.attempts_by_peer == {}
     assert not server._pending
+
+
+def test_rejection_warnings_are_capped_per_run(caplog: pytest.LogCaptureFixture) -> None:
+    """A scanner rotating addresses must not flood the log."""
+    server = LocalStreamServer(port=0)
+    caplog.set_level(logging.DEBUG, logger="aionanit.local_stream.server")
+
+    class _Transport:
+        def __init__(self, peer: str) -> None:
+            self._peer = peer
+
+        def get_extra_info(self, name: str) -> object:
+            return (self._peer, 51515, 0, 0) if name == "peername" else None
+
+        def abort(self) -> None:
+            pass
+
+    for n in range(server_module.MAX_REJECTION_WARNINGS + 3):
+        server_module._Acceptor(server).connection_made(_Transport(f"2001:4860:4860::{n + 1:x}"))  # type: ignore[arg-type]
+
+    levels = [r.levelno for r in caplog.records if "Dropped a connection" in r.getMessage()]
+    assert levels.count(logging.WARNING) == server_module.MAX_REJECTION_WARNINGS
+    assert levels.count(logging.DEBUG) == 3
+    assert server.rejected_connections == server_module.MAX_REJECTION_WARNINGS + 3

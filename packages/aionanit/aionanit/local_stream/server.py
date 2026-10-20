@@ -36,6 +36,7 @@ MAX_PENDING_CONNECTIONS = 8
 MAX_PENDING_PER_PEER = 2
 WRITE_TIMEOUT = 10.0
 MAX_TRACKED_PEERS = 256
+MAX_REJECTION_WARNINGS = 5
 HEADER_WAIT = 10.0
 CLOSE_TIMEOUT = 2.0
 APP_NAME = "nanit"
@@ -193,12 +194,17 @@ class _Acceptor(asyncio.Protocol):
         if not peer_is_local(peer):
             # Not counted as an attempt, so it can't disguise a camera's miss.
             server.rejected_connections += 1
-            server._count(server.rejected_by_peer, peer)
-            # Once per address: a camera whose address is rewritten on the way
-            # (CGNAT, a VPN) would otherwise look like one that never connected.
-            level = (
-                logging.WARNING if server.rejected_by_peer.get(peer or "") == 1 else logging.DEBUG
-            )
+            # Once per address, and only a few per run: a camera whose address
+            # is rewritten on the way (CGNAT, a VPN) would otherwise look like
+            # one that never connected, while a scanner rotating addresses
+            # must not flood the log.
+            level = logging.DEBUG
+            if (
+                server._count(server.rejected_by_peer, peer) == 1
+                and server.rejection_warnings < MAX_REJECTION_WARNINGS
+            ):
+                server.rejection_warnings += 1
+                level = logging.WARNING
             _LOGGER.log(
                 level,
                 "Dropped a connection from %s, which is not a private, link-local or "
@@ -271,6 +277,7 @@ class LocalStreamServer:
         self.attempts_by_peer: dict[str, int] = {}
         self.failures_by_peer: dict[str, int] = {}
         self.rejected_by_peer: dict[str, int] = {}
+        self.rejection_warnings = 0
 
     @property
     def tls(self) -> bool:
@@ -388,12 +395,14 @@ class LocalStreamServer:
     # Internals
     # ------------------------------------------------------------------
 
-    def _count(self, table: dict[str, int], peer: str | None) -> None:
+    def _count(self, table: dict[str, int], peer: str | None) -> int:
+        """Count one more for ``peer`` and return its new count (0 for no peer)."""
         if peer is None:
-            return
+            return 0
         if peer not in table and len(table) >= MAX_TRACKED_PEERS:
             table.pop(next(iter(table)))
         table[peer] = table.get(peer, 0) + 1
+        return table[peer]
 
     def record_failure(self, peer: str | None) -> None:
         """Count a connection that failed TLS or RTMP, or never published."""

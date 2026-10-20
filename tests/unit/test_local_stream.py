@@ -1849,15 +1849,6 @@ async def test_advertised_host_uses_the_public_helper_without_a_route(
         assert await owner.async_advertised_host() == HOST
 
 
-@pytest.fixture
-def managed_go2rtc() -> Any:
-    """Stand in for go2rtc's constant, which needs go2rtc's client library to import."""
-    with patch.object(
-        const_module, "_ha_managed_go2rtc_url", return_value="http://localhost:11984/"
-    ):
-        yield
-
-
 @pytest.mark.parametrize(
     ("go2rtc_url", "option", "enabled"),
     [
@@ -1871,7 +1862,6 @@ def managed_go2rtc() -> Any:
 )
 async def test_default_is_off_only_with_an_external_go2rtc(
     hass: HomeAssistant,
-    managed_go2rtc: None,
     go2rtc_url: str | None,
     option: bool | None,
     enabled: bool,
@@ -1886,9 +1876,7 @@ async def test_default_is_off_only_with_an_external_go2rtc(
         hass.data.pop("go2rtc", None)
 
 
-async def test_unexpected_go2rtc_data_counts_as_the_built_in_server(
-    hass: HomeAssistant, managed_go2rtc: None
-) -> None:
+async def test_unexpected_go2rtc_data_counts_as_the_built_in_server(hass: HomeAssistant) -> None:
     hass.data["go2rtc"] = object()
     try:
         assert ls.local_stream_enabled(hass, _entry(hass)) is True
@@ -1896,21 +1884,7 @@ async def test_unexpected_go2rtc_data_counts_as_the_built_in_server(
         hass.data.pop("go2rtc", None)
 
 
-async def test_go2rtc_that_does_not_import_counts_as_the_built_in_server(
-    hass: HomeAssistant,
-) -> None:
-    """Core without go2rtc's client library, or a release that moved its constants."""
-    hass.data["go2rtc"] = SimpleNamespace(url="http://192.168.1.20:1984/")
-    try:
-        with patch.object(const_module, "_ha_managed_go2rtc_url", return_value=None):
-            assert ls.local_stream_enabled(hass, _entry(hass)) is True
-    finally:
-        hass.data.pop("go2rtc", None)
-
-
-async def test_options_form_defaults_off_with_an_external_go2rtc(
-    hass: HomeAssistant, managed_go2rtc: None
-) -> None:
+async def test_options_form_defaults_off_with_an_external_go2rtc(hass: HomeAssistant) -> None:
     entry = _entry(hass)
     hass.data["go2rtc"] = SimpleNamespace(url="http://192.168.1.20:1984/")
     try:
@@ -1934,10 +1908,12 @@ async def test_options_form_defaults_off_with_an_external_go2rtc(
         ("http://go2rtc:1984/", True),
         ("http://192.168.1.20:1984/", True),
         ("not a url", False),
+        ("http://[::1", False),
+        ("http://LOCALHOST:1984/", False),
     ],
 )
 async def test_go2rtc_on_the_same_host_is_not_external(
-    hass: HomeAssistant, managed_go2rtc: None, url: str, external: bool
+    hass: HomeAssistant, url: str, external: bool
 ) -> None:
     hass.data["go2rtc"] = SimpleNamespace(url=url)
     try:

@@ -70,6 +70,21 @@ def auto_enable_custom_integrations(enable_custom_integrations):
 
 
 @pytest.fixture(autouse=True)
+def no_ffmpeg_binary():
+    """Skip the ffmpeg integration's binary probe, which runs at setup.
+
+    nanit depends on ffmpeg (for stills from the live stream). Without this,
+    every entry setup starts an ffmpeg process, and logs an error wherever
+    the binary is missing.
+    """
+    with patch(
+        "homeassistant.components.ffmpeg.FFmpegManager.async_get_version",
+        AsyncMock(return_value=(None, None)),
+    ):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def block_nanit_network(monkeypatch):
     """Fail any attempt to resolve a Nanit host. Tests must use in-process fakes.
 

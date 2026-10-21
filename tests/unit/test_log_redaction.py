@@ -42,6 +42,7 @@ MASKED = "rtmps://media-secured.nanit.com/nanit/baby123.***"
 EXPECTED_LOGGERS = (
     "homeassistant.components.stream",
     "homeassistant.components.go2rtc.server",
+    "haffmpeg.core",
 )
 CAMERA = "camera.nursery"
 CAMERA_STREAM_LOGGER = f"homeassistant.components.stream.stream.{CAMERA}"
@@ -81,6 +82,31 @@ def test_go2rtc_still_relays_through_its_module_logger() -> None:
 
     assert "_LOGGER = logging.getLogger(__name__)" in source
     assert "_LOGGER.log(loglevel, msg)" in source
+
+
+def test_haffmpeg_still_logs_its_command_line_through_the_module_logger() -> None:
+    """Stream stills run ffmpeg through ha-ffmpeg, which logs the input URL.
+
+    If ha-ffmpeg moved that line to another logger, the filter would silently
+    stop covering it.
+    """
+    source = Path(importlib.import_module("haffmpeg.core").__file__ or "").read_text()
+
+    assert "_LOGGER = logging.getLogger(__name__)" in source
+    assert '_LOGGER.debug("Start FFmpeg with %s", str(self._argv))' in source
+
+
+def test_filter_redacts_an_ffmpeg_command_line(
+    hass: HomeAssistant, token_filter: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="haffmpeg.core")
+    argv = ["ffmpeg", "-rw_timeout", "10000000", "-i", URL, "-an", "-frames:v", "1"]
+    argv += ["-c:v", "mjpeg", "-f", "image2pipe", "-"]
+
+    logging.getLogger("haffmpeg.core").debug("Start FFmpeg with %s", str(argv))
+
+    assert TOKEN not in caplog.text
+    assert MASKED in caplog.text
 
 
 @pytest.fixture

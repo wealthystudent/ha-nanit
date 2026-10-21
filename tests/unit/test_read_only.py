@@ -458,7 +458,7 @@ def _options_entry(hass: HomeAssistant, options: dict[str, Any]) -> MockConfigEn
 async def _open(hass: HomeAssistant, entry: MockConfigEntry, step: str) -> Any:
     result = await hass.config_entries.options.async_init(entry.entry_id)
     assert result.get("type") is FlowResultType.MENU
-    assert set(result["menu_options"]) == {"device", "read_only"}
+    assert set(result["menu_options"]) == {"device", "read_only", "stream_stills"}
     return await hass.config_entries.options.async_configure(
         result["flow_id"], {"next_step_id": step}
     )

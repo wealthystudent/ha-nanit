@@ -13,7 +13,7 @@ import contextlib
 import logging
 import re
 from collections.abc import Callable, Coroutine
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -96,6 +96,13 @@ def _clean_uid(value: Any) -> str | None:
 
 
 @dataclass
+class StreamStillInfo:
+    """When the camera entity last took a still from the live stream (diagnostics)."""
+
+    last_taken: datetime | None = None
+
+
+@dataclass
 class CameraData:
     """Runtime data for a single camera within the account."""
 
@@ -104,6 +111,7 @@ class CameraData:
     push_coordinator: NanitPushCoordinator
     cloud_coordinator: NanitCloudCoordinator | None
     network_coordinator: NanitNetworkCoordinator | None = None
+    stream_still: StreamStillInfo = field(default_factory=StreamStillInfo)
 
 
 @dataclass

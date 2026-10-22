@@ -40,6 +40,20 @@ _STREAM_TOKEN = re.compile(
     r"(media-secured\.nanit\.com(?::\d+)?(?:/|%2F)nanit(?:/|%2F)[^/.\s%]+\.)[A-Za-z0-9_\-.]+",
     re.IGNORECASE,
 )
+# Local streaming (#175): the loopback FLV URL carries a per-run secret in
+# ``?k=``, and the push URL sent to the camera carries the stream key as its
+# last path segment. The cloud host is excluded so its rule above keeps the
+# baby uid readable.
+# The FLV secret may sit after other query parameters, and go2rtc's REST API
+# carries the whole URL percent-encoded in its src= parameter.
+_LOCAL_FLV_SECRET = re.compile(
+    r"((?:/|%2F)nanit(?:/|%2F)[^/?\s%]+\.flv(?:\?|%3F)(?:[^\s]{0,256}?(?:&|%26))??k(?:=|%3D))"
+    r"[A-Za-z0-9_\-]+",
+    re.IGNORECASE,
+)
+_LOCAL_PUSH_KEY = re.compile(
+    r"(rtmps?://(?!media-secured\.nanit\.com)[^/\s]+/nanit/)[A-Za-z0-9_\-]+", re.IGNORECASE
+)
 _REDACTED = "***"
 _FORMATTER = logging.Formatter()
 
@@ -48,7 +62,9 @@ _DATA_KEY = f"{DOMAIN}_stream_token_filter"
 
 def redact_stream_token(text: str) -> str:
     """Mask the access token in any Nanit stream URL in ``text``."""
-    return _STREAM_TOKEN.sub(rf"\g<1>{_REDACTED}", text)
+    text = _STREAM_TOKEN.sub(rf"\g<1>{_REDACTED}", text)
+    text = _LOCAL_FLV_SECRET.sub(rf"\g<1>{_REDACTED}", text)
+    return _LOCAL_PUSH_KEY.sub(rf"\g<1>{_REDACTED}", text)
 
 
 class StreamTokenFilter(logging.Filter):

@@ -12,6 +12,7 @@
     "ffmpeg",
     "http",
     "lovelace",
+    "network",
     "stream"
   ],
   "documentation": "https://github.com/wealthystudent/ha-nanit",

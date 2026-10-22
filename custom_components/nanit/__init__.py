@@ -37,6 +37,7 @@ from .coordinator import NanitPushCoordinator, NanitSoundLightCoordinator
 from .device_links import async_get_device
 from .frontend import async_register_card
 from .hub import CameraData, NanitHub, SpeakerData
+from .local_stream import LocalStreamEntry, async_setup_local_stream, async_unload_local_stream
 from .log_redaction import async_install_stream_token_filter, async_remove_stream_token_filter
 from .sanitize import display_name
 
@@ -52,6 +53,9 @@ class NanitData:
     # current options: turning read-only mode on or off changes the options
     # before the reload unloads the old set.
     platforms: list[Platform] = field(default_factory=lambda: list(PLATFORMS))
+    # The local stream receiver's state for this entry, None when local
+    # streaming is off or the receiver could not bind.
+    local_stream: LocalStreamEntry | None = None
 
 
 type NanitConfigEntry = ConfigEntry[NanitData]
@@ -100,11 +104,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: NanitConfigEntry) -> boo
 
     read_only = is_read_only(entry)
     platforms = READ_ONLY_PLATFORMS if read_only else PLATFORMS
+    local_stream = await async_setup_local_stream(hass, entry)
+    if local_stream is not None:
+        # Runs on unload and on a setup that fails from here on.
+        entry.async_on_unload(lambda: async_unload_local_stream(hass, local_stream))
     entry.runtime_data = NanitData(
         hub=hub,
         cameras=hub.camera_data,
         speakers=hub.speaker_data,
         platforms=list(platforms),
+        local_stream=local_stream,
     )
 
     await _async_migrate_sl_identities(hass, entry, hub)
@@ -149,6 +158,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: NanitConfigEntry) -> boo
         for coordinator in coordinators:
             with contextlib.suppress(Exception):
                 await asyncio.shield(coordinator.async_shutdown())
+        if local_stream is not None:
+            # The receiver would otherwise keep the camera's push socket
+            # open until Home Assistant cancels it.
+            with contextlib.suppress(Exception):
+                await asyncio.shield(async_unload_local_stream(hass, local_stream))
         await _async_shutdown_hub(hub)
 
     # async_listen rather than async_listen_once: the stop event only fires

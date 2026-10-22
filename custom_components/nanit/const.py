@@ -54,6 +54,12 @@ CONF_SPEAKER_IPS = "speaker_ips"
 # speaker_uid → name for machines no baby is paired with (entry data).
 CONF_UNPAIRED_SPEAKERS = "unpaired_speakers"
 CONF_READ_ONLY = "read_only"
+# Local streaming (#175): the camera pushes to Home Assistant over the LAN.
+CONF_LOCAL_STREAM = "local_stream"
+CONF_LOCAL_STREAM_PORT = "local_stream_port"
+CONF_LOCAL_STREAM_HOST = "local_stream_host"
+DEFAULT_LOCAL_STREAM_PORT = 1935
+
 # Stills from the live stream when the cloud snapshot fails (off by default).
 CONF_STREAM_STILLS = "stream_stills"
 

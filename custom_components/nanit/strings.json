@@ -57,6 +57,7 @@
         "menu_options": {
           "device": "Sound & Light IP address",
           "read_only": "Read-only mode",
+          "local_stream": "Local streaming",
           "stream_stills": "Stills from the live stream"
         }
       },
@@ -79,6 +80,19 @@
         "description": "Read-only mode applies to every device on this account. Home Assistant keeps the camera stream, sensors and motion and sound detection, but gets no control over device settings: camera power or sleep, night light, volume and Sound & Light controls are removed, and automations that use them stop working. Turning it off brings them back with the same names and entity IDs.",
         "data": {
           "read_only": "Read-only mode"
+        }
+      },
+      "local_stream": {
+        "title": "Local streaming",
+        "description": "With local streaming on, the camera sends its video straight to Home Assistant over your network instead of through the Nanit cloud, encrypted with a certificate Home Assistant creates. The camera must be able to reach Home Assistant on the port below. If it can't, the integration falls back to the cloud stream and tells you why.",
+        "data": {
+          "local_stream": "Local streaming",
+          "local_stream_port": "Port",
+          "local_stream_host": "Advertised address"
+        },
+        "data_description": {
+          "local_stream_port": "TCP port Home Assistant listens on for the camera. If it is taken, the next few ports are tried, unless an advertised address is set.",
+          "local_stream_host": "Leave blank to detect it. Set it when Home Assistant runs in a container with bridge networking (use the host's LAN address and publish the port), or when Home Assistant has more than one network connection and the camera is on one that isn't the default (use Home Assistant's address on the camera's network)."
         }
       },
       "stream_stills": {
@@ -147,6 +161,55 @@
     "camera_connection_failed": {
       "title": "Nanit camera failed to connect",
       "description": "Camera **{camera_name}** could not be reached. It is retried automatically the first time Nanit reports it online, and whenever the integration is reloaded.\n\nError: {error}"
+    },
+    "local_stream_port_in_use": {
+      "title": "Nanit local streaming could not start",
+      "description": "Home Assistant could not listen on port {port} for local camera streaming, so the Nanit cloud stream is used instead.\n\nError: {error}\n\nPick another port in the Nanit integration options, or turn local streaming off there."
+    },
+    "local_stream_unreachable": {
+      "title": "Nanit camera can't reach Home Assistant for local streaming",
+      "fix_flow": {
+        "step": {
+          "init": {
+            "title": "Nanit camera can't reach Home Assistant for local streaming",
+            "description": "Using the Nanit cloud stream instead. The camera was told to send its video to `{address}` but never connected, twice in a row. Allow TCP port {port} to Home Assistant in the host firewall, and publish the port if Home Assistant runs in a container. If the camera is on another network or VLAN, allow it to reach Home Assistant on that port in your router. If Home Assistant has its own address on the camera's network, set that as the advertised address in the Nanit integration options.\n\nLocal streaming is paused and is retried automatically every 24 hours. Submit this repair once you've fixed it to retry right away.",
+            "menu_options": {
+              "retry": "Retry local streaming now",
+              "disable": "Turn local streaming off"
+            }
+          }
+        }
+      }
+    },
+    "local_stream_unreachable_docker": {
+      "title": "Nanit camera can't reach Home Assistant for local streaming",
+      "fix_flow": {
+        "step": {
+          "init": {
+            "title": "Nanit camera can't reach Home Assistant for local streaming",
+            "description": "Using the Nanit cloud stream instead. The camera was told to send its video to `{address}` but never connected, twice in a row. Home Assistant looks like it runs in a container with bridge networking, so publish the port (`-p {port}:{port}`) or use host networking, and set the advertised address to the host's LAN IP in the Nanit integration options.\n\nLocal streaming is paused and is retried automatically every 24 hours. Submit this repair once you've fixed it to retry right away.",
+            "menu_options": {
+              "retry": "Retry local streaming now",
+              "disable": "Turn local streaming off"
+            }
+          }
+        }
+      }
+    },
+    "local_stream_protocol_error": {
+      "title": "Nanit local streaming keeps failing",
+      "fix_flow": {
+        "step": {
+          "init": {
+            "title": "Nanit local streaming keeps failing",
+            "description": "Using the Nanit cloud stream instead. The camera reached Home Assistant at `{address}` but the connection kept failing, so local streaming is paused and retried every 24 hours. This is probably a bug: please open an issue with a debug log from the Nanit integration.",
+            "menu_options": {
+              "retry": "Retry local streaming now",
+              "disable": "Turn local streaming off"
+            }
+          }
+        }
+      }
     }
   },
   "entity": {

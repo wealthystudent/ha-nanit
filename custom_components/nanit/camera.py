@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import shlex
 import shutil
@@ -21,12 +22,20 @@ from homeassistant.util import dt as dt_util
 from homeassistant.util.system_info import is_official_image
 
 from aionanit import NanitCamera
+from aionanit.camera import STREAM_LIMIT_STATUS
 from aionanit.models import ConnectionState
 
 from . import NanitConfigEntry
 from .const import DOMAIN, is_read_only, is_stream_stills
 from .coordinator import NanitPushCoordinator
 from .entity import NanitEntity
+from .local_stream import (
+    ACK_TIMEOUT,
+    BUSY_PUBLISH_WAIT,
+    COOLDOWN,
+    PUBLISH_WAIT,
+    LocalStreamCamera,
+)
 from .hub import StreamStillInfo
 from .log_redaction import async_attach_to_camera_stream, async_detach_from_camera_stream
 
@@ -90,12 +99,16 @@ async def async_setup_entry(
             "async_reset_stream",
         )
     read_only = is_read_only(entry)
+    local_stream = entry.runtime_data.local_stream
+    if local_stream is not None:
+        local_stream.prune_keys(set(entry.runtime_data.cameras))
     stream_stills = is_stream_stills(entry)
     async_add_entities(
         NanitCameraEntity(
             cam_data.push_coordinator,
             cam_data.camera,
             read_only=read_only,
+            local=(local_stream.camera(cam_data.camera.uid) if local_stream is not None else None),
             stream_stills=stream_stills,
             still_info=cam_data.stream_still,
         )
@@ -116,6 +129,7 @@ class NanitCameraEntity(NanitEntity, Camera):
         camera: NanitCamera,
         *,
         read_only: bool = False,
+        local: LocalStreamCamera | None = None,
         stream_stills: bool = False,
         still_info: StreamStillInfo | None = None,
     ) -> None:
@@ -123,6 +137,17 @@ class NanitCameraEntity(NanitEntity, Camera):
         super().__init__(coordinator)
         Camera.__init__(self)
         self._camera = camera
+        # Local streaming (#175). When set and active, the camera pushes to
+        # the receiver and stream_source() returns its loopback FLV URL.
+        self._local = local
+        self._cancel_local_cooldown_timer: CALLBACK_TYPE | None = None
+        self._local_fallback_task: asyncio.Task[None] | None = None
+        if local is not None:
+            local.channel.start_callback = self._async_local_start
+            local.channel.on_consumers_changed = self._handle_local_consumers
+            local.channel.on_publish = self._handle_local_publish
+            local.on_mode_changed = self._handle_local_cooldown_end
+            local.channel.accepting = local.active and self.is_on
         # Read-only mode: no ON_OFF, so Home Assistant never offers to put
         # the camera to sleep; turn_on/turn_off also refuse if called anyway.
         self._read_only = read_only
@@ -173,6 +198,7 @@ class NanitCameraEntity(NanitEntity, Camera):
             self._invalidate_stream("power state change")
         else:
             self._invalidate_stream_if_expired()
+        self._update_local_accepting()
 
         if (
             conn_state is ConnectionState.CONNECTED
@@ -205,6 +231,18 @@ class NanitCameraEntity(NanitEntity, Camera):
         """
         async_detach_from_camera_stream(self.entity_id)
         self._invalidate_stream("entity removal")
+        if self._local is not None:
+            self._local.channel.start_callback = None
+            self._local.channel.on_consumers_changed = None
+            self._local.channel.on_publish = None
+            self._local.on_mode_changed = None
+            self._local.channel.cancel_start()
+        if self._local_fallback_task is not None and not self._local_fallback_task.done():
+            self._local_fallback_task.cancel()
+        self._local_fallback_task = None
+        if self._cancel_local_cooldown_timer is not None:
+            self._cancel_local_cooldown_timer()
+            self._cancel_local_cooldown_timer = None
         for task in (
             self._stream_refresh_task,
             self._stream_keepalive_task,
@@ -236,6 +274,7 @@ class NanitCameraEntity(NanitEntity, Camera):
         self._cached_stream_source = None
         self._stream_source_started_at = 0.0
         self._cancel_stream_timers()
+        self._close_local_subscribers()
 
     async def async_reset_stream(self) -> None:
         """Reset HA's cached Nanit stream so the next viewer gets a fresh RTMPS URL."""
@@ -256,6 +295,7 @@ class NanitCameraEntity(NanitEntity, Camera):
         self._cached_stream_source = None
         self._stream_source_started_at = 0.0
         self._cancel_stream_timers()
+        self._close_local_subscribers()
 
     async def _stop_discarded_stream(self, stream: Any) -> None:
         """Best-effort cleanup for a stream removed from HA's cache."""
@@ -315,6 +355,14 @@ class NanitCameraEntity(NanitEntity, Camera):
         if not self.is_on:
             _LOGGER.debug("Camera %s is powered off — no stream source", self._camera.uid)
             return None
+
+        if self._local is not None and self._local.active:
+            # No side effects here: Home Assistant asks for the source when it
+            # picks a WebRTC provider at startup and on every WebRTC offer,
+            # not only when someone watches. The camera is started by the
+            # receiver's first subscriber (_async_local_start).
+            self._local.channel.accepting = True
+            return self._local.flv_url()
 
         source = self._cached_stream_source
         source_age = time.monotonic() - self._stream_source_started_at
@@ -415,6 +463,10 @@ class NanitCameraEntity(NanitEntity, Camera):
         if self._cancel_stream_keepalive_timer is not None:
             self._cancel_stream_keepalive_timer()
             self._cancel_stream_keepalive_timer = None
+        # Route by what is being consumed, not by mode: a cloud stream that
+        # outlived a local miss still needs its keepalive.
+        if self._local is not None and self._local.channel.consumer_count:
+            self._handle_local_keepalive()
         source = self._cached_stream_source
         if source is None:
             return
@@ -477,6 +529,8 @@ class NanitCameraEntity(NanitEntity, Camera):
         starts fresh.
         """
         stream = self.stream
+        if self._local_reclaimed_stream():
+            return
         if self.is_on and stream is not None and stream.outputs():
             try:
                 source = await self._camera.async_get_stream_rtmps_url()
@@ -488,6 +542,8 @@ class NanitCameraEntity(NanitEntity, Camera):
                 return
             if not await self._async_start_streaming_safe(source):
                 self._expire_stream_source()
+                return
+            if self._local_reclaimed_stream(after_put=True):
                 return
             _LOGGER.debug(
                 "Rotating RTMPS source in place for camera %s after %s",
@@ -571,6 +627,307 @@ class NanitCameraEntity(NanitEntity, Camera):
                 self._camera.uid,
             )
             await self._camera.async_start_streaming()
+
+    # ------------------------------------------------------------------
+    # Local streaming
+    # ------------------------------------------------------------------
+
+    @callback
+    def _update_local_accepting(self) -> None:
+        """Turn local consumers away at once while the camera can't push."""
+        local = self._local
+        if local is None:
+            return
+        data = self.coordinator.data
+        connected = data is None or data.connection.state is ConnectionState.CONNECTED
+        # Readers get a 503 at once while the camera can't be asked to push.
+        accepting = self.is_on and local.active and connected
+        local.channel.accepting = accepting
+        if not self.is_on:
+            local.channel.close_subscribers()
+
+    @callback
+    def _close_local_subscribers(self) -> None:
+        """Make local consumers reconnect, as a fresh cloud URL would."""
+        if self._local is not None:
+            self._local.channel.close_subscribers()
+
+    async def _async_local_start(self) -> bool:
+        """Start the camera's push for the receiver's first subscriber.
+
+        One best-effort PUT_STREAMING, then a short wait for the camera to
+        publish. A miss of any kind moves the camera to the cloud stream
+        for a cooldown. Only a clean miss (the camera acked and nothing
+        ever connected) counts toward pausing local streaming.
+
+        A camera that already streams to as many apps as it allows answers
+        STREAM_LIMIT_STATUS. That says nothing about the network, so it is
+        never a strike. It still grows the backoff: the slot can stay taken
+        for hours (other apps watching overnight, or this entry's own cloud
+        push after a fallback), and a retry every cooldown would stall the
+        viewer each time. The cloud URL may still play meanwhile, if one of
+        the other apps keeps a cloud stream running.
+
+        Connections are counted per peer once the camera's address is
+        learned from an earlier publish, so a LAN scanner or another camera
+        landing in the window doesn't disguise a miss.
+        Without a known address the server-wide counts are the best signal.
+        """
+        local = self._local
+        if local is None or not self.is_on or not local.active:
+            return False
+        data = self.coordinator.data
+        if data is not None and data.connection.state is not ConnectionState.CONNECTED:
+            # The relay is reconnecting (HA starting, a token refresh). The
+            # request would just time out, so end this read quietly: the
+            # player retries, by when the camera is reachable again.
+            return False
+        server = local.owner.server
+        peer = local.channel.publisher_peer
+        if peer is not None:
+            # asyncio reports peer addresses in canonical form.
+            try:
+                peer = str(ipaddress.ip_address(peer))
+            except ValueError:
+                peer = None
+
+        def counts() -> tuple[int, int]:
+            if peer is None:
+                return server.connection_attempts, server.protocol_failures
+            return server.attempts_by_peer.get(peer, 0), server.failures_by_peer.get(peer, 0)
+
+        attempts_before, failures_before = counts()
+        try:
+            url, host = await local.async_publish_url()
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("Nanit local streaming has no address to advertise: %s", err)
+            # Usually lasting (no routable address), so it grows the backoff.
+            self._fall_back_to_cloud("no local address to advertise")
+            return False
+        try:
+            # aionanit leaves a late ACK to resolve a future nobody awaits,
+            # which is harmless.
+            async with asyncio.timeout(ACK_TIMEOUT):
+                status = await self._camera.async_start_streaming(
+                    rtmps_url=url, reconnect_on_failure=False
+                )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Local PUT_STREAMING failed for camera %s: %s", self._camera.uid, err)
+            self._fall_back_to_cloud("camera did not accept the local stream request")
+            return False
+        if not isinstance(status, int):
+            status = None  # unknown: judge by whether the camera connects
+        busy = status == STREAM_LIMIT_STATUS
+        if status is not None and status != 200 and not busy:
+            _LOGGER.debug(
+                "Camera %s declined the local stream request: %s", self._camera.uid, status
+            )
+            self._fall_back_to_cloud(f"camera declined the local stream request ({status})")
+            return False
+
+        if await local.channel.wait_for_publish(BUSY_PUBLISH_WAIT if busy else PUBLISH_WAIT):
+            return True  # _handle_local_publish cleared the strikes
+
+        if busy:
+            reason = "the camera is already streaming to as many apps as it allows"
+            _LOGGER.info("Nanit local stream for %s skipped: %s", self._camera.uid, reason)
+            self._fall_back_to_cloud(reason)
+            return False
+
+        if not self.is_on:
+            # Put to sleep while we waited: not the network's fault.
+            self._fall_back_to_cloud("camera went to sleep", count_miss=False)
+            return False
+        attempts_after, failures_after = counts()
+        if attempts_after > attempts_before:
+            if failures_after > failures_before:
+                local.owner.record_protocol_failure()
+            reason = "a connection arrived but never published"
+        else:
+            local.owner.record_strike(host)
+            reason = "the camera never connected"
+        _LOGGER.info("Nanit local stream for %s missed: %s", self._camera.uid, reason)
+        self._fall_back_to_cloud(reason)
+        return False
+
+    @callback
+    def _fall_back_to_cloud(self, reason: str, *, count_miss: bool = True) -> None:
+        """Move this camera to the cloud stream for the cooldown.
+
+        The mode flips at once. Moving a running HLS stream to the cloud
+        happens in the background, so the FLV request that triggered the
+        miss is not held open through the cloud start's retries.
+        """
+        local = self._local
+        if local is None:
+            return
+        local.start_cooldown(reason, count_miss=count_miss)
+        local.channel.accepting = False
+        self._schedule_local_cooldown_end(max(0.0, local.cooldown_until - time.monotonic()))
+        stream = self.stream
+        hass = getattr(self, "hass", None)
+        if stream is not None and not stream.outputs():
+            # An idle HLS stream keeps the FLV URL forever (HA never asks for
+            # the source again), so drop it and the next viewer gets the cloud.
+            self._invalidate_stream("local stream unavailable")
+            return
+        if hass is None or stream is None or not self.is_on:
+            return
+        if self._local_fallback_task is None or self._local_fallback_task.done():
+            self._local_fallback_task = hass.async_create_task(
+                self._async_move_hls_to_cloud(),
+                name=f"nanit_local_fallback_{self._camera.uid}",
+            )
+
+    async def _async_move_hls_to_cloud(self) -> None:
+        """Point a running HLS stream at the cloud URL.
+
+        WebRTC viewers re-offer and stream_source() hands them the cloud URL.
+        """
+        stream = self.stream
+        if stream is None or self._local_reclaimed_stream():
+            return
+        try:
+            source = await self._camera.async_get_stream_rtmps_url()
+        except Exception:
+            _LOGGER.debug("Could not build the cloud URL after a local miss", exc_info=True)
+            return
+        if not await self._async_start_streaming_safe(source, reconnect_on_failure=False):
+            return
+        if self._local_reclaimed_stream(after_put=True):
+            return
+        self._cached_stream_source = source
+        self._stream_source_started_at = time.monotonic()
+        self._schedule_stream_expiry_timer()
+        self._schedule_stream_keepalive_timer()
+        stream.update_source(source)
+
+    def _local_reclaimed_stream(self, *, after_put: bool = False) -> bool:
+        """Hand the stream to local if local took over while a cloud task waited.
+
+        This can happen without the cooldown-end handler having run first,
+        when the pause lapses by the wall clock before its timer fires (a
+        host suspend). Finishing the move here keeps the stream from being
+        left half switched.
+        """
+        if self._local is None or not self._local.active:
+            return False
+        self._handle_local_cooldown_end()
+        if after_put and self._local.channel.consumer_count:
+            # The cloud request already went out and took the push away from
+            # local readers, so point the camera back at them right away.
+            self._handle_local_keepalive()
+        return True
+
+    @callback
+    def _schedule_local_cooldown_end(self, delay: float = COOLDOWN) -> None:
+        if self._cancel_local_cooldown_timer is not None:
+            self._cancel_local_cooldown_timer()
+        hass = getattr(self, "hass", None)
+        if hass is None:
+            self._cancel_local_cooldown_timer = None
+            return
+        self._cancel_local_cooldown_timer = async_call_later(
+            hass, delay, self._handle_local_cooldown_end
+        )
+
+    @callback
+    def _handle_local_cooldown_end(self, _now: object = None) -> None:
+        """Move the camera back to local streaming (cooldown or pause over).
+
+        The camera has one push target for all of Home Assistant, so the
+        cloud stream is wound down here instead of waiting for it to idle
+        (a preloaded or always-on stream never does). A watched HLS stream
+        is switched in place to the local URL, whose first read starts the
+        camera locally, or falls back to the cloud again on a miss. The
+        cached cloud URL and its timers are dropped so nothing later moves
+        the push back. A WebRTC viewer still pulling the cloud URL stalls
+        until its player re-offers, which the Nanit card does on its own.
+        """
+        if self._cancel_local_cooldown_timer is not None:
+            # Also reached early, from the repair's retry or the pause end.
+            self._cancel_local_cooldown_timer()
+            self._cancel_local_cooldown_timer = None
+        local = self._local
+        if local is None:
+            return
+        self._update_local_accepting()
+        if not local.active:
+            return
+        # A cloud task already waiting would move the stream back to cloud.
+        for task in (self._local_fallback_task, self._stream_refresh_task):
+            if task is not None and not task.done() and task is not asyncio.current_task():
+                task.cancel()
+        if self._cached_stream_source is not None:
+            self._expire_stream_source()
+            keepalive = self._stream_keepalive_task
+            if keepalive is not None and not keepalive.done():
+                # A cloud keepalive in flight would point the camera back.
+                keepalive.cancel()
+            if local.channel.consumer_count:
+                # The keepalive timer is shared, and local readers still need it.
+                self._schedule_stream_keepalive_timer()
+        stream = self.stream
+        flv_url = local.flv_url()
+        # Keyed on what the stream plays, not on the cached URL: a failed
+        # cloud renewal leaves the stream on the old URL with nothing cached.
+        if stream is None or stream.source == flv_url:
+            return
+        if stream.outputs() and self.is_on:
+            stream.update_source(flv_url)
+        else:
+            # Drop only the idle HLS stream: local readers are already on
+            # the URL we're switching to and keep the shared keepalive.
+            self.stream = None
+            if (hass := getattr(self, "hass", None)) is not None:
+                hass.create_task(
+                    self._stop_discarded_stream(stream),
+                    name=f"nanit_stop_discarded_stream_{self._camera.uid}",
+                )
+
+    @callback
+    def _handle_local_publish(self) -> None:
+        """Any accepted push proves the path works, asked for or not."""
+        if self._local is not None:
+            self._local.owner.record_success()
+            self._local.record_publish()
+            if not self._local.active:
+                # The path works after all, so end the cooldown too.
+                self._local.end_cooldown()
+
+    @callback
+    def _handle_local_consumers(self, count: int) -> None:
+        """Start the keepalive when local consumers appear."""
+        if count and self._cancel_stream_keepalive_timer is None:
+            self._schedule_stream_keepalive_timer()
+
+    @callback
+    def _handle_local_keepalive(self) -> None:
+        """Re-send the local push URL while anyone reads the local stream."""
+        local = self._local
+        if local is None:
+            return
+        channel = local.channel
+        if not channel.consumer_count or not self.is_on or not local.active:
+            return
+        data = self.coordinator.data
+        if data is not None and data.connection.state is not ConnectionState.CONNECTED:
+            # The CONNECTED transition calls the keepalive again.
+            self._schedule_stream_keepalive_timer()
+            return
+        if self._stream_keepalive_task is None or self._stream_keepalive_task.done():
+            self._stream_keepalive_task = self.hass.async_create_task(
+                self._async_local_keepalive(),
+                name=f"nanit_local_keepalive_{self._camera.uid}",
+            )
+        self._schedule_stream_keepalive_timer()
+
+    async def _async_local_keepalive(self) -> bool:
+        local = self._local
+        if local is None:
+            return False
+        url, _host = await local.async_publish_url()
+        return await self._async_start_streaming_safe(url, reconnect_on_failure=False)
 
     # ------------------------------------------------------------------
     # Snapshot (with caching)

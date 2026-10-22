@@ -130,6 +130,7 @@ implicit_reexport = true
 asyncio_mode = "auto"
 pythonpath = ["."]
 testpaths = ["tests/unit"]
+markers = ["local_stream_receiver: run with the real local stream receiver (binds a port)"]
 
 [tool.pyright]
 # Editor language servers (basedpyright, pyright, Pylance). mypy is the type

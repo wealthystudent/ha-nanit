@@ -29,6 +29,10 @@ TO_REDACT = {
     "speaker_uid",
     "speaker_uid_map",
     "unpaired_speakers",
+    "local_stream_state",
+    "advertised_host",
+    "local_stream_host",
+    "publisher_peer",
 }
 
 
@@ -89,4 +93,9 @@ async def async_get_config_entry_diagnostics(
         "cameras": async_redact_data(cameras_diag, TO_REDACT),
         "speaker_count": len(speakers_diag),
         "speakers": async_redact_data(speakers_diag, TO_REDACT),
+        "local_streaming": (
+            async_redact_data(local.diagnostics(), TO_REDACT)
+            if (local := entry.runtime_data.local_stream) is not None
+            else {"enabled": False}
+        ),
     }

@@ -29,6 +29,7 @@ from . import NanitConfigEntry
 from .const import DOMAIN, is_read_only, is_stream_stills
 from .coordinator import NanitPushCoordinator
 from .entity import NanitEntity
+from .hub import StreamStillInfo
 from .local_stream import (
     ACK_TIMEOUT,
     BUSY_PUBLISH_WAIT,
@@ -36,7 +37,6 @@ from .local_stream import (
     PUBLISH_WAIT,
     LocalStreamCamera,
 )
-from .hub import StreamStillInfo
 from .log_redaction import async_attach_to_camera_stream, async_detach_from_camera_stream
 
 PARALLEL_UPDATES = 0

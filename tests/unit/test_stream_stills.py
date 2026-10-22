@@ -468,7 +468,7 @@ async def test_camera_setup_passes_the_option_to_each_camera(enabled: bool) -> N
     )
     entry = MagicMock(
         options={CONF_STREAM_STILLS: True} if enabled else {},
-        runtime_data=SimpleNamespace(cameras={"cam_1": cam_data}),
+        runtime_data=SimpleNamespace(cameras={"cam_1": cam_data}, local_stream=None),
     )
     added: list[NanitCameraEntity] = []
 

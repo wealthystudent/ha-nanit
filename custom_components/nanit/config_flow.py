@@ -19,6 +19,9 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from aionanit import NanitAuthError, NanitClient, NanitConnectionError, NanitMfaRequiredError
 
 from .const import (
+    CONF_LOCAL_STREAM,
+    CONF_LOCAL_STREAM_HOST,
+    CONF_LOCAL_STREAM_PORT,
     CONF_MFA_CODE,
     CONF_READ_ONLY,
     CONF_REFRESH_TOKEN,
@@ -26,10 +29,12 @@ from .const import (
     CONF_SPEAKER_IPS,
     CONF_STORE_CREDENTIALS,
     CONF_STREAM_STILLS,
+    DEFAULT_LOCAL_STREAM_PORT,
     DOMAIN,
     LOGGER,
     is_read_only,
     is_stream_stills,
+    local_stream_default,
 )
 from .sanitize import display_name
 
@@ -395,7 +400,51 @@ class NanitOptionsFlow(OptionsFlow):
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Choose what to configure."""
         return self.async_show_menu(
-            step_id="init", menu_options=["device", "read_only", "stream_stills"]
+            step_id="init",
+            menu_options=["device", "read_only", "local_stream", "stream_stills"],
+        )
+
+    async def async_step_local_stream(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Turn local streaming on or off and set its port and address."""
+        options = self.config_entry.options
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            host = str(user_input.get(CONF_LOCAL_STREAM_HOST, "")).strip()
+            if host:
+                try:
+                    ipaddress.ip_address(host)
+                except ValueError:
+                    errors[CONF_LOCAL_STREAM_HOST] = "invalid_ip"
+            if not errors:
+                new_options: dict[str, Any] = {**options}
+                new_options[CONF_LOCAL_STREAM] = bool(user_input[CONF_LOCAL_STREAM])
+                new_options[CONF_LOCAL_STREAM_PORT] = int(user_input[CONF_LOCAL_STREAM_PORT])
+                new_options.pop(CONF_LOCAL_STREAM_HOST, None)
+                if host:
+                    new_options[CONF_LOCAL_STREAM_HOST] = host
+                return self.async_create_entry(title="", data=new_options)
+
+        return self.async_show_form(
+            step_id="local_stream",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_LOCAL_STREAM,
+                        default=options.get(CONF_LOCAL_STREAM, local_stream_default(self.hass)),
+                    ): cv.boolean,
+                    vol.Required(
+                        CONF_LOCAL_STREAM_PORT,
+                        default=options.get(CONF_LOCAL_STREAM_PORT, DEFAULT_LOCAL_STREAM_PORT),
+                    ): vol.All(vol.Coerce(int), vol.Range(min=1024, max=65535)),
+                    vol.Optional(
+                        CONF_LOCAL_STREAM_HOST,
+                        description={"suggested_value": options.get(CONF_LOCAL_STREAM_HOST, "")},
+                    ): str,
+                }
+            ),
+            errors=errors,
         )
 
     async def async_step_read_only(

@@ -107,6 +107,20 @@ def block_nanit_network(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_local_stream_receiver(request):
+    """Keep the local stream receiver off unless a test opts in.
+
+    Local streaming is on by default, and its receiver binds a real port.
+    Tests that exercise it are marked ``local_stream_receiver``.
+    """
+    if request.node.get_closest_marker("local_stream_receiver"):
+        yield
+        return
+    with patch("custom_components.nanit.async_setup_local_stream", AsyncMock(return_value=None)):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _mock_card_registration():
     """Skip frontend card registration in unit tests."""
     with patch("custom_components.nanit.async_register_card", AsyncMock()):

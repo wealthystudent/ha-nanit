@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import datetime
+import logging
 import random
 import socket
 import ssl
@@ -17,6 +18,7 @@ import aiohttp
 import pytest
 
 from aionanit.local_stream import LocalStreamServer, StreamChannel, amf0, channel, flv, rtmp
+from aionanit.local_stream import server as server_module
 from aionanit.local_stream.flv import TAG_AUDIO, TAG_SCRIPT, TAG_VIDEO, Tag
 from aionanit.local_stream.rtmp import RtmpError, RtmpSession
 
@@ -1345,3 +1347,89 @@ async def test_failing_publish_callback_keeps_the_connection() -> None:
     ch.on_publish = broken
     ch.publish_started(1, None, lambda: None)
     assert ch.publishing
+
+
+@pytest.mark.parametrize(
+    ("peer", "allowed"),
+    [
+        ("127.0.0.1", True),
+        ("::1", True),
+        ("192.168.1.107", True),
+        ("10.30.0.9", True),
+        ("172.16.4.2", True),
+        ("169.254.10.1", True),
+        ("fd6b:bba:b6aa::5", True),
+        ("fe80::1%eth0", True),
+        ("::ffff:192.168.1.107", True),
+        ("::ffff:8.8.8.8", False),
+        ("8.8.8.8", False),
+        ("2001:4860:4860::8888", False),
+        ("100.64.0.1", False),
+        ("not-an-address", False),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_peer_is_local(peer: str | None, allowed: bool) -> None:
+    assert server_module.peer_is_local(peer) is allowed
+
+
+def test_a_non_local_peer_is_dropped_before_anything_runs(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    server = LocalStreamServer(port=0)
+    caplog.set_level(logging.DEBUG, logger="aionanit.local_stream.server")
+
+    class _Transport:
+        aborted = False
+
+        def get_extra_info(self, name: str) -> object:
+            return ("2001:4860:4860::8888", 51515, 0, 0) if name == "peername" else None
+
+        def abort(self) -> None:
+            self.aborted = True
+
+        def set_protocol(self, protocol: object) -> None:
+            raise AssertionError("a dropped peer must never reach RTMP")
+
+        def pause_reading(self) -> None:
+            raise AssertionError("a dropped peer must never reach TLS")
+
+    transport = _Transport()
+    server_module._Acceptor(server).connection_made(transport)  # type: ignore[arg-type]
+
+    assert transport.aborted
+    assert server.rejected_connections == 1
+    # Warned once per address, so a rewritten camera address is visible.
+    server_module._Acceptor(server).connection_made(_Transport())  # type: ignore[arg-type]
+    assert server.rejected_connections == 2
+    levels = [r.levelno for r in caplog.records if "Dropped a connection" in r.getMessage()]
+    assert levels == [logging.WARNING, logging.DEBUG]
+    # Not an attempt, so it can't disguise a camera's miss.
+    assert server.connection_attempts == 0
+    assert server.attempts_by_peer == {}
+    assert not server._pending
+
+
+def test_rejection_warnings_are_capped_per_run(caplog: pytest.LogCaptureFixture) -> None:
+    """A scanner rotating addresses must not flood the log."""
+    server = LocalStreamServer(port=0)
+    caplog.set_level(logging.DEBUG, logger="aionanit.local_stream.server")
+
+    class _Transport:
+        def __init__(self, peer: str) -> None:
+            self._peer = peer
+
+        def get_extra_info(self, name: str) -> object:
+            return (self._peer, 51515, 0, 0) if name == "peername" else None
+
+        def abort(self) -> None:
+            pass
+
+    for n in range(server_module.MAX_REJECTION_WARNINGS + 3):
+        server_module._Acceptor(server).connection_made(_Transport(f"2001:4860:4860::{n + 1:x}"))  # type: ignore[arg-type]
+
+    levels = [r.levelno for r in caplog.records if "Dropped a connection" in r.getMessage()]
+    assert levels.count(logging.WARNING) == server_module.MAX_REJECTION_WARNINGS
+    assert levels.count(logging.DEBUG) == 3
+    assert server.rejected_connections == server_module.MAX_REJECTION_WARNINGS + 3

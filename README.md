@@ -154,7 +154,7 @@ How each piece of data reaches Home Assistant:
 - **Motion and sound events** come from the Nanit cloud API, polled every 30 seconds.
 - **Network diagnostics** (WiFi details) are polled every 5 minutes.
 - **Sound & Light state** (power, sound, light, volume) arrives as push updates over the speaker's WebSocket, local or relay. A light 30 second poll reconciles state and refreshes battery and WiFi diagnostics. The firmware version is requested with the poll until known, then left alone.
-- **Video** streams on demand over RTMPS when a viewer opens the camera.
+- **Video** streams on demand when a viewer opens the camera: straight from the camera over your network with [local streaming](#local-streaming), or through the Nanit cloud over RTMPS.
 
 ## Local connection
 
@@ -164,12 +164,32 @@ The camera is always controlled through Nanit's relay. Current camera firmware d
 
 One thing worth knowing: the speaker accepts a single local client at a time. If the Nanit phone app on the same network holds the local slot, the integration uses the cloud relay and takes the local slot back automatically when it frees up.
 
+## Local streaming
+
+Local streaming is on by default, unless Home Assistant's go2rtc uses an external server (see below). When someone opens the camera, Home Assistant asks the camera to send its video and audio straight to Home Assistant over your network, instead of through the Nanit cloud. Control still goes through Nanit's relay as before. The video is encrypted (RTMPS, with a certificate Home Assistant creates for itself), which keeps it from being read on your network but doesn't authenticate either end. Home Assistant re-serves it to its own players, so the live view, WebRTC and HLS all work the same.
+
+The camera has to be able to reach Home Assistant on TCP port 1935. Home Assistant only accepts connections on it from local addresses (private, link-local or loopback), so even a host with a public IPv6 address doesn't take them from the internet.
+
+On Home Assistant OS there is nothing to do. On Container or Core with host networking, allow TCP 1935 if the host runs a firewall (firewalld, ufw), for example `sudo firewall-cmd --permanent --add-port=1935/tcp && sudo firewall-cmd --reload`. With Docker bridge networking, publish the port (`-p 1935:1935`) and set **Advertised address** to the host's LAN IP in the options. If the camera is on another network or VLAN, allow it to reach Home Assistant on TCP 1935 in your router. If Home Assistant has its own address on the camera's network, set **Advertised address** to that address instead.
+
+If the camera can't reach Home Assistant, nothing breaks: the integration falls back to the cloud stream. After two misses in a row it pauses local streaming, retries it automatically once a day, and shows a repair in **Settings → System → Repairs** with the exact address the camera was given and a button to retry once you've fixed it.
+
+**Settings → Devices & Services → Nanit → Configure → Local streaming** turns it off, changes the port, or sets the advertised address. If the port is taken, the next few ports are tried automatically unless an advertised address is set. With more than one Nanit account, the first one to start sets the port for all of them.
+
+Good to know:
+
+- The camera only streams to a few Nanit apps or devices at a time (two in testing), and Home Assistant counts as one. When other apps already use them all, Home Assistant falls back to the cloud stream and tries local again later, waiting longer each time the camera is still busy, up to six hours.
+- The camera keeps sending video for a while after the last viewer leaves, like the cloud stream.
+- If your go2rtc server's URL (`go2rtc: url:` in your configuration) isn't `localhost` or a loopback address, it can't reach the local stream, so WebRTC would fall back to HLS. Local streaming therefore starts off on those setups. You can still turn it on in the options.
+- A camera that falls back to the cloud while it is being watched stays on the cloud until it has been idle for about 20 minutes, because Home Assistant's own cloud stream holds one of the camera's slots until then. Enabling **Preload camera stream** keeps the camera streaming around the clock, so a preloaded camera that falls back stays on the cloud until preloading stops long enough for the camera to go idle. **Stills from the live stream** has the same effect while something keeps asking for a picture, like a HomeKit tile that's always on screen, since each still re-sends the cloud request during the fallback.
+
 ## Troubleshooting
 
 | Problem | Solution |
 |---------|----------|
 | MFA code rejected | Codes expire fast — use the latest one. |
 | Stream not playing | Verify HA can reach `rtmps://media-secured.nanit.com`. The Stream integration is pulled in automatically; on installs without `default_config:` an older version left it out, and the picture silently fell back to still images. |
+| Local streaming not used | Check **Settings → System → Repairs** for a Nanit repair, which names the address the camera was told to use. Allow TCP 1935 to Home Assistant in the host firewall or your router. In a container or with a second network, you may also need the advertised address. See [Local streaming](#local-streaming). |
 | FFmpeg error at startup (Home Assistant Core) | Nanit depends on Home Assistant's FFmpeg integration (for stills from the live stream), which logs an error at startup when no ffmpeg binary is installed, whether or not that option is on. Install FFmpeg and restart Home Assistant. Home Assistant OS and Container include it. |
 | Stream frozen or stale | Run the `nanit.reset_stream` action on the camera entity (the dashboard card does this automatically when it detects a stall). |
 | Sensors unavailable | WebSocket reconnects automatically. Try reloading the integration if it persists. |
@@ -179,9 +199,9 @@ One thing worth knowing: the speaker accepts a single local client at a time. If
 
 ## Known limitations
 
-- Authentication, motion/sound events, and streaming always require the Nanit cloud — no fully offline mode.
+- Authentication, motion/sound events and camera control always require the Nanit cloud, so there is no fully offline mode. Video stays on your network with [local streaming](#local-streaming).
 - Motion and sound detection is polled every 30 seconds (up to ~30s delay).
-- Live video requires your HA instance to reach `rtmps://media-secured.nanit.com`.
+- Without local streaming, live video requires your HA instance to reach `rtmps://media-secured.nanit.com`.
 
 ## Removing the integration
 

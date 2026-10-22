@@ -1,9 +1,12 @@
 """Constants for the Nanit integration."""
 
+import ipaddress
 import logging
+from urllib.parse import urlsplit
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
+from homeassistant.core import HomeAssistant
 
 DOMAIN = "nanit"
 LOGGER = logging.getLogger(__package__)
@@ -54,6 +57,12 @@ CONF_SPEAKER_IPS = "speaker_ips"
 # speaker_uid → name for machines no baby is paired with (entry data).
 CONF_UNPAIRED_SPEAKERS = "unpaired_speakers"
 CONF_READ_ONLY = "read_only"
+# Local streaming (#175): the camera pushes to Home Assistant over the LAN.
+CONF_LOCAL_STREAM = "local_stream"
+CONF_LOCAL_STREAM_PORT = "local_stream_port"
+CONF_LOCAL_STREAM_HOST = "local_stream_host"
+DEFAULT_LOCAL_STREAM_PORT = 1935
+
 # Stills from the live stream when the cloud snapshot fails (off by default).
 CONF_STREAM_STILLS = "stream_stills"
 
@@ -66,6 +75,35 @@ def is_read_only(entry: ConfigEntry) -> bool:
 def is_stream_stills(entry: ConfigEntry) -> bool:
     """Return whether camera stills may be taken from the live stream."""
     return entry.options.get(CONF_STREAM_STILLS, False) is True
+
+
+def uses_external_go2rtc(hass: HomeAssistant) -> bool:
+    """Return True if Home Assistant's go2rtc URL is not on localhost.
+
+    A server elsewhere can't reach the loopback FLV the receiver serves, so
+    local streaming would only move its WebRTC viewers to HLS. The built-in
+    server and one on HA's own host use a localhost URL and can. This reads
+    go2rtc's runtime data, a Home Assistant internal, so anything unexpected
+    counts as the built-in server.
+    """
+    url = getattr(hass.data.get("go2rtc"), "url", None)
+    if not isinstance(url, str):
+        return False
+    try:
+        host = urlsplit(url).hostname
+    except ValueError:
+        return False
+    if host is None or host == "localhost":
+        return False
+    try:
+        return not ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return True
+
+
+def local_stream_default(hass: HomeAssistant) -> bool:
+    """Return the setting's default: on, unless go2rtc uses an external server."""
+    return not uses_external_go2rtc(hass)
 
 
 # Default sound list (used when API doesn't return available_sounds)

@@ -2,6 +2,7 @@
   "domain": "nanit",
   "name": "Nanit",
   "after_dependencies": [
+    "go2rtc",
     "zeroconf"
   ],
   "codeowners": [
@@ -12,6 +13,7 @@
     "ffmpeg",
     "http",
     "lovelace",
+    "network",
     "stream"
   ],
   "documentation": "https://github.com/wealthystudent/ha-nanit",

@@ -70,7 +70,9 @@ _STREAM_STILL_WARN_AFTER = 3
 # ffmpeg gives up once a wait for data from the input lasts this long, as it
 # should for a stream that is not being served yet. Any byte resets the timer,
 # so a server that keeps sending control messages such as RTMP pings is not
-# cut off. ha-ffmpeg's own 15s read timeout ends a read too, but its kill path
+# cut off. The local receiver's FLV endpoint sends nothing until the camera
+# publishes, so a local push that starts later than this misses one grab and
+# the next one reads it warm. ha-ffmpeg's own 15s read timeout ends a read too, but its kill path
 # logs a "Task exception was never retrieved" error with a traceback, so this
 # stays well under it. Going lower ends a slow but working read early. A warm
 # read takes about 5s in total.
@@ -1101,10 +1103,15 @@ class NanitCameraEntity(NanitEntity, Camera):
         With a viewer of Home Assistant's own stream, the frame comes from that
         running stream and nothing is sent to the camera. Otherwise it is read
         with a one-shot ffmpeg process, not through the stream worker, so
-        nothing keeps running afterwards. ``stream_source()`` sends
-        PUT_STREAMING like a viewer would. Its keepalive renews the push only
-        while a stream has outputs, so a grab leaves the camera to stop
-        pushing on its own about 20 minutes later. PUT_STREAMING STOPPED is
+        nothing keeps running afterwards. The read starts the camera's push
+        like a viewer would: on the cloud, ``stream_source()`` sends
+        PUT_STREAMING, and in local mode the receiver's first subscriber does.
+        The cloud keepalive renews the push only while a stream has outputs,
+        so a grab leaves the camera to stop pushing on its own about 20
+        minutes later. During a local cooldown each grab re-sends the cloud
+        PUT_STREAMING, which keeps that push and its stream slot alive, so a
+        picture asked for at least every 20 minutes keeps the camera on the
+        cloud (#190). PUT_STREAMING STOPPED is
         never sent, because it is camera-wide and would cut off anyone
         watching. The source URL carries an access token and is never logged
         here.

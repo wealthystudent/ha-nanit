@@ -684,9 +684,9 @@ class NanitCameraEntity(NanitEntity, Camera):
         """Remember the push the camera accepted, so it can be stopped by name.
 
         In testing the camera serves one push per client and declines a
-        start (403) while ours is live, keeping the push it had. So only an accepted or
-        unknown answer is recorded, and an accepted one also means the other
-        kind of push is gone.
+        start (403) while ours is live, keeping the push it had. So only an
+        accepted or unknown answer is recorded, and an accepted one also
+        means the other kind of push is gone.
         """
         if isinstance(status, int) and status != 200:
             return
@@ -1012,12 +1012,12 @@ class NanitCameraEntity(NanitEntity, Camera):
         The camera has one push target for all of Home Assistant, so the
         cloud stream is wound down here instead of waiting for it to idle
         (a preloaded or always-on stream never does), and the camera is told
-        to stop pushing to the cloud URL. A watched HLS stream
-        is switched in place to the local URL, whose first read starts the
-        camera locally, or falls back to the cloud again on a miss. The
-        cached cloud URL and its timers are dropped so nothing later moves
-        the push back. A WebRTC viewer still pulling the cloud URL stalls
-        until its player re-offers, which the Nanit card does on its own.
+        to stop pushing to the cloud URL. A watched HLS stream is switched
+        in place to the local URL, whose first read starts the camera
+        locally, or falls back to the cloud again on a miss. The cached cloud
+        URL and its timers are dropped so nothing later moves the push back.
+        A WebRTC viewer still pulling the cloud URL stalls until its player
+        re-offers, which the Nanit card does on its own.
         """
         if self._cancel_local_cooldown_timer is not None:
             # Also reached early, from the repair's retry or the pause end.

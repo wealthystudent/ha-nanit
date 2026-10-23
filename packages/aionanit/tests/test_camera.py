@@ -1363,6 +1363,26 @@ class TestTimeoutForceReconnect:
         await cam.async_stop_streaming()
         assert cam._send_request.await_args.kwargs["streaming"].rtmp_url == ""
 
+    async def test_stop_streaming_keeps_the_push_it_did_not_stop(self) -> None:
+        cam, *_ = _make_camera()
+        url = "rtmps://media-secured.nanit.com/nanit/baby.token"
+        cam._stream_url = url
+        for code, named in ((500, url), (200, "rtmps://elsewhere/other")):
+            cam._send_request = AsyncMock(
+                return_value=Response(
+                    request_id=1, request_type=RequestType.PUT_STREAMING, status_code=code
+                )
+            )
+            await cam.async_stop_streaming(rtmps_url=named)
+            assert cam._stream_url == url
+
+    async def test_start_with_no_status_is_remembered_for_the_stop(self) -> None:
+        cam, *_ = _make_camera()
+        url = "rtmps://media-secured.nanit.com/nanit/baby.token"
+        cam._send_request = AsyncMock(return_value=None)
+        await cam.async_start_streaming(rtmps_url=url)
+        assert cam._stream_url == url
+
     async def test_timeout_calls_reconnect_before_retry(self) -> None:
         """Request timeout triggers _async_reconnect, then retries."""
         cam, *_ = _make_camera()

@@ -390,6 +390,7 @@ class NanitCameraEntity(NanitEntity, Camera):
             self._local.channel.accepting = True
             return self._local.flv_url()
 
+        await self._async_release_local_push()
         source = self._cached_stream_source
         source_age = time.monotonic() - self._stream_source_started_at
         if (
@@ -749,17 +750,25 @@ class NanitCameraEntity(NanitEntity, Camera):
         """Stop our cloud push and wait for it before a local PUT_STREAMING.
 
         The camera declines a new push while ours is live, so the local
-        request must not overtake the stop. A stop already under way may be
-        for an older URL than the one now recorded, so this checks again
-        after it, a bounded number of times. Each stop is bounded by its own
-        timeout.
+        request must not overtake the stop. A stop already under way is
+        awaited first. If a push is still recorded after it (the stop failed,
+        or it was for an older URL), one more stop is sent. Each is bounded
+        by ACK_TIMEOUT.
         """
-        for _ in range(2):
-            await self._async_wait_for_cloud_stop()
-            if self._cloud_push_url is None:
-                return
-            self._stop_cloud_push()
         await self._async_wait_for_cloud_stop()
+        if self._cloud_push_url is not None:
+            self._stop_cloud_push()
+            await self._async_wait_for_cloud_stop()
+
+    async def _async_release_local_push(self) -> None:
+        """Stop a local push the camera accepted before asking for the cloud.
+
+        After a clean miss the camera acked the local request but never
+        connected, and it may still count that push against its slots.
+        """
+        url = self._local_push_url
+        if url is not None and await self._async_stop_push(url) and self._local_push_url == url:
+            self._local_push_url = None
 
     def _cloud_push_just_stopped(self) -> bool:
         return time.monotonic() - self._cloud_stopped_at < _STOP_SETTLE_WINDOW
@@ -938,6 +947,7 @@ class NanitCameraEntity(NanitEntity, Camera):
         except Exception:
             _LOGGER.debug("Could not build the cloud URL after a local miss", exc_info=True)
             return
+        await self._async_release_local_push()
         if not await self._async_start_streaming_safe(source, reconnect_on_failure=False):
             return
         if self._local_reclaimed_stream(after_put=True):

@@ -382,15 +382,13 @@ class NanitCameraEntity(NanitEntity, Camera):
             _LOGGER.debug("Camera %s is powered off — no stream source", self._camera.uid)
             return None
 
-        if self._local is not None and self._local.active:
-            # No side effects here: Home Assistant asks for the source when it
-            # picks a WebRTC provider at startup and on every WebRTC offer,
-            # not only when someone watches. The camera is started by the
-            # receiver's first subscriber (_async_local_start).
-            self._local.channel.accepting = True
-            return self._local.flv_url()
+        if (url := self._local_stream_source()) is not None:
+            return url
 
         await self._async_release_local_push()
+        if (url := self._local_stream_source()) is not None:
+            # A late publish ended the cooldown during the stop.
+            return url
         source = self._cached_stream_source
         source_age = time.monotonic() - self._stream_source_started_at
         if (
@@ -406,6 +404,8 @@ class NanitCameraEntity(NanitEntity, Camera):
 
             if not await self._async_start_streaming_safe(source):
                 return None
+            if self._local_reclaimed_stream(after_put=True):
+                return self._local_stream_source()
 
             self._cached_stream_source = source
             self._stream_source_started_at = time.monotonic()
@@ -423,9 +423,24 @@ class NanitCameraEntity(NanitEntity, Camera):
         )
         if not await self._async_start_streaming_safe(source):
             return None
+        if self._local_reclaimed_stream(after_put=True):
+            return self._local_stream_source()
         # PUT_STREAMING just went out — restart the keepalive countdown.
         self._schedule_stream_keepalive_timer()
         return source
+
+    def _local_stream_source(self) -> str | None:
+        """Return the receiver's FLV URL while local streaming is active.
+
+        No side effects here: Home Assistant asks for the source when it
+        picks a WebRTC provider at startup and on every WebRTC offer, not
+        only when someone watches. The camera is started by the receiver's
+        first subscriber (_async_local_start).
+        """
+        if self._local is None or not self._local.active:
+            return None
+        self._local.channel.accepting = True
+        return self._local.flv_url()
 
     def _schedule_stream_expiry_timer(self, delay: float = _STREAM_SOURCE_MAX_AGE) -> None:
         """Schedule backend stream invalidation so token expiry is not update-dependent."""
@@ -767,7 +782,10 @@ class NanitCameraEntity(NanitEntity, Camera):
         connected, and it may still count that push against its slots.
         """
         url = self._local_push_url
-        if url is not None and await self._async_stop_push(url) and self._local_push_url == url:
+        if url is None or (self._local is not None and self._local.channel.publishing):
+            # A camera that is publishing is not a dead push. Leave it be.
+            return
+        if await self._async_stop_push(url) and self._local_push_url == url:
             self._local_push_url = None
 
     def _cloud_push_just_stopped(self) -> bool:

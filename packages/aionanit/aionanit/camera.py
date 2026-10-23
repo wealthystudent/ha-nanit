@@ -164,6 +164,9 @@ class NanitCamera:
         self._stopped: bool = False
         self._connected_event: asyncio.Event = asyncio.Event()
         self._connected_event.set()
+        # The URL of the last push the camera accepted, for a STOPPED that
+        # doesn't name one.
+        self._stream_url: str = ""
 
     # ------------------------------------------------------------------
     # Properties
@@ -567,8 +570,10 @@ class NanitCamera:
             raise
         status = getattr(response, "status_code", None)
         if not isinstance(status, int):
+            self._stream_url = rtmps_url
             return None
         if status == 200:
+            self._stream_url = rtmps_url
             _LOGGER.debug("PUT_STREAMING succeeded for camera %s", self._uid)
         else:
             _LOGGER.debug(
@@ -582,22 +587,24 @@ class NanitCamera:
     async def async_stop_streaming(
         self,
         *,
-        rtmps_url: str = "",
+        rtmps_url: str | None = None,
         reconnect_on_failure: bool = True,
     ) -> int | None:
         """Send PUT_STREAMING with status=STOPPED to camera.
 
         The camera stops the push to ``rtmps_url``. It answers 200 to an
-        empty URL as well but keeps pushing, so a caller that wants a push
-        ended has to name the URL it sent with ``async_start_streaming``.
+        empty URL as well but keeps pushing, so the URL has to be named.
+        Without one, this names the last push the camera accepted from
+        ``async_start_streaming``.
 
         Returns the camera's status code, or None if the response carried
         none.
         """
+        url = self._stream_url if rtmps_url is None else rtmps_url
         streaming = Streaming(
             id=StreamIdentifier.MOBILE,
             status=StreamingStatus.STOPPED,
-            rtmp_url=rtmps_url,
+            rtmp_url=url,
         )
         response = await self._send_request(
             RequestType.PUT_STREAMING,
@@ -605,7 +612,11 @@ class NanitCamera:
             reconnect_on_failure=reconnect_on_failure,
         )
         status = getattr(response, "status_code", None)
-        return status if isinstance(status, int) else None
+        if not isinstance(status, int):
+            return None
+        if status == 200 and url == self._stream_url:
+            self._stream_url = ""
+        return status
 
     # ------------------------------------------------------------------
     # Snapshot

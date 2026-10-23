@@ -1340,8 +1340,28 @@ class TestTimeoutForceReconnect:
         cam, *_ = _make_camera()
         cam._send_request = AsyncMock(return_value=None)
         assert await cam.async_stop_streaming() is None
-        assert cam._send_request.await_args.kwargs["streaming"].rtmp_url == ""
         assert cam._send_request.await_args.kwargs["reconnect_on_failure"] is True
+
+    async def test_stop_streaming_defaults_to_the_accepted_push(self) -> None:
+        """An unnamed STOPPED names the last push the camera accepted."""
+        cam, *_ = _make_camera()
+        url = "rtmps://media-secured.nanit.com/nanit/baby.token"
+
+        def answer(code: int) -> Response:
+            return Response(request_id=1, request_type=RequestType.PUT_STREAMING, status_code=code)
+
+        cam._send_request = AsyncMock(return_value=answer(200))
+        await cam.async_start_streaming(rtmps_url=url)
+        cam._send_request = AsyncMock(return_value=answer(STREAM_LIMIT_STATUS))
+        await cam.async_start_streaming(rtmps_url="rtmps://elsewhere/declined")
+
+        cam._send_request = AsyncMock(return_value=answer(200))
+        assert await cam.async_stop_streaming() == 200
+        assert cam._send_request.await_args.kwargs["streaming"].rtmp_url == url
+
+        # Stopped, so there is nothing left to name.
+        await cam.async_stop_streaming()
+        assert cam._send_request.await_args.kwargs["streaming"].rtmp_url == ""
 
     async def test_timeout_calls_reconnect_before_retry(self) -> None:
         """Request timeout triggers _async_reconnect, then retries."""

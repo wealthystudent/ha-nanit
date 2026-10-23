@@ -2344,3 +2344,22 @@ async def test_local_release_keeps_the_record_when_the_stop_fails(hass: HomeAssi
         camera.async_stop_streaming = outcome
         await entity._async_release_local_push()
         assert entity._local_push_url == "rtmps://192.168.1.10:1935/nanit/key"
+
+
+async def test_publish_during_a_cached_cloud_start_serves_local(hass: HomeAssistant) -> None:
+    local = _local_entry(hass, _entry(hass)).camera("cam_1")
+    entity, camera = _entity(hass, local)
+    local.start_cooldown("x")
+    entity._cached_stream_source = "rtmps://cloud/url"
+    entity._stream_source_started_at = time.monotonic()
+
+    async def start(**_kwargs: Any) -> int:
+        local.end_cooldown()
+        return 200
+
+    camera.async_start_streaming = AsyncMock(side_effect=start)
+    camera.async_stop_streaming = AsyncMock(return_value=200)
+    assert await entity.stream_source() == FLV_URL
+    await hass.async_block_till_done()
+    assert entity._cached_stream_source is None
+    assert entity._cancel_stream_keepalive_timer is None

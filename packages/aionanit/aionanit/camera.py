@@ -579,17 +579,33 @@ class NanitCamera:
             )
         return status
 
-    async def async_stop_streaming(self) -> None:
-        """Send PUT_STREAMING with status=STOPPED to camera."""
+    async def async_stop_streaming(
+        self,
+        *,
+        rtmps_url: str = "",
+        reconnect_on_failure: bool = True,
+    ) -> int | None:
+        """Send PUT_STREAMING with status=STOPPED to camera.
+
+        The camera stops the push to ``rtmps_url``. It answers 200 to an
+        empty URL as well but keeps pushing, so a caller that wants a push
+        ended has to name the URL it sent with ``async_start_streaming``.
+
+        Returns the camera's status code, or None if the response carried
+        none.
+        """
         streaming = Streaming(
             id=StreamIdentifier.MOBILE,
             status=StreamingStatus.STOPPED,
-            rtmp_url="",
+            rtmp_url=rtmps_url,
         )
-        await self._send_request(
+        response = await self._send_request(
             RequestType.PUT_STREAMING,
             streaming=streaming,
+            reconnect_on_failure=reconnect_on_failure,
         )
+        status = getattr(response, "status_code", None)
+        return status if isinstance(status, int) else None
 
     # ------------------------------------------------------------------
     # Snapshot

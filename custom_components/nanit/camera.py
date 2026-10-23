@@ -166,6 +166,12 @@ class NanitCameraEntity(NanitEntity, Camera):
         self._cancel_stream_keepalive_timer: CALLBACK_TYPE | None = None
         self._stream_refresh_task: asyncio.Task[None] | None = None
         self._stream_keepalive_task: asyncio.Task[bool] | None = None
+        # The push the camera last accepted from this entity, cloud or local.
+        # A STOPPED only ends a push it names, so these are kept to stop our
+        # own push before switching targets and on removal (#190).
+        self._cloud_push_url: str | None = None
+        self._local_push_url: str | None = None
+        self._cloud_stop_task: asyncio.Task[None] | None = None
         # Opt-in stills from the live stream when the cloud snapshot fails.
         self._stream_stills = stream_stills
         self._still_info = still_info if still_info is not None else StreamStillInfo()
@@ -249,12 +255,20 @@ class NanitCameraEntity(NanitEntity, Camera):
             self._stream_refresh_task,
             self._stream_keepalive_task,
             self._stream_still_task,
+            self._cloud_stop_task,
         ):
             if task is not None and not task.done():
                 task.cancel()
         self._stream_refresh_task = None
         self._stream_keepalive_task = None
         self._stream_still_task = None
+        self._cloud_stop_task = None
+        # The camera keeps pushing to a target that is gone, and that push
+        # holds one of its app slots until it lapses.
+        for url in (self._cloud_push_url, self._local_push_url):
+            if url is not None:
+                await self._async_stop_push(url)
+        self._cloud_push_url = self._local_push_url = None
         await super().async_will_remove_from_hass()
 
     def _invalidate_stream(self, reason: str = "state change") -> None:
@@ -567,6 +581,7 @@ class NanitCameraEntity(NanitEntity, Camera):
         rtmps_url: str | None = None,
         *,
         reconnect_on_failure: bool = True,
+        local: bool = False,
     ) -> bool:
         """Send PUT_STREAMING with retry.  Returns True on success.
 
@@ -576,10 +591,14 @@ class NanitCameraEntity(NanitEntity, Camera):
         stops the camera's RTMPS push, so a keepalive that reconnects on a
         slow ACK tears down the very stream it is keeping alive and loops
         (reconnect → resume PUT_STREAMING → slow ACK → reconnect …).
+
+        ``local`` says ``rtmps_url`` is the receiver's, for the push record.
         """
         for attempt in range(1, _STREAM_START_ATTEMPTS + 1):
             try:
-                await self._async_send_put_streaming(rtmps_url, reconnect_on_failure)
+                status = await self._async_send_put_streaming(rtmps_url, reconnect_on_failure)
+                if rtmps_url is not None:
+                    self._record_push(rtmps_url, status, local=local)
                 return True
             except Exception:
                 if attempt < _STREAM_START_ATTEMPTS:
@@ -602,14 +621,17 @@ class NanitCameraEntity(NanitEntity, Camera):
 
     async def _async_send_put_streaming(
         self, rtmps_url: str | None, reconnect_on_failure: bool
-    ) -> None:
-        """Send one PUT_STREAMING, degrading gracefully on older aionanit wheels."""
+    ) -> object:
+        """Send one PUT_STREAMING, degrading gracefully on older aionanit wheels.
+
+        Returns what the client returned, the camera's status on current
+        aionanit.
+        """
         if not reconnect_on_failure:
             try:
-                await self._camera.async_start_streaming(
+                return await self._camera.async_start_streaming(
                     rtmps_url=rtmps_url, reconnect_on_failure=False
                 )
-                return
             except TypeError as err:
                 if "reconnect_on_failure" not in str(err):
                     raise
@@ -619,7 +641,7 @@ class NanitCameraEntity(NanitEntity, Camera):
                     self._camera.uid,
                 )
         try:
-            await self._camera.async_start_streaming(rtmps_url=rtmps_url)
+            return await self._camera.async_start_streaming(rtmps_url=rtmps_url)
         except TypeError as err:
             if "rtmps_url" not in str(err):
                 raise
@@ -629,6 +651,74 @@ class NanitCameraEntity(NanitEntity, Camera):
                 self._camera.uid,
             )
             await self._camera.async_start_streaming()
+            return None
+
+    @callback
+    def _record_push(self, url: str, status: object, *, local: bool) -> None:
+        """Remember the push the camera accepted, so it can be stopped by name.
+
+        The camera serves one push per client and declines a start (403)
+        while ours is live, keeping the push it had. So only an accepted or
+        unknown answer is recorded, and an accepted one also means the other
+        kind of push is gone.
+        """
+        if isinstance(status, int) and status != 200:
+            return
+        if local:
+            self._local_push_url = url
+            if status == 200:
+                self._cloud_push_url = None
+        else:
+            self._cloud_push_url = url
+            if status == 200:
+                self._local_push_url = None
+
+    async def _async_stop_push(self, url: str) -> bool:
+        """Ask the camera to stop pushing to ``url``. Best effort.
+
+        Never reconnects the control session, and never logs the error text,
+        which could carry the URL and its token.
+        """
+        try:
+            async with asyncio.timeout(ACK_TIMEOUT):
+                await self._camera.async_stop_streaming(rtmps_url=url, reconnect_on_failure=False)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug(
+                "Could not stop a push for camera %s: %s", self._camera.uid, type(err).__name__
+            )
+            return False
+        return True
+
+    @callback
+    def _stop_cloud_push(self) -> None:
+        """Start stopping our cloud push in the background, once at a time."""
+        url = self._cloud_push_url
+        hass = getattr(self, "hass", None)
+        if url is None or hass is None:
+            return
+        if self._cloud_stop_task is not None and not self._cloud_stop_task.done():
+            return
+        self._cloud_stop_task = hass.async_create_task(
+            self._async_stop_cloud_push(url),
+            name=f"nanit_stop_cloud_push_{self._camera.uid}",
+        )
+
+    async def _async_stop_cloud_push(self, url: str) -> None:
+        if await self._async_stop_push(url) and self._cloud_push_url == url:
+            self._cloud_push_url = None
+
+    async def _async_release_cloud_push(self) -> None:
+        """Stop our cloud push and wait for it before a local PUT_STREAMING.
+
+        The camera declines a new push while ours is live, so the local
+        request must not overtake the stop. The wait is bounded by the
+        stop's own timeout.
+        """
+        if self._cloud_push_url is not None:
+            self._stop_cloud_push()
+        task = self._cloud_stop_task
+        if task is not None and not task.done():
+            await asyncio.wait((task,))
 
     # ------------------------------------------------------------------
     # Local streaming
@@ -665,10 +755,9 @@ class NanitCameraEntity(NanitEntity, Camera):
         A camera that already streams to as many apps as it allows answers
         STREAM_LIMIT_STATUS. That says nothing about the network, so it is
         never a strike. It still grows the backoff: the slot can stay taken
-        for hours (other apps watching overnight, or this entry's own cloud
-        push after a fallback), and a retry every cooldown would stall the
-        viewer each time. The cloud URL may still play meanwhile, if one of
-        the other apps keeps a cloud stream running.
+        for hours (other apps watching overnight), and a retry every
+        cooldown would stall the viewer each time. Our own cloud push is
+        stopped before the request, so it is never what holds the slot.
 
         Connections are counted per peer once the camera's address is
         learned from an earlier publish, so a LAN scanner or another camera
@@ -706,6 +795,7 @@ class NanitCameraEntity(NanitEntity, Camera):
             # Usually lasting (no routable address), so it grows the backoff.
             self._fall_back_to_cloud("no local address to advertise")
             return False
+        await self._async_release_cloud_push()
         try:
             # aionanit leaves a late ACK to resolve a future nobody awaits,
             # which is harmless.
@@ -717,6 +807,7 @@ class NanitCameraEntity(NanitEntity, Camera):
             _LOGGER.debug("Local PUT_STREAMING failed for camera %s: %s", self._camera.uid, err)
             self._fall_back_to_cloud("camera did not accept the local stream request")
             return False
+        self._record_push(url, status, local=True)
         if not isinstance(status, int):
             status = None  # unknown: judge by whether the camera connects
         busy = status == STREAM_LIMIT_STATUS
@@ -839,7 +930,8 @@ class NanitCameraEntity(NanitEntity, Camera):
 
         The camera has one push target for all of Home Assistant, so the
         cloud stream is wound down here instead of waiting for it to idle
-        (a preloaded or always-on stream never does). A watched HLS stream
+        (a preloaded or always-on stream never does), and the camera is told
+        to stop pushing to the cloud URL. A watched HLS stream
         is switched in place to the local URL, whose first read starts the
         camera locally, or falls back to the cloud again on a miss. The
         cached cloud URL and its timers are dropped so nothing later moves
@@ -860,6 +952,9 @@ class NanitCameraEntity(NanitEntity, Camera):
         for task in (self._local_fallback_task, self._stream_refresh_task):
             if task is not None and not task.done() and task is not asyncio.current_task():
                 task.cancel()
+        # Our cloud push would hold the camera's slot, and outlive the cached
+        # URL by up to 20 minutes, so a local request would be declined.
+        self._stop_cloud_push()
         if self._cached_stream_source is not None:
             self._expire_stream_source()
             keepalive = self._stream_keepalive_task
@@ -935,7 +1030,8 @@ class NanitCameraEntity(NanitEntity, Camera):
             # unlike the first start this is not a miss, and the next tick retries.
             _LOGGER.debug("Nanit local keepalive has no address to advertise: %s", err)
             return False
-        return await self._async_start_streaming_safe(url, reconnect_on_failure=False)
+        await self._async_release_cloud_push()
+        return await self._async_start_streaming_safe(url, reconnect_on_failure=False, local=True)
 
     # ------------------------------------------------------------------
     # Snapshot (with caching)
@@ -1109,12 +1205,10 @@ class NanitCameraEntity(NanitEntity, Camera):
         The cloud keepalive renews the push only while a stream has outputs,
         so a grab leaves the camera to stop pushing on its own about 20
         minutes later. During a local cooldown each grab re-sends the cloud
-        PUT_STREAMING, which keeps that push and its stream slot alive, so a
-        picture asked for at least every 20 minutes keeps the camera on the
-        cloud (#190). PUT_STREAMING STOPPED is
-        never sent, because it is camera-wide and would cut off anyone
-        watching. The source URL carries an access token and is never logged
-        here.
+        PUT_STREAMING, which keeps that push alive until the cooldown ends,
+        when the push is stopped by name. A grab sends no STOPPED itself,
+        since a viewer may be using the push it started. The source URL
+        carries an access token and is never logged here.
 
         WebRTC (go2rtc) and HomeKit viewers do not use that stream, so for
         them the ffmpeg path runs and re-sends PUT_STREAMING, usually for the

@@ -274,7 +274,14 @@ class NanitCameraEntity(NanitEntity, Camera):
         self._stream_still_task = None
         self._cloud_stop_task = None
         # The camera keeps pushing to a target that is gone, and that push
-        # holds one of its app slots until it lapses.
+        # holds one of its app slots until it lapses. A local push is stopped
+        # only while it is live: the camera answers a stop for one it isn't
+        # making very late (about 70 s in testing), and the next setup reuses
+        # the same URL, so a late stop could end that one's first push.
+        if self._local_push_url is not None and (
+            self._local is None or not self._local.channel.publishing
+        ):
+            self._local_push_url = None
         urls = [url for url in (self._cloud_push_url, self._local_push_url) if url is not None]
         if urls:
             await asyncio.gather(*(self._async_stop_push(url) for url in urls))

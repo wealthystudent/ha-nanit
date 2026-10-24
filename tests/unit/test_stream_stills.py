@@ -36,6 +36,7 @@ from custom_components.nanit.diagnostics import async_get_config_entry_diagnosti
 from custom_components.nanit.hub import StreamStillInfo
 
 from .test_entities import _camera_state, _disable_state_writes, _push_coordinator
+from .test_local_stream import FLV_URL, _entry, _local_entry
 
 pytestmark = [
     pytest.mark.filterwarnings("ignore::pytest.PytestRemovedIn9Warning"),
@@ -331,7 +332,7 @@ async def test_no_stream_source_skips_the_frame_read(hass: HomeAssistant) -> Non
 
 
 async def test_grab_never_stops_the_camera_stream(hass: HomeAssistant) -> None:
-    """PUT_STREAMING STOPPED is camera-wide and would cut off a live viewer."""
+    """A grab sends no STOPPED: a viewer may be using the push it started."""
     for grab in (
         AsyncMock(return_value=NEW_IMAGE),
         AsyncMock(side_effect=RuntimeError("boom")),
@@ -1102,3 +1103,37 @@ async def test_retry_delay_counts_from_the_end_of_a_grab(hass: HomeAssistant) ->
         await entity.async_camera_image()
         await _settle(hass, entity)
         assert camera.async_start_streaming.await_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Local streaming
+# ---------------------------------------------------------------------------
+
+
+async def test_grab_in_local_mode_reads_the_receiver(hass: HomeAssistant) -> None:
+    """In local mode the grab reads the receiver and asks nothing of the cloud.
+
+    The receiver's first reader is what starts the camera, so the grab itself
+    sends no PUT_STREAMING.
+    """
+    local = _local_entry(hass, _entry(hass)).camera("cam_1")
+    coordinator = _push_coordinator(_camera_state(sleep_mode=False))
+    camera = _camera_mock()
+    info = StreamStillInfo()
+    entity = NanitCameraEntity(
+        coordinator, camera, stream_stills=True, still_info=info, local=local
+    )
+    entity.hass = hass
+    _disable_state_writes(entity)
+    entity._cached_snapshot = OLD_IMAGE
+    entity._cached_snapshot_at = time.monotonic() - MAX_AGE - 60
+
+    with patch(GRAB, new=AsyncMock(return_value=NEW_IMAGE)) as grab:
+        await entity.async_camera_image()
+        await _settle(hass, entity)
+
+    grab.assert_awaited_once_with(hass, f"-rw_timeout 10000000 -i {shlex.quote(FLV_URL)}")
+    camera.async_start_streaming.assert_not_awaited()
+    camera.async_get_stream_rtmps_url.assert_not_awaited()
+    assert entity._cached_snapshot == NEW_IMAGE
+    assert entity._cloud_push_url is None

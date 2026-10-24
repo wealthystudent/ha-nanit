@@ -181,7 +181,8 @@ Good to know:
 - The camera only streams to a few Nanit apps or devices at a time (two in testing), and Home Assistant counts as one. When other apps already use them all, Home Assistant falls back to the cloud stream and tries local again later, waiting longer each time the camera is still busy, up to six hours.
 - The camera keeps sending video for a while after the last viewer leaves, like the cloud stream.
 - If your go2rtc server's URL (`go2rtc: url:` in your configuration) isn't `localhost` or a loopback address, it can't reach the local stream, so WebRTC would fall back to HLS. Local streaming therefore starts off on those setups. You can still turn it on in the options.
-- A camera that falls back to the cloud while it is being watched stays on the cloud until it has been idle for about 20 minutes, because Home Assistant's own cloud stream holds one of the camera's slots until then. Enabling **Preload camera stream** keeps the camera streaming around the clock, so a preloaded camera that falls back stays on the cloud until preloading stops long enough for the camera to go idle. **Stills from the live stream** has the same effect while something keeps asking for a picture, like a HomeKit tile that's always on screen, since each still re-sends the cloud request during the fallback.
+- A camera that falls back to the cloud goes back to local when the wait is over, even while it's being watched, preloaded, or asked for stills. Home Assistant first tells the camera to stop its own cloud stream, which would otherwise hold one of the camera's slots. A WebRTC viewer's picture pauses until the player reconnects, which the Nanit card does on its own.
+- Reloading the integration ends that wait, so local is tried again on the next view. It doesn't end the pause after two misses in a row, which the repair's retry button does.
 
 ## Troubleshooting
 

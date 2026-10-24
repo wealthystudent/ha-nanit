@@ -44,6 +44,7 @@ just card          # Rebuild the Lovelace card after editing frontend/src (commi
 just card watch    # Rebuild on every change
 
 just dev           # Dev Home Assistant → http://localhost:8123
+just dev fix/foo   # Serve the checkout on this branch, or a worktree by folder name
 just dev restart   # Restart after code changes
 just dev logs      # Follow logs
 just dev reset     # Wipe dev state

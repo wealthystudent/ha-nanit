@@ -89,6 +89,7 @@ just test all         # Both test suites
 just card             # Rebuild the Lovelace card bundle
 just dev              # Start dev HA instance → http://localhost:8123
 just dev restart      # Restart after code changes
+just dev <branch>     # Serve the checkout that has <branch>, such as your worktree
 just notes            # Preview release notes for what main would ship
 ```
 
@@ -104,7 +105,7 @@ Full details in [CONTRIBUTING.md](CONTRIBUTING.md). What agents must get right:
 - Release labels (`release:patch|minor|major`) publish a beta on merge. Pick the size that matches the change; leave unlabelled if nothing user-facing changed.
 - If behavior or user-facing functionality changes, update `README.md` in the same PR.
 - Commits are signed with the host's existing git signing setup. Never change signing config or disable it.
-- `just check` passes before pushing. Verify behavior in the dev HA instance (`just dev`) when the change is user-facing.
+- `just check` passes before pushing. Verify behavior in the dev HA instance when the change is user-facing. Docker is blocked in the sandbox, so give the user `just dev <your branch>` to run.
 - Check the change against the applicable sections of [`docs/SECURITY_AUDIT_CHECKLIST.md`](docs/SECURITY_AUDIT_CHECKLIST.md) before opening the PR.
 
 ### Releases

@@ -6,8 +6,9 @@ services:
     network_mode: host
     volumes:
       - ha-config:/config
-      - ../custom_components:/config/custom_components:ro
-      - ../packages/aionanit:/opt/aionanit
+      # NANIT_TREE (set by `just dev <branch>`) serves the checkout that has that branch.
+      - ${NANIT_TREE:-..}/custom_components:/config/custom_components:ro
+      - ${NANIT_TREE:-..}/packages/aionanit:/opt/aionanit
     environment:
       - TZ=Europe/Oslo
     command: >

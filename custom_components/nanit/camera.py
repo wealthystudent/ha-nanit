@@ -385,10 +385,6 @@ class NanitCameraEntity(NanitEntity, Camera):
         if (url := self._local_stream_source()) is not None:
             return url
 
-        await self._async_release_local_push()
-        if (url := self._local_stream_source()) is not None:
-            # A late publish ended the cooldown during the stop.
-            return url
         source = self._cached_stream_source
         source_age = time.monotonic() - self._stream_source_started_at
         if (
@@ -733,6 +729,7 @@ class NanitCameraEntity(NanitEntity, Camera):
         if isinstance(status, int) and status != 200:
             _LOGGER.debug("Camera %s declined to stop a push: %s", self._camera.uid, status)
             return False
+        _LOGGER.debug("Stopped a push for camera %s", self._camera.uid)
         return True
 
     @callback
@@ -774,19 +771,6 @@ class NanitCameraEntity(NanitEntity, Camera):
         if self._cloud_push_url is not None:
             self._stop_cloud_push()
             await self._async_wait_for_cloud_stop()
-
-    async def _async_release_local_push(self) -> None:
-        """Stop a local push the camera accepted before asking for the cloud.
-
-        After a clean miss the camera acked the local request but never
-        connected, and it may still count that push against its slots.
-        """
-        url = self._local_push_url
-        if url is None or (self._local is not None and self._local.channel.publishing):
-            # A camera that is publishing is not a dead push. Leave it be.
-            return
-        if await self._async_stop_push(url) and self._local_push_url == url:
-            self._local_push_url = None
 
     def _cloud_push_just_stopped(self) -> bool:
         return time.monotonic() - self._cloud_stopped_at < _STOP_SETTLE_WINDOW
@@ -965,7 +949,6 @@ class NanitCameraEntity(NanitEntity, Camera):
         except Exception:
             _LOGGER.debug("Could not build the cloud URL after a local miss", exc_info=True)
             return
-        await self._async_release_local_push()
         if not await self._async_start_streaming_safe(source, reconnect_on_failure=False):
             return
         if self._local_reclaimed_stream(after_put=True):

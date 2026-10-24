@@ -1080,6 +1080,13 @@ class NanitCamera:
             _LOGGER.info("Reconnecting camera %s inline", self._uid)
             self._cancel_local_probe()
             self._cancel_token_refresh()
+            # The connect below replaces the socket without a DISCONNECTED or
+            # RECONNECTING transition, so nothing else fails requests still in
+            # flight on the old one, and their responses can no longer arrive.
+            # Fail them now (as the local-promotion path does) so callers retry
+            # on the new session instead of each waiting out a full timeout and
+            # then forcing yet another reconnect.
+            self._pending.cancel_all(NanitTransportError("Reconnecting"))
 
             connected = False
             try:

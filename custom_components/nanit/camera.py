@@ -23,6 +23,7 @@ from homeassistant.util.system_info import is_official_image
 
 from aionanit import NanitCamera
 from aionanit.camera import STREAM_LIMIT_STATUS
+from aionanit.exceptions import NanitRequestTimeout, NanitTransportError
 from aionanit.models import ConnectionState
 
 from . import NanitConfigEntry
@@ -54,6 +55,12 @@ _STREAM_STOP_TIMEOUT = 5.0
 # winding it down, so the local request is sent once more after a short delay.
 _STOP_SETTLE_WINDOW = 10.0
 _STOP_SETTLE_DELAY = 2.0
+# The camera ends a cloud push about 20 minutes after the last request that
+# kept it going. Past that the record is forgotten rather than stopped, since
+# the camera answers a stop for a push it isn't making very late. A declined
+# keepalive for our own push counts as keeping it going (see _record_push),
+# and the 5 minutes over 20 are margin on a lifetime that's only observed.
+_CLOUD_PUSH_LIFETIME = 25 * 60.0
 _SNAPSHOT_CACHE_TTL = 60.0
 _SNAPSHOT_PREFETCH_AGE = 30.0
 # Stream stills (opt-in): when the cloud snapshot fails, a cached image older
@@ -176,6 +183,7 @@ class NanitCameraEntity(NanitEntity, Camera):
         self._cloud_push_url: str | None = None
         self._local_push_url: str | None = None
         self._cloud_push_generation = 0
+        self._cloud_push_at = 0.0
         self._cloud_stop_task: asyncio.Task[None] | None = None
         self._cloud_stopped_at = float("-inf")
         self._warned_stop_unsupported = False
@@ -282,7 +290,7 @@ class NanitCameraEntity(NanitEntity, Camera):
             self._local is None or not self._local.channel.publishing
         ):
             self._local_push_url = None
-        urls = [url for url in (self._cloud_push_url, self._local_push_url) if url is not None]
+        urls = [url for url in (self._live_cloud_push_url(), self._local_push_url) if url]
         if urls:
             await asyncio.gather(*(self._async_stop_push(url) for url in urls))
         self._cloud_push_url = self._local_push_url = None
@@ -623,13 +631,26 @@ class NanitCameraEntity(NanitEntity, Camera):
 
         ``local`` says ``rtmps_url`` is the receiver's, for the push record.
         """
+        maybe_sent = False
         for attempt in range(1, _STREAM_START_ATTEMPTS + 1):
             try:
                 status = await self._async_send_put_streaming(rtmps_url, reconnect_on_failure)
                 if rtmps_url is not None:
+                    if maybe_sent and status == STREAM_LIMIT_STATUS:
+                        # An earlier attempt may have been accepted with its
+                        # answer lost, and this 403 is then the camera
+                        # declining because of that push of ours.
+                        status = None
                     self._record_push(rtmps_url, status, local=local)
                 return True
-            except Exception:
+            except Exception as err:
+                # A request that may have reached the camera can have started
+                # a push, and in testing a push outlived the session that
+                # started it. Only a camera that was never reached (not
+                # connected) is sure to have started nothing.
+                maybe_sent = maybe_sent or isinstance(
+                    err, (NanitRequestTimeout, NanitTransportError)
+                )
                 if attempt < _STREAM_START_ATTEMPTS:
                     _LOGGER.debug(
                         "PUT_STREAMING attempt %d/%d failed for camera %s, retrying in %.0fs",
@@ -689,9 +710,20 @@ class NanitCameraEntity(NanitEntity, Camera):
         In testing the camera serves one push per client and declines a
         start (403) while ours is live, keeping the push it had. So only an
         accepted or unknown answer is recorded, and an accepted one also
-        means the other kind of push is gone.
+        means the other kind of push is gone. A cloud 403 while the record
+        is still current only renews the record's clock, whatever URL it
+        was for (every cloud URL we send is ours, and it moves on when the
+        source is renewed): a watched push gets that 403 on every keepalive,
+        and forgetting it while live brings #190 back. A record past its
+        lifetime is never brought back.
         """
         if isinstance(status, int) and status != 200:
+            if (
+                status == STREAM_LIMIT_STATUS
+                and not local
+                and self._live_cloud_push_url() is not None
+            ):
+                self._cloud_push_at = time.monotonic()
             return
         if local:
             self._local_push_url = url
@@ -699,6 +731,7 @@ class NanitCameraEntity(NanitEntity, Camera):
                 self._cloud_push_url = None
         else:
             self._cloud_push_url = url
+            self._cloud_push_at = time.monotonic()
             # A stop already under way must not clear this newer record.
             self._cloud_push_generation += 1
             if status == 200:
@@ -742,7 +775,7 @@ class NanitCameraEntity(NanitEntity, Camera):
     @callback
     def _stop_cloud_push(self) -> None:
         """Start stopping our cloud push in the background, once at a time."""
-        url = self._cloud_push_url
+        url = self._live_cloud_push_url()
         hass = getattr(self, "hass", None)
         if url is None or hass is None:
             return
@@ -775,9 +808,18 @@ class NanitCameraEntity(NanitEntity, Camera):
         by ACK_TIMEOUT.
         """
         await self._async_wait_for_cloud_stop()
-        if self._cloud_push_url is not None:
+        if self._live_cloud_push_url() is not None:
             self._stop_cloud_push()
             await self._async_wait_for_cloud_stop()
+
+    def _live_cloud_push_url(self) -> str | None:
+        """Return our recorded cloud push, forgetting one that ran out on its own."""
+        if (
+            self._cloud_push_url is not None
+            and time.monotonic() - self._cloud_push_at > _CLOUD_PUSH_LIFETIME
+        ):
+            self._cloud_push_url = None
+        return self._cloud_push_url
 
     def _cloud_push_just_stopped(self) -> bool:
         return time.monotonic() - self._cloud_stopped_at < _STOP_SETTLE_WINDOW

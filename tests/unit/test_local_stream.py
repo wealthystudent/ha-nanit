@@ -23,6 +23,11 @@ from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from aionanit.camera import STREAM_LIMIT_STATUS
+from aionanit.exceptions import (
+    NanitCameraUnavailable,
+    NanitRequestTimeout,
+    NanitTransportError,
+)
 from aionanit.local_stream import StreamChannel
 from aionanit.models import ConnectionState
 from custom_components.nanit import camera as camera_module
@@ -2049,6 +2054,7 @@ async def test_local_keepalive_records_and_releases(hass: HomeAssistant, source_
     local = _local_entry(hass, _entry(hass)).camera("cam_1")
     entity, camera = _entity(hass, local)
     entity._cloud_push_url = "rtmps://cloud/url"
+    entity._cloud_push_at = time.monotonic()
     camera.async_start_streaming = AsyncMock(return_value=200)
     camera.async_stop_streaming = AsyncMock(return_value=200)
     assert await entity._async_local_keepalive() is True
@@ -2232,6 +2238,7 @@ async def test_removal_stops_both_pushes(hass: HomeAssistant) -> None:
     entity, camera = _entity(hass, local)
     entity.entity_id = "camera.nursery"
     entity._cloud_push_url = "rtmps://cloud/url"
+    entity._cloud_push_at = time.monotonic()
     entity._local_push_url = "rtmps://192.168.1.10:1935/nanit/key"
     with patch.object(type(local.channel), "publishing", new=True):
         await entity.async_will_remove_from_hass()
@@ -2315,3 +2322,178 @@ async def test_fallback_sends_no_stop_for_the_local_push(hass: HomeAssistant) ->
     assert await entity.stream_source() == "rtmps://cloud/url"
     camera.async_stop_streaming.assert_not_awaited()
     entity._cancel_stream_timers()
+
+
+def _age_cloud_push(entity: NanitCameraEntity) -> None:
+    entity._cloud_push_at = time.monotonic() - camera_module._CLOUD_PUSH_LIFETIME - 1
+
+
+async def test_cooldown_end_forgets_a_cloud_push_that_ran_out(hass: HomeAssistant) -> None:
+    """The camera answers a stop for a push it isn't making very late."""
+    local = _local_entry(hass, _entry(hass)).camera("cam_1")
+    entity, camera = await _cloud_push(hass, local)
+    _age_cloud_push(entity)
+    local.cooldown_until = 0.0
+    entity._handle_local_cooldown_end()
+    await hass.async_block_till_done()
+    camera.async_stop_streaming.assert_not_awaited()
+    assert entity._cloud_push_url is None
+
+
+async def test_local_start_skips_the_stop_for_a_cloud_push_that_ran_out(
+    hass: HomeAssistant, source_ip: Any
+) -> None:
+    local = _local_entry(hass, _entry(hass)).camera("cam_1")
+    entity, camera = await _cloud_push(hass, local)
+    _age_cloud_push(entity)
+    local.cooldown_until = 0.0
+    local.channel.wait_for_publish = AsyncMock(return_value=True)
+    assert await entity._async_local_start() is True
+    camera.async_stop_streaming.assert_not_awaited()
+
+
+async def test_removal_forgets_a_cloud_push_that_ran_out(hass: HomeAssistant) -> None:
+    local = _local_entry(hass, _entry(hass)).camera("cam_1")
+    entity, camera = await _cloud_push(hass, local)
+    entity.entity_id = "camera.nursery"
+    _age_cloud_push(entity)
+    await entity.async_will_remove_from_hass()
+    camera.async_stop_streaming.assert_not_awaited()
+
+
+async def test_declined_keepalive_for_our_push_keeps_it_current(hass: HomeAssistant) -> None:
+    """A watched push renewed only by declined keepalives is still live."""
+    local = _local_entry(hass, _entry(hass)).camera("cam_1")
+    entity, camera = await _cloud_push(hass, local)
+    entity._cloud_push_at = time.monotonic() - camera_module._CLOUD_PUSH_LIFETIME + 5
+    camera.async_start_streaming = AsyncMock(return_value=STREAM_LIMIT_STATUS)
+    assert await entity._async_start_streaming_safe("rtmps://cloud/url")
+    entity._cloud_push_at -= 10  # would have run out without the renewal
+    assert entity._live_cloud_push_url() == "rtmps://cloud/url"
+
+
+async def test_a_403_does_not_bring_back_a_push_that_ran_out(hass: HomeAssistant) -> None:
+    local = _local_entry(hass, _entry(hass)).camera("cam_1")
+    entity, camera = await _cloud_push(hass, local)
+    _age_cloud_push(entity)
+    camera.async_start_streaming = AsyncMock(return_value=STREAM_LIMIT_STATUS)
+    assert await entity._async_start_streaming_safe("rtmps://cloud/url")
+    assert entity._live_cloud_push_url() is None
+
+
+async def test_first_403_for_a_fresh_cloud_url_renews_our_push(hass: HomeAssistant) -> None:
+    """A fresh URL is declined before it becomes the cached one, and still counts."""
+    local = _local_entry(hass, _entry(hass)).camera("cam_1")
+    entity, camera = await _cloud_push(hass, local)
+    entity._cloud_push_at = time.monotonic() - camera_module._CLOUD_PUSH_LIFETIME + 5
+    camera.async_start_streaming = AsyncMock(return_value=STREAM_LIMIT_STATUS)
+    assert await entity._async_start_streaming_safe("rtmps://cloud/fresh")
+    entity._cloud_push_at -= 10  # would have run out without the renewal
+    assert entity._live_cloud_push_url() == "rtmps://cloud/url"
+
+
+async def test_only_a_403_renews_our_push(hass: HomeAssistant) -> None:
+    local = _local_entry(hass, _entry(hass)).camera("cam_1")
+    entity, camera = await _cloud_push(hass, local)
+    entity._cloud_push_at = time.monotonic() - camera_module._CLOUD_PUSH_LIFETIME + 5
+    camera.async_start_streaming = AsyncMock(return_value=500)
+    assert await entity._async_start_streaming_safe("rtmps://cloud/url")
+    entity._cloud_push_at -= 10
+    assert entity._live_cloud_push_url() is None
+
+
+async def test_keepalives_after_a_declined_rotation_keep_our_push_current(
+    hass: HomeAssistant,
+) -> None:
+    """A rotation declined while our push is live moves the cache, not the push.
+
+    Keepalives then send the new URL, and their 403s must still count for the
+    push the camera kept, or a long view forgets it and #190 comes back.
+    """
+    local = _local_entry(hass, _entry(hass)).camera("cam_1")
+    entity, camera = await _cloud_push(hass, local)
+    entity.stream = _watched_stream()
+    entity._stream_source_started_at = time.monotonic()
+    camera.async_get_stream_rtmps_url = AsyncMock(return_value="rtmps://cloud/rotated")
+    camera.async_start_streaming = AsyncMock(return_value=STREAM_LIMIT_STATUS)
+    await entity._async_refresh_stream_source("test")
+    assert entity._cached_stream_source == "rtmps://cloud/rotated"
+    assert entity._cloud_push_url == "rtmps://cloud/url"
+
+    entity._cloud_push_at = time.monotonic() - camera_module._CLOUD_PUSH_LIFETIME + 5
+    assert await entity._async_start_streaming_safe("rtmps://cloud/rotated")
+    entity._cloud_push_at -= 10
+    assert entity._live_cloud_push_url() == "rtmps://cloud/url"
+    entity._cancel_stream_timers()
+
+
+async def test_403_after_a_lost_answer_is_recorded(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A start accepted with its answer lost makes the retry's 403 come from our push."""
+    monkeypatch.setattr(camera_module, "_STREAM_RETRY_DELAY", 0.0)
+    local = _local_entry(hass, _entry(hass)).camera("cam_1")
+    entity, camera = _entity(hass, local)
+    camera.async_start_streaming = AsyncMock(
+        side_effect=[NanitRequestTimeout("PUT_STREAMING", 7, 3.0), STREAM_LIMIT_STATUS]
+    )
+    assert await entity._async_start_streaming_safe("rtmps://cloud/url", reconnect_on_failure=False)
+    assert entity._live_cloud_push_url() == "rtmps://cloud/url"
+
+
+async def test_403_after_an_unreachable_camera_is_not_recorded(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing reached the camera, so the 403 is someone else holding the slot."""
+    monkeypatch.setattr(camera_module, "_STREAM_RETRY_DELAY", 0.0)
+    local = _local_entry(hass, _entry(hass)).camera("cam_1")
+    entity, camera = _entity(hass, local)
+    camera.async_start_streaming = AsyncMock(
+        side_effect=[NanitCameraUnavailable("down"), STREAM_LIMIT_STATUS]
+    )
+    assert await entity._async_start_streaming_safe("rtmps://cloud/url", reconnect_on_failure=False)
+    assert entity._live_cloud_push_url() is None
+
+
+async def test_local_403_does_not_renew_the_cloud_push(hass: HomeAssistant, source_ip: Any) -> None:
+    local = _local_entry(hass, _entry(hass)).camera("cam_1")
+    entity, camera = await _cloud_push(hass, local)
+    entity._cloud_push_at = time.monotonic() - camera_module._CLOUD_PUSH_LIFETIME + 5
+    camera.async_start_streaming = AsyncMock(return_value=STREAM_LIMIT_STATUS)
+    assert await entity._async_start_streaming_safe(
+        "rtmps://192.168.1.10:1935/nanit/key", local=True
+    )
+    entity._cloud_push_at -= 10
+    assert entity._live_cloud_push_url() is None
+
+
+async def test_403_after_a_dropped_session_is_recorded(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The request may have reached the camera, and a push outlives its session."""
+    monkeypatch.setattr(camera_module, "_STREAM_RETRY_DELAY", 0.0)
+    local = _local_entry(hass, _entry(hass)).camera("cam_1")
+    entity, camera = _entity(hass, local)
+    camera.async_start_streaming = AsyncMock(
+        side_effect=[NanitTransportError("session dropped"), STREAM_LIMIT_STATUS]
+    )
+    assert await entity._async_start_streaming_safe("rtmps://cloud/url", reconnect_on_failure=False)
+    assert entity._live_cloud_push_url() == "rtmps://cloud/url"
+
+
+async def test_a_possible_push_counts_through_later_failures(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A push started by the first attempt survives a later attempt that never got out."""
+    monkeypatch.setattr(camera_module, "_STREAM_RETRY_DELAY", 0.0)
+    local = _local_entry(hass, _entry(hass)).camera("cam_1")
+    entity, camera = _entity(hass, local)
+    camera.async_start_streaming = AsyncMock(
+        side_effect=[
+            NanitRequestTimeout("PUT_STREAMING", 7, 3.0),
+            NanitCameraUnavailable("down"),
+            STREAM_LIMIT_STATUS,
+        ]
+    )
+    assert await entity._async_start_streaming_safe("rtmps://cloud/url", reconnect_on_failure=False)
+    assert entity._live_cloud_push_url() == "rtmps://cloud/url"

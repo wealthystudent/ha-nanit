@@ -385,6 +385,10 @@ class LocalStreamEntry:
             "Pausing Nanit local streaming for 24 hours (%s), using the cloud stream", issue
         )
         self.async_raise_issue(issue, host)
+        # The pause sends every camera of the entry's new views to the cloud,
+        # not only the one whose miss caused it, so each publishes its route.
+        for cam in self.cameras.values():
+            cam.notify_route_changed()
 
     @callback
     def async_raise_issue(self, issue: str, host: str) -> None:
@@ -515,6 +519,9 @@ class LocalStreamCamera:
         # Set by the camera entity, called when local streaming is allowed
         # again from outside the entity (the repair's retry).
         self.on_mode_changed: Callable[[], None] | None = None
+        # Set by the camera entity, called when a pause moves this camera to
+        # the cloud from outside the entity.
+        self.on_route_changed: Callable[[], None] | None = None
 
     @property
     def active(self) -> bool:
@@ -557,6 +564,11 @@ class LocalStreamCamera:
         """Allow local streaming again right away."""
         self.cooldown_until = 0.0
         self.notify_mode_changed()
+
+    def notify_route_changed(self) -> None:
+        """Tell the camera entity its stream route may have changed."""
+        if self.on_route_changed is not None:
+            self.on_route_changed()
 
     def notify_mode_changed(self) -> None:
         """Tell the camera entity that local streaming may be allowed again."""

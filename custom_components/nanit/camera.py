@@ -160,6 +160,7 @@ class NanitCameraEntity(NanitEntity, Camera):
             local.channel.on_consumers_changed = self._handle_local_consumers
             local.channel.on_publish = self._handle_local_publish
             local.on_mode_changed = self._handle_local_cooldown_end
+            local.on_route_changed = self._write_route_state
             local.channel.accepting = local.active and self.is_on
         # Read-only mode: no ON_OFF, so Home Assistant never offers to put
         # the camera to sleep; turn_on/turn_off also refuse if called anyway.
@@ -193,6 +194,17 @@ class NanitCameraEntity(NanitEntity, Camera):
         self._stream_still_task: asyncio.Task[None] | None = None
         self._stream_still_finished_at: float | None = None
         self._stream_still_failures = 0
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Say whether a new view gets the local stream or the cloud one.
+
+        The Nanit card reloads its player when this turns to cloud, since a
+        player that opened the local stream just before a fallback has
+        nothing to play and doesn't retry on its own.
+        """
+        local = self._local
+        return {"stream_route": "local" if local is not None and local.active else "cloud"}
 
     @property
     def is_on(self) -> bool:
@@ -262,6 +274,7 @@ class NanitCameraEntity(NanitEntity, Camera):
             self._local.channel.on_consumers_changed = None
             self._local.channel.on_publish = None
             self._local.on_mode_changed = None
+            self._local.on_route_changed = None
             self._local.channel.cancel_start()
         if self._local_fallback_task is not None and not self._local_fallback_task.done():
             self._local_fallback_task.cancel()
@@ -969,6 +982,10 @@ class NanitCameraEntity(NanitEntity, Camera):
             return
         local.start_cooldown(reason, count_miss=count_miss)
         local.channel.accepting = False
+        # Written before the HLS stream is moved below, so the card's remount
+        # usually lands first. That is fine: it joins the same stream, whose
+        # playlist waits for the cloud segments.
+        self._write_route_state()
         self._schedule_local_cooldown_end(max(0.0, local.cooldown_until - time.monotonic()))
         stream = self.stream
         hass = getattr(self, "hass", None)
@@ -1026,6 +1043,12 @@ class NanitCameraEntity(NanitEntity, Camera):
         return True
 
     @callback
+    def _write_route_state(self) -> None:
+        """Publish stream_route once the entity is in Home Assistant."""
+        if getattr(self, "hass", None) is not None and self.entity_id and self.platform:
+            self.async_write_ha_state()
+
+    @callback
     def _schedule_local_cooldown_end(self, delay: float = COOLDOWN) -> None:
         if self._cancel_local_cooldown_timer is not None:
             self._cancel_local_cooldown_timer()
@@ -1061,6 +1084,7 @@ class NanitCameraEntity(NanitEntity, Camera):
         self._update_local_accepting()
         if not local.active:
             return
+        self._write_route_state()
         # A cloud task already waiting would move the stream back to cloud.
         for task in (self._local_fallback_task, self._stream_refresh_task):
             if task is not None and not task.done() and task is not asyncio.current_task():

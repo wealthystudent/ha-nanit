@@ -31,6 +31,13 @@ const STREAM_VISUAL_READY_SELECTORS = "video, img, canvas, ha-hls-player, ha-web
 // Hide the loader quickly when HA has mounted a stream/player element, while
 // the stricter liveness watchdog continues in the background for self-healing.
 const STREAM_LOADED_FAILOPEN_MS = 3500;
+// On the local stream, the loader stays up (no fail-open) until there's a
+// picture, for at most this long in total. A refused local start takes about
+// 5 s and makes HA's player show an error just before the integration falls
+// back and the card remounts on the cloud stream. Timed from the first blank
+// tick on the route while the loader is still up, so remounts don't extend it. A stream still blank after
+// this shows the player as before.
+const STREAM_LOCAL_START_HOLD_MS = 20000;
 
 @customElement("nanit-card")
 export class NanitCard extends LitElement {
@@ -58,6 +65,13 @@ export class NanitCard extends LitElement {
   private _backendRecoveryFallback: number | undefined;
   private _backendRecoveryInFlight = false;
   private _lastBackendResetAt = 0;
+  // The current mount decoded a frame (fail-open alone doesn't count).
+  private _sawFrame = false;
+  // The camera entity's stream_route on the last tick.
+  private _lastRoute?: string;
+  // When the local-start hold began (0: not running). Reset by a route
+  // change, a picture, or the camera turning off.
+  private _localHoldStartedAt = 0;
 
   static styles = cardStyles;
 
@@ -94,6 +108,13 @@ export class NanitCard extends LitElement {
     // Keep the stream mounted so a reconnect can recover it; only an explicit
     // `off` state should collapse the card and show "Camera Off".
     return this.hass.states[power]?.state !== "off";
+  }
+
+  // "local" or "cloud": which stream a new view gets, set by the integration.
+  private _streamRoute(entities: NanitEntities): string | undefined {
+    if (!entities.camera) return undefined;
+    const route = this.hass.states[entities.camera]?.attributes.stream_route;
+    return typeof route === "string" ? route : undefined;
   }
 
   private _fireMoreInfo(entityId: string): void {
@@ -199,10 +220,50 @@ export class NanitCard extends LitElement {
     const hasVisualStream = this._hasVisualStreamElement(streamEl);
     const video = this._findStreamVideo(streamEl);
 
-    // Fail open: after a grace window, hide the loader regardless — never let it
-    // permanently cover a stream that is actually playing (e.g. WebRTC, where
-    // currentTime is unreliable, or when the <video> can't be located).
+    if (video && video.readyState >= 2) {
+      this._sawFrame = true;
+      this._localHoldStartedAt = 0;
+    }
+
+    // The integration fell back from the local stream to the cloud one. A
+    // player that opened the local stream has nothing to play and won't ask
+    // again, so remount now rather than waiting out the startup budget. A
+    // player showing a picture is left alone.
+    // An unavailable camera entity (the relay reconnecting) carries no
+    // stream_route, so only a defined route is remembered and a flip across
+    // that gap is still seen.
+    const route = this._streamRoute(this._entities());
+    const fellBack = this._lastRoute === "local" && route === "cloud";
+    if (route !== undefined) {
+      if (route !== this._lastRoute) this._localHoldStartedAt = 0;
+      this._lastRoute = route;
+    }
+    if (fellBack && !this._sawFrame) {
+      // Skips the reload backoff: this remount is caused by the fallback,
+      // not by a stall, and fallbacks are spaced by the cooldown.
+      this._cooldownUntil = 0;
+      this._reloadStream(false);
+      return;
+    }
+
+    let holdLoader = false;
+    if (!this._sawFrame && route === "local" && this._streamMountedAt > 0) {
+      // Only started while the loader is still up, so it can't run out
+      // behind a player that already failed open.
+      if (this._localHoldStartedAt === 0 && !this._streamLoaded) {
+        this._localHoldStartedAt = Date.now();
+      }
+      holdLoader =
+        this._localHoldStartedAt !== 0 &&
+        Date.now() - this._localHoldStartedAt < STREAM_LOCAL_START_HOLD_MS;
+    }
+
+    // Fail open: after a grace window, hide the loader unless the local-start
+    // hold is running. Never let it permanently cover a stream that is
+    // actually playing (e.g. WebRTC, where currentTime is unreliable, or when
+    // the <video> can't be located).
     if (
+      !holdLoader &&
       !this._streamLoaded &&
       this._streamMountedAt > 0 &&
       Date.now() - this._streamMountedAt > STREAM_LOADED_FAILOPEN_MS
@@ -345,7 +406,9 @@ export class NanitCard extends LitElement {
     this._checkStreamLiveness();
   };
 
-  private _reloadStream(): void {
+  // countReload=false is a deliberate remount after a fallback, which must not
+  // use up the budget a real stall right after it needs.
+  private _reloadStream(countReload = true): void {
     const now = Date.now();
     // Backing off after hitting the cap — don't remount.
     if (now < this._cooldownUntil) {
@@ -358,13 +421,16 @@ export class NanitCard extends LitElement {
       this._reloadCount = 0;
     }
 
-    this._reloadCount += 1;
-    if (this._reloadCount >= STREAM_MAX_RELOADS) {
-      this._cooldownUntil = now + STREAM_RELOAD_COOLDOWN_MS;
+    if (countReload) {
+      this._reloadCount += 1;
+      if (this._reloadCount >= STREAM_MAX_RELOADS) {
+        this._cooldownUntil = now + STREAM_RELOAD_COOLDOWN_MS;
+      }
     }
 
     this._streamEpoch += 1;
     this._streamLoaded = false;
+    this._sawFrame = false;
     this._streamHealthy = false;
     this._lastVideoTime = 0;
     this._sawProgress = false;
@@ -392,6 +458,9 @@ export class NanitCard extends LitElement {
     this._resumeProbeUntil = 0;
     this._streamMountedAt = 0;
     this._watchedEpoch = -1;
+    this._sawFrame = false;
+    this._lastRoute = undefined;
+    this._localHoldStartedAt = 0;
   }
 
   protected render(): TemplateResult {

@@ -259,3 +259,27 @@ def test_is_nanit_card_resource_matches_known_paths() -> None:
     assert _is_nanit_card_resource("/hacsfiles/ha-nanit/nanit-card.js?v=123")
     assert _is_nanit_card_resource("/local/community/nanit/nanit-card.js")
     assert not _is_nanit_card_resource("/local/community/other-card.js")
+
+
+def test_card_reloads_its_player_when_the_route_turns_to_cloud() -> None:
+    """The card reads stream_route and remounts a player with no picture on a fallback."""
+    root = Path(__file__).resolve().parents[2]
+    card = (root / "frontend" / "src" / "nanit-card.ts").read_text(encoding="utf-8")
+    bundle = (root / "custom_components" / "nanit" / "frontend" / "nanit-card.js").read_text(
+        encoding="utf-8"
+    )
+    assert "attributes.stream_route" in card
+    assert "_lastRoute" in card
+    assert "stream_route" in bundle
+
+
+def test_card_holds_its_loader_through_a_local_start() -> None:
+    """The loader stays up through a local start instead of revealing the player's error."""
+    root = Path(__file__).resolve().parents[2]
+    card = (root / "frontend" / "src" / "nanit-card.ts").read_text(encoding="utf-8")
+    bundle = (root / "custom_components" / "nanit" / "frontend" / "nanit-card.js").read_text(
+        encoding="utf-8"
+    )
+    assert "STREAM_LOCAL_START_HOLD_MS" in card
+    assert "_localHoldStartedAt" in card
+    assert "_localHoldStartedAt" in bundle

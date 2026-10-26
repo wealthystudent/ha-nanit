@@ -2497,3 +2497,92 @@ async def test_a_possible_push_counts_through_later_failures(
     )
     assert await entity._async_start_streaming_safe("rtmps://cloud/url", reconnect_on_failure=False)
     assert entity._live_cloud_push_url() == "rtmps://cloud/url"
+
+
+# ----------------------------------------------------------------------
+# stream_route (the card reloads its player on a fallback)
+# ----------------------------------------------------------------------
+
+
+async def test_stream_route_follows_the_mode(hass: HomeAssistant) -> None:
+    local = _local_entry(hass, _entry(hass)).camera("cam_1")
+    entity, _camera = _entity(hass, local)
+    assert entity.extra_state_attributes == {"stream_route": "local"}
+    local.start_cooldown("test")
+    assert entity.extra_state_attributes == {"stream_route": "cloud"}
+    local.end_cooldown()
+    assert entity.extra_state_attributes == {"stream_route": "local"}
+
+
+def test_stream_route_is_cloud_without_local_streaming() -> None:
+    entity = NanitCameraEntity(_push_coordinator(_camera_state()), MagicMock(uid="cam_1"))
+    assert entity.extra_state_attributes == {"stream_route": "cloud"}
+
+
+async def test_fallback_and_cooldown_end_publish_the_route(hass: HomeAssistant) -> None:
+    local = _local_entry(hass, _entry(hass)).camera("cam_1")
+    entity, _camera = _entity(hass, local)
+    entity.entity_id = "camera.nursery"
+    entity.platform = MagicMock()
+    with patch.object(NanitCameraEntity, "async_write_ha_state") as write:
+        entity._fall_back_to_cloud("test")
+        assert write.call_count == 1
+        assert entity.extra_state_attributes == {"stream_route": "cloud"}
+        local.cooldown_until = 0.0
+        entity._handle_local_cooldown_end()
+        assert write.call_count == 2
+        assert entity.extra_state_attributes == {"stream_route": "local"}
+
+
+async def test_route_is_not_written_before_the_entity_is_added(hass: HomeAssistant) -> None:
+    local = _local_entry(hass, _entry(hass)).camera("cam_1")
+    entity, _camera = _entity(hass, local)
+    with patch.object(NanitCameraEntity, "async_write_ha_state") as write:
+        entity._fall_back_to_cloud("test")
+    write.assert_not_called()
+
+
+async def test_route_is_not_written_without_a_platform(hass: HomeAssistant) -> None:
+    local = _local_entry(hass, _entry(hass)).camera("cam_1")
+    entity, _camera = _entity(hass, local)
+    entity.entity_id = "camera.nursery"
+    entity.platform = None
+    with patch.object(NanitCameraEntity, "async_write_ha_state") as write:
+        entity._fall_back_to_cloud("test")
+    write.assert_not_called()
+
+
+async def test_a_pause_publishes_the_route_of_every_camera(hass: HomeAssistant) -> None:
+    owner = _local_entry(hass, _entry(hass))
+    local_a = owner.camera("cam_1")
+    local_b = owner.camera("cam_2")
+    entity_a, _ = _entity(hass, local_a)
+    entity_b, _ = _entity(hass, local_b)
+    entity_a.entity_id, entity_b.entity_id = "camera.a", "camera.b"
+    entity_a.platform = entity_b.platform = MagicMock()
+    written: list[str] = []
+    with patch.object(
+        NanitCameraEntity,
+        "async_write_ha_state",
+        autospec=True,
+        side_effect=lambda self: written.append(self.entity_id),
+    ):
+        owner.record_strike("192.168.1.10")
+        owner.record_strike("192.168.1.10")
+    assert owner.paused
+    assert "camera.b" in written
+    assert entity_b.extra_state_attributes == {"stream_route": "cloud"}
+
+
+async def test_a_removed_entity_is_not_written_on_a_pause(hass: HomeAssistant) -> None:
+    owner = _local_entry(hass, _entry(hass))
+    local = owner.camera("cam_1")
+    entity, _camera = _entity(hass, local)
+    entity.entity_id = "camera.nursery"
+    entity.platform = MagicMock()
+    await entity.async_will_remove_from_hass()
+    with patch.object(NanitCameraEntity, "async_write_ha_state") as write:
+        owner.record_strike("192.168.1.10")
+        owner.record_strike("192.168.1.10")
+    assert owner.paused
+    write.assert_not_called()

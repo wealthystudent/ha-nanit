@@ -7,6 +7,7 @@ import contextlib
 import socket
 import sys
 import time
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -20,7 +21,8 @@ _ = sys.modules.setdefault("turbojpeg", MagicMock(TurboJPEG=MagicMock()))
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import issue_registry as ir
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from homeassistant.util import dt as dt_util
+from pytest_homeassistant_custom_component.common import MockConfigEntry, async_fire_time_changed
 
 from aionanit.camera import STREAM_LIMIT_STATUS
 from aionanit.exceptions import (
@@ -133,6 +135,7 @@ def _cancel_entity_timers() -> Any:
     while _ENTITIES:
         entity = _ENTITIES.pop()
         entity._cancel_stream_timers()
+        entity._cancel_local_idle_stop()
         if entity._cancel_local_cooldown_timer is not None:
             entity._cancel_local_cooldown_timer()
             entity._cancel_local_cooldown_timer = None
@@ -140,7 +143,7 @@ def _cancel_entity_timers() -> Any:
 
 def _entity(hass: HomeAssistant, local: ls.LocalStreamCamera, *, on: bool = True) -> tuple:
     coordinator = _push_coordinator(_camera_state(sleep_mode=not on))
-    camera = MagicMock(uid="cam_1")
+    camera = MagicMock(uid="cam_1", connected=True)
     camera.async_get_stream_rtmps_url = AsyncMock(return_value="rtmps://cloud/url")
     camera.async_start_streaming = AsyncMock()
     camera.async_stop_streaming = AsyncMock()
@@ -2586,3 +2589,385 @@ async def test_a_removed_entity_is_not_written_on_a_pause(hass: HomeAssistant) -
         owner.record_strike("192.168.1.10")
     assert owner.paused
     write.assert_not_called()
+
+
+# ----------------------------------------------------------------------
+# Idle stop of the local push
+# ----------------------------------------------------------------------
+
+LOCAL_PUSH = "rtmps://192.168.1.10:1935/nanit/key"
+
+
+def _publishing_entity(hass: HomeAssistant) -> tuple:
+    """An entity whose camera is pushing to the receiver, read by one viewer."""
+    local = _local_entry(hass, _entry(hass)).camera("cam_1")
+    entity, camera = _entity(hass, local)
+    entity._local_push_url = LOCAL_PUSH
+    local.channel.publish_started(1, "192.168.1.107", lambda: None)
+    camera.async_stop_streaming = AsyncMock(return_value=200)
+    sub = local.channel.subscribe()
+    return entity, camera, local, sub
+
+
+async def _idle_for(hass: HomeAssistant, seconds: float) -> None:
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=seconds))
+    await hass.async_block_till_done()
+
+
+async def test_the_local_push_stops_a_while_after_the_last_viewer(hass: HomeAssistant) -> None:
+    entity, camera, local, sub = _publishing_entity(hass)
+    local.channel.unsubscribe(sub)
+    await _idle_for(hass, camera_module._LOCAL_IDLE_STOP_AFTER - 5)
+    camera.async_stop_streaming.assert_not_awaited()
+    await _idle_for(hass, camera_module._LOCAL_IDLE_STOP_AFTER + 1)
+    camera.async_stop_streaming.assert_awaited_once_with(
+        rtmps_url=LOCAL_PUSH, reconnect_on_failure=False
+    )
+    assert entity._local_push_url is None
+
+
+async def test_a_viewer_coming_back_keeps_the_local_push(hass: HomeAssistant) -> None:
+    _, camera, local, sub = _publishing_entity(hass)
+    local.channel.unsubscribe(sub)
+    await _idle_for(hass, 10)
+    local.channel.subscribe()
+    await _idle_for(hass, camera_module._LOCAL_IDLE_STOP_AFTER + 1)
+    camera.async_stop_streaming.assert_not_awaited()
+
+
+async def test_no_stop_when_the_camera_is_not_publishing(hass: HomeAssistant) -> None:
+    """A stop for a push the camera isn't making is answered late and could end the next one."""
+    _, camera, local, sub = _publishing_entity(hass)
+    local.channel.unsubscribe(sub)
+    local.channel.publish_ended(1)
+    await _idle_for(hass, camera_module._LOCAL_IDLE_STOP_AFTER + 1)
+    camera.async_stop_streaming.assert_not_awaited()
+
+
+async def test_a_failed_idle_stop_is_tried_again(hass: HomeAssistant) -> None:
+    entity, camera, local, sub = _publishing_entity(hass)
+    camera.async_stop_streaming = AsyncMock(return_value=500)
+    local.channel.unsubscribe(sub)
+    await _idle_for(hass, camera_module._LOCAL_IDLE_STOP_AFTER + 1)
+    camera.async_stop_streaming.assert_awaited_once()
+    assert entity._local_push_url == LOCAL_PUSH
+    await _idle_for(hass, 2 * camera_module._LOCAL_IDLE_STOP_AFTER + 2)
+    assert camera.async_stop_streaming.await_count == 2
+
+
+async def test_an_ignored_stop_is_checked_again(hass: HomeAssistant, source_ip: Any) -> None:
+    """A stop answered 200 while the camera keeps pushing gets another go."""
+    _, camera, local, sub = _publishing_entity(hass)
+    local.channel.unsubscribe(sub)
+    await _idle_for(hass, camera_module._LOCAL_IDLE_STOP_AFTER + 1)
+    await _idle_for(hass, 2 * camera_module._LOCAL_IDLE_STOP_AFTER + 2)
+    assert camera.async_stop_streaming.await_count == 2
+    # The second stop names the receiver's URL, since the record was cleared.
+    expected, _host = await local.async_publish_url()
+    assert expected != LOCAL_PUSH
+    assert camera.async_stop_streaming.await_args.kwargs["rtmps_url"] == expected
+
+
+async def test_removal_cancels_the_idle_stop(hass: HomeAssistant) -> None:
+    entity, camera, local, sub = _publishing_entity(hass)
+    local.channel.unsubscribe(sub)
+    assert entity._cancel_local_idle_timer is not None
+    entity.entity_id = "camera.nursery"
+    await entity.async_will_remove_from_hass()
+    assert entity._cancel_local_idle_timer is None
+    camera.async_stop_streaming.reset_mock()
+    await _idle_for(hass, camera_module._LOCAL_IDLE_STOP_AFTER + 1)
+    camera.async_stop_streaming.assert_not_awaited()
+
+
+async def test_a_push_nobody_asked_for_is_stopped_with_the_receivers_url(
+    hass: HomeAssistant, source_ip: Any
+) -> None:
+    """A push that outlived an HA restart has no record, so its URL is derived."""
+    local = _local_entry(hass, _entry(hass)).camera("cam_1")
+    entity, camera = _entity(hass, local)
+    camera.async_stop_streaming = AsyncMock(return_value=200)
+    expected, _host = await local.async_publish_url()
+    assert entity._local_push_url is None
+    local.channel.publish_started(1, "192.168.1.107", lambda: None)
+    await _idle_for(hass, camera_module._LOCAL_IDLE_STOP_AFTER + 1)
+    camera.async_stop_streaming.assert_awaited_once_with(
+        rtmps_url=expected, reconnect_on_failure=False
+    )
+
+
+async def test_a_reopen_right_after_the_idle_stop_gets_the_settle_retry(
+    hass: HomeAssistant, source_ip: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The camera is still winding the push down, so its 403 isn't a busy camera."""
+    monkeypatch.setattr(camera_module, "_STOP_SETTLE_DELAY", 0.0)
+    entity, camera, local, sub = _publishing_entity(hass)
+    local.channel.unsubscribe(sub)
+    await _idle_for(hass, camera_module._LOCAL_IDLE_STOP_AFTER + 1)
+    camera.async_stop_streaming.assert_awaited_once()
+    local.channel.publish_ended(1)
+    camera.async_start_streaming = AsyncMock(side_effect=[STREAM_LIMIT_STATUS, 200])
+    local.channel.wait_for_publish = AsyncMock(return_value=True)
+    assert await entity._async_local_start() is True
+    assert camera.async_start_streaming.await_count == 2
+    assert local.fallbacks == 0
+    local.channel.close()  # ends the publisher grace timer
+
+
+async def test_a_returning_viewer_cancels_the_idle_stop(hass: HomeAssistant) -> None:
+    entity, _camera, local, sub = _publishing_entity(hass)
+    local.channel.unsubscribe(sub)
+    assert entity._cancel_local_idle_timer is not None
+    local.channel.subscribe()
+    assert entity._cancel_local_idle_timer is None
+
+
+async def test_sleep_cancels_the_idle_stop(hass: HomeAssistant) -> None:
+    entity, _, local, sub = _publishing_entity(hass)
+    with patch.object(NanitCameraEntity, "async_write_ha_state"):
+        entity._handle_coordinator_update()  # remember "on"
+        local.channel.unsubscribe(sub)
+        assert entity._cancel_local_idle_timer is not None
+        entity.coordinator.data = _camera_state(sleep_mode=True)
+        entity._handle_coordinator_update()
+    assert entity._cancel_local_idle_timer is None
+
+
+async def test_a_derived_stop_is_sent_only_twice(hass: HomeAssistant, source_ip: Any) -> None:
+    """A derived URL may name nothing, so it isn't retried forever, even across reconnects."""
+    local = _local_entry(hass, _entry(hass)).camera("cam_1")
+    entity, camera = _entity(hass, local)
+    camera.async_stop_streaming = AsyncMock(return_value=200)
+    local.channel.publish_started(1, "192.168.1.107", lambda: None)
+    step = camera_module._LOCAL_IDLE_STOP_AFTER
+    for delay in (step, 2 * step, 4 * step):
+        await _idle_for(hass, delay + 1)
+    assert camera.async_stop_streaming.await_count == 2
+    assert entity._cancel_local_idle_timer is None
+    # The camera reconnects the same unread push: still no more stops.
+    local.channel.publish_ended(1)
+    local.channel.publish_started(2, "192.168.1.107", lambda: None)
+    await _idle_for(hass, step + 1)
+    assert camera.async_stop_streaming.await_count == 2
+
+
+async def test_failed_derived_sends_do_not_spend_the_budget(
+    hass: HomeAssistant, source_ip: Any
+) -> None:
+    local = _local_entry(hass, _entry(hass)).camera("cam_1")
+    _entity_unused, camera = _entity(hass, local)
+    camera.async_stop_streaming = AsyncMock(
+        side_effect=[ConnectionError(), ConnectionError(), 200, 200]
+    )
+    local.channel.publish_started(1, "192.168.1.107", lambda: None)
+    step = camera_module._LOCAL_IDLE_STOP_AFTER
+    for delay in (step, 2 * step, 4 * step, 8 * step):
+        await _idle_for(hass, delay + 1)
+    assert camera.async_stop_streaming.await_count == 4
+
+
+async def test_a_recorded_push_resets_the_derived_budget(
+    hass: HomeAssistant, source_ip: Any
+) -> None:
+    local = _local_entry(hass, _entry(hass)).camera("cam_1")
+    entity, camera = _entity(hass, local)
+    camera.async_stop_streaming = AsyncMock(return_value=200)
+    local.channel.publish_started(1, "192.168.1.107", lambda: None)
+    step = camera_module._LOCAL_IDLE_STOP_AFTER
+    for delay in (step, 2 * step):
+        await _idle_for(hass, delay + 1)
+    assert entity._derived_stop_attempts == 2
+    entity._record_push(LOCAL_PUSH, 200, local=True)
+    assert entity._derived_stop_attempts == 0
+
+
+async def test_a_republish_replaces_a_long_recheck(hass: HomeAssistant) -> None:
+    entity, camera, local, sub = _publishing_entity(hass)
+    camera.async_stop_streaming = AsyncMock(return_value=500)
+    local.channel.unsubscribe(sub)
+    step = camera_module._LOCAL_IDLE_STOP_AFTER
+    for delay in (step, 2 * step):
+        await _idle_for(hass, delay + 1)
+    assert camera.async_stop_streaming.await_count == 2
+    assert entity._local_idle_delay == 4 * step
+    local.channel.publish_ended(1)
+    local.channel.publish_started(2, "192.168.1.107", lambda: None)
+    await _idle_for(hass, step + 1)
+    assert camera.async_stop_streaming.await_count == 3
+
+
+async def test_a_rename_during_a_cooldown_keeps_its_end(hass: HomeAssistant) -> None:
+    local = _local_entry(hass, _entry(hass)).camera("cam_1")
+    entity, _camera = _entity(hass, local)
+    local.start_cooldown("test")
+    entity._schedule_local_cooldown_end(max(0.0, local.cooldown_until - time.monotonic()))
+    entity.entity_id = "camera.nursery"
+    await entity.async_will_remove_from_hass()
+    assert entity._cancel_local_cooldown_timer is None
+    with (
+        patch("custom_components.nanit.camera.NanitEntity.async_added_to_hass", AsyncMock()),
+        patch("custom_components.nanit.camera.async_attach_to_camera_stream"),
+    ):
+        await entity.async_added_to_hass()
+    assert entity._cancel_local_cooldown_timer is not None
+
+
+async def test_the_recheck_backs_off(hass: HomeAssistant) -> None:
+    entity, camera, local, sub = _publishing_entity(hass)
+    camera.async_stop_streaming = AsyncMock(return_value=500)
+    local.channel.unsubscribe(sub)
+    await _idle_for(hass, camera_module._LOCAL_IDLE_STOP_AFTER + 1)
+    assert entity._local_idle_delay == 2 * camera_module._LOCAL_IDLE_STOP_AFTER
+    local.channel.subscribe()
+    assert entity._local_idle_delay == camera_module._LOCAL_IDLE_STOP_AFTER
+
+
+async def test_removal_waits_for_an_idle_stop_in_flight(hass: HomeAssistant) -> None:
+    """No second stop for a push the camera is already ending."""
+    entity, camera, local, sub = _publishing_entity(hass)
+    release = asyncio.Event()
+
+    async def slow_stop(**_kw: Any) -> int:
+        await release.wait()
+        return 200
+
+    camera.async_stop_streaming = AsyncMock(side_effect=slow_stop)
+    local.channel.unsubscribe(sub)
+    async_fire_time_changed(
+        hass, dt_util.utcnow() + timedelta(seconds=camera_module._LOCAL_IDLE_STOP_AFTER + 1)
+    )
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert camera.async_stop_streaming.await_count == 1
+    entity.entity_id = "camera.nursery"
+    removal = asyncio.ensure_future(entity.async_will_remove_from_hass())
+    await asyncio.sleep(0)
+    release.set()
+    await removal
+    assert camera.async_stop_streaming.await_count == 1
+    assert entity._cancel_local_idle_timer is None
+
+
+async def test_an_unread_push_is_armed_when_the_entity_is_added(hass: HomeAssistant) -> None:
+    local = _local_entry(hass, _entry(hass)).camera("cam_1")
+    local.channel.publish_started(1, "192.168.1.107", lambda: None)  # before the entity exists
+    entity, _camera = _entity(hass, local)
+    entity.entity_id = "camera.nursery"
+    assert entity._cancel_local_idle_timer is None
+    with (
+        patch("custom_components.nanit.camera.NanitEntity.async_added_to_hass", AsyncMock()),
+        patch("custom_components.nanit.camera.async_attach_to_camera_stream"),
+    ):
+        await entity.async_added_to_hass()
+    assert entity._cancel_local_idle_timer is not None
+
+
+async def test_a_rename_keeps_local_streaming_and_the_idle_stop(
+    hass: HomeAssistant, source_ip: Any
+) -> None:
+    """A rename removes the entity and adds the same object back."""
+    local = _local_entry(hass, _entry(hass)).camera("cam_1")
+    entity, camera = _entity(hass, local)
+    camera.async_stop_streaming = AsyncMock(return_value=200)
+    entity.entity_id = "camera.nursery"
+    await entity.async_will_remove_from_hass()
+    assert local.channel.start_callback is None
+    with (
+        patch("custom_components.nanit.camera.NanitEntity.async_added_to_hass", AsyncMock()),
+        patch("custom_components.nanit.camera.async_attach_to_camera_stream"),
+    ):
+        await entity.async_added_to_hass()
+    assert local.channel.start_callback == entity._async_local_start
+    assert local.channel.on_consumers_changed == entity._handle_local_consumers
+    local.channel.publish_started(1, "192.168.1.107", lambda: None)
+    await _idle_for(hass, camera_module._LOCAL_IDLE_STOP_AFTER + 1)
+    camera.async_stop_streaming.assert_awaited_once()
+
+
+async def test_no_stop_when_a_viewer_arrives_during_the_url_lookup(
+    hass: HomeAssistant, source_ip: Any
+) -> None:
+    local = _local_entry(hass, _entry(hass)).camera("cam_1")
+    entity, camera = _entity(hass, local)
+    camera.async_stop_streaming = AsyncMock(return_value=200)
+    local.channel.publish_started(1, "192.168.1.107", lambda: None)
+    real_lookup = local.async_publish_url
+
+    async def lookup_then_viewer() -> tuple[str, str]:
+        result = await real_lookup()
+        local.channel.subscribe()
+        return result
+
+    with patch.object(local, "async_publish_url", lookup_then_viewer):
+        await _idle_for(hass, camera_module._LOCAL_IDLE_STOP_AFTER + 1)
+    camera.async_stop_streaming.assert_not_awaited()
+    assert entity._cancel_local_idle_timer is None
+
+
+async def test_timed_out_derived_stops_spend_the_budget(
+    hass: HomeAssistant, source_ip: Any
+) -> None:
+    """A stop for a push the camera isn't making times out, and must not repeat forever."""
+    local = _local_entry(hass, _entry(hass)).camera("cam_1")
+    entity, camera = _entity(hass, local)
+    camera.async_stop_streaming = AsyncMock(side_effect=TimeoutError)
+    local.channel.publish_started(1, "192.168.1.107", lambda: None)
+    step = camera_module._LOCAL_IDLE_STOP_AFTER
+    for delay in (step, 2 * step, 4 * step, 8 * step):
+        await _idle_for(hass, delay + 1)
+    assert camera.async_stop_streaming.await_count == 2
+    assert entity._cancel_local_idle_timer is None
+
+
+async def test_a_rename_rearms_the_idle_stop_at_the_short_delay(hass: HomeAssistant) -> None:
+    entity, camera, local, sub = _publishing_entity(hass)
+    camera.async_stop_streaming = AsyncMock(return_value=500)
+    local.channel.unsubscribe(sub)
+    step = camera_module._LOCAL_IDLE_STOP_AFTER
+    for delay in (step, 2 * step):
+        await _idle_for(hass, delay + 1)
+    assert entity._local_idle_delay == 4 * step
+    entity.entity_id = "camera.nursery"
+    await entity.async_will_remove_from_hass()
+    with (
+        patch("custom_components.nanit.camera.NanitEntity.async_added_to_hass", AsyncMock()),
+        patch("custom_components.nanit.camera.async_attach_to_camera_stream"),
+    ):
+        await entity.async_added_to_hass()
+    assert entity._local_idle_delay == step
+
+
+async def test_a_reopen_right_after_a_renames_stop_gets_the_settle_retry(
+    hass: HomeAssistant, source_ip: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(camera_module, "_STOP_SETTLE_DELAY", 0.0)
+    entity, camera, local, _sub = _publishing_entity(hass)
+    entity.entity_id = "camera.nursery"
+    await entity.async_will_remove_from_hass()  # stops the live local push
+    with (
+        patch("custom_components.nanit.camera.NanitEntity.async_added_to_hass", AsyncMock()),
+        patch("custom_components.nanit.camera.async_attach_to_camera_stream"),
+    ):
+        await entity.async_added_to_hass()
+    local.channel.publish_ended(1)
+    camera.async_start_streaming = AsyncMock(side_effect=[STREAM_LIMIT_STATUS, 200])
+    local.channel.wait_for_publish = AsyncMock(return_value=True)
+    assert await entity._async_local_start() is True
+    assert camera.async_start_streaming.await_count == 2
+    local.channel.close()
+
+
+async def test_a_timeout_with_the_session_down_does_not_spend_the_budget(
+    hass: HomeAssistant, source_ip: Any
+) -> None:
+    """The wait may have been spent reconnecting, before anything was sent."""
+    local = _local_entry(hass, _entry(hass)).camera("cam_1")
+    entity, camera = _entity(hass, local)
+    camera.connected = False
+    camera.async_stop_streaming = AsyncMock(side_effect=TimeoutError)
+    local.channel.publish_started(1, "192.168.1.107", lambda: None)
+    step = camera_module._LOCAL_IDLE_STOP_AFTER
+    for delay in (step, 2 * step, 4 * step):
+        await _idle_for(hass, delay + 1)
+    assert camera.async_stop_streaming.await_count == 3
+    assert entity._derived_stop_attempts == 0

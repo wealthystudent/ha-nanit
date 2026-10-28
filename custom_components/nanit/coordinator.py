@@ -17,12 +17,14 @@ NanitSoundLightCoordinator: Push-based coordinator wrapping NanitSoundLight.subs
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.event import async_call_later
@@ -47,6 +49,28 @@ _LOGGER = logging.getLogger(__name__)
 # How long to wait before marking entities unavailable after a disconnect.
 # If the WebSocket reconnects within this window, entities never go unavailable.
 _AVAILABILITY_GRACE_SECONDS: float = 30.0
+
+# Waits before each retry of a cloud poll that failed to connect. Nanit's REST
+# API answers a single request with HTTP 5xx or times out several times a day;
+# retrying a few seconds later gets fresh data, and the entities stay available
+# meanwhile. Setup gets no retries, so it still fails fast.
+_POLL_RETRY_DELAYS: tuple[float, ...] = (5.0, 10.0)
+
+
+async def _async_fetch_with_retries[T](
+    coordinator: DataUpdateCoordinator[Any], fetch: Callable[[], Awaitable[T]]
+) -> T:
+    """Return ``fetch()``, retrying a NanitConnectionError except during setup."""
+    entry = coordinator.config_entry
+    in_setup = entry is not None and entry.state is ConfigEntryState.SETUP_IN_PROGRESS
+    delays = () if in_setup else _POLL_RETRY_DELAYS
+    for delay in delays:
+        try:
+            return await fetch()
+        except NanitConnectionError as err:
+            _LOGGER.debug("%s poll failed, retrying in %.0fs: %s", coordinator.name, delay, err)
+            await asyncio.sleep(delay)
+    return await fetch()
 
 
 class NanitPushCoordinator(DataUpdateCoordinator[CameraState]):
@@ -184,8 +208,9 @@ class NanitCloudCoordinator(DataUpdateCoordinator[list[CloudEvent]]):
         """Fetch cloud events from the Nanit API."""
         try:
             client = self._hub.client
-            events = await client.async_get_events(self.baby.uid)
-            return events
+            return await _async_fetch_with_retries(
+                self, lambda: client.async_get_events(self.baby.uid)
+            )
         except NanitAuthError as err:
             raise ConfigEntryAuthFailed(
                 translation_domain=DOMAIN,
@@ -233,7 +258,7 @@ class NanitNetworkCoordinator(DataUpdateCoordinator[NetworkInfo | None]):
             # The hub's tolerant fetch parses camera-less baby rows (mixed
             # accounts), including on published aionanit wheels whose strict
             # parser raises KeyError on them.
-            babies = await self._hub.async_get_babies_tolerant()
+            babies = await _async_fetch_with_retries(self, self._hub.async_get_babies_tolerant)
         except NanitAuthError as err:
             raise ConfigEntryAuthFailed(
                 translation_domain=DOMAIN,

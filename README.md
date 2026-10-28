@@ -204,6 +204,7 @@ Good to know:
 - Authentication, motion/sound events and camera control always require the Nanit cloud, so there is no fully offline mode. Video stays on your network with [local streaming](#local-streaming).
 - Motion and sound detection is polled every 30 seconds (up to ~30s delay).
 - Without local streaming, live video requires your HA instance to reach `rtmps://media-secured.nanit.com`.
+- On the cloud stream, a live view kept open over WebRTC for more than about 75 minutes, such as an always-on display, freezes until its player reconnects. The stream's address can't yet be renewed under a WebRTC viewer that is still playing. The Nanit card reconnects on its own, and local streaming isn't affected.
 
 ## Removing the integration
 

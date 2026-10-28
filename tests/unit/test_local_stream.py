@@ -2971,3 +2971,44 @@ async def test_a_timeout_with_the_session_down_does_not_spend_the_budget(
         await _idle_for(hass, delay + 1)
     assert camera.async_stop_streaming.await_count == 3
     assert entity._derived_stop_attempts == 0
+
+
+async def test_removal_cancels_a_keepalive_before_waiting_for_the_idle_stop(
+    hass: HomeAssistant,
+) -> None:
+    """A keepalive in flight must not send while removal waits for the idle stop."""
+    entity, camera, local, sub = _publishing_entity(hass)
+    lookup_gate = asyncio.Event()
+    stop_gate = asyncio.Event()
+
+    async def slow_lookup() -> tuple[str, str]:
+        await lookup_gate.wait()
+        return LOCAL_PUSH, "192.168.1.10"
+
+    async def slow_stop(**_kw: Any) -> int:
+        await stop_gate.wait()
+        return 200
+
+    camera.async_stop_streaming = AsyncMock(side_effect=slow_stop)
+    with patch.object(local, "async_publish_url", slow_lookup):
+        keepalive = hass.async_create_task(entity._async_local_keepalive())
+        entity._stream_keepalive_task = keepalive
+        await asyncio.sleep(0)
+        local.channel.unsubscribe(sub)
+        async_fire_time_changed(
+            hass, dt_util.utcnow() + timedelta(seconds=camera_module._LOCAL_IDLE_STOP_AFTER + 1)
+        )
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert camera.async_stop_streaming.await_count == 1
+        entity.entity_id = "camera.nursery"
+        removal = asyncio.ensure_future(entity.async_will_remove_from_hass())
+        await asyncio.sleep(0)
+        lookup_gate.set()
+        for _ in range(10):
+            await asyncio.sleep(0)
+        stop_gate.set()
+        await removal
+    assert keepalive.cancelled()
+    camera.async_start_streaming.assert_not_awaited()
+    assert camera.async_stop_streaming.await_count == 1

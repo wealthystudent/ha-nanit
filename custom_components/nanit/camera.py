@@ -314,17 +314,14 @@ class NanitCameraEntity(NanitEntity, Camera):
             self._cancel_local_cooldown_timer()
             self._cancel_local_cooldown_timer = None
         self._cancel_local_idle_stop()
-        # An idle stop already sent is waited for, not cancelled: cancelling
-        # it would leave the push recorded and send a second stop below for a
-        # push the camera is already ending, answered late.
-        if self._local_stop_task is not None and not self._local_stop_task.done():
-            await asyncio.wait((self._local_stop_task,), timeout=ACK_TIMEOUT + 1)
+        # Cancelled before the idle stop is waited for. A keepalive or refresh
+        # finishing during that wait would re-record a push or re-arm the
+        # keepalive timer on a removed entity.
         for task in (
             self._stream_refresh_task,
             self._stream_keepalive_task,
             self._stream_still_task,
             self._cloud_stop_task,
-            self._local_stop_task,
         ):
             if task is not None and not task.done():
                 task.cancel()
@@ -332,6 +329,13 @@ class NanitCameraEntity(NanitEntity, Camera):
         self._stream_keepalive_task = None
         self._stream_still_task = None
         self._cloud_stop_task = None
+        # An idle stop already sent is waited for, not cancelled: cancelling
+        # it would leave the push recorded and send a second stop below for a
+        # push the camera is already ending, answered late.
+        idle_stop = self._local_stop_task
+        if idle_stop is not None and not idle_stop.done():
+            await asyncio.wait((idle_stop,), timeout=ACK_TIMEOUT + 1)
+            idle_stop.cancel()
         self._local_stop_task = None
         # The camera keeps pushing to a target that is gone, and that push
         # holds one of its app slots until it lapses. A local push is stopped

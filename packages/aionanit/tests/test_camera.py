@@ -1551,6 +1551,99 @@ class TestNotConnectedReconnect:
 # ---------------------------------------------------------------------------
 
 
+def _emit_connect(cam: NanitCamera) -> AsyncMock:
+    """Mock connect that emits the transitions WsTransport._async_connect does.
+
+    The real transport closes the old socket, then reports CONNECTING, then
+    CONNECTED, so the mock has to as well.
+    """
+
+    async def connect(*_a: object, **_k: object) -> None:
+        cam._on_connection_change(ConnectionState.CONNECTING, TransportKind.CLOUD, None)
+        cam._on_connection_change(ConnectionState.CONNECTED, TransportKind.CLOUD, None)
+
+    return AsyncMock(side_effect=connect)
+
+
+def _stop_loops(cam: NanitCamera) -> None:
+    cam._cancel_sensor_poll()
+    cam._cancel_playback_poll()
+    cam._cancel_token_refresh()
+
+
+class TestInlineReconnectFailsPending:
+    async def test_perform_reconnect_fails_pending_requests(self) -> None:
+        """A request on the replaced socket fails fast instead of timing out."""
+        cam, *_ = _make_camera()
+        cam._transport = MagicMock()
+        cam._transport.connected = True
+        cam._transport.idle_seconds = 0.0
+        cam._transport.transport_kind = TransportKind.CLOUD
+        cam._transport.async_connect_cloud = _emit_connect(cam)
+        cam._async_enable_sensor_push = AsyncMock()
+        future = cam._pending.track(cam._pending.next_id())
+
+        try:
+            await cam._perform_reconnect(force=True)
+        finally:
+            _stop_loops(cam)
+
+        cam._transport.async_connect_cloud.assert_awaited_once()
+        assert future.done()
+        with pytest.raises(NanitTransportError):
+            future.result()
+
+    async def test_skipped_reconnect_leaves_pending_requests_alone(self) -> None:
+        """The freshness guard returns before anything is failed."""
+        cam, *_ = _make_camera()
+        cam._transport = MagicMock()
+        cam._transport.connected = True
+        cam._transport.idle_seconds = 0.0
+        cam._transport.async_connect_cloud = AsyncMock()
+        future = cam._pending.track(cam._pending.next_id())
+
+        await cam._perform_reconnect(force=False)
+
+        cam._transport.async_connect_cloud.assert_not_awaited()
+        assert not future.done()
+
+    async def test_request_sent_during_token_fetch_is_failed(self) -> None:
+        """A request tracked while the reconnect awaits its token is failed too.
+
+        The old socket is still open during the token fetch, so a concurrent
+        caller can send on it. The transport reports CONNECTING only after it
+        has closed that socket, which is where pending requests get failed.
+        """
+        cam, tm, _ = _make_camera()
+        gate = asyncio.Event()
+        late: list[asyncio.Future[Response]] = []
+
+        async def slow_token(*_a: object, **_k: object) -> str:
+            late.append(cam._pending.track(cam._pending.next_id()))
+            await gate.wait()
+            return "tok"
+
+        tm.async_get_access_token = AsyncMock(side_effect=slow_token)
+        cam._transport = MagicMock()
+        cam._transport.connected = True
+        cam._transport.idle_seconds = 0.0
+        cam._transport.transport_kind = TransportKind.CLOUD
+        cam._transport.async_connect_cloud = _emit_connect(cam)
+        cam._async_enable_sensor_push = AsyncMock()
+
+        task = asyncio.create_task(cam._perform_reconnect(force=True))
+        await asyncio.sleep(0)
+        gate.set()
+        try:
+            await task
+        finally:
+            _stop_loops(cam)
+
+        assert late and late[0].done()
+        with pytest.raises(NanitTransportError):
+            late[0].result()
+
+
 class TestHealthCheckLifecycle:
     async def test_health_check_cancelled_on_stop(self) -> None:
         """async_stop cancels the health check task."""

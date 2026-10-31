@@ -781,11 +781,17 @@ class NanitCamera:
         elif state in (ConnectionState.DISCONNECTED, ConnectionState.RECONNECTING):
             self._connected_event.clear()
 
-        if state in (ConnectionState.DISCONNECTED, ConnectionState.RECONNECTING):
+        # CONNECTING fires once the transport has closed the previous socket,
+        # so nothing sent on it can still be answered.
+        if state in (
+            ConnectionState.CONNECTING,
+            ConnectionState.DISCONNECTED,
+            ConnectionState.RECONNECTING,
+        ):
             reason = (
-                "Connection reconnecting"
-                if state == ConnectionState.RECONNECTING
-                else "Connection lost"
+                "Connection lost"
+                if state == ConnectionState.DISCONNECTED
+                else "Connection reconnecting"
             )
             self._pending.cancel_all(NanitTransportError(reason))
 

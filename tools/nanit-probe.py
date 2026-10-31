@@ -349,6 +349,9 @@ class ProbeSession:
                     print(_dump_proto_fields(msg.response.control, indent=2))
                 elif msg.response.status_code != 200:
                     print(f"  Status message: {msg.response.status_message}")
+                else:
+                    print("\n  Parsed response fields:")
+                    print(_dump_proto_fields(msg.response, indent=2))
             except TimeoutError:
                 print("\n  ⚠ No response within 10s (camera may not support this)")
         finally:
@@ -823,6 +826,26 @@ async def cmd_dump_state(session: ProbeSession) -> None:
         print(_dump_proto_fields(resp, indent=2))
     except (NanitError, TimeoutError) as err:
         print(f"  GET_CONTROL failed: {err}")
+
+
+# ── 17. Read local connection tokens (GET_UCTOKENS) ─────────────────────
+
+
+@probe_command(
+    name="get-uctokens",
+    description="GET_UCTOKENS — read the camera's local connection tokens (read only)",
+    hint=(
+        "The local socket (wss://<ip>:442) authenticates with 'token <uc_token>'.\n"
+        "  Our proto has no payload for UC tokens, so look for UNKNOWN response\n"
+        "  fields. A string there is a candidate token for the local handshake (#176)."
+    ),
+)
+async def cmd_get_uctokens(session: ProbeSession) -> None:
+    req = Request(id=session.next_id(), type=RequestType.GET_UCTOKENS)
+    data = b"\x08\x01" + _encode_varint((2 << 3) | 2)
+    raw_req = req.SerializeToString()
+    data += _encode_varint(len(raw_req)) + raw_req
+    await session.send_raw_and_dump(data, "GET_UCTOKENS (no payload)")
 
 
 # ── Menu ─────────────────────────────────────────────────────────────────

@@ -89,7 +89,8 @@ just release    # create PR, label, merge, release stable (owner), retry
 
 Fix the workflow on `main` (via PR), then `just release` → Retry and pick the
 tag. `release.yaml` always runs from `main`, so the fix applies while the build
-still uses the original tag's code.
+still uses the original tag's code. The gate's Workflow Lint checks `main`'s
+workflows for the same reason.
 
 Because the gate is `main`'s `ci.yaml` run against the tag's tree, only tags
 built on this pipeline (their tree has `uv.lock`) can be retried. Retry hides

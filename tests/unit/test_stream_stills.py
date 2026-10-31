@@ -1077,7 +1077,9 @@ async def test_ffmpeg_input_keeps_an_odd_url_as_one_argument(hass: HomeAssistant
 
 async def test_retry_delay_counts_from_the_end_of_a_grab(hass: HomeAssistant) -> None:
     entity, camera, _ = _entity(hass)
-    clock = [time.monotonic()]
+    # A whole number keeps the sums below exact. With a fractional start the
+    # last step can land a rounding error short of the retry delay.
+    clock = [float(int(time.monotonic()))]
     entity._cached_snapshot_at = clock[0] - MAX_AGE - 60
 
     async def slow_miss(_hass: HomeAssistant, source: str) -> None:

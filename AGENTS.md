@@ -89,6 +89,7 @@ just test all         # Both test suites
 just card             # Rebuild the Lovelace card bundle
 just dev              # Start dev HA instance → http://localhost:8123
 just dev restart      # Restart after code changes
+just dev <branch>     # Serve the checkout that has <branch>, such as your worktree
 just notes            # Preview release notes for what main would ship
 ```
 
@@ -104,7 +105,7 @@ Full details in [CONTRIBUTING.md](CONTRIBUTING.md). What agents must get right:
 - Release labels (`release:patch|minor|major`) publish a beta on merge. Pick the size that matches the change; leave unlabelled if nothing user-facing changed.
 - If behavior or user-facing functionality changes, update `README.md` in the same PR.
 - Commits are signed with the host's existing git signing setup. Never change signing config or disable it.
-- `just check` passes before pushing. Verify behavior in the dev HA instance (`just dev`) when the change is user-facing.
+- `just check` passes before pushing. Verify behavior in the dev HA instance when the change is user-facing. Docker is blocked in the sandbox, so give the user `just dev <your branch>` to run.
 - Check the change against the applicable sections of [`docs/SECURITY_AUDIT_CHECKLIST.md`](docs/SECURITY_AUDIT_CHECKLIST.md) before opening the PR.
 
 ### Releases
@@ -167,7 +168,7 @@ Full checklist: [`docs/SECURITY_AUDIT_CHECKLIST.md`](docs/SECURITY_AUDIT_CHECKLI
 
 ### Enforcement (Claude Code)
 
-`.claude/settings.json` is checked in and applies to anyone running Claude Code in this repo. Its permission rules guard against the common forms of the actions above (releases, tag creation, workflow dispatch and reruns, `--admin` merges, force pushes, `--no-verify`) and ask before pushes, merges and `AGENTS.md` edits. They match command text, so they are accident guards, not a security boundary: an unusual spelling of the same command slips past, and the rules above still apply as written. A hook formats edited Python files with the locked ruff (it installs only ruff, not the full environment). Personal overrides go in `.claude/settings.local.json` (gitignored). Other agents: follow the rules as written.
+`.claude/settings.json` is checked in and applies to anyone running Claude Code in this repo. Its permission rules guard against the common forms of the actions above (releases, tag creation, workflow dispatch and reruns, `--admin` merges, force pushes, `--no-verify`) and ask before merges and `AGENTS.md` edits. They match command text, so they are accident guards, not a security boundary: an unusual spelling of the same command slips past, and the rules above still apply as written. A hook formats edited Python files with the locked ruff (it installs only ruff, not the full environment). Personal overrides go in `.claude/settings.local.json` (gitignored). Other agents: follow the rules as written.
 
 ---
 

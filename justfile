@@ -63,17 +63,24 @@ card action="build":
 
 # ─── Dev HA Instance ──────────────────────────────────────────────────
 
-# Dev HA: just dev [stop|restart|logs|reset] (default: start)
+# Dev HA: just dev [stop|restart|logs|reset] (default: start), or just dev <branch>
 dev action="start":
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{ action }}" in
-        start)   docker compose -f dev/docker-compose.yml up -d && echo "HA running at http://localhost:8123" ;;
+        start)   docker compose -f dev/docker-compose.yml up -d && echo "HA running at http://localhost:8123 with code from {{ justfile_directory() }}" ;;
         stop)    docker compose -f dev/docker-compose.yml down ;;
         restart) docker compose -f dev/docker-compose.yml restart homeassistant ;;
         logs)    docker compose -f dev/docker-compose.yml logs -f homeassistant ;;
         reset)   docker compose -f dev/docker-compose.yml down --volumes && echo "Dev state wiped. Run 'just dev' to start fresh." ;;
-        *)       echo "Unknown action '{{ action }}'. Use: start, stop, restart, logs, reset"; exit 1 ;;
+        *)
+            # Any other word is a branch or a folder in .claude/worktrees: serve that checkout.
+            tree=$(git worktree list --porcelain | awk -v ref="branch refs/heads/{{ action }}" -v dir="/.claude/worktrees/{{ action }}" '
+                /^worktree /{w=substr($0,10); if (substr(w, length(w)-length(dir)+1)==dir) {print w; exit}}
+                $0==ref{print w; exit}')
+            [ -n "$tree" ] || { echo "No checkout has branch or worktree '{{ action }}'. Use: start, stop, restart, logs, reset, or a name from 'git worktree list'"; exit 1; }
+            [ -d "$tree/custom_components" ] || { echo "$tree is gone. Run 'git worktree prune'"; exit 1; }
+            NANIT_TREE="$tree" docker compose -f dev/docker-compose.yml up -d && echo "HA running at http://localhost:8123 with code from $tree" ;;
     esac
 
 # ─── Tools ────────────────────────────────────────────────────────────

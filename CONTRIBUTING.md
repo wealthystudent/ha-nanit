@@ -44,6 +44,7 @@ just card          # Rebuild the Lovelace card after editing frontend/src (commi
 just card watch    # Rebuild on every change
 
 just dev           # Dev Home Assistant → http://localhost:8123
+just dev fix/foo   # Serve the checkout on this branch, or a worktree by folder name
 just dev restart   # Restart after code changes
 just dev logs      # Follow logs
 just dev reset     # Wipe dev state
@@ -149,8 +150,8 @@ type-checking authority; the editor only gives fast feedback.
 - **Claude Code** applies `.claude/settings.json` to anyone using it in this
   repo. Its rules catch the usual forms of releases, tag creation, workflow
   dispatch, force pushes, `--admin` merges and `--no-verify` (accident guards
-  that match command text, not a security boundary), ask before pushes and
-  merges, and format edited Python with the locked ruff. The format hook
+  that match command text, not a security boundary), ask before merges, and
+  format edited Python with the locked ruff. The format hook
   installs only ruff, so it stays light on a fresh clone. The `review-prs`
   skill reviews open PRs. Personal settings go in
   `.claude/settings.local.json` (gitignored).

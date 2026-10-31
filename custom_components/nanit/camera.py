@@ -61,19 +61,32 @@ _STOP_SETTLE_DELAY = 2.0
 # keepalive for our own push counts as keeping it going (see _record_push),
 # and the 5 minutes over 20 are margin on a lifetime that's only observed.
 _CLOUD_PUSH_LIFETIME = 25 * 60.0
+# Unlike the cloud push, the camera's push to our receiver never ends on its
+# own (it ran 12 hours with no reader in testing), holding one of its app
+# slots. It is stopped once the receiver has had no reader for this long
+# (past the stills retry delay, so the next grab still finds it running). A
+# push that keeps going is checked again, twice as long apart each time, up to
+# _LOCAL_IDLE_RECHECK_MAX. A stop by a URL we only derived (no record after an
+# HA restart) is sent at most _DERIVED_STOP_ATTEMPTS times until a push URL
+# is recorded again, in case the camera was given another address and the stop
+# names nothing.
+_LOCAL_IDLE_STOP_AFTER = 90.0
+_LOCAL_IDLE_RECHECK_MAX = 30 * 60.0
+_DERIVED_STOP_ATTEMPTS = 2
 _SNAPSHOT_CACHE_TTL = 60.0
 _SNAPSHOT_PREFETCH_AGE = 30.0
 # Stream stills (opt-in): when the cloud snapshot fails, a cached image older
 # than this is replaced by one frame read from the live stream. Each grab asks
-# the camera to stream, and it keeps pushing for ~20 minutes afterwards.
+# the camera to stream. A cloud push then lasts ~20 minutes, and a local one
+# until the idle stop 90 s after the grab.
 _STREAM_STILL_MAX_AGE = 10 * 60
 # Wait at least this long after a grab ended before starting another, so a
 # failing stream is not retried on every image request. The wait doubles with
 # each failure in a row, up to _STREAM_STILL_RETRY_CAP, and resets on success.
 _STREAM_STILL_RETRY_DELAY = 60.0
 # Every failed ffmpeg attempt still sends PUT_STREAMING, and the camera then
-# pushes for ~20 minutes. A cap well past that lets a camera that never yields a
-# still stop streaming for most of the time.
+# pushes for a while (~20 minutes on the cloud). A cap well past that lets a
+# camera that never yields a still stop streaming for most of the time.
 _STREAM_STILL_RETRY_CAP = 60 * 60
 _STREAM_STILL_MAX_DOUBLINGS = 6
 # Failures in a row before one warning is logged for the streak.
@@ -83,10 +96,11 @@ _STREAM_STILL_WARN_AFTER = 3
 # so a server that keeps sending control messages such as RTMP pings is not
 # cut off. The local receiver's FLV endpoint sends nothing until the camera
 # publishes, so a local push that starts later than this misses one grab and
-# the next one reads it warm. ha-ffmpeg's own 15s read timeout ends a read too, but its kill path
-# logs a "Task exception was never retrieved" error with a traceback, so this
-# stays well under it. Going lower ends a slow but working read early. A warm
-# read takes about 5s in total.
+# the next one reads it warm, since it lands before the idle stop. ha-ffmpeg's
+# own 15s read timeout ends a read too, but its kill path logs a "Task
+# exception was never retrieved" error with a traceback, so this stays well
+# under it. Going lower ends a slow but working read early. A warm read takes
+# about 5s in total.
 _STREAM_STILL_STALL_TIMEOUT = 10.0
 # Bound on the frame read. ffmpeg and then ha-ffmpeg stop a read themselves
 # well before this, so it only guards against a call that never returns.
@@ -155,12 +169,8 @@ class NanitCameraEntity(NanitEntity, Camera):
         self._local = local
         self._cancel_local_cooldown_timer: CALLBACK_TYPE | None = None
         self._local_fallback_task: asyncio.Task[None] | None = None
+        self._attach_local()
         if local is not None:
-            local.channel.start_callback = self._async_local_start
-            local.channel.on_consumers_changed = self._handle_local_consumers
-            local.channel.on_publish = self._handle_local_publish
-            local.on_mode_changed = self._handle_local_cooldown_end
-            local.on_route_changed = self._write_route_state
             local.channel.accepting = local.active and self.is_on
         # Read-only mode: no ON_OFF, so Home Assistant never offers to put
         # the camera to sleep; turn_on/turn_off also refuse if called anyway.
@@ -186,7 +196,12 @@ class NanitCameraEntity(NanitEntity, Camera):
         self._cloud_push_generation = 0
         self._cloud_push_at = 0.0
         self._cloud_stop_task: asyncio.Task[None] | None = None
-        self._cloud_stopped_at = float("-inf")
+        self._cancel_local_idle_timer: CALLBACK_TYPE | None = None
+        self._local_stop_task: asyncio.Task[None] | None = None
+        self._removed = False
+        self._local_idle_delay = _LOCAL_IDLE_STOP_AFTER
+        self._derived_stop_attempts = 0
+        self._push_stopped_at = float("-inf")
         self._warned_stop_unsupported = False
         # Opt-in stills from the live stream when the cloud snapshot fails.
         self._stream_stills = stream_stills
@@ -234,6 +249,7 @@ class NanitCameraEntity(NanitEntity, Camera):
             if not cur_on:
                 # Sleep ends the camera's push, so there is nothing to stop.
                 self._cloud_push_url = self._local_push_url = None
+                self._cancel_local_idle_stop()
         else:
             self._invalidate_stream_if_expired()
         self._update_local_accepting()
@@ -257,6 +273,20 @@ class NanitCameraEntity(NanitEntity, Camera):
         # Home Assistant logs each camera's stream under its own logger, keyed
         # by entity_id, and a rename re-runs this with the new id.
         async_attach_to_camera_stream(self.entity_id)
+        # A rename removes the entity and adds the same object back, and the
+        # removal detached it from the receiver.
+        self._removed = False
+        self._attach_local()
+        self._local_idle_delay = _LOCAL_IDLE_STOP_AFTER
+        local_cam = self._local
+        if local_cam is not None and local_cam.cooldown_until > time.monotonic():
+            # Removal cancelled the timer that hands the camera back to local.
+            self._schedule_local_cooldown_end(local_cam.cooldown_until - time.monotonic())
+        # A push that outlived a restart may have published before the entity
+        # was added, when there was no hass to arm the idle stop with.
+        local = self._local
+        if local is not None and local.channel.publishing and not local.channel.consumer_count:
+            self._arm_local_idle_stop()
 
     async def async_will_remove_from_hass(self) -> None:
         """Tear down stream bookkeeping so nothing outlives the entity.
@@ -268,6 +298,7 @@ class NanitCameraEntity(NanitEntity, Camera):
         camera's push away from the replacement entity's stream.
         """
         async_detach_from_camera_stream(self.entity_id)
+        self._removed = True
         self._invalidate_stream("entity removal")
         if self._local is not None:
             self._local.channel.start_callback = None
@@ -282,6 +313,10 @@ class NanitCameraEntity(NanitEntity, Camera):
         if self._cancel_local_cooldown_timer is not None:
             self._cancel_local_cooldown_timer()
             self._cancel_local_cooldown_timer = None
+        self._cancel_local_idle_stop()
+        # Cancelled before the idle stop is waited for. A keepalive or refresh
+        # finishing during that wait would re-record a push or re-arm the
+        # keepalive timer on a removed entity.
         for task in (
             self._stream_refresh_task,
             self._stream_keepalive_task,
@@ -294,6 +329,14 @@ class NanitCameraEntity(NanitEntity, Camera):
         self._stream_keepalive_task = None
         self._stream_still_task = None
         self._cloud_stop_task = None
+        # An idle stop already sent is waited for, not cancelled: cancelling
+        # it would leave the push recorded and send a second stop below for a
+        # push the camera is already ending, answered late.
+        idle_stop = self._local_stop_task
+        if idle_stop is not None and not idle_stop.done():
+            await asyncio.wait((idle_stop,), timeout=ACK_TIMEOUT + 1)
+            idle_stop.cancel()
+        self._local_stop_task = None
         # The camera keeps pushing to a target that is gone, and that push
         # holds one of its app slots until it lapses. A local push is stopped
         # only while it is live: the camera answers a stop for one it isn't
@@ -304,8 +347,10 @@ class NanitCameraEntity(NanitEntity, Camera):
         ):
             self._local_push_url = None
         urls = [url for url in (self._live_cloud_push_url(), self._local_push_url) if url]
-        if urls:
-            await asyncio.gather(*(self._async_stop_push(url) for url in urls))
+        if urls and any(await asyncio.gather(*(self._async_stop_push(url) for url in urls))):
+            # A rename adds this object back at once, and a viewer then can
+            # land in the wind-down.
+            self._push_stopped_at = time.monotonic()
         self._cloud_push_url = self._local_push_url = None
         await super().async_will_remove_from_hass()
 
@@ -740,6 +785,7 @@ class NanitCameraEntity(NanitEntity, Camera):
             return
         if local:
             self._local_push_url = url
+            self._derived_stop_attempts = 0
             if status == 200:
                 self._cloud_push_url = None
         else:
@@ -757,15 +803,30 @@ class NanitCameraEntity(NanitEntity, Camera):
         which could carry the URL and its token. Only a 200, or an answer
         with no status, counts as stopped.
         """
+        stopped, _reached = await self._async_send_stop(url)
+        return stopped
+
+    async def _async_send_stop(self, url: str) -> tuple[bool, bool]:
+        """Stop a push like _async_stop_push, also saying whether it reached the camera.
+
+        Reached means answered, or timed out while the control session was
+        connected (the camera answers a stop for a push it isn't making very
+        late). A timeout with the session down may have been spent waiting to
+        reconnect, before anything was sent.
+        """
+        connected = getattr(self._camera, "connected", True) is True
         try:
             async with asyncio.timeout(ACK_TIMEOUT):
                 status = await self._camera.async_stop_streaming(
                     rtmps_url=url, reconnect_on_failure=False
                 )
+        except (TimeoutError, NanitRequestTimeout):
+            _LOGGER.debug("Timed out stopping a push for camera %s", self._camera.uid)
+            return False, connected
         except TypeError as err:
             if "rtmps_url" not in str(err):
                 _LOGGER.debug("Could not stop a push for camera %s: TypeError", self._camera.uid)
-                return False
+                return False, False
             if not self._warned_stop_unsupported:
                 self._warned_stop_unsupported = True
                 _LOGGER.warning(
@@ -773,17 +834,17 @@ class NanitCameraEntity(NanitEntity, Camera):
                     "stay on the cloud stream after a fallback. Reinstall the integration",
                     self._camera.uid,
                 )
-            return False
+            return False, False
         except Exception as err:  # noqa: BLE001
             _LOGGER.debug(
                 "Could not stop a push for camera %s: %s", self._camera.uid, type(err).__name__
             )
-            return False
+            return False, False
         if isinstance(status, int) and status != 200:
             _LOGGER.debug("Camera %s declined to stop a push: %s", self._camera.uid, status)
-            return False
+            return False, True
         _LOGGER.debug("Stopped a push for camera %s", self._camera.uid)
-        return True
+        return True, True
 
     @callback
     def _stop_cloud_push(self) -> None:
@@ -802,7 +863,7 @@ class NanitCameraEntity(NanitEntity, Camera):
     async def _async_stop_cloud_push(self, url: str, generation: int) -> None:
         if not await self._async_stop_push(url):
             return
-        self._cloud_stopped_at = time.monotonic()
+        self._push_stopped_at = time.monotonic()
         if self._cloud_push_generation == generation:
             self._cloud_push_url = None
 
@@ -834,8 +895,9 @@ class NanitCameraEntity(NanitEntity, Camera):
             self._cloud_push_url = None
         return self._cloud_push_url
 
-    def _cloud_push_just_stopped(self) -> bool:
-        return time.monotonic() - self._cloud_stopped_at < _STOP_SETTLE_WINDOW
+    def _push_just_stopped(self) -> bool:
+        """Return True right after we stopped a push, cloud or local."""
+        return time.monotonic() - self._push_stopped_at < _STOP_SETTLE_WINDOW
 
     # ------------------------------------------------------------------
     # Local streaming
@@ -926,7 +988,7 @@ class NanitCameraEntity(NanitEntity, Camera):
 
         try:
             status = await put()
-            if status == STREAM_LIMIT_STATUS and self._cloud_push_just_stopped():
+            if status == STREAM_LIMIT_STATUS and self._push_just_stopped():
                 await asyncio.sleep(_STOP_SETTLE_DELAY)
                 status = await put()
         except Exception as err:  # noqa: BLE001
@@ -1121,9 +1183,26 @@ class NanitCameraEntity(NanitEntity, Camera):
                     name=f"nanit_stop_discarded_stream_{self._camera.uid}",
                 )
 
+    def _attach_local(self) -> None:
+        """Connect the entity to its receiver channel and local-stream state."""
+        local = self._local
+        if local is None:
+            return
+        local.channel.start_callback = self._async_local_start
+        local.channel.on_consumers_changed = self._handle_local_consumers
+        local.channel.on_publish = self._handle_local_publish
+        local.on_mode_changed = self._handle_local_cooldown_end
+        local.on_route_changed = self._write_route_state
+
     @callback
     def _handle_local_publish(self) -> None:
         """Any accepted push proves the path works, asked for or not."""
+        self._local_idle_delay = _LOCAL_IDLE_STOP_AFTER
+        if self._local is not None and not self._local.channel.consumer_count:
+            # A push nobody asked for, such as one that outlived an HA restart.
+            # A long recheck left over from an earlier push is replaced.
+            self._cancel_local_idle_stop()
+            self._arm_local_idle_stop()
         if self._local is not None:
             self._local.owner.record_success()
             self._local.record_publish()
@@ -1133,9 +1212,90 @@ class NanitCameraEntity(NanitEntity, Camera):
 
     @callback
     def _handle_local_consumers(self, count: int) -> None:
-        """Start the keepalive when local consumers appear."""
-        if count and self._cancel_stream_keepalive_timer is None:
-            self._schedule_stream_keepalive_timer()
+        """Start the keepalive for local consumers, the idle stop without."""
+        if count:
+            self._cancel_local_idle_stop()
+            self._local_idle_delay = _LOCAL_IDLE_STOP_AFTER
+            if self._cancel_stream_keepalive_timer is None:
+                self._schedule_stream_keepalive_timer()
+            return
+        self._arm_local_idle_stop()
+
+    @callback
+    def _arm_local_idle_stop(self) -> None:
+        hass = getattr(self, "hass", None)
+        if hass is None or self._removed or self._cancel_local_idle_timer is not None:
+            return
+        self._cancel_local_idle_timer = async_call_later(
+            hass, self._local_idle_delay, self._handle_local_idle
+        )
+
+    @callback
+    def _cancel_local_idle_stop(self) -> None:
+        if self._cancel_local_idle_timer is not None:
+            self._cancel_local_idle_timer()
+            self._cancel_local_idle_timer = None
+
+    @callback
+    def _handle_local_idle(self, _now: object = None) -> None:
+        """Stop the camera's push to the receiver after it went unread."""
+        self._cancel_local_idle_timer = None
+        local = self._local
+        if local is None or local.channel.consumer_count:
+            return
+        if not local.channel.publishing:
+            # Nothing to stop, and the camera answers a stop for a push it
+            # isn't making very late, which could end the next one.
+            return
+        if self._local_stop_task is not None and not self._local_stop_task.done():
+            return
+        self._local_stop_task = self.hass.async_create_task(
+            self._async_stop_idle_local_push(),
+            name=f"nanit_stop_idle_local_push_{self._camera.uid}",
+        )
+
+    async def _async_stop_idle_local_push(self) -> None:
+        local = self._local
+        if local is None:
+            return
+        url = self._local_push_url
+        if url is None:
+            # A push that outlived an HA restart was asked for by the old
+            # process. The receiver hands out the same URL to the same host.
+            if self._derived_stop_attempts >= _DERIVED_STOP_ATTEMPTS:
+                _LOGGER.debug(
+                    "Camera %s keeps pushing to the receiver unread, and our stops did not end it",
+                    self._camera.uid,
+                )
+                return
+            try:
+                url, _host = await local.async_publish_url()
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug("No local URL to stop the push with: %s", err)
+                self._arm_local_idle_recheck()
+                return
+        if local.channel.consumer_count or not local.channel.publishing:
+            return  # a viewer arrived, or the push ended, while we got here
+        derived = url != self._local_push_url
+        stopped, reached = await self._async_send_stop(url)
+        if stopped:
+            self._push_stopped_at = time.monotonic()
+            if self._local_push_url == url:
+                self._local_push_url = None
+        if derived and reached:
+            # A send that never left says nothing about the URL. One that
+            # reached the camera counts, answered or not: a stop naming a push
+            # the camera isn't making is answered about 70 s late.
+            self._derived_stop_attempts += 1
+        # Checked again later: a stop can fail, or be answered and ignored.
+        self._arm_local_idle_recheck()
+
+    @callback
+    def _arm_local_idle_recheck(self) -> None:
+        if self._local is None or self._local.channel.consumer_count:
+            return
+        self._local_idle_delay = min(self._local_idle_delay * 2, _LOCAL_IDLE_RECHECK_MAX)
+        self._arm_local_idle_stop()
 
     @callback
     def _handle_local_keepalive(self) -> None:
@@ -1343,9 +1503,10 @@ class NanitCameraEntity(NanitEntity, Camera):
         PUT_STREAMING, and in local mode the receiver's first subscriber does.
         The cloud keepalive renews the push only while a stream has outputs,
         so a grab leaves the camera to stop pushing on its own about 20
-        minutes later. During a local cooldown each grab re-sends the cloud
-        PUT_STREAMING, which keeps that push alive until the cooldown ends,
-        when the push is stopped by name. A grab sends no STOPPED itself,
+        minutes later, and a local push is stopped 90 s after the grab.
+        During a local cooldown each grab re-sends the cloud PUT_STREAMING,
+        which keeps that push alive until the cooldown ends, when the push
+        is stopped by name. A grab sends no STOPPED itself,
         since a viewer may be using the push it started. The source URL
         carries an access token and is never logged here.
 

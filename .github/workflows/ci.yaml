@@ -195,9 +195,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # No ref: as the release gate this lints main's workflows, the ones the
+      # release runs, not the tag's copies. A workflow fix on main then
+      # unblocks a retry of an existing tag.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref }}
           persist-credentials: false
 
       - name: actionlint

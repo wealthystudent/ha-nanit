@@ -18,9 +18,12 @@ import pytest
 # Camera imports pull in turbojpeg; stub it like test_entities.py does.
 _ = sys.modules.setdefault("turbojpeg", MagicMock(TurboJPEG=MagicMock()))
 
+from homeassistant.components.stream import Stream
+from homeassistant.components.stream.worker import StreamWorkerError
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import issue_registry as ir
+from homeassistant.setup import async_setup_component
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry, async_fire_time_changed
 
@@ -3012,3 +3015,102 @@ async def test_removal_cancels_a_keepalive_before_waiting_for_the_idle_stop(
     assert keepalive.cancelled()
     camera.async_start_streaming.assert_not_awaited()
     assert camera.async_stop_streaming.await_count == 1
+
+
+async def test_source_switch_during_the_workers_retry_wait_leaves_it_stoppable(
+    hass: HomeAssistant,
+) -> None:
+    """A real worker keeps running on the new URL, and a later stop ends it."""
+    await async_setup_component(hass, "stream", {})
+    calls: list[str] = []
+    quit_events: list[Any] = []
+
+    def worker(source: str, *args: Any) -> None:
+        calls.append(source)
+        if len(calls) == 1:
+            raise StreamWorkerError("refused local read")
+        quit_events.append(args[-1])
+        while not args[-1].is_set():
+            time.sleep(0.01)
+
+    with (
+        patch("homeassistant.components.stream.worker.stream_worker", worker),
+        patch("homeassistant.components.stream._should_retry", return_value=True),
+        patch("homeassistant.components.stream.KeyFrameConverter", MagicMock()),
+        patch("homeassistant.components.stream.STREAM_RESTART_INCREMENT", 0.3),
+    ):
+        stream = Stream(
+            hass, FLV_URL, {}, MagicMock(), MagicMock(preload_stream=False, orientation=1), None
+        )
+        stream.add_provider("hls")
+        await stream.start()
+        thread = stream._thread
+        assert thread is not None
+        try:
+            async with asyncio.timeout(5):
+                while stream.available:
+                    await asyncio.sleep(0.01)  # the worker is in its retry wait
+                NanitCameraEntity._switch_stream_source(stream, "rtmps://cloud/url")
+                while len(calls) < 2:
+                    await asyncio.sleep(0.01)
+            assert calls == [FLV_URL, "rtmps://cloud/url"]
+            assert thread.is_alive()  # the same worker carried on
+            # A viewer's playlist keeps its output. Losing it answers 404 until reloaded.
+            assert "hls" in stream.outputs()
+            async with asyncio.timeout(5):
+                await stream.stop()
+            assert not thread.is_alive()
+        finally:
+            for event in quit_events:
+                event.set()
+            stream._fast_restart_once = False
+            stream._thread_quit.set()
+            await hass.async_add_executor_job(thread.join, 2)
+
+
+async def test_source_switch_while_the_worker_runs_restarts_it(hass: HomeAssistant) -> None:
+    stream = MagicMock(available=True)
+    NanitCameraEntity._switch_stream_source(stream, "rtmps://cloud/url")
+    stream.update_source.assert_called_once_with("rtmps://cloud/url")
+
+
+def _waiting_stream(source: str) -> MagicMock:
+    """A stream whose worker is waiting to retry."""
+    stream = _watched_stream(source)
+    stream.available = False
+    return stream
+
+
+async def test_move_to_cloud_during_the_retry_wait_only_assigns(
+    hass: HomeAssistant, source_ip: Any
+) -> None:
+    local = _local_entry(hass, _entry(hass)).camera("cam_1")
+    entity, _camera = _entity(hass, local)
+    local.start_cooldown("x")
+    stream = _waiting_stream(FLV_URL)
+    entity.stream = stream
+    await entity._async_move_hls_to_cloud()
+    stream.update_source.assert_not_called()
+    assert stream.source == "rtmps://cloud/url"
+
+
+async def test_renewal_during_the_retry_wait_only_assigns(hass: HomeAssistant) -> None:
+    local = _local_entry(hass, _entry(hass)).camera("cam_1")
+    entity, camera = _entity(hass, local)
+    local.start_cooldown("x")
+    camera.async_get_stream_rtmps_url = AsyncMock(return_value="rtmps://cloud/new")
+    stream = _waiting_stream("rtmps://cloud/old")
+    entity.stream = stream
+    await entity._async_refresh_stream_source("test")
+    stream.update_source.assert_not_called()
+    assert stream.source == "rtmps://cloud/new"
+
+
+async def test_cooldown_end_during_the_retry_wait_only_assigns(hass: HomeAssistant) -> None:
+    local = _local_entry(hass, _entry(hass)).camera("cam_1")
+    entity, _camera = _entity(hass, local)
+    stream = _waiting_stream("rtmps://cloud/url")
+    entity.stream = stream
+    entity._handle_local_cooldown_end()
+    stream.update_source.assert_not_called()
+    assert stream.source == FLV_URL

@@ -1685,22 +1685,20 @@ async def test_refresh_with_local_active_sends_nothing_to_the_cloud(
     entity, camera = _entity(hass, local)
     entity.stream = _watched_stream()
     entity._cached_stream_source = "rtmps://cloud/url"
-    _publish_on_request(local)  # the trial the check starts plays locally
+    local.channel.publish_started(1, "192.168.1.107", lambda: None)  # local plays
     await entity._async_refresh_stream_source("test")
     camera.async_get_stream_rtmps_url.assert_not_awaited()
-    for call in camera.async_start_streaming.await_args_list:
-        assert not call.kwargs["rtmps_url"].startswith("rtmps://cloud")
+    camera.async_start_streaming.assert_not_awaited()
 
 
 async def test_move_with_local_active_sends_nothing_to_the_cloud(hass: HomeAssistant) -> None:
     local = _local_entry(hass, _entry(hass)).camera("cam_1")
     entity, camera = _entity(hass, local)
     entity.stream = _watched_stream()
-    _publish_on_request(local)  # the trial the check starts plays locally
+    local.channel.publish_started(1, "192.168.1.107", lambda: None)  # local plays
     await entity._async_move_hls_to_cloud()
     camera.async_get_stream_rtmps_url.assert_not_awaited()
-    for call in camera.async_start_streaming.await_args_list:
-        assert not call.kwargs["rtmps_url"].startswith("rtmps://cloud")
+    camera.async_start_streaming.assert_not_awaited()
 
 
 async def test_local_taking_over_during_the_put_points_the_camera_back(
@@ -1994,8 +1992,8 @@ async def _cloud_push(hass: HomeAssistant, local: ls.LocalStreamCamera) -> tuple
 async def test_cooldown_end_stops_our_cloud_push_by_name(hass: HomeAssistant) -> None:
     local = _local_entry(hass, _entry(hass)).camera("cam_1")
     entity, camera = await _cloud_push(hass, local)
-    local.cooldown_until = 0.0
-    entity._handle_local_cooldown_end(trial=False)
+    # The camera publishing hands over at once.
+    local.channel.publish_started(1, "192.168.1.107", lambda: None)
     await hass.async_block_till_done()
     camera.async_stop_streaming.assert_awaited_once_with(
         rtmps_url="rtmps://cloud/url", reconnect_on_failure=False
@@ -2050,8 +2048,8 @@ async def test_failed_stop_is_retried_by_the_local_start(
     local = _local_entry(hass, _entry(hass)).camera("cam_1")
     entity, camera = await _cloud_push(hass, local)
     camera.async_stop_streaming = AsyncMock(side_effect=TimeoutError)
-    local.cooldown_until = 0.0
-    entity._handle_local_cooldown_end(trial=False)
+    # The camera publishing hands over at once.
+    local.channel.publish_started(1, "192.168.1.107", lambda: None)
     await hass.async_block_till_done()
     assert entity._cloud_push_url == "rtmps://cloud/url"
 
@@ -2150,8 +2148,8 @@ async def test_stop_racing_a_newer_accept_keeps_the_record(hass: HomeAssistant) 
         return 200
 
     camera.async_stop_streaming = stop
-    local.cooldown_until = 0.0
-    entity._handle_local_cooldown_end(trial=False)
+    # The camera publishing hands over at once.
+    local.channel.publish_started(1, "192.168.1.107", lambda: None)
     await asyncio.sleep(0)
     # A retried cloud start for the same URL lands while the stop is out.
     entity._record_push("rtmps://cloud/url", 200, local=False)
@@ -3146,7 +3144,8 @@ async def test_cooldown_end_during_the_retry_wait_only_assigns(hass: HomeAssista
     entity, _camera = _entity(hass, local)
     stream = _waiting_stream("rtmps://cloud/url")
     entity.stream = stream
-    entity._handle_local_cooldown_end()
+    local.start_cooldown("x")
+    local.channel.publish_started(1, "192.168.1.107", lambda: None)
     stream.update_source.assert_not_called()
     assert stream.source == FLV_URL
 
@@ -3191,13 +3190,10 @@ async def test_missed_trial_leaves_the_cloud_stream_playing(
     assert urls[0].startswith(f"rtmps://{HOST}")
     # Our cloud push is asked for again in case the trial stopped it.
     assert urls[-1] == "rtmps://cloud/url"
-    assert entity._cancel_stream_expiry_timer is not None
     assert entity._cancel_stream_keepalive_timer is not None
 
 
-async def test_trial_holds_the_cooldown_and_sends_nothing_else(
-    hass: HomeAssistant, source_ip: Any
-) -> None:
+async def test_trial_holds_the_cooldown(hass: HomeAssistant, source_ip: Any) -> None:
     local, entity, camera, stream = _watched_on_cloud(hass)
     release = asyncio.Event()
 
@@ -3214,9 +3210,6 @@ async def test_trial_holds_the_cooldown_and_sends_nothing_else(
     # Ends the hold if the trial never reaches an outcome.
     assert entity._cancel_local_cooldown_timer is not None
     sent = camera.async_start_streaming.await_count
-    entity._handle_stream_keepalive()  # no cloud request while the trial runs
-    await asyncio.sleep(0)
-    assert camera.async_start_streaming.await_count == sent
     trial = entity._local_trial_task
     local.cooldown_until = 0.0
     entity._handle_local_cooldown_end()  # another end (a timer) joins the trial
@@ -3353,30 +3346,6 @@ async def test_missed_trial_with_only_webrtc_viewers_asks_for_the_cloud_again(
     assert not local.active
 
 
-async def test_renewal_during_a_trial_waits_for_it(hass: HomeAssistant, source_ip: Any) -> None:
-    local, entity, camera, stream = _watched_on_cloud(hass)
-    release = asyncio.Event()
-
-    async def wait(_timeout: float) -> bool:
-        await release.wait()
-        local.channel.publish_started(1, "192.168.1.107", lambda: None)
-        return True
-
-    local.channel.wait_for_publish = AsyncMock(side_effect=wait)
-    entity._handle_local_cooldown_end()
-    await asyncio.sleep(0.01)
-    entity._refresh_or_expire_stream_source("test")  # as the renewal timer does
-    refresh = entity._stream_refresh_task
-    assert refresh is not None
-    await asyncio.sleep(0.01)
-    camera.async_get_stream_rtmps_url.assert_not_awaited()
-    release.set()
-    await hass.async_block_till_done()
-    assert refresh.done()
-    camera.async_get_stream_rtmps_url.assert_not_awaited()
-    stream.update_source.assert_called_once_with(FLV_URL)
-
-
 async def test_cooldown_lapsing_during_a_resend_moves_nothing_before_a_publish(
     hass: HomeAssistant, source_ip: Any
 ) -> None:
@@ -3415,30 +3384,6 @@ async def test_lapsed_cooldown_found_by_a_renewal_tries_local_first(
     stream.update_source.assert_called_once_with(FLV_URL)
 
 
-async def test_trial_cancels_a_renewal_already_out(hass: HomeAssistant, source_ip: Any) -> None:
-    local, entity, camera, _stream = _watched_on_cloud(hass)
-    gate = asyncio.Event()
-
-    async def slow_url() -> str:
-        await gate.wait()
-        return "rtmps://cloud/new"
-
-    camera.async_get_stream_rtmps_url = AsyncMock(side_effect=slow_url)
-    local.channel.wait_for_publish = AsyncMock(return_value=False)
-    local.cooldown_until = time.monotonic() + 600  # still cooling down
-    entity._refresh_or_expire_stream_source("test")
-    await asyncio.sleep(0.01)  # the renewal is waiting on the new URL
-    local.cooldown_until = 0.0
-    entity._cancel_stream_timers()
-    entity._handle_local_cooldown_end()
-    # Re-armed at once, not only by a miss.
-    assert entity._cancel_stream_expiry_timer is not None
-    gate.set()
-    await hass.async_block_till_done()
-    urls = [c.kwargs.get("rtmps_url") for c in camera.async_start_streaming.await_args_list]
-    assert "rtmps://cloud/new" not in urls
-
-
 async def test_missed_trial_with_no_cached_url_moves_the_stream(
     hass: HomeAssistant, source_ip: Any
 ) -> None:
@@ -3451,17 +3396,6 @@ async def test_missed_trial_with_no_cached_url_moves_the_stream(
     for call in camera.async_start_streaming.await_args_list:
         assert call.kwargs.get("rtmps_url") is not None
     stream.update_source.assert_called_once_with("rtmps://cloud/url")
-
-
-async def test_trial_cancels_a_keepalive_already_out(hass: HomeAssistant, source_ip: Any) -> None:
-    local, entity, _camera, _stream = _watched_on_cloud(hass)
-    local.channel.wait_for_publish = AsyncMock(return_value=False)
-    keepalive = hass.async_create_task(asyncio.sleep(3600))
-    entity._stream_keepalive_task = keepalive
-    entity._handle_local_cooldown_end()
-    await asyncio.sleep(0)
-    assert keepalive.cancelled()
-    await hass.async_block_till_done()
 
 
 async def test_viewer_waits_for_a_slow_trial_only_as_long_as_ha_allows(
@@ -3492,10 +3426,11 @@ async def test_renewal_whose_trial_misses_renews_the_cloud(
     local, entity, camera, stream = _watched_on_cloud(hass)  # cooldown lapsed
     camera.async_get_stream_rtmps_url = AsyncMock(return_value="rtmps://cloud/new")
     local.channel.wait_for_publish = AsyncMock(return_value=False)
+    stream.update_source.side_effect = lambda url: setattr(stream, "source", url)
     await entity._async_refresh_stream_source("test")
     await hass.async_block_till_done()
     camera.async_get_stream_rtmps_url.assert_awaited()
-    stream.update_source.assert_called_once_with("rtmps://cloud/new")
+    assert stream.source == "rtmps://cloud/new"
 
 
 async def test_missed_trial_moves_a_stream_left_on_another_cloud_url(
@@ -3508,39 +3443,6 @@ async def test_missed_trial_moves_a_stream_left_on_another_cloud_url(
     entity._handle_local_cooldown_end()
     await hass.async_block_till_done()
     stream.update_source.assert_called_once_with("rtmps://cloud/url")
-
-
-async def test_cooldown_end_during_a_cached_request_keeps_the_url_cached(
-    hass: HomeAssistant, source_ip: Any
-) -> None:
-    local = _local_entry(hass, _entry(hass)).camera("cam_1")
-    entity, camera = _entity(hass, local)
-    local.start_cooldown("x")
-    entity._cached_stream_source = "rtmps://cloud/url"
-    entity._stream_source_started_at = time.monotonic()
-    release = asyncio.Event()
-
-    async def wait(_timeout: float) -> bool:
-        await release.wait()
-        return False
-
-    local.channel.wait_for_publish = AsyncMock(side_effect=wait)
-
-    async def start(*, rtmps_url: str, **_kwargs: Any) -> int:
-        if rtmps_url == "rtmps://cloud/url" and not entity._local_trial_running():
-            local.cooldown_until = 0.0
-            entity._handle_local_cooldown_end()  # nobody watches: drops the cache
-            assert entity._cached_stream_source is None
-        return 200
-
-    camera.async_start_streaming = AsyncMock(side_effect=start)
-    assert await entity.stream_source() == "rtmps://cloud/url"
-    # The push just accepted counts as watched, so a trial runs, and its miss
-    # re-sends only a cached URL.
-    assert entity._local_trial_running()
-    assert entity._cached_stream_source == "rtmps://cloud/url"
-    release.set()
-    await hass.async_block_till_done()
 
 
 async def test_missed_trial_does_not_double_a_running_fallback(

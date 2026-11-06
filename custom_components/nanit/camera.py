@@ -138,14 +138,15 @@ async def async_setup_entry(
     stream_stills = is_stream_stills(entry)
     stored = entry.data.get(ENTRY_CLOUD_PUSH)
     cloud_pushes = stored if isinstance(stored, Mapping) else {}
-    if set(cloud_pushes) - set(entry.runtime_data.cameras):
-        # A camera that left the account would keep its URL and token here.
-        cloud_pushes = {
-            uid: row for uid, row in cloud_pushes.items() if uid in entry.runtime_data.cameras
-        }
-        hass.config_entries.async_update_entry(
-            entry, data={**entry.data, ENTRY_CLOUD_PUSH: cloud_pushes}
-        )
+    if cloud_pushes:
+        # A camera the hub will retry keeps its row for the reload that adds it.
+        known = set(entry.runtime_data.cameras) | entry.runtime_data.hub.failed_camera_uids
+        if set(cloud_pushes) - known:
+            # A camera that left the account would keep its URL and token here.
+            cloud_pushes = {uid: row for uid, row in cloud_pushes.items() if uid in known}
+            hass.config_entries.async_update_entry(
+                entry, data={**entry.data, ENTRY_CLOUD_PUSH: cloud_pushes}
+            )
     async_add_entities(
         NanitCameraEntity(
             cam_data.push_coordinator,
@@ -943,8 +944,10 @@ class NanitCameraEntity(NanitEntity, Camera):
         url, at = stored.get("url"), stored.get("at")
         if not isinstance(url, str) or not url or not isinstance(at, int | float):
             return
-        # A clock behind at boot (no RTC before NTP) reads as no time passed.
-        age = max(0.0, time.time() - at)
+        # The push may have been renewed up to a persist interval after the
+        # stored time, so it is treated as that much younger. A clock behind
+        # at boot (no RTC before NTP) reads as no time passed.
+        age = max(0.0, time.time() - at - _CLOUD_PUSH_PERSIST_INTERVAL)
         if age > _CLOUD_PUSH_LIFETIME:
             return
         self._cloud_push_url = url
@@ -964,9 +967,7 @@ class NanitCameraEntity(NanitEntity, Camera):
         """
         entry = getattr(self.coordinator, "config_entry", None)
         hass = getattr(self, "hass", None)
-        # Only a local start or a cooldown end uses the record after a
-        # restart, so without local streaming there is nothing to keep it for.
-        if not isinstance(entry, ConfigEntry) or hass is None or self._local is None:
+        if not isinstance(entry, ConfigEntry) or hass is None:
             return
         stored = entry.data.get(ENTRY_CLOUD_PUSH)
         pushes = dict(stored) if isinstance(stored, Mapping) else {}
@@ -977,6 +978,10 @@ class NanitCameraEntity(NanitEntity, Camera):
             if old is None:
                 return
             del pushes[uid]
+        elif self._local is None:
+            # Only a local start or a cooldown end uses the record after a
+            # restart, so without local streaming nothing is stored.
+            return
         else:
             at = time.time() - (time.monotonic() - self._cloud_push_at)
             if (

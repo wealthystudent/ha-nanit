@@ -396,6 +396,22 @@ class NanitCameraEntity(NanitEntity, Camera):
         self._cancel_stream_timers()
         self._close_local_subscribers()
 
+    @staticmethod
+    def _switch_stream_source(stream: Any, source: str) -> None:
+        """Point a running HLS stream at ``source``.
+
+        While HA's worker waits to retry after an error (the stream reads as
+        unavailable), Stream.update_source() ends the worker's thread and leaves
+        its restart flag set. The next stop then restarts the worker instead of
+        ending it, and it keeps reading with nobody watching. The worker reads
+        ``source`` when its wait ends (10 s after a first error, longer after
+        more), so there it is only assigned.
+        """
+        if stream.available:
+            stream.update_source(source)
+        else:
+            stream.source = source
+
     async def _stop_discarded_stream(self, stream: Any) -> None:
         """Best-effort cleanup for a stream removed from HA's cache."""
         try:
@@ -665,7 +681,7 @@ class NanitCameraEntity(NanitEntity, Camera):
             self._stream_source_started_at = time.monotonic()
             self._schedule_stream_expiry_timer()
             self._schedule_stream_keepalive_timer()
-            stream.update_source(source)
+            self._switch_stream_source(stream, source)
             return
 
         # No active consumers — discard so the next viewer starts fresh.
@@ -1085,7 +1101,7 @@ class NanitCameraEntity(NanitEntity, Camera):
         self._stream_source_started_at = time.monotonic()
         self._schedule_stream_expiry_timer()
         self._schedule_stream_keepalive_timer()
-        stream.update_source(source)
+        self._switch_stream_source(stream, source)
 
     def _local_reclaimed_stream(self, *, after_put: bool = False) -> bool:
         """Hand the stream to local if local took over while a cloud task waited.
@@ -1172,7 +1188,7 @@ class NanitCameraEntity(NanitEntity, Camera):
         if stream is None or stream.source == flv_url:
             return
         if stream.outputs() and self.is_on:
-            stream.update_source(flv_url)
+            self._switch_stream_source(stream, flv_url)
         else:
             # Drop only the idle HLS stream: local readers are already on
             # the URL we're switching to and keep the shared keepalive.

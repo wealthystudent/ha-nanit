@@ -9,6 +9,9 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 
 DOMAIN = "nanit"
+# Entry data key for each camera's last cloud push, kept across a restart so
+# it can still be stopped by name (#206).
+ENTRY_CLOUD_PUSH = "cloud_push"
 LOGGER = logging.getLogger(__package__)
 
 PLATFORMS = [
@@ -119,3 +122,8 @@ DEFAULT_SOUND_MACHINE_SOUNDS = (
     "dryer",
     "vacuum",
 )
+
+
+def unloaded_marker(entry_id: str) -> str:
+    """Return the hass.data[DOMAIN] key that says an entry was unloaded in this run."""
+    return f"unloaded_{entry_id}"

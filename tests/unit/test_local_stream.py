@@ -3114,3 +3114,187 @@ async def test_cooldown_end_during_the_retry_wait_only_assigns(hass: HomeAssista
     entity._handle_local_cooldown_end()
     stream.update_source.assert_not_called()
     assert stream.source == FLV_URL
+
+
+# ----------------------------------------------------------------------
+# #206: the cloud push survives a restart, and a reload ends the pause
+# ----------------------------------------------------------------------
+
+
+def _stored_entity(
+    hass: HomeAssistant, entry: MockConfigEntry, local: ls.LocalStreamCamera
+) -> tuple:
+    """An entity built the way setup builds it, from the entry's stored push."""
+    coordinator = _push_coordinator(_camera_state(sleep_mode=False))
+    coordinator.config_entry = entry
+    camera = MagicMock(uid="cam_1", connected=True)
+    camera.async_get_stream_rtmps_url = AsyncMock(return_value="rtmps://cloud/url")
+    camera.async_start_streaming = AsyncMock(return_value=200)
+    camera.async_stop_streaming = AsyncMock(return_value=200)
+    stored = entry.data.get(const_module.ENTRY_CLOUD_PUSH) or {}
+    entity = NanitCameraEntity(coordinator, camera, local=local, cloud_push=stored.get("cam_1"))
+    entity.hass = hass
+    _ENTITIES.append(entity)
+    return entity, camera
+
+
+def _store_push(hass: HomeAssistant, entry: MockConfigEntry, row: object) -> None:
+    hass.config_entries.async_update_entry(
+        entry, data={**entry.data, const_module.ENTRY_CLOUD_PUSH: {"cam_1": row}}
+    )
+
+
+async def test_push_from_before_a_restart_is_stopped_before_the_local_start(
+    hass: HomeAssistant, source_ip: Any
+) -> None:
+    entry = _entry(hass)
+    _store_push(hass, entry, {"url": "rtmps://cloud/old", "at": time.time() - 60})
+    local = _local_entry(hass, entry).camera("cam_1")
+    entity, camera = _stored_entity(hass, entry, local)
+    calls: list[str] = []
+
+    async def stop(*, rtmps_url: str, **_kwargs: Any) -> int:
+        calls.append(f"STOP {rtmps_url}")
+        return 200
+
+    async def start(*, rtmps_url: str, **_kwargs: Any) -> int:
+        calls.append(f"START {rtmps_url}")
+        return 200
+
+    camera.async_stop_streaming = stop
+    camera.async_start_streaming = start
+    local.channel.wait_for_publish = AsyncMock(return_value=True)
+    assert await entity._async_local_start() is True
+    assert calls[0] == "STOP rtmps://cloud/old"
+    assert calls[1].startswith(f"START rtmps://{HOST}")
+    assert "cam_1" not in entry.data[const_module.ENTRY_CLOUD_PUSH]
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        pytest.param({"url": "rtmps://cloud/old", "at": time.time() - 26 * 60}, id="lapsed"),
+        pytest.param({"url": "rtmps://cloud/old"}, id="no-time"),
+        pytest.param({"url": 5, "at": time.time()}, id="bad-url"),
+        pytest.param("rtmps://cloud/old", id="not-a-mapping"),
+    ],
+)
+async def test_push_that_cannot_still_run_is_not_restored(hass: HomeAssistant, row: object) -> None:
+    entry = _entry(hass)
+    _store_push(hass, entry, row)
+    entity, camera = _stored_entity(hass, entry, _local_entry(hass, entry).camera("cam_1"))
+    assert entity._live_cloud_push_url() is None
+    entity._handle_local_cooldown_end()
+    await hass.async_block_till_done()
+    camera.async_stop_streaming.assert_not_awaited()
+
+
+async def test_clock_behind_at_boot_still_restores_the_push(hass: HomeAssistant) -> None:
+    entry = _entry(hass)
+    _store_push(hass, entry, {"url": "rtmps://cloud/old", "at": time.time() + 3600})
+    entity, _camera = _stored_entity(hass, entry, _local_entry(hass, entry).camera("cam_1"))
+    assert entity._live_cloud_push_url() == "rtmps://cloud/old"
+
+
+async def test_cloud_push_is_stored_and_renewals_are_throttled(hass: HomeAssistant) -> None:
+    entry = _entry(hass)
+    local = _local_entry(hass, entry).camera("cam_1")
+    entity, camera = _stored_entity(hass, entry, local)
+    local.start_cooldown("x")
+    assert await entity.stream_source() == "rtmps://cloud/url"
+    entity._cancel_stream_timers()
+    row = entry.data[const_module.ENTRY_CLOUD_PUSH]["cam_1"]
+    assert row["url"] == "rtmps://cloud/url"
+    first_at = row["at"]
+
+    camera.async_start_streaming = AsyncMock(return_value=STREAM_LIMIT_STATUS)
+    with patch.object(hass.config_entries, "async_update_entry") as update:
+        assert await entity._async_start_streaming_safe("rtmps://cloud/url")
+    update.assert_not_called()  # a renewal right away writes nothing
+
+    # One keepalive interval later, the renewal is written.
+    old_at = first_at - camera_module._STREAM_KEEPALIVE_INTERVAL
+    _store_push(hass, entry, {"url": "rtmps://cloud/url", "at": old_at})
+    assert await entity._async_start_streaming_safe("rtmps://cloud/url")
+    assert entry.data[const_module.ENTRY_CLOUD_PUSH]["cam_1"]["at"] >= first_at
+
+
+async def test_stopped_cloud_push_is_removed_from_storage(hass: HomeAssistant) -> None:
+    entry = _entry(hass)
+    _store_push(hass, entry, {"url": "rtmps://cloud/old", "at": time.time() - 60})
+    local = _local_entry(hass, entry).camera("cam_1")
+    entity, camera = _stored_entity(hass, entry, local)
+    entity._handle_local_cooldown_end()
+    await hass.async_block_till_done()
+    camera.async_stop_streaming.assert_awaited_once_with(
+        rtmps_url="rtmps://cloud/old", reconnect_on_failure=False
+    )
+    assert "cam_1" not in entry.data[const_module.ENTRY_CLOUD_PUSH]
+
+
+@pytest.mark.parametrize(("stop_status", "kept"), [(200, False), (TimeoutError, True)])
+async def test_removal_keeps_a_push_it_could_not_stop(
+    hass: HomeAssistant, stop_status: object, kept: bool
+) -> None:
+    entry = _entry(hass)
+    _store_push(hass, entry, {"url": "rtmps://cloud/old", "at": time.time() - 60})
+    entity, camera = _stored_entity(hass, entry, _local_entry(hass, entry).camera("cam_1"))
+    entity.entity_id = "camera.nursery"
+    if stop_status is TimeoutError:
+        camera.async_stop_streaming = AsyncMock(side_effect=TimeoutError)
+    else:
+        camera.async_stop_streaming = AsyncMock(return_value=stop_status)
+    await entity.async_will_remove_from_hass()
+    assert ("cam_1" in entry.data[const_module.ENTRY_CLOUD_PUSH]) is kept
+
+
+async def test_diagnostics_redact_the_cloud_push(hass: HomeAssistant) -> None:
+    from homeassistant.components.diagnostics import async_redact_data
+
+    from custom_components.nanit.diagnostics import TO_REDACT
+
+    entry = _entry(hass)
+    _store_push(hass, entry, {"url": "rtmps://cloud/secret-token", "at": time.time()})
+    data = async_redact_data(dict(entry.data), TO_REDACT)
+    assert data[const_module.ENTRY_CLOUD_PUSH] == "**REDACTED**"
+
+
+@pytest.mark.local_stream_receiver
+async def test_reload_ends_the_pause_and_a_restart_keeps_it(
+    hass: HomeAssistant, mock_nanit_client: Any
+) -> None:
+    from custom_components.nanit import async_setup_entry, async_unload_entry
+
+    entry = _entry(hass, {CONF_LOCAL_STREAM: True})
+    paused = {
+        "keys": {},
+        "strikes": 2,
+        "paused_at": time.time(),
+        "paused_reason": ls.ISSUE_UNREACHABLE,
+        "host": HOST,
+    }
+    hass.config_entries.async_update_entry(entry, data={**entry.data, ls.ENTRY_DATA_KEY: paused})
+    with (
+        patch.object(ls, "_async_acquire_server", AsyncMock(return_value=_FakeServer())),
+        patch.object(ls, "_async_release_server", AsyncMock()),
+        patch.object(
+            hass.config_entries, "async_forward_entry_setups", AsyncMock(return_value=True)
+        ),
+        patch.object(hass.config_entries, "async_unload_platforms", AsyncMock(return_value=True)),
+    ):
+        assert await async_setup_entry(hass, entry)  # a start: still paused
+        local = entry.runtime_data.local_stream
+        assert local is not None
+        assert local.paused
+        issue_id = f"{ls.ISSUE_UNREACHABLE}_{entry.entry_id}"
+        assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is not None
+        local.cancel_timers()
+
+        assert await async_unload_entry(hass, entry)
+        reloaded = await ls.async_setup_local_stream(hass, entry)
+    assert reloaded is not None
+    assert not reloaded.paused
+    assert reloaded.strikes == 0
+    assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None
+    # The marker is used once, so a later setup in this run is not a reload.
+    assert const_module.unloaded_marker(entry.entry_id) not in hass.data.get(DOMAIN, {})

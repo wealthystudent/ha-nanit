@@ -8,12 +8,13 @@ import logging
 import shlex
 import shutil
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 from homeassistant.components.camera import Camera, CameraEntityFeature
 from homeassistant.components.ffmpeg import async_get_image as ffmpeg_get_image
 from homeassistant.components.ffmpeg import get_ffmpeg_manager
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback, async_get_current_platform
@@ -27,7 +28,7 @@ from aionanit.exceptions import NanitRequestTimeout, NanitTransportError
 from aionanit.models import ConnectionState
 
 from . import NanitConfigEntry
-from .const import DOMAIN, is_read_only, is_stream_stills
+from .const import DOMAIN, ENTRY_CLOUD_PUSH, is_read_only, is_stream_stills
 from .coordinator import NanitPushCoordinator
 from .entity import NanitEntity
 from .hub import StreamStillInfo
@@ -130,6 +131,8 @@ async def async_setup_entry(
     if local_stream is not None:
         local_stream.prune_keys(set(entry.runtime_data.cameras))
     stream_stills = is_stream_stills(entry)
+    stored = entry.data.get(ENTRY_CLOUD_PUSH)
+    cloud_pushes = stored if isinstance(stored, Mapping) else {}
     async_add_entities(
         NanitCameraEntity(
             cam_data.push_coordinator,
@@ -138,6 +141,7 @@ async def async_setup_entry(
             local=(local_stream.camera(cam_data.camera.uid) if local_stream is not None else None),
             stream_stills=stream_stills,
             still_info=cam_data.stream_still,
+            cloud_push=cloud_pushes.get(cam_data.camera.uid),
         )
         for cam_data in entry.runtime_data.cameras.values()
     )
@@ -159,6 +163,7 @@ class NanitCameraEntity(NanitEntity, Camera):
         local: LocalStreamCamera | None = None,
         stream_stills: bool = False,
         still_info: StreamStillInfo | None = None,
+        cloud_push: object = None,
     ) -> None:
         """Initialize."""
         super().__init__(coordinator)
@@ -209,6 +214,7 @@ class NanitCameraEntity(NanitEntity, Camera):
         self._stream_still_task: asyncio.Task[None] | None = None
         self._stream_still_finished_at: float | None = None
         self._stream_still_failures = 0
+        self._restore_cloud_push(cloud_push)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -249,6 +255,7 @@ class NanitCameraEntity(NanitEntity, Camera):
             if not cur_on:
                 # Sleep ends the camera's push, so there is nothing to stop.
                 self._cloud_push_url = self._local_push_url = None
+                self._persist_cloud_push()
                 self._cancel_local_idle_stop()
         else:
             self._invalidate_stream_if_expired()
@@ -346,12 +353,18 @@ class NanitCameraEntity(NanitEntity, Camera):
             self._local is None or not self._local.channel.publishing
         ):
             self._local_push_url = None
-        urls = [url for url in (self._live_cloud_push_url(), self._local_push_url) if url]
-        if urls and any(await asyncio.gather(*(self._async_stop_push(url) for url in urls))):
+        cloud_url = self._live_cloud_push_url()
+        urls = [url for url in (cloud_url, self._local_push_url) if url]
+        stopped = await asyncio.gather(*(self._async_stop_push(url) for url in urls))
+        if any(stopped):
             # A rename adds this object back at once, and a viewer then can
             # land in the wind-down.
             self._push_stopped_at = time.monotonic()
         self._cloud_push_url = self._local_push_url = None
+        if cloud_url is None or stopped[0]:
+            # A cloud push the stop didn't reach stays stored, so the next
+            # setup (a reload) can still stop it by name.
+            self._persist_cloud_push()
         await super().async_will_remove_from_hass()
 
     def _invalidate_stream(self, reason: str = "state change") -> None:
@@ -798,6 +811,7 @@ class NanitCameraEntity(NanitEntity, Camera):
                 and self._live_cloud_push_url() is not None
             ):
                 self._cloud_push_at = time.monotonic()
+                self._persist_cloud_push()
             return
         if local:
             self._local_push_url = url
@@ -811,6 +825,7 @@ class NanitCameraEntity(NanitEntity, Camera):
             self._cloud_push_generation += 1
             if status == 200:
                 self._local_push_url = None
+        self._persist_cloud_push()
 
     async def _async_stop_push(self, url: str) -> bool:
         """Ask the camera to stop pushing to ``url``. Best effort.
@@ -882,6 +897,7 @@ class NanitCameraEntity(NanitEntity, Camera):
         self._push_stopped_at = time.monotonic()
         if self._cloud_push_generation == generation:
             self._cloud_push_url = None
+            self._persist_cloud_push()
 
     async def _async_wait_for_cloud_stop(self) -> None:
         task = self._cloud_stop_task
@@ -901,6 +917,57 @@ class NanitCameraEntity(NanitEntity, Camera):
         if self._live_cloud_push_url() is not None:
             self._stop_cloud_push()
             await self._async_wait_for_cloud_stop()
+
+    def _restore_cloud_push(self, stored: object) -> None:
+        """Bring back a cloud push recorded before a restart, if it may still run."""
+        if not isinstance(stored, Mapping):
+            return
+        url, at = stored.get("url"), stored.get("at")
+        if not isinstance(url, str) or not url or not isinstance(at, int | float):
+            return
+        # A clock behind at boot (no RTC before NTP) reads as no time passed.
+        age = max(0.0, time.time() - at)
+        if age > _CLOUD_PUSH_LIFETIME:
+            return
+        self._cloud_push_url = url
+        self._cloud_push_at = time.monotonic() - age
+        _LOGGER.debug(
+            "Restored camera %s's cloud push from %.0f s ago, to stop it by name",
+            self._camera.uid,
+            age,
+        )
+
+    @callback
+    def _persist_cloud_push(self) -> None:
+        """Store the cloud push record in the entry data, so a restart keeps it.
+
+        A renewal (a declined keepalive every few minutes while the cloud
+        stream is watched) is written at most once per keepalive interval.
+        """
+        entry = getattr(self.coordinator, "config_entry", None)
+        hass = getattr(self, "hass", None)
+        if not isinstance(entry, ConfigEntry) or hass is None:
+            return
+        stored = entry.data.get(ENTRY_CLOUD_PUSH)
+        pushes = dict(stored) if isinstance(stored, Mapping) else {}
+        uid = self._camera.uid
+        old = pushes.get(uid)
+        url = self._cloud_push_url
+        if url is None:
+            if old is None:
+                return
+            del pushes[uid]
+        else:
+            at = time.time() - (time.monotonic() - self._cloud_push_at)
+            if (
+                isinstance(old, Mapping)
+                and old.get("url") == url
+                and isinstance(old.get("at"), int | float)
+                and at - old["at"] < _STREAM_KEEPALIVE_INTERVAL
+            ):
+                return
+            pushes[uid] = {"url": url, "at": at}
+        hass.config_entries.async_update_entry(entry, data={**entry.data, ENTRY_CLOUD_PUSH: pushes})
 
     def _live_cloud_push_url(self) -> str | None:
         """Return our recorded cloud push, forgetting one that ran out on its own."""

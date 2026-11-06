@@ -62,6 +62,11 @@ _STOP_SETTLE_DELAY = 2.0
 # keepalive for our own push counts as keeping it going (see _record_push),
 # and the 5 minutes over 20 are margin on a lifetime that's only observed.
 _CLOUD_PUSH_LIFETIME = 25 * 60.0
+# The record is kept in the entry data so a restart can still stop the push
+# (#206). A renewal is written at most this often, so a watched cloud stream
+# rewrites the entry about four times an hour. The cost is that a push renewed
+# since the last write may be treated as older than it is after a restart.
+_CLOUD_PUSH_PERSIST_INTERVAL = 15 * 60.0
 # Unlike the cloud push, the camera's push to our receiver never ends on its
 # own (it ran 12 hours with no reader in testing), holding one of its app
 # slots. It is stopped once the receiver has had no reader for this long
@@ -133,6 +138,14 @@ async def async_setup_entry(
     stream_stills = is_stream_stills(entry)
     stored = entry.data.get(ENTRY_CLOUD_PUSH)
     cloud_pushes = stored if isinstance(stored, Mapping) else {}
+    if set(cloud_pushes) - set(entry.runtime_data.cameras):
+        # A camera that left the account would keep its URL and token here.
+        cloud_pushes = {
+            uid: row for uid, row in cloud_pushes.items() if uid in entry.runtime_data.cameras
+        }
+        hass.config_entries.async_update_entry(
+            entry, data={**entry.data, ENTRY_CLOUD_PUSH: cloud_pushes}
+        )
     async_add_entities(
         NanitCameraEntity(
             cam_data.push_coordinator,
@@ -248,6 +261,11 @@ class NanitCameraEntity(NanitEntity, Camera):
         prev_conn_state = self._prev_conn_state
         self._prev_conn_state = conn_state
 
+        if prev_on is None and not cur_on and self._cloud_push_url is not None:
+            # Asleep at startup: a push restored from before a restart ended
+            # with the sleep.
+            self._cloud_push_url = None
+            self._persist_cloud_push()
         if prev_on is not None and prev_on != cur_on:
             # Camera power changed — invalidate cached stream.
             self._cancel_stream_still()
@@ -941,12 +959,14 @@ class NanitCameraEntity(NanitEntity, Camera):
     def _persist_cloud_push(self) -> None:
         """Store the cloud push record in the entry data, so a restart keeps it.
 
-        A renewal (a declined keepalive every few minutes while the cloud
-        stream is watched) is written at most once per keepalive interval.
+        A renewal of the same URL is written at most once per
+        _CLOUD_PUSH_PERSIST_INTERVAL.
         """
         entry = getattr(self.coordinator, "config_entry", None)
         hass = getattr(self, "hass", None)
-        if not isinstance(entry, ConfigEntry) or hass is None:
+        # Only a local start or a cooldown end uses the record after a
+        # restart, so without local streaming there is nothing to keep it for.
+        if not isinstance(entry, ConfigEntry) or hass is None or self._local is None:
             return
         stored = entry.data.get(ENTRY_CLOUD_PUSH)
         pushes = dict(stored) if isinstance(stored, Mapping) else {}
@@ -963,7 +983,7 @@ class NanitCameraEntity(NanitEntity, Camera):
                 isinstance(old, Mapping)
                 and old.get("url") == url
                 and isinstance(old.get("at"), int | float)
-                and at - old["at"] < _STREAM_KEEPALIVE_INTERVAL
+                and at - old["at"] < _CLOUD_PUSH_PERSIST_INTERVAL
             ):
                 return
             pushes[uid] = {"url": url, "at": at}

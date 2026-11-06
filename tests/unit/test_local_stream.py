@@ -3212,8 +3212,8 @@ async def test_cloud_push_is_stored_and_renewals_are_throttled(hass: HomeAssista
         assert await entity._async_start_streaming_safe("rtmps://cloud/url")
     update.assert_not_called()  # a renewal right away writes nothing
 
-    # One keepalive interval later, the renewal is written.
-    old_at = first_at - camera_module._STREAM_KEEPALIVE_INTERVAL
+    # One persist interval later, the renewal is written.
+    old_at = first_at - camera_module._CLOUD_PUSH_PERSIST_INTERVAL
     _store_push(hass, entry, {"url": "rtmps://cloud/url", "at": old_at})
     assert await entity._async_start_streaming_safe("rtmps://cloud/url")
     assert entry.data[const_module.ENTRY_CLOUD_PUSH]["cam_1"]["at"] >= first_at
@@ -3298,3 +3298,98 @@ async def test_reload_ends_the_pause_and_a_restart_keeps_it(
     assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None
     # The marker is used once, so a later setup in this run is not a reload.
     assert const_module.unloaded_marker(entry.entry_id) not in hass.data.get(DOMAIN, {})
+
+
+async def test_new_cloud_url_is_stored_at_once(hass: HomeAssistant) -> None:
+    entry = _entry(hass)
+    _store_push(hass, entry, {"url": "rtmps://cloud/old", "at": time.time()})
+    entity, _camera = _stored_entity(hass, entry, _local_entry(hass, entry).camera("cam_1"))
+    assert await entity._async_start_streaming_safe("rtmps://cloud/new")
+    assert entry.data[const_module.ENTRY_CLOUD_PUSH]["cam_1"]["url"] == "rtmps://cloud/new"
+
+
+async def test_restored_push_from_a_clock_ahead_still_lapses(hass: HomeAssistant) -> None:
+    entry = _entry(hass)
+    _store_push(hass, entry, {"url": "rtmps://cloud/old", "at": time.time() + 3600})
+    entity, _camera = _stored_entity(hass, entry, _local_entry(hass, entry).camera("cam_1"))
+    entity._cloud_push_at -= camera_module._CLOUD_PUSH_LIFETIME + 1
+    assert entity._live_cloud_push_url() is None
+
+
+async def test_removal_keeps_the_cloud_push_when_only_the_local_stop_worked(
+    hass: HomeAssistant,
+) -> None:
+    entry = _entry(hass)
+    _store_push(hass, entry, {"url": "rtmps://cloud/old", "at": time.time() - 60})
+    local = _local_entry(hass, entry).camera("cam_1")
+    entity, camera = _stored_entity(hass, entry, local)
+    entity.entity_id = "camera.nursery"
+    entity._local_push_url = "rtmps://192.168.1.10:1935/nanit/key"
+
+    async def stop(*, rtmps_url: str, **_kwargs: Any) -> int:
+        if rtmps_url == "rtmps://cloud/old":
+            raise TimeoutError
+        return 200
+
+    camera.async_stop_streaming = stop
+    with patch.object(type(local.channel), "publishing", new=True):
+        await entity.async_will_remove_from_hass()
+    assert "cam_1" in entry.data[const_module.ENTRY_CLOUD_PUSH]
+
+
+async def test_asleep_at_startup_forgets_the_restored_push(hass: HomeAssistant) -> None:
+    entry = _entry(hass)
+    _store_push(hass, entry, {"url": "rtmps://cloud/old", "at": time.time() - 60})
+    entity, _camera = _stored_entity(hass, entry, _local_entry(hass, entry).camera("cam_1"))
+    entity.coordinator.data = _camera_state(sleep_mode=True)
+    with patch.object(entity, "async_write_ha_state"):
+        entity._handle_coordinator_update()
+    assert entity._live_cloud_push_url() is None
+    assert "cam_1" not in entry.data[const_module.ENTRY_CLOUD_PUSH]
+
+
+async def test_no_record_is_stored_without_local_streaming(hass: HomeAssistant) -> None:
+    entry = _entry(hass)
+    coordinator = _push_coordinator(_camera_state(sleep_mode=False))
+    coordinator.config_entry = entry
+    camera = MagicMock(uid="cam_1", connected=True)
+    camera.async_start_streaming = AsyncMock(return_value=200)
+    entity = NanitCameraEntity(coordinator, camera, local=None)
+    entity.hass = hass
+    _ENTITIES.append(entity)
+    assert await entity._async_start_streaming_safe("rtmps://cloud/url")
+    assert const_module.ENTRY_CLOUD_PUSH not in entry.data
+
+
+@pytest.mark.local_stream_receiver
+async def test_setup_restores_the_stored_push_and_prunes_departed_cameras(
+    hass: HomeAssistant, mock_nanit_client: Any
+) -> None:
+    from custom_components.nanit import async_setup_entry
+    from custom_components.nanit.camera import async_setup_entry as camera_setup
+
+    entry = _entry(hass, {CONF_LOCAL_STREAM: True})
+    hass.config_entries.async_update_entry(
+        entry,
+        data={
+            **entry.data,
+            const_module.ENTRY_CLOUD_PUSH: {
+                "cam_1": {"url": "rtmps://cloud/old", "at": time.time() - 60},
+                "gone": {"url": "rtmps://cloud/gone", "at": time.time() - 60},
+            },
+        },
+    )
+    with (
+        patch.object(ls, "_async_acquire_server", AsyncMock(return_value=_FakeServer())),
+        patch.object(ls, "_async_release_server", AsyncMock()),
+        patch.object(
+            hass.config_entries, "async_forward_entry_setups", AsyncMock(return_value=True)
+        ),
+    ):
+        assert await async_setup_entry(hass, entry)
+        added: list[NanitCameraEntity] = []
+        await camera_setup(hass, entry, lambda entities: added.extend(entities))
+    _ENTITIES.extend(added)
+    restored = {entity._camera.uid: entity._live_cloud_push_url() for entity in added}
+    assert restored["cam_1"] == "rtmps://cloud/old"
+    assert set(entry.data[const_module.ENTRY_CLOUD_PUSH]) == {"cam_1"}

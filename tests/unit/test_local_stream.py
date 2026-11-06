@@ -824,7 +824,7 @@ async def test_options_change_clears_the_pause_on_the_next_setup(
         first.record_strike(HOST)
         first.record_strike(HOST)
         assert first.paused
-        # Same options: still paused after a reload.
+        # Same options and no unload first, as after a restart: still paused.
         again = await ls.async_setup_local_stream(hass, entry)
         assert again is not None
         assert again.paused
@@ -3289,7 +3289,12 @@ async def test_reload_ends_the_pause_and_a_restart_keeps_it(
         ),
         patch.object(hass.config_entries, "async_unload_platforms", AsyncMock(return_value=True)),
     ):
-        assert await async_setup_entry(hass, entry)  # a start: still paused
+        # A first setup records the options fingerprint, so the next one
+        # takes the same path a restart does.
+        first = await ls.async_setup_local_stream(hass, entry)
+        assert first is not None
+        first.cancel_timers()
+        assert await async_setup_entry(hass, entry)  # a restart: still paused
         local = entry.runtime_data.local_stream
         assert local is not None
         assert local.paused
@@ -3433,4 +3438,26 @@ async def test_cleared_push_is_deleted_without_local_streaming(hass: HomeAssista
     entity.entity_id = "camera.nursery"
     _ENTITIES.append(entity)
     await entity.async_will_remove_from_hass()
+    assert "cam_1" not in entry.data[const_module.ENTRY_CLOUD_PUSH]
+
+
+async def test_restored_push_keeps_its_age(hass: HomeAssistant) -> None:
+    """A restored push lapses when its real lifetime runs out, not 25 minutes later."""
+    entry = _entry(hass)
+    stored_age = camera_module._CLOUD_PUSH_PERSIST_INTERVAL + 20 * 60
+    _store_push(hass, entry, {"url": "rtmps://cloud/old", "at": time.time() - stored_age})
+    entity, _camera = _stored_entity(hass, entry, _local_entry(hass, entry).camera("cam_1"))
+    age = time.monotonic() - entity._cloud_push_at
+    assert 20 * 60 - 5 <= age <= 20 * 60 + 5
+
+
+async def test_sleep_during_the_run_deletes_the_stored_push(hass: HomeAssistant) -> None:
+    entry = _entry(hass)
+    _store_push(hass, entry, {"url": "rtmps://cloud/old", "at": time.time() - 60})
+    entity, _camera = _stored_entity(hass, entry, _local_entry(hass, entry).camera("cam_1"))
+    with patch.object(entity, "async_write_ha_state"):
+        entity._handle_coordinator_update()  # awake
+        assert "cam_1" in entry.data[const_module.ENTRY_CLOUD_PUSH]
+        entity.coordinator.data = _camera_state(sleep_mode=True)
+        entity._handle_coordinator_update()  # goes to sleep
     assert "cam_1" not in entry.data[const_module.ENTRY_CLOUD_PUSH]

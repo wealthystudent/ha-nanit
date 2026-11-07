@@ -3462,3 +3462,59 @@ async def test_sleep_during_the_run_deletes_the_stored_push(hass: HomeAssistant)
         entity.coordinator.data = _camera_state(sleep_mode=True)
         entity._handle_coordinator_update()  # goes to sleep
     assert "cam_1" not in entry.data[const_module.ENTRY_CLOUD_PUSH]
+
+
+async def _push_carried_through_a_local_off_run(hass: HomeAssistant) -> tuple:
+    """Run with local off after a restart: the old push A is restored and renewed.
+
+    A keepalive with the new run's URL B is declined while A plays, which keeps
+    A going, so the stored row must keep naming A.
+    """
+    entry = _entry(hass)
+    _store_push(hass, entry, {"url": "rtmps://cloud/A", "at": time.time() - 16 * 60})
+    entity, camera = _stored_entity(hass, entry, None)
+    entity.entity_id = "camera.nursery"
+    camera.async_start_streaming = AsyncMock(return_value=STREAM_LIMIT_STATUS)
+    assert await entity._async_start_streaming_safe("rtmps://cloud/B")
+    row = entry.data[const_module.ENTRY_CLOUD_PUSH]["cam_1"]
+    assert row["url"] == "rtmps://cloud/A"
+    assert row["at"] > time.time() - 60
+    return entry, entity, camera
+
+
+async def test_turning_local_on_stops_the_old_push_on_the_reload(
+    hass: HomeAssistant,
+) -> None:
+    entry, entity, camera = await _push_carried_through_a_local_off_run(hass)
+    await entity.async_will_remove_from_hass()  # the options reload
+    camera.async_stop_streaming.assert_awaited_with(
+        rtmps_url="rtmps://cloud/A", reconnect_on_failure=False
+    )
+    assert "cam_1" not in entry.data[const_module.ENTRY_CLOUD_PUSH]
+
+
+async def test_turning_local_on_stops_the_old_push_before_the_first_local_start(
+    hass: HomeAssistant, source_ip: Any
+) -> None:
+    entry, entity, camera = await _push_carried_through_a_local_off_run(hass)
+    camera.async_stop_streaming = AsyncMock(side_effect=TimeoutError)
+    await entity.async_will_remove_from_hass()  # the reload's stop doesn't land
+    local = _local_entry(hass, entry).camera("cam_1")
+    entity2, camera2 = _stored_entity(hass, entry, local)
+    calls: list[str] = []
+
+    async def stop(*, rtmps_url: str, **_kwargs: Any) -> int:
+        calls.append(f"STOP {rtmps_url}")
+        return 200
+
+    async def start(*, rtmps_url: str, **_kwargs: Any) -> int:
+        calls.append(f"START {rtmps_url}")
+        return 200
+
+    camera2.async_stop_streaming = stop
+    camera2.async_start_streaming = start
+    local.channel.wait_for_publish = AsyncMock(return_value=True)
+    assert await entity2._async_local_start() is True
+    assert calls[0] == "STOP rtmps://cloud/A"
+    assert calls[1].startswith(f"START rtmps://{HOST}")
+    assert "cam_1" not in entry.data[const_module.ENTRY_CLOUD_PUSH]

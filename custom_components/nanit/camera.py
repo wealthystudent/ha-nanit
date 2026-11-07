@@ -63,7 +63,9 @@ _STOP_SETTLE_DELAY = 2.0
 # and the 5 minutes over 20 are margin on a lifetime that's only observed.
 _CLOUD_PUSH_LIFETIME = 25 * 60.0
 # The record is kept in the entry data so a restart can still stop the push
-# (#206). A renewal is written at most this often, so a watched cloud stream
+# (#206), with local streaming off too, since turning it on afterwards is
+# when that push gets in the way. A renewal is written at most this often, so
+# a watched cloud stream
 # rewrites the entry about four times an hour. The cost is that a push renewed
 # since the last write may be treated as older than it is after a restart.
 _CLOUD_PUSH_PERSIST_INTERVAL = 15 * 60.0
@@ -978,10 +980,6 @@ class NanitCameraEntity(NanitEntity, Camera):
             if old is None:
                 return
             del pushes[uid]
-        elif self._local is None:
-            # Only a local start or a cooldown end uses the record after a
-            # restart, so without local streaming nothing is stored.
-            return
         else:
             at = time.time() - (time.monotonic() - self._cloud_push_at)
             if (

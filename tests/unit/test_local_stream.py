@@ -3360,7 +3360,8 @@ async def test_asleep_at_startup_forgets_the_restored_push(hass: HomeAssistant) 
     assert "cam_1" not in entry.data[const_module.ENTRY_CLOUD_PUSH]
 
 
-async def test_no_record_is_stored_without_local_streaming(hass: HomeAssistant) -> None:
+async def test_record_is_stored_without_local_streaming(hass: HomeAssistant) -> None:
+    """Turning local streaming on later must still find a push from before a restart."""
     entry = _entry(hass)
     coordinator = _push_coordinator(_camera_state(sleep_mode=False))
     coordinator.config_entry = entry
@@ -3370,7 +3371,7 @@ async def test_no_record_is_stored_without_local_streaming(hass: HomeAssistant) 
     entity.hass = hass
     _ENTITIES.append(entity)
     assert await entity._async_start_streaming_safe("rtmps://cloud/url")
-    assert const_module.ENTRY_CLOUD_PUSH not in entry.data
+    assert entry.data[const_module.ENTRY_CLOUD_PUSH]["cam_1"]["url"] == "rtmps://cloud/url"
 
 
 @pytest.mark.local_stream_receiver

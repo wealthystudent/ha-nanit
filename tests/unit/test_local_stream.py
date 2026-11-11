@@ -2868,8 +2868,11 @@ async def test_removal_retells_a_provider_whose_unregister_was_cut_off(
         entity._fall_back_to_cloud("test")
         await asyncio.sleep(0)
         assert provider.unregistered == 1
+        task = entity._route_refresh_task
         # The first unregister hangs past removal's wait and is cancelled.
         await entity.async_will_remove_from_hass()
+        await asyncio.sleep(0)
+        assert task is not None and task.cancelled()
     assert provider.unregistered == 2
     assert not entity._detached_providers
 
@@ -2901,6 +2904,59 @@ async def test_an_error_in_the_route_task_is_logged_and_a_later_flip_retries(
         await hass.async_block_till_done()
     assert calls == 2
     assert entity._published_route == entity._settled_route == "local"
+
+
+async def test_a_provider_found_later_on_local_is_written(hass: HomeAssistant) -> None:
+    entity, _local = _routed_entity(hass)
+    provider = _FakeGo2rtc()
+    with _offers(provider), patch.object(NanitCameraEntity, "async_write_ha_state") as write:
+        # go2rtc loading after the camera: core refreshes, the route is unchanged.
+        await entity.async_refresh_providers()
+    assert entity._webrtc_provider is provider
+    write.assert_called_once()
+
+
+async def test_a_removed_entity_starts_no_route_task(hass: HomeAssistant) -> None:
+    entity, _local = _routed_entity(hass)
+    entity._removed = True
+    with patch.object(NanitCameraEntity, "async_write_ha_state"):
+        entity._fall_back_to_cloud("test")
+    assert entity._route_refresh_task is None
+
+
+async def test_removal_does_not_wait_forever_for_a_refresh_core_started(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(camera_module, "_PROVIDER_REFRESH_WAIT", 0.05)
+    entity, _local = _routed_entity(hass)
+
+    async def base_refresh(self: Any, *, write_state: bool = True) -> None:
+        await asyncio.Event().wait()
+
+    with (
+        patch.object(Camera, "async_refresh_providers", autospec=True, side_effect=base_refresh),
+        patch.object(NanitCameraEntity, "async_write_ha_state"),
+    ):
+        refresh = hass.async_create_task(entity.async_refresh_providers())
+        await asyncio.sleep(0)
+        assert entity._provider_lock.locked()
+        async with asyncio.timeout(2):
+            await entity.async_will_remove_from_hass()
+        refresh.cancel()
+
+
+async def test_a_provider_left_detached_is_told_on_the_next_route_write(
+    hass: HomeAssistant,
+) -> None:
+    entity, _local = _routed_entity(hass)
+    provider = _FakeGo2rtc()
+    # Left over with the route settled and no task running.
+    entity._detached_providers.append(provider)
+    with patch.object(NanitCameraEntity, "async_write_ha_state"):
+        entity._write_route_state()
+        await hass.async_block_till_done()
+    assert provider.unregistered == 1
+    assert not entity._detached_providers
 
 
 async def test_unchanged_route_is_written_without_a_refresh(hass: HomeAssistant) -> None:

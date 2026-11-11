@@ -282,15 +282,21 @@ class NanitCameraEntity(NanitEntity, Camera):
             invalidate = getattr(self, "_invalidate_camera_capabilities_cache", None)
             if invalidate is not None:
                 invalidate()
+            # Also reached from a refresh core started, with no route task about.
+            self._ensure_route_task()
 
     async def _async_unregister_detached(self) -> None:
         while self._detached_providers:
-            provider = self._detached_providers.pop()
+            # Removed only once told, so a cancel at removal leaves it for the
+            # removal's own pass.
+            provider = self._detached_providers[0]
             # As core does: a provider's I/O must not break the route or removal.
             try:
                 await provider.async_unregister_camera(self)
             except Exception:
                 _LOGGER.exception("Error unregistering WebRTC provider for %s", self.entity_id)
+            if self._detached_providers and self._detached_providers[0] is provider:
+                self._detached_providers.pop(0)
 
     async def _async_get_supported_webrtc_provider[T](
         self, fn: Callable[[HomeAssistant, Camera], Coroutine[None, None, T | None]]
@@ -1240,20 +1246,29 @@ class NanitCameraEntity(NanitEntity, Camera):
             self._published_route = "cloud"
         if route == self._published_route:
             self.async_write_ha_state()
-        if (self._detached_providers or not self._route_settled(route)) and (
-            self._route_refresh_task is None or self._route_refresh_task.done()
-        ):
+        if self._detached_providers or not self._route_settled(route):
+            self._ensure_route_task()
+
+    @callback
+    def _ensure_route_task(self) -> None:
+        if self._removed or getattr(self, "hass", None) is None:
+            return
+        if self._route_refresh_task is None or self._route_refresh_task.done():
             self._route_refresh_task = self.hass.async_create_task(
                 self._async_publish_route(), name=f"nanit_publish_route_{self._camera.uid}"
             )
 
     async def _async_publish_route(self) -> None:
         """Tell detached providers, and refresh until the provider fits the route."""
-        while not self._removed:
-            await self._async_unregister_detached()
-            if self._route_settled(self._stream_route()):
-                return
-            await self.async_refresh_providers()
+        try:
+            while not self._removed:
+                await self._async_unregister_detached()
+                if self._route_settled(self._stream_route()):
+                    return
+                await self.async_refresh_providers()
+        except Exception:
+            # Fails safe: cloud has no provider, and the next flip tries again.
+            _LOGGER.exception("Error updating the WebRTC provider for %s", self.entity_id)
 
     def _route_settled(self, route: str) -> bool:
         """Whether the provider was last picked for ``route`` and it is published."""

@@ -289,7 +289,7 @@ class NanitCameraEntity(NanitEntity, Camera):
         ):
             # The camera's RTMPS push can end with its control session (the
             # pre-emptive token-refresh reconnect, for one), though in testing
-            # a cloud push also outlived an HA restart. aionanit's reconnect
+            # a cloud push even outlived an HA restart. aionanit's reconnect
             # handler does not re-send PUT_STREAMING, so resume the push now
             # and watched streams recover well inside HA's 30s demux timeout.
             self._handle_stream_keepalive()
@@ -617,7 +617,7 @@ class NanitCameraEntity(NanitEntity, Camera):
         immediately; the pending timer is cancelled so it cannot double up.
 
         The send is best-effort (no reconnect-on-failure): forcing a control
-        reconnect on a late ACK would itself kill the RTMPS push and re-enter
+        reconnect on a late ACK could itself kill the RTMPS push and re-enter
         this handler on the reconnect transition — an endless teardown loop.
         A genuinely dead session is still recovered by aionanit's periodic
         health check, whose reconnect lands back here to resume the push.

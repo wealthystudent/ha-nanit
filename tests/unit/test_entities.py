@@ -979,7 +979,7 @@ async def test_camera_keepalive_stops_after_source_invalidation(
 async def test_camera_reconnect_resumes_watched_stream_push(
     hass: HomeAssistant,
 ) -> None:
-    """The camera's RTMPS push dies with its control session.
+    """The camera's RTMPS push can end with its control session.
 
     aionanit's reconnect handler does not re-send PUT_STREAMING (e.g. after
     the pre-emptive token-refresh reconnect), so the entity must resume the

@@ -287,10 +287,11 @@ class NanitCameraEntity(NanitEntity, Camera):
             and prev_conn_state is not None
             and prev_conn_state is not ConnectionState.CONNECTED
         ):
-            # The camera's RTMPS push dies with its control session (e.g. the
-            # pre-emptive token-refresh reconnect) and aionanit's reconnect
-            # handler does not re-send PUT_STREAMING. Resume the push now so
-            # watched streams recover well inside HA's 30s demux timeout.
+            # The camera's RTMPS push can end with its control session (the
+            # pre-emptive token-refresh reconnect, for one), though in testing
+            # a cloud push also outlived an HA restart. aionanit's reconnect
+            # handler does not re-send PUT_STREAMING, so resume the push now
+            # and watched streams recover well inside HA's 30s demux timeout.
             self._handle_stream_keepalive()
 
         super()._handle_coordinator_update()
@@ -733,7 +734,7 @@ class NanitCameraEntity(NanitEntity, Camera):
         ``reconnect_on_failure=False`` makes each send best-effort: aionanit
         will not force-reconnect the control WebSocket when the ACK is late.
         Background keepalives must use this — a control-session reconnect
-        stops the camera's RTMPS push, so a keepalive that reconnects on a
+        can stop the camera's RTMPS push, so a keepalive that reconnects on a
         slow ACK tears down the very stream it is keeping alive and loops
         (reconnect → resume PUT_STREAMING → slow ACK → reconnect …).
 
@@ -949,14 +950,17 @@ class NanitCameraEntity(NanitEntity, Camera):
         # The push may have been renewed up to a persist interval after the
         # stored time, so it is treated as that much younger. A clock behind
         # at boot (no RTC before NTP) reads as no time passed.
-        age = max(0.0, time.time() - at - _CLOUD_PUSH_PERSIST_INTERVAL)
+        stored_age = time.time() - at
+        age = max(0.0, stored_age - _CLOUD_PUSH_PERSIST_INTERVAL)
         if age > _CLOUD_PUSH_LIFETIME:
             return
         self._cloud_push_url = url
         self._cloud_push_at = time.monotonic() - age
         _LOGGER.debug(
-            "Restored camera %s's cloud push from %.0f s ago, to stop it by name",
+            "Restored camera %s's cloud push, stored %.0f s ago and treated as %.0f s old,"
+            " to stop it by name",
             self._camera.uid,
+            stored_age,
             age,
         )
 

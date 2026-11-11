@@ -1267,7 +1267,8 @@ class NanitCameraEntity(NanitEntity, Camera):
                     return
                 await self.async_refresh_providers()
         except Exception:
-            # Fails safe: cloud has no provider, and the next flip tries again.
+            # Fails safe, with no provider. The next route change tries again,
+            # so a camera that stays local keeps HLS only until then.
             _LOGGER.exception("Error updating the WebRTC provider for %s", self.entity_id)
 
     def _route_settled(self, route: str) -> bool:

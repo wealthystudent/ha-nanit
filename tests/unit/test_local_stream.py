@@ -2959,6 +2959,19 @@ async def test_a_provider_left_detached_is_told_on_the_next_route_write(
     assert not entity._detached_providers
 
 
+async def test_a_provider_without_an_unregister_hook_is_dropped_quietly(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Before HA 2026.9 providers have no unregister hook."""
+    entity, _local = _routed_entity(hass)
+    entity._detached_providers.append(object())
+    with patch.object(NanitCameraEntity, "async_write_ha_state"):
+        entity._write_route_state()
+        await hass.async_block_till_done()
+    assert not entity._detached_providers
+    assert "Error unregistering" not in caplog.text
+
+
 async def test_unchanged_route_is_written_without_a_refresh(hass: HomeAssistant) -> None:
     entity, _local = _routed_entity(hass)
     with (

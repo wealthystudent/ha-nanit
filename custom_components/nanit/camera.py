@@ -290,9 +290,13 @@ class NanitCameraEntity(NanitEntity, Camera):
             # Removed only once told, so a cancel at removal leaves it for the
             # removal's own pass.
             provider = self._detached_providers[0]
+            # Providers have no unregister hook before HA 2026.9, so there is
+            # nothing to tell them.
+            unregister = getattr(provider, "async_unregister_camera", None)
             # As core does: a provider's I/O must not break the route or removal.
             try:
-                await provider.async_unregister_camera(self)
+                if unregister is not None:
+                    await unregister(self)
             except Exception:
                 _LOGGER.exception("Error unregistering WebRTC provider for %s", self.entity_id)
             if self._detached_providers and self._detached_providers[0] is provider:

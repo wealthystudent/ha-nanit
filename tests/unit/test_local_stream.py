@@ -2959,17 +2959,38 @@ async def test_a_provider_left_detached_is_told_on_the_next_route_write(
     assert not entity._detached_providers
 
 
-async def test_a_provider_without_an_unregister_hook_is_dropped_quietly(
+class _OldGo2rtc:
+    """A provider as HA before 2026.8 has it: sessions, but no unregister hook."""
+
+    def __init__(self) -> None:
+        self.sessions = {"sid-1", "sid-2"}
+        self.closed: list[str] = []
+
+    def async_close_session(self, session_id: str) -> None:
+        self.sessions.remove(session_id)  # KeyError for an unknown id, as core's pop
+        self.closed.append(session_id)
+
+
+async def test_a_provider_without_an_unregister_hook_still_gets_its_closes(
     hass: HomeAssistant, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Before HA 2026.9 providers have no unregister hook."""
+    """A session opened on local is closed after the flip to cloud."""
     entity, _local = _routed_entity(hass)
-    entity._detached_providers.append(object())
+    provider = _OldGo2rtc()
+    entity._detached_providers.append(provider)
     with patch.object(NanitCameraEntity, "async_write_ha_state"):
         entity._write_route_state()
         await hass.async_block_till_done()
     assert not entity._detached_providers
     assert "Error unregistering" not in caplog.text
+    assert entity._webrtc_provider is None
+    entity.close_webrtc_session("sid-1")
+    entity.close_webrtc_session("unknown")
+    assert provider.closed == ["sid-1"]
+    # Back on local the same provider is attached again and core closes for it.
+    entity._webrtc_provider = provider
+    entity.close_webrtc_session("sid-2")
+    assert provider.closed == ["sid-1", "sid-2"]
 
 
 async def test_unchanged_route_is_written_without_a_refresh(hass: HomeAssistant) -> None:

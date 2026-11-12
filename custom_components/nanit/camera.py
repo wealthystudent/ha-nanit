@@ -216,6 +216,9 @@ class NanitCameraEntity(NanitEntity, Camera):
         self._route_refresh_task: asyncio.Task[None] | None = None
         # Providers taken off the camera at a flip to cloud, still to be told.
         self._detached_providers: list[Any] = []
+        # Detached providers that HA before 2026.8 gives no way to tell. They
+        # still own sessions opened on local, so closes go to them.
+        self._untold_providers: list[Any] = []
         self._push_stopped_at = float("-inf")
         self._warned_stop_unsupported = False
         # Opt-in stills from the live stream when the cloud snapshot fails.
@@ -290,13 +293,15 @@ class NanitCameraEntity(NanitEntity, Camera):
             # Removed only once told, so a cancel at removal leaves it for the
             # removal's own pass.
             provider = self._detached_providers[0]
-            # Providers have no unregister hook before HA 2026.9, so there is
-            # nothing to tell them.
+            # Providers have no unregister hook before HA 2026.8, so their
+            # open sessions stay theirs to close.
             unregister = getattr(provider, "async_unregister_camera", None)
             # As core does: a provider's I/O must not break the route or removal.
             try:
                 if unregister is not None:
                     await unregister(self)
+                elif not any(p is provider for p in self._untold_providers):
+                    self._untold_providers.append(provider)
             except Exception:
                 _LOGGER.exception("Error unregistering WebRTC provider for %s", self.entity_id)
             if self._detached_providers and self._detached_providers[0] is provider:
@@ -550,11 +555,20 @@ class NanitCameraEntity(NanitEntity, Camera):
 
     @callback
     def close_webrtc_session(self, session_id: str) -> None:
-        """Close a WebRTC session, ignoring duplicate go2rtc close callbacks."""
+        """Close a WebRTC session, ignoring duplicate go2rtc close callbacks.
+
+        Also closes it on providers detached under HA before 2026.8, which
+        core no longer reaches once the camera has no provider.
+        """
         try:
             super().close_webrtc_session(session_id)
         except KeyError:
             _LOGGER.debug("WebRTC session %s was already closed", session_id)
+        for provider in self._untold_providers:
+            if provider is self._webrtc_provider:
+                continue
+            with contextlib.suppress(KeyError):
+                provider.async_close_session(session_id)
 
     # ------------------------------------------------------------------
     # Streaming

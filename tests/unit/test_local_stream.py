@@ -3015,7 +3015,8 @@ async def test_a_session_on_a_replaced_provider_is_still_closed(hass: HomeAssist
     assert old.closed == ["sid-1"]
 
 
-async def test_a_session_is_closed_after_removal(hass: HomeAssistant) -> None:
+async def test_a_session_is_closed_after_removal_before_ha_2026_8(hass: HomeAssistant) -> None:
+    """Core has no removal hook here, so the provider is still set when we detach."""
     entity, _local = _routed_entity(hass)
     provider = _OldGo2rtc("sid-1")
     entity._webrtc_provider = provider

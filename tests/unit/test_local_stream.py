@@ -2962,8 +2962,8 @@ async def test_a_provider_left_detached_is_told_on_the_next_route_write(
 class _OldGo2rtc:
     """A provider as HA before 2026.8 has it: sessions, but no unregister hook."""
 
-    def __init__(self) -> None:
-        self.sessions = {"sid-1", "sid-2"}
+    def __init__(self, *sessions: str) -> None:
+        self.sessions = set(sessions)
         self.closed: list[str] = []
 
     def async_close_session(self, session_id: str) -> None:
@@ -2971,26 +2971,69 @@ class _OldGo2rtc:
         self.closed.append(session_id)
 
 
-async def test_a_provider_without_an_unregister_hook_still_gets_its_closes(
-    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+class _Go2rtcEarly2026Eight(_OldGo2rtc):
+    """HA 2026.8.0 to 2026.8.2: the hook exists but leaves sessions open."""
+
+    async def async_unregister_camera(self, camera: Any) -> None:
+        return None
+
+
+@pytest.mark.parametrize("provider_class", [_OldGo2rtc, _Go2rtcEarly2026Eight])
+async def test_a_session_opened_on_local_is_closed_after_a_flip_to_cloud(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture, provider_class: type
 ) -> None:
-    """A session opened on local is closed after the flip to cloud."""
     entity, _local = _routed_entity(hass)
-    provider = _OldGo2rtc()
-    entity._detached_providers.append(provider)
-    with patch.object(NanitCameraEntity, "async_write_ha_state"):
-        entity._write_route_state()
+    provider = provider_class("sid-1", "sid-2", "sid-3")
+    entity._webrtc_provider = provider
+    with _offers(provider), patch.object(NanitCameraEntity, "async_write_ha_state"):
+        entity._fall_back_to_cloud("test")
+        # Before the route task has run.
+        entity.close_webrtc_session("sid-1")
         await hass.async_block_till_done()
     assert not entity._detached_providers
     assert "Error unregistering" not in caplog.text
     assert entity._webrtc_provider is None
-    entity.close_webrtc_session("sid-1")
+    entity.close_webrtc_session("sid-2")
     entity.close_webrtc_session("unknown")
-    assert provider.closed == ["sid-1"]
+    assert provider.closed == ["sid-1", "sid-2"]
     # Back on local the same provider is attached again and core closes for it.
     entity._webrtc_provider = provider
-    entity.close_webrtc_session("sid-2")
-    assert provider.closed == ["sid-1", "sid-2"]
+    entity.close_webrtc_session("sid-3")
+    assert provider.closed == ["sid-1", "sid-2", "sid-3"]
+
+
+async def test_a_session_on_a_replaced_provider_is_still_closed(hass: HomeAssistant) -> None:
+    entity, _local = _routed_entity(hass)
+    old = _OldGo2rtc("sid-1")
+    entity._webrtc_provider = old
+    with _offers(old), patch.object(NanitCameraEntity, "async_write_ha_state"):
+        entity._fall_back_to_cloud("test")
+        await hass.async_block_till_done()
+    # go2rtc reloaded while on cloud, and the new instance is attached on local.
+    entity._webrtc_provider = _OldGo2rtc()
+    entity.close_webrtc_session("sid-1")
+    assert old.closed == ["sid-1"]
+
+
+async def test_a_session_is_closed_after_removal(hass: HomeAssistant) -> None:
+    entity, _local = _routed_entity(hass)
+    provider = _OldGo2rtc("sid-1")
+    entity._webrtc_provider = provider
+    with patch.object(NanitCameraEntity, "async_write_ha_state"):
+        await entity.async_will_remove_from_hass()
+    entity.close_webrtc_session("sid-1")
+    assert provider.closed == ["sid-1"]
+
+
+async def test_a_failing_provider_does_not_stop_the_closes(hass: HomeAssistant) -> None:
+    entity, _local = _routed_entity(hass)
+    broken = MagicMock()
+    broken.async_close_session.side_effect = RuntimeError("boom")
+    good = _OldGo2rtc("sid-1")
+    entity._detach(broken)
+    entity._detach(good)
+    entity.close_webrtc_session("sid-1")
+    assert good.closed == ["sid-1"]
 
 
 async def test_unchanged_route_is_written_without_a_refresh(hass: HomeAssistant) -> None:

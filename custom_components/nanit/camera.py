@@ -216,9 +216,10 @@ class NanitCameraEntity(NanitEntity, Camera):
         self._route_refresh_task: asyncio.Task[None] | None = None
         # Providers taken off the camera at a flip to cloud, still to be told.
         self._detached_providers: list[Any] = []
-        # Detached providers that HA before 2026.8 gives no way to tell. They
-        # still own sessions opened on local, so closes go to them.
-        self._untold_providers: list[Any] = []
+        # Every provider ever detached. Before HA 2026.8.3 an unregister does
+        # not close the camera's sessions, and core drops a close once the
+        # camera has no provider, so closes are passed on to these.
+        self._session_providers: list[Any] = []
         self._push_stopped_at = float("-inf")
         self._warned_stop_unsupported = False
         # Opt-in stills from the live stream when the cloud snapshot fails.
@@ -279,7 +280,7 @@ class NanitCameraEntity(NanitEntity, Camera):
         provider = self._webrtc_provider
         if provider is not None:
             self._webrtc_provider = None
-            self._detached_providers.append(provider)
+            self._detach(provider)
             # Some HA versions cache the capabilities and clear them only in
             # their own refresh.
             invalidate = getattr(self, "_invalidate_camera_capabilities_cache", None)
@@ -288,20 +289,23 @@ class NanitCameraEntity(NanitEntity, Camera):
             # Also reached from a refresh core started, with no route task about.
             self._ensure_route_task()
 
+    @callback
+    def _detach(self, provider: Any) -> None:
+        self._detached_providers.append(provider)
+        if not any(p is provider for p in self._session_providers):
+            self._session_providers.append(provider)
+
     async def _async_unregister_detached(self) -> None:
         while self._detached_providers:
             # Removed only once told, so a cancel at removal leaves it for the
             # removal's own pass.
             provider = self._detached_providers[0]
-            # Providers have no unregister hook before HA 2026.8, so their
-            # open sessions stay theirs to close.
+            # Providers have no unregister hook before HA 2026.8.
             unregister = getattr(provider, "async_unregister_camera", None)
             # As core does: a provider's I/O must not break the route or removal.
             try:
                 if unregister is not None:
                     await unregister(self)
-                elif not any(p is provider for p in self._untold_providers):
-                    self._untold_providers.append(provider)
             except Exception:
                 _LOGGER.exception("Error unregistering WebRTC provider for %s", self.entity_id)
             if self._detached_providers and self._detached_providers[0] is provider:
@@ -469,7 +473,7 @@ class NanitCameraEntity(NanitEntity, Camera):
         with contextlib.suppress(TimeoutError):
             async with asyncio.timeout(_PROVIDER_REFRESH_WAIT), self._provider_lock:
                 if self._webrtc_provider is not None:
-                    self._detached_providers.append(self._webrtc_provider)
+                    self._detach(self._webrtc_provider)
                     self._webrtc_provider = None
                 await self._async_unregister_detached()
 
@@ -557,18 +561,24 @@ class NanitCameraEntity(NanitEntity, Camera):
     def close_webrtc_session(self, session_id: str) -> None:
         """Close a WebRTC session, ignoring duplicate go2rtc close callbacks.
 
-        Also closes it on providers detached under HA before 2026.8, which
-        core no longer reaches once the camera has no provider.
+        Also passes it to detached providers, which core no longer reaches
+        and which before HA 2026.8.3 kept the session open after unregister.
         """
         try:
             super().close_webrtc_session(session_id)
         except KeyError:
             _LOGGER.debug("WebRTC session %s was already closed", session_id)
-        for provider in self._untold_providers:
+        for provider in self._session_providers:
             if provider is self._webrtc_provider:
                 continue
-            with contextlib.suppress(KeyError):
+            # Unknown ids raise KeyError before 2026.8.3; any provider error
+            # must not stop the others.
+            try:
                 provider.async_close_session(session_id)
+            except KeyError:
+                pass
+            except Exception:
+                _LOGGER.debug("Error closing WebRTC session %s", session_id, exc_info=True)
 
     # ------------------------------------------------------------------
     # Streaming

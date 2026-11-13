@@ -45,3 +45,25 @@ class NanitProtocolError(NanitError):
 
 class NanitCameraUnavailable(NanitError):
     """Camera is not reachable via any transport."""
+
+
+class NanitWebRtcRefused(NanitError):
+    """The camera answered a WebRTC offer with a non-200 status."""
+
+    def __init__(self, status_code: int | None, status_message: str = "") -> None:
+
+        super().__init__(
+            f"Camera refused the WebRTC offer: {status_code} {status_message}".rstrip()
+        )
+        self.status_code = status_code
+        self.status_message = status_message
+
+
+class NanitWebRtcClosed(NanitError):
+    """A WebRTC session ended before the camera answered its offer."""
+
+    def __init__(self, error: int, error_message: str = "") -> None:
+
+        super().__init__(f"WebRTC session closed: {error} {error_message}".rstrip())
+        self.error = error
+        self.error_message = error_message

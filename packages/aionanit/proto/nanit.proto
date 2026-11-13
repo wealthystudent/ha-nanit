@@ -46,6 +46,7 @@ enum RequestType {
   PUT_TCP_REQUEST = 45;
   GET_STING_START = 46;
   GET_LOGS_URI = 47;
+  PUT_WEBRTC_SERVICE_MESSAGE = 50;
 }
 
 enum SensorType {
@@ -235,6 +236,49 @@ message GetSettings {
   optional bool all = 1;
 }
 
+// Signaling for the camera's own WebRTC stream (PUT_WEBRTC_SERVICE_MESSAGE).
+// Field numbers from the Nanit app's protobuf adapters. Mute (4) and stream
+// controls (5) are left out until something uses them.
+message WebRtc {
+  enum Error {
+    OK = 0;
+    INTERNAL_ERROR = 1;
+    INVALID_SDP = 2;
+    NEGOTIATION_FAILED = 3;
+  }
+
+  message SessionDescription {
+    enum Type {
+      OFFER = 0;
+      PRANSWER = 1;
+      ANSWER = 2;
+      ROLLBACK = 3;
+    }
+    required int64 session_id = 1;
+    required Type sdp_type = 2;
+    required string description = 3;
+  }
+
+  message IceCandidate {
+    required int64 session_id = 1;
+    optional string sdp_mid = 2;
+    optional int32 sdp_m_line_index = 3;
+    required string sdp = 4;
+  }
+
+  message Close {
+    required int64 session_id = 1;
+    optional Error error = 2;
+    optional string error_message = 3;
+  }
+
+  oneof command {
+    SessionDescription session_description = 1;
+    IceCandidate ice_candidate = 2;
+    Close close = 3;
+  }
+}
+
 message Request {
   required int32 id = 1;
   required RequestType type = 2;
@@ -250,6 +294,7 @@ message Request {
   optional Playback playback = 16;
   optional GetControl get_control = 17;
   optional GetLogs get_logs = 18;
+  optional WebRtc webrtc = 36;
 }
 
 message Response {
@@ -264,6 +309,7 @@ message Response {
   optional Playback playback = 11;
   repeated Soundtrack soundtracks = 12;
   optional Control control = 13;
+  optional WebRtc webrtc = 29;
 }
 
 message Message {

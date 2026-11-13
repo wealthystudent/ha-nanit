@@ -66,6 +66,9 @@ DEFAULT_LOCAL_STREAM_PORT = 1935
 # Stills from the live stream when the cloud snapshot fails (off by default).
 CONF_STREAM_STILLS = "stream_stills"
 
+# Browsers get the camera's own WebRTC stream instead of go2rtc's (off by default).
+CONF_NATIVE_WEBRTC = "native_webrtc"
+
 
 def is_read_only(entry: ConfigEntry) -> bool:
     """Return whether the entry is in read-only mode (no device control at all)."""
@@ -75,6 +78,11 @@ def is_read_only(entry: ConfigEntry) -> bool:
 def is_stream_stills(entry: ConfigEntry) -> bool:
     """Return whether camera stills may be taken from the live stream."""
     return entry.options.get(CONF_STREAM_STILLS, False) is True
+
+
+def is_native_webrtc(entry: ConfigEntry) -> bool:
+    """Return whether browsers get the camera's own WebRTC stream."""
+    return entry.options.get(CONF_NATIVE_WEBRTC, False) is True
 
 
 def uses_external_go2rtc(hass: HomeAssistant) -> bool:

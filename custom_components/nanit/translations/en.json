@@ -58,7 +58,8 @@
           "device": "Sound & Light IP address",
           "read_only": "Read-only mode",
           "local_stream": "Local streaming",
-          "stream_stills": "Stills from the live stream"
+          "stream_stills": "Stills from the live stream",
+          "native_webrtc": "Camera's own WebRTC stream"
         }
       },
       "device": {
@@ -100,6 +101,13 @@
         "description": "Fills the camera's picture (HomeKit tiles, picture cards) from the live stream when Nanit's cloud has no still, as it currently has none. When a picture is asked for and the last one is more than about 10 minutes old, Home Assistant starts the camera's stream briefly and keeps one frame. The camera then keeps streaming for about 20 minutes and holds one of its stream slots (it allows about two), so an always-visible tile keeps it streaming and leaves one fewer phone able to watch live. Nothing is taken while the camera is asleep. Needs FFmpeg, which Home Assistant OS and Container include. Applies to every camera on this account, and changing it reloads the integration.",
         "data": {
           "stream_stills": "Stills from the live stream"
+        }
+      },
+      "native_webrtc": {
+        "title": "Camera's own WebRTC stream",
+        "description": "Browsers and the Home Assistant app play the camera's own WebRTC stream, straight from the camera over your network, instead of a stream relayed through Home Assistant. It starts in about a second, at 1080p and 10 frames a second on a Nanit Pro. The device showing it must be able to reach the camera's address directly, so it is meant for viewing at home; elsewhere the player falls back to the regular stream. Each open view holds one of the camera's two stream slots, as a watching Nanit Home or the Nanit app does, so with views open Home Assistant may have to use the cloud stream for stills, recording and the regular player. The browser must support H.264. Cameras Nanit doesn't offer this on keep the regular stream. Applies to every camera on this account, and changing it reloads the integration.",
+        "data": {
+          "native_webrtc": "Camera's own WebRTC stream"
         }
       }
     },

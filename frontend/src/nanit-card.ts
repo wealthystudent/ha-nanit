@@ -656,8 +656,11 @@ export class NanitCard extends LitElement {
 
     if (isEntityAvailable(this.hass, temperatureEntity)) {
       const val = parseFloat(this.hass.states[temperatureEntity!].state);
-      const display = isNaN(val) ? this.hass.states[temperatureEntity!].state : val.toFixed(1);
-      const unit = (this.hass.states[temperatureEntity!].attributes.unit_of_measurement as string) ?? "";
+      // No reading (unknown or unavailable) shows dashes, as the Nanit app does.
+      const display = isNaN(val) ? "--" : val.toFixed(1);
+      const unit = isNaN(val)
+        ? ""
+        : ((this.hass.states[temperatureEntity!].attributes.unit_of_measurement as string) ?? "");
       pills.push(html`
         <div class="pill pill-temp" @click=${() => this._fireMoreInfo(temperatureEntity!)}>
           <ha-icon icon="mdi:thermometer"></ha-icon>
@@ -668,8 +671,10 @@ export class NanitCard extends LitElement {
 
     if (isEntityAvailable(this.hass, humidityEntity)) {
       const val = parseFloat(this.hass.states[humidityEntity!].state);
-      const display = isNaN(val) ? this.hass.states[humidityEntity!].state : val.toFixed(1);
-      const unit = (this.hass.states[humidityEntity!].attributes.unit_of_measurement as string) ?? "%";
+      const display = isNaN(val) ? "--" : val.toFixed(1);
+      const unit = isNaN(val)
+        ? ""
+        : ((this.hass.states[humidityEntity!].attributes.unit_of_measurement as string) ?? "%");
       pills.push(html`
         <div class="pill pill-humid" @click=${() => this._fireMoreInfo(humidityEntity!)}>
           <ha-icon icon="mdi:water-percent"></ha-icon>

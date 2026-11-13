@@ -23,6 +23,31 @@ _WIFI_BAND_MAP: dict[int, str] = {
     SettingsWifiBand.FR5_0GHZ: "5ghz",
 }
 
+# A camera whose temperature and humidity sensor has nothing to report sends
+# -1000 for both (#208), where the Nanit app shows dashes. A reading far
+# outside anything a nursery camera can see is treated as no reading rather
+# than a value. -40..85 C is a common sensor rating, not this camera's spec.
+_TEMPERATURE_RANGE = (-40.0, 85.0)
+_HUMIDITY_RANGE = (0.0, 100.0)
+
+
+def _sensor_reading(sd: SensorData) -> float | None:
+    """Return the reading carried by ``sd``, or None if it carries none.
+
+    A field holding 0 counts as none, as it always has here.
+    """
+    if sd.value_milli:
+        return sd.value_milli / 1000.0
+    if sd.value:
+        return float(sd.value)
+    return None
+
+
+def _in_range(value: float, bounds: tuple[float, float]) -> float | None:
+    low, high = bounds
+    return value if low <= value <= high else None
+
+
 _MOUNTING_MODE_MAP: dict[int, str] = {
     MountingMode.STAND: "stand",
     MountingMode.TRAVEL: "travel",
@@ -45,15 +70,13 @@ def _parse_sensor_data(
 
     for sd in sensor_data_list:
         if sd.sensor_type == ProtoSensorType.TEMPERATURE:
-            if sd.value_milli:
-                temperature = sd.value_milli / 1000.0
-            elif sd.value:
-                temperature = float(sd.value)
+            reading = _sensor_reading(sd)
+            if reading is not None:
+                temperature = _in_range(reading, _TEMPERATURE_RANGE)
         elif sd.sensor_type == ProtoSensorType.HUMIDITY:
-            if sd.value_milli:
-                humidity = sd.value_milli / 1000.0
-            elif sd.value:
-                humidity = float(sd.value)
+            reading = _sensor_reading(sd)
+            if reading is not None:
+                humidity = _in_range(reading, _HUMIDITY_RANGE)
         elif sd.sensor_type == ProtoSensorType.LIGHT:
             light = sd.value
         elif sd.sensor_type == ProtoSensorType.SOUND:

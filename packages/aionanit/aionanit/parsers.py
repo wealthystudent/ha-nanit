@@ -32,7 +32,10 @@ _HUMIDITY_RANGE = (0.0, 100.0)
 
 
 def _sensor_reading(sd: SensorData) -> float | None:
-    """Return the reading carried by ``sd``, or None if it carries none."""
+    """Return the reading carried by ``sd``, or None if it carries none.
+
+    A field holding 0 counts as none, as it always has here.
+    """
     if sd.value_milli:
         return sd.value_milli / 1000.0
     if sd.value:

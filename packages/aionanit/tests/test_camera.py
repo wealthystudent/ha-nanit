@@ -305,6 +305,50 @@ class TestParseSensorData:
         result = _parse_sensor_data(data, SensorState())
         assert result.temperature == 24.0
 
+    @pytest.mark.parametrize(
+        "reading",
+        [{"value_milli": -1000000}, {"value": -1000}],
+        ids=["value_milli", "value"],
+    )
+    def test_no_reading_sentinel_is_unknown(self, reading: dict[str, int]) -> None:
+        """#208: a camera with nothing to report sends -1000 for both."""
+        existing = SensorState(temperature=22.0, humidity=40.0)
+        data = [
+            SensorData(sensor_type=ProtoSensorType.TEMPERATURE, **reading),
+            SensorData(sensor_type=ProtoSensorType.HUMIDITY, **reading),
+        ]
+        result = _parse_sensor_data(data, existing)
+        assert result.temperature is None
+        assert result.humidity is None
+
+    @pytest.mark.parametrize(
+        ("sensor_type", "value_milli", "expected"),
+        [
+            (ProtoSensorType.TEMPERATURE, -40000, -40.0),
+            (ProtoSensorType.TEMPERATURE, 85000, 85.0),
+            (ProtoSensorType.TEMPERATURE, -40001, None),
+            (ProtoSensorType.TEMPERATURE, 85001, None),
+            (ProtoSensorType.HUMIDITY, 100000, 100.0),
+            (ProtoSensorType.HUMIDITY, 100001, None),
+            (ProtoSensorType.HUMIDITY, -1, None),
+        ],
+    )
+    def test_readings_outside_the_sensor_range_are_unknown(
+        self, sensor_type: int, value_milli: int, expected: float | None
+    ) -> None:
+        data = [SensorData(sensor_type=sensor_type, value_milli=value_milli)]
+        result = _parse_sensor_data(data, SensorState(temperature=22.0, humidity=40.0))
+        value = (
+            result.temperature if sensor_type == ProtoSensorType.TEMPERATURE else result.humidity
+        )
+        assert value == expected
+
+    def test_a_valid_reading_after_no_reading_comes_back(self) -> None:
+        data = [SensorData(sensor_type=ProtoSensorType.HUMIDITY, value_milli=-1000000)]
+        unknown = _parse_sensor_data(data, SensorState(humidity=40.0))
+        data = [SensorData(sensor_type=ProtoSensorType.HUMIDITY, value_milli=45500)]
+        assert _parse_sensor_data(data, unknown).humidity == 45.5
+
 
 class TestParseStatus:
     def test_empty_response(self) -> None:

@@ -172,6 +172,15 @@ def test_sensor_value_extraction(sensor_key: str, expected: float | int) -> None
     assert entity.native_value == expected
 
 
+@pytest.mark.parametrize("sensor_key", ["temperature", "humidity"])
+def test_sensor_is_unknown_when_the_camera_has_no_reading(sensor_key: str) -> None:
+    """#208: the parser turns the camera's -1000 into None, which reads unknown."""
+    coordinator = _push_coordinator(_camera_state(temperature=None, humidity=None))
+    entity = NanitSensor(coordinator, _sensor_description(sensor_key))
+
+    assert entity.native_value is None
+
+
 def test_sensor_returns_none_when_no_data() -> None:
     coordinator = _push_coordinator(None)
     entity = NanitSensor(coordinator, _sensor_description("temperature"))

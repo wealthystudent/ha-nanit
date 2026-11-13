@@ -196,6 +196,7 @@ Good to know:
 | FFmpeg error at startup (Home Assistant Core) | Nanit depends on Home Assistant's FFmpeg integration (for stills from the live stream), which logs an error at startup when no ffmpeg binary is installed, whether or not that option is on. Install FFmpeg and restart Home Assistant. Home Assistant OS and Container include it. |
 | Stream frozen or stale | Run the `nanit.reset_stream` action on the camera entity (the dashboard card does this automatically when it detects a stall). |
 | Sensors unavailable | WebSocket reconnects automatically. Try reloading the integration if it persists. |
+| Temperature or humidity shows unknown (`--` on the card) | The camera isn't reporting a reading. The Nanit app shows dashes for it too. |
 | Sound & Light not using the local connection | Check that it's on the same network as HA, or set its IP in the options. The Nanit app on the same network can hold the speaker's only local slot. |
 | Re-authentication required | Session expired — click the notification to re-enter credentials. |
 | Other issues | Check **Settings → System → Logs** (filter for `nanit`) or download diagnostics from the integration page. |

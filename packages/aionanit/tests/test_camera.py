@@ -343,6 +343,15 @@ class TestParseSensorData:
         )
         assert value == expected
 
+    @pytest.mark.parametrize("sensor_type", [ProtoSensorType.TEMPERATURE, ProtoSensorType.HUMIDITY])
+    @pytest.mark.parametrize("fields", [{}, {"value_milli": 0}], ids=["unset", "zero"])
+    def test_an_entry_with_no_value_keeps_the_reading(
+        self, sensor_type: int, fields: dict[str, int]
+    ) -> None:
+        existing = SensorState(temperature=22.0, humidity=40.0)
+        result = _parse_sensor_data([SensorData(sensor_type=sensor_type, **fields)], existing)
+        assert (result.temperature, result.humidity) == (22.0, 40.0)
+
     def test_a_valid_reading_after_no_reading_comes_back(self) -> None:
         data = [SensorData(sensor_type=ProtoSensorType.HUMIDITY, value_milli=-1000000)]
         unknown = _parse_sensor_data(data, SensorState(humidity=40.0))

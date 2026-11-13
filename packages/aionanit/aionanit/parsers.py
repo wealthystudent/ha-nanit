@@ -24,8 +24,9 @@ _WIFI_BAND_MAP: dict[int, str] = {
 }
 
 # A camera whose temperature and humidity sensor has nothing to report sends
-# -1000 for both (#208), where the Nanit app shows dashes. Anything outside
-# what the sensor can measure is treated as no reading rather than a value.
+# -1000 for both (#208), where the Nanit app shows dashes. A reading far
+# outside anything a nursery camera can see is treated as no reading rather
+# than a value. -40..85 C is a common sensor rating, not this camera's spec.
 _TEMPERATURE_RANGE = (-40.0, 85.0)
 _HUMIDITY_RANGE = (0.0, 100.0)
 

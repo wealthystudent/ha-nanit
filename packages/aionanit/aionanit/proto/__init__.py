@@ -27,6 +27,7 @@ from .nanit_pb2 import (
     Stream,
     StreamIdentifier,
     Streaming,
+    WebRtc,
 )
 
 # ---------------------------------------------------------------------------
@@ -104,6 +105,24 @@ class StreamingStatus:
     PAUSED: int = Streaming.PAUSED
 
 
+class WebRtcSdpType:
+    """WebRtc.SessionDescription.Type enum values."""
+
+    OFFER: int = WebRtc.SessionDescription.OFFER
+    PRANSWER: int = WebRtc.SessionDescription.PRANSWER
+    ANSWER: int = WebRtc.SessionDescription.ANSWER
+    ROLLBACK: int = WebRtc.SessionDescription.ROLLBACK
+
+
+class WebRtcError:
+    """WebRtc.Error enum values, carried by a close."""
+
+    OK: int = WebRtc.OK
+    INTERNAL_ERROR: int = WebRtc.INTERNAL_ERROR
+    INVALID_SDP: int = WebRtc.INVALID_SDP
+    NEGOTIATION_FAILED: int = WebRtc.NEGOTIATION_FAILED
+
+
 # ---------------------------------------------------------------------------
 # Nested message aliases — flat names for sub-messages.
 # ---------------------------------------------------------------------------
@@ -111,6 +130,9 @@ class StreamingStatus:
 ControlSensorDataTransfer = Control.SensorDataTransfer
 SettingsSensorSettings = Settings.SensorSettings
 SettingsStreamSettings = Settings.StreamSettings
+WebRtcClose = WebRtc.Close
+WebRtcIceCandidate = WebRtc.IceCandidate
+WebRtcSessionDescription = WebRtc.SessionDescription
 
 
 __all__ = [
@@ -146,4 +168,10 @@ __all__ = [
     "StreamType",
     "Streaming",
     "StreamingStatus",
+    "WebRtc",
+    "WebRtcClose",
+    "WebRtcError",
+    "WebRtcIceCandidate",
+    "WebRtcSdpType",
+    "WebRtcSessionDescription",
 ]

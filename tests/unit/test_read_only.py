@@ -463,6 +463,7 @@ async def _open(hass: HomeAssistant, entry: MockConfigEntry, step: str) -> Any:
         "read_only",
         "local_stream",
         "stream_stills",
+        "native_webrtc",
     }
     return await hass.config_entries.options.async_configure(
         result["flow_id"], {"next_step_id": step}

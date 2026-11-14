@@ -84,6 +84,7 @@ class Request(google.protobuf.message.Message):
     playback: Playback
     get_control: GetControl
     get_logs: GetLogs
+    webrtc: WebRtc
 
 class RequestType:
     PUT_STREAMING: int
@@ -130,6 +131,7 @@ class RequestType:
     PUT_TCP_REQUEST: int
     GET_STING_START: int
     GET_LOGS_URI: int
+    PUT_WEBRTC_SERVICE_MESSAGE: int
     @staticmethod
     def Name(number: int) -> str: ...
     @staticmethod
@@ -146,6 +148,7 @@ class Response(google.protobuf.message.Message):
     playback: Playback
     soundtracks: list[Soundtrack]
     control: Control
+    webrtc: WebRtc
 
 class SensorData(google.protobuf.message.Message):
     sensor_type: int
@@ -218,3 +221,32 @@ class Streaming(google.protobuf.message.Message):
     status: int
     rtmp_url: str
     attempts: int
+
+class WebRtc(google.protobuf.message.Message):
+    OK: int
+    INTERNAL_ERROR: int
+    INVALID_SDP: int
+    NEGOTIATION_FAILED: int
+    class SessionDescription(google.protobuf.message.Message):
+        OFFER: int
+        PRANSWER: int
+        ANSWER: int
+        ROLLBACK: int
+        session_id: int
+        sdp_type: int
+        description: str
+
+    class IceCandidate(google.protobuf.message.Message):
+        session_id: int
+        sdp_mid: str
+        sdp_m_line_index: int
+        sdp: str
+
+    class Close(google.protobuf.message.Message):
+        session_id: int
+        error: int
+        error_message: str
+
+    session_description: WebRtc.SessionDescription
+    ice_candidate: WebRtc.IceCandidate
+    close: WebRtc.Close

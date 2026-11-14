@@ -166,3 +166,25 @@ class SpeakerCandidate:
     uid: str
     name: str
     status: str  # "currently-coupled", "already-coupled" or "available"
+
+
+@dataclass(frozen=True)
+class WebRtcCandidate:
+    """An ICE candidate the camera trickled for a WebRTC session."""
+
+    session_id: int
+    candidate: str
+    sdp_mid: str | None
+    sdp_m_line_index: int | None
+
+
+@dataclass(frozen=True)
+class WebRtcClosed:
+    """A WebRTC session ended by the camera, or by losing the control socket.
+
+    ``error`` is a ``WebRtc.Error`` value (0 is a clean close).
+    """
+
+    session_id: int
+    error: int
+    error_message: str

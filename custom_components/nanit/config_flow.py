@@ -23,6 +23,7 @@ from .const import (
     CONF_LOCAL_STREAM_HOST,
     CONF_LOCAL_STREAM_PORT,
     CONF_MFA_CODE,
+    CONF_NATIVE_WEBRTC,
     CONF_READ_ONLY,
     CONF_REFRESH_TOKEN,
     CONF_SPEAKER_IP,
@@ -32,6 +33,7 @@ from .const import (
     DEFAULT_LOCAL_STREAM_PORT,
     DOMAIN,
     LOGGER,
+    is_native_webrtc,
     is_read_only,
     is_stream_stills,
     local_stream_default,
@@ -401,7 +403,7 @@ class NanitOptionsFlow(OptionsFlow):
         """Choose what to configure."""
         return self.async_show_menu(
             step_id="init",
-            menu_options=["device", "read_only", "local_stream", "stream_stills"],
+            menu_options=["device", "read_only", "local_stream", "stream_stills", "native_webrtc"],
         )
 
     async def async_step_local_stream(
@@ -488,6 +490,28 @@ class NanitOptionsFlow(OptionsFlow):
                 {
                     vol.Required(
                         CONF_STREAM_STILLS, default=is_stream_stills(self.config_entry)
+                    ): cv.boolean,
+                }
+            ),
+        )
+
+    async def async_step_native_webrtc(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Turn the camera's own WebRTC stream on or off for the whole account."""
+        if user_input is not None:
+            new_options: dict[str, Any] = {**self.config_entry.options}
+            new_options.pop(CONF_NATIVE_WEBRTC, None)
+            if user_input[CONF_NATIVE_WEBRTC]:
+                new_options[CONF_NATIVE_WEBRTC] = True
+            return self.async_create_entry(title="", data=new_options)
+
+        return self.async_show_form(
+            step_id="native_webrtc",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_NATIVE_WEBRTC, default=is_native_webrtc(self.config_entry)
                     ): cv.boolean,
                 }
             ),

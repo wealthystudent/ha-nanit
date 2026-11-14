@@ -28,7 +28,7 @@ from aionanit.exceptions import NanitRequestTimeout, NanitTransportError
 from aionanit.models import ConnectionState
 
 from . import NanitConfigEntry
-from .const import DOMAIN, is_read_only, is_stream_stills
+from .const import DOMAIN, is_native_webrtc, is_read_only, is_stream_stills
 from .coordinator import NanitPushCoordinator
 from .entity import NanitEntity
 from .hub import StreamStillInfo
@@ -40,6 +40,7 @@ from .local_stream import (
     LocalStreamCamera,
 )
 from .log_redaction import async_attach_to_camera_stream, async_detach_from_camera_stream
+from .webrtc import NanitWebRTCProvider
 
 PARALLEL_UPDATES = 0
 
@@ -133,6 +134,7 @@ async def async_setup_entry(
     if local_stream is not None:
         local_stream.prune_keys(set(entry.runtime_data.cameras))
     stream_stills = is_stream_stills(entry)
+    native_webrtc = is_native_webrtc(entry)
     async_add_entities(
         NanitCameraEntity(
             cam_data.push_coordinator,
@@ -141,6 +143,7 @@ async def async_setup_entry(
             local=(local_stream.camera(cam_data.camera.uid) if local_stream is not None else None),
             stream_stills=stream_stills,
             still_info=cam_data.stream_still,
+            native_webrtc=native_webrtc,
         )
         for cam_data in entry.runtime_data.cameras.values()
     )
@@ -162,6 +165,7 @@ class NanitCameraEntity(NanitEntity, Camera):
         local: LocalStreamCamera | None = None,
         stream_stills: bool = False,
         still_info: StreamStillInfo | None = None,
+        native_webrtc: bool = False,
     ) -> None:
         """Initialize."""
         super().__init__(coordinator)
@@ -228,6 +232,11 @@ class NanitCameraEntity(NanitEntity, Camera):
         self._stream_still_task: asyncio.Task[None] | None = None
         self._stream_still_finished_at: float | None = None
         self._stream_still_failures = 0
+        # The camera's own WebRTC (see webrtc.py). When on, it is this camera's
+        # provider on every route, and go2rtc is never used for it.
+        self._native_provider: NanitWebRTCProvider | None = (
+            NanitWebRTCProvider(camera) if native_webrtc else None
+        )
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -255,7 +264,19 @@ class NanitCameraEntity(NanitEntity, Camera):
             route = self._stream_route()
             self._provider_route = route
             old_provider, old_published = self._webrtc_provider, self._published_route
-            await super().async_refresh_providers(write_state=False)
+            if self._native_provider is not None:
+                # Not route-bound: the camera streams to the browser directly.
+                # A removal that timed out may have left it queued for another
+                # unregister, which would turn it off again after a re-add.
+                self._detached_providers = [
+                    p for p in self._detached_providers if p is not self._native_provider
+                ]
+                self._native_provider.attach()
+                self._webrtc_provider = self._native_provider
+                if old_provider is not self._native_provider:
+                    self._invalidate_capabilities()
+            else:
+                await super().async_refresh_providers(write_state=False)
             if self._stream_route() != route:
                 # Moved to cloud while a provider was being registered for local.
                 self._detach_provider_for_cloud()
@@ -274,20 +295,25 @@ class NanitCameraEntity(NanitEntity, Camera):
         With the provider still set, that offer would reach go2rtc with the
         cloud URL. The unregister itself runs in _async_publish_route.
         """
-        if self._stream_route() != "cloud":
+        if self._stream_route() != "cloud" or self._native_provider is not None:
+            # The native provider doesn't use the RTMP route, so it stays.
             return
         self._provider_route = "cloud"
         provider = self._webrtc_provider
         if provider is not None:
             self._webrtc_provider = None
             self._detach(provider)
-            # Some HA versions cache the capabilities and clear them only in
-            # their own refresh.
-            invalidate = getattr(self, "_invalidate_camera_capabilities_cache", None)
-            if invalidate is not None:
-                invalidate()
+            self._invalidate_capabilities()
             # Also reached from a refresh core started, with no route task about.
             self._ensure_route_task()
+
+    @callback
+    def _invalidate_capabilities(self) -> None:
+        # Some HA versions cache the capabilities and clear them only in
+        # their own refresh.
+        invalidate = getattr(self, "_invalidate_camera_capabilities_cache", None)
+        if invalidate is not None:
+            invalidate()
 
     @callback
     def _detach(self, provider: Any) -> None:
@@ -352,6 +378,12 @@ class NanitCameraEntity(NanitEntity, Camera):
                 # Sleep ends the camera's push, so there is nothing to stop.
                 self._cloud_push_url = self._local_push_url = None
                 self._cancel_local_idle_stop()
+                if self._native_provider is not None and self._native_provider.session_count:
+                    # Core refuses new offers while asleep; end the open ones.
+                    self.hass.async_create_task(
+                        self._native_provider.async_close_all(),
+                        name=f"nanit_close_webrtc_{self._camera.uid}",
+                    )
         else:
             self._invalidate_stream_if_expired()
         self._update_local_accepting()
@@ -1166,7 +1198,12 @@ class NanitCameraEntity(NanitEntity, Camera):
         if busy:
             reason = "the camera is already streaming to as many apps as it allows"
             _LOGGER.info("Nanit local stream for %s skipped: %s", self._camera.uid, reason)
-            self._fall_back_to_cloud(reason)
+            # Our own WebRTC views hold slots too; they end when the views
+            # close, so they don't count toward the backoff.
+            own_sessions = (
+                self._native_provider is not None and self._native_provider.session_count > 0
+            )
+            self._fall_back_to_cloud(reason, count_miss=not own_sessions)
             return False
 
         if not self.is_on:

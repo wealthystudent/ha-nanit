@@ -100,6 +100,25 @@ What it costs:
 
 The setting applies to every camera on the account, and changing it reloads the integration.
 
+## The camera's own WebRTC stream (optional)
+
+Turn on **Settings → Devices & Services → Nanit → Configure → Camera's own WebRTC stream** to have browsers and the Home Assistant app play the camera's own WebRTC stream, the one Nanit's apps and Nanit Homes use, straight from the camera over your network. It starts in about a second, at 1080p and 10 frames a second with audio. The video and audio go directly from the camera to the browser, through neither Home Assistant nor the Nanit cloud. Setting up each view does go through Nanit's cloud relay, the same connection the integration already uses for control, so it needs the internet.
+
+How it works:
+
+- The camera sends H.264 only, so the browser has to support it. Chrome, Edge, Safari and the Home Assistant apps do; a browser that doesn't (some Linux Chromium builds, or Firefox until it has downloaded its H.264 plugin) gets the regular stream.
+- Each open view is its own connection to the camera. It works whether the camera's regular stream is on the local route or the cloud one.
+- Home Assistant still offers its regular stream (HLS) alongside, and the player falls back to it if the WebRTC connection can't be made. Current Home Assistant versions start both at once and switch to WebRTC when it plays.
+- Nanit offers it only on newer cameras and firmware. What an older camera does with it hasn't been seen: if it refuses or doesn't answer, Home Assistant gives up on each view after about 5 seconds, while the regular stream, which current frontends start alongside, keeps playing. A refusal is logged once. Leave the option off for such a camera.
+
+What it costs:
+
+- The device showing the camera has to reach the camera's address directly, so it's meant for viewing at home. Away from home, or with the camera on a separate network or VLAN your phone can't reach, the player falls back to the regular stream after its connection attempts fail.
+- Each open view holds one of the camera's two stream slots for as long as it's open, the same way a watching Nanit Home or the Nanit app does. Homes and these views are never turned away, but Home Assistant's own stream can be: with both slots taken (two views, or one view and a watching Home or app), the camera refuses Home Assistant's request to start a local stream, and Home Assistant falls back to the cloud stream for the regular player, stills and recording. That cloud stream has played with both Homes watching; whether it plays with only these views open hasn't been tested. With local streaming, that refusal is logged and doesn't grow its backoff. A view left open across a Home Assistant restart isn't known to the restarted Home Assistant, so a refusal it causes does count.
+- It is off by default.
+
+The setting applies to every camera on the account, and changing it reloads the integration.
+
 ## Dashboard Card
 
 A companion Lovelace card is **bundled with the integration** — no HACS frontend dependencies or manual JS installation required. After setup, the card appears in your card picker automatically.
@@ -183,7 +202,7 @@ Good to know:
 - The camera keeps sending video to Home Assistant until it's told to stop, so Home Assistant stops it about two minutes after the last viewer leaves. Opening the camera again starts it again within a few seconds.
 - If your go2rtc server's URL (`go2rtc: url:` in your configuration) isn't `localhost` or a loopback address, it can't reach the local stream, so WebRTC would fall back to HLS. Local streaming therefore starts off on those setups. You can still turn it on in the options.
 - A camera that falls back to the cloud goes back to local when the wait is over, even while it's being watched, preloaded, or asked for stills. Home Assistant first tells the camera to stop its own cloud stream, which would otherwise hold one of the camera's slots.
-- Home Assistant offers WebRTC only while a camera is on the local stream, because go2rtc crashes on Nanit's cloud stream ([AlexxIT/go2rtc#2061](https://github.com/AlexxIT/go2rtc/issues/2061)) and takes WebRTC down for every camera. So a camera that's on the cloud stream plays over HLS, and that includes local streaming being turned off or paused, and setups where it starts off because go2rtc uses an external server. When a camera falls back to the cloud, or local streaming pauses, its open WebRTC views are closed and the Nanit card reloads its player over HLS. On Home Assistant before 2026.8.3 they aren't closed, so the picture freezes until the card notices, about 8 seconds or more. A camera dialog left open across that may need reopening.
+- Without the camera's own WebRTC stream (see above), Home Assistant offers WebRTC only while a camera is on the local stream, because go2rtc crashes on Nanit's cloud stream ([AlexxIT/go2rtc#2061](https://github.com/AlexxIT/go2rtc/issues/2061)) and takes WebRTC down for every camera. So a camera that's on the cloud stream plays over HLS, and that includes local streaming being turned off or paused, and setups where it starts off because go2rtc uses an external server. When a camera falls back to the cloud, or local streaming pauses, its open WebRTC views are closed and the Nanit card reloads its player over HLS. On Home Assistant before 2026.8.3 they aren't closed, so the picture freezes until the card notices, about 8 seconds or more. A camera dialog left open across that may need reopening.
 - Reloading the integration ends that wait, so local is tried again on the next view. It doesn't end the pause after two misses in a row, which the repair's retry button does.
 
 ## Troubleshooting

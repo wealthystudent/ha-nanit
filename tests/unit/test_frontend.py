@@ -273,6 +273,14 @@ def test_card_reloads_its_player_when_the_route_turns_to_cloud() -> None:
     assert "stream_route" in bundle
 
 
+def test_card_reloads_its_player_when_the_route_turns_to_local() -> None:
+    """The stream has moved to the local URL, so the card doesn't wait for a stall."""
+    root = Path(__file__).resolve().parents[2]
+    card = (root / "frontend" / "src" / "nanit-card.ts").read_text(encoding="utf-8")
+    assert 'this._lastRoute === "cloud" && route === "local"' in card
+    assert "(fellBack && !this._sawFrame) || movedLocal" in card
+
+
 def test_card_holds_its_loader_through_a_local_start() -> None:
     """The loader stays up through a local start instead of revealing the player's error."""
     root = Path(__file__).resolve().parents[2]

@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import ipaddress
 import logging
 import shlex
 import shutil
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from typing import Any
 
 from homeassistant.components.camera import Camera, CameraEntityFeature
@@ -51,6 +52,8 @@ _STREAM_SOURCE_MAX_AGE = 45 * 60
 # PUT_STREAMING; keepalives must land well inside that window.
 _STREAM_KEEPALIVE_INTERVAL = 5 * 60
 _STREAM_STOP_TIMEOUT = 5.0
+# How long removal waits for a WebRTC provider refresh still running.
+_PROVIDER_REFRESH_WAIT = 5.0
 # A 403 this soon after our own cloud push was stopped may be the camera still
 # winding it down, so the local request is sent once more after a short delay.
 _STOP_SETTLE_WINDOW = 10.0
@@ -201,6 +204,22 @@ class NanitCameraEntity(NanitEntity, Camera):
         self._removed = False
         self._local_idle_delay = _LOCAL_IDLE_STOP_AFTER
         self._derived_stop_attempts = 0
+        # WebRTC is offered only on the local route (see
+        # _async_get_supported_webrtc_provider). _provider_route is the route
+        # the provider is being picked for, _settled_route the one the last
+        # finished refresh picked it for, and _published_route the one
+        # stream_route reports.
+        self._provider_route: str | None = None
+        self._settled_route: str | None = None
+        self._published_route: str | None = None
+        self._provider_lock = asyncio.Lock()
+        self._route_refresh_task: asyncio.Task[None] | None = None
+        # Providers taken off the camera at a flip to cloud, still to be told.
+        self._detached_providers: list[Any] = []
+        # Every provider ever detached. Before HA 2026.8.3 an unregister does
+        # not close the camera's sessions, and core drops a close once the
+        # camera has no provider, so closes are passed on to these.
+        self._session_providers: list[Any] = []
         self._push_stopped_at = float("-inf")
         self._warned_stop_unsupported = False
         # Opt-in stills from the live stream when the cloud snapshot fails.
@@ -218,8 +237,91 @@ class NanitCameraEntity(NanitEntity, Camera):
         player that opened the local stream just before a fallback has
         nothing to play and doesn't retry on its own.
         """
+        return {"stream_route": self._published_route or self._stream_route()}
+
+    def _stream_route(self) -> str:
+        """Return the route a new view would get right now."""
         local = self._local
-        return {"stream_route": "local" if local is not None and local.active else "cloud"}
+        return "local" if local is not None and local.active else "cloud"
+
+    async def async_refresh_providers(self, *, write_state: bool = True) -> None:
+        """Pick the WebRTC provider for the current route, then report the route.
+
+        On a flip to local, stream_route changes only once the provider is
+        registered, so the card's player sees WebRTC when it asks. A flip to
+        cloud has already taken the provider away (_detach_provider_for_cloud).
+        """
+        async with self._provider_lock:
+            route = self._stream_route()
+            self._provider_route = route
+            old_provider, old_published = self._webrtc_provider, self._published_route
+            await super().async_refresh_providers(write_state=False)
+            if self._stream_route() != route:
+                # Moved to cloud while a provider was being registered for local.
+                self._detach_provider_for_cloud()
+                return
+            self._settled_route = self._published_route = route
+            changed = self._webrtc_provider is not old_provider or route != old_published
+        if write_state and changed:
+            self.async_write_ha_state()
+
+    @callback
+    def _detach_provider_for_cloud(self) -> None:
+        """Take WebRTC off the camera at once when it is on the cloud route.
+
+        A go2rtc unregister closes the camera's sessions and then awaits a REST
+        call, and a player whose session closed offers again straight away.
+        With the provider still set, that offer would reach go2rtc with the
+        cloud URL. The unregister itself runs in _async_publish_route.
+        """
+        if self._stream_route() != "cloud":
+            return
+        self._provider_route = "cloud"
+        provider = self._webrtc_provider
+        if provider is not None:
+            self._webrtc_provider = None
+            self._detach(provider)
+            # Some HA versions cache the capabilities and clear them only in
+            # their own refresh.
+            invalidate = getattr(self, "_invalidate_camera_capabilities_cache", None)
+            if invalidate is not None:
+                invalidate()
+            # Also reached from a refresh core started, with no route task about.
+            self._ensure_route_task()
+
+    @callback
+    def _detach(self, provider: Any) -> None:
+        self._detached_providers.append(provider)
+        if not any(p is provider for p in self._session_providers):
+            self._session_providers.append(provider)
+
+    async def _async_unregister_detached(self) -> None:
+        while self._detached_providers:
+            # Removed only once told, so a cancel at removal leaves it for the
+            # removal's own pass.
+            provider = self._detached_providers[0]
+            # Providers have no unregister hook before HA 2026.8.
+            unregister = getattr(provider, "async_unregister_camera", None)
+            # As core does: a provider's I/O must not break the route or removal.
+            try:
+                if unregister is not None:
+                    await unregister(self)
+            except Exception:
+                _LOGGER.exception("Error unregistering WebRTC provider for %s", self.entity_id)
+            if self._detached_providers and self._detached_providers[0] is provider:
+                self._detached_providers.pop(0)
+
+    async def _async_get_supported_webrtc_provider[T](
+        self, fn: Callable[[HomeAssistant, Camera], Coroutine[None, None, T | None]]
+    ) -> T | None:
+        """Offer WebRTC only on the local route.
+
+        go2rtc panics on the Nanit cloud stream (AlexxIT/go2rtc#2061), which
+        takes WebRTC down for every camera, so cloud views use HLS.
+        """
+        if self._provider_route != "local":
+            return None
+        return await super()._async_get_supported_webrtc_provider(fn)
 
     @property
     def is_on(self) -> bool:
@@ -352,7 +454,28 @@ class NanitCameraEntity(NanitEntity, Camera):
             # land in the wind-down.
             self._push_stopped_at = time.monotonic()
         self._cloud_push_url = self._local_push_url = None
+        await self._async_drop_webrtc_provider()
         await super().async_will_remove_from_hass()
+
+    async def _async_drop_webrtc_provider(self) -> None:
+        """Unregister what Home Assistant's own removal cleanup could not see.
+
+        Core unregisters the provider before this entity's removal runs, so a
+        provider registered by a refresh still running then, or detached at a
+        flip to cloud and not yet told, would stay registered.
+        """
+        task = self._route_refresh_task
+        self._route_refresh_task = None
+        if task is not None and not task.done():
+            await asyncio.wait((task,), timeout=_PROVIDER_REFRESH_WAIT)
+            task.cancel()
+        # Bounded, since a refresh started by core holds the lock too.
+        with contextlib.suppress(TimeoutError):
+            async with asyncio.timeout(_PROVIDER_REFRESH_WAIT), self._provider_lock:
+                if self._webrtc_provider is not None:
+                    self._detach(self._webrtc_provider)
+                    self._webrtc_provider = None
+                await self._async_unregister_detached()
 
     def _invalidate_stream(self, reason: str = "state change") -> None:
         """Stop and discard HA's cached stream so a fresh one can be created."""
@@ -436,11 +559,26 @@ class NanitCameraEntity(NanitEntity, Camera):
 
     @callback
     def close_webrtc_session(self, session_id: str) -> None:
-        """Close a WebRTC session, ignoring duplicate go2rtc close callbacks."""
+        """Close a WebRTC session, ignoring duplicate go2rtc close callbacks.
+
+        Also passes it to detached providers, which core no longer reaches
+        and which before HA 2026.8.3 kept the session open after unregister.
+        """
         try:
             super().close_webrtc_session(session_id)
         except KeyError:
             _LOGGER.debug("WebRTC session %s was already closed", session_id)
+        for provider in self._session_providers:
+            if provider is self._webrtc_provider:
+                continue
+            # Unknown ids raise KeyError before 2026.8.3; any provider error
+            # must not stop the others.
+            try:
+                provider.async_close_session(session_id)
+            except KeyError:
+                pass
+            except Exception:
+                _LOGGER.debug("Error closing WebRTC session %s", session_id, exc_info=True)
 
     # ------------------------------------------------------------------
     # Streaming
@@ -1060,9 +1198,9 @@ class NanitCameraEntity(NanitEntity, Camera):
             return
         local.start_cooldown(reason, count_miss=count_miss)
         local.channel.accepting = False
-        # Written before the HLS stream is moved below, so the card's remount
-        # usually lands first. That is fine: it joins the same stream, whose
-        # playlist waits for the cloud segments.
+        # Published once WebRTC is off for the camera, usually after the HLS
+        # stream below has moved. A card remount before that is fine: it joins
+        # the same stream, whose playlist waits for the cloud segments.
         self._write_route_state()
         self._schedule_local_cooldown_end(max(0.0, local.cooldown_until - time.monotonic()))
         stream = self.stream
@@ -1122,9 +1260,48 @@ class NanitCameraEntity(NanitEntity, Camera):
 
     @callback
     def _write_route_state(self) -> None:
-        """Publish stream_route once the entity is in Home Assistant."""
-        if getattr(self, "hass", None) is not None and self.entity_id and self.platform:
+        """Publish stream_route once the entity is in Home Assistant.
+
+        A changed route refreshes the WebRTC provider first, and the state is
+        written when that is done.
+        """
+        if getattr(self, "hass", None) is None or not self.entity_id or not self.platform:
+            return
+        route = self._stream_route()
+        if route == "cloud":
+            # WebRTC is gone before anyone sees the cloud route.
+            self._detach_provider_for_cloud()
+            self._published_route = "cloud"
+        if route == self._published_route:
             self.async_write_ha_state()
+        if self._detached_providers or not self._route_settled(route):
+            self._ensure_route_task()
+
+    @callback
+    def _ensure_route_task(self) -> None:
+        if self._removed or getattr(self, "hass", None) is None:
+            return
+        if self._route_refresh_task is None or self._route_refresh_task.done():
+            self._route_refresh_task = self.hass.async_create_task(
+                self._async_publish_route(), name=f"nanit_publish_route_{self._camera.uid}"
+            )
+
+    async def _async_publish_route(self) -> None:
+        """Tell detached providers, and refresh until the provider fits the route."""
+        try:
+            while not self._removed:
+                await self._async_unregister_detached()
+                if self._route_settled(self._stream_route()):
+                    return
+                await self.async_refresh_providers()
+        except Exception:
+            # Fails safe, with no provider. The next route change tries again,
+            # so a camera that stays local keeps HLS only until then.
+            _LOGGER.exception("Error updating the WebRTC provider for %s", self.entity_id)
+
+    def _route_settled(self, route: str) -> bool:
+        """Whether the provider was last picked for ``route`` and it is published."""
+        return route == self._settled_route == self._published_route
 
     @callback
     def _schedule_local_cooldown_end(self, delay: float = COOLDOWN) -> None:
@@ -1149,8 +1326,8 @@ class NanitCameraEntity(NanitEntity, Camera):
         in place to the local URL, whose first read starts the camera
         locally, or falls back to the cloud again on a miss. The cached cloud
         URL and its timers are dropped so nothing later moves the push back.
-        A WebRTC viewer still pulling the cloud URL stalls until its player
-        re-offers, which the Nanit card does on its own.
+        Cloud views use HLS (see _async_get_supported_webrtc_provider), so
+        no WebRTC viewer is pulling the cloud URL here.
         """
         if self._cancel_local_cooldown_timer is not None:
             # Also reached early, from the repair's retry or the pause end.
@@ -1168,9 +1345,9 @@ class NanitCameraEntity(NanitEntity, Camera):
             if task is not None and not task.done() and task is not asyncio.current_task():
                 task.cancel()
         # Stop our cloud push now rather than at the next local request: a
-        # WebRTC viewer pulls the cloud URL directly and only moves over once
-        # its picture stops, and an idle camera frees the slot for Nanit's
-        # own apps instead of holding it for up to 20 minutes.
+        # watched or preloaded stream never goes idle on its own, and an idle
+        # camera frees the slot for Nanit's own apps instead of holding it for
+        # up to 20 minutes.
         self._stop_cloud_push()
         if self._cached_stream_source is not None:
             self._expire_stream_source()

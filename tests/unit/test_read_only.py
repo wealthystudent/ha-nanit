@@ -460,6 +460,7 @@ async def _open(hass: HomeAssistant, entry: MockConfigEntry, step: str) -> Any:
     assert result.get("type") is FlowResultType.MENU
     assert set(result["menu_options"]) == {
         "device",
+        "manual_speaker",
         "read_only",
         "local_stream",
         "stream_stills",

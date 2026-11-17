@@ -21,10 +21,14 @@ from aionanit.models import Baby
 from custom_components.nanit import config_flow as nanit_config_flow
 from custom_components.nanit.const import (
     CONF_CAMERA_IPS,
+    CONF_MANUAL_SPEAKER_NAME,
+    CONF_MANUAL_SPEAKER_REMOVE,
+    CONF_MANUAL_SPEAKERS,
     CONF_MFA_CODE,
     CONF_REFRESH_TOKEN,
     CONF_SPEAKER_IP,
     CONF_SPEAKER_IPS,
+    CONF_SPEAKER_UID,
     CONF_STORE_CREDENTIALS,
     DOMAIN,
 )
@@ -737,8 +741,8 @@ _BABY_WITH_SPEAKER = Baby(uid="baby_1", name="Nursery", camera_uid="cam_1", spea
 _BABY_2_WITH_SPEAKER = Baby(uid="baby_2", name="Playroom", camera_uid="cam_2", speaker_uid="spk_2")
 
 
-async def test_options_flow_no_speakers_aborts(hass: HomeAssistant) -> None:
-    """Only Sound & Light Machines take a local IP, so no speaker means nothing to set."""
+async def test_options_flow_no_speakers_offers_manual_entry(hass: HomeAssistant) -> None:
+    """With no speaker reported by the cloud, the IP branch offers to add one by uid."""
     hass = await _resolve_hass(hass)
     entry = MockConfigEntry(domain=DOMAIN, options={})
     entry.runtime_data = SimpleNamespace(
@@ -748,8 +752,82 @@ async def test_options_flow_no_speakers_aborts(hass: HomeAssistant) -> None:
 
     result = await _open_device_options(hass, entry)
 
-    assert result.get("type") is FlowResultType.ABORT
-    assert result.get("reason") == "no_speakers"
+    assert result.get("type") is FlowResultType.FORM
+    assert result.get("step_id") == "manual_speaker"
+
+
+async def _open_manual_options(hass: HomeAssistant, entry: MockConfigEntry) -> Any:
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    return await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "manual_speaker"}
+    )
+
+
+async def test_options_flow_manual_speaker_is_added_with_its_ip(hass: HomeAssistant) -> None:
+    hass = await _resolve_hass(hass)
+    entry = MockConfigEntry(domain=DOMAIN, options={"read_only": True})
+    entry.add_to_hass(hass)
+
+    result = await _open_manual_options(hass, entry)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            CONF_SPEAKER_UID: " L151AMA255206P ",
+            CONF_MANUAL_SPEAKER_NAME: "Nursery",
+            CONF_SPEAKER_IP: "192.168.1.72",
+        },
+    )
+
+    result_data = _as_dict(result)
+    assert result_data.get("type") is FlowResultType.CREATE_ENTRY
+    assert result_data["data"] == {
+        "read_only": True,
+        CONF_MANUAL_SPEAKERS: {"L151AMA255206P": "Nursery"},
+        CONF_SPEAKER_IPS: {"L151AMA255206P": "192.168.1.72"},
+    }
+
+
+async def test_options_flow_manual_speaker_remove(hass: HomeAssistant) -> None:
+    """Removing drops the speaker and its IP, leaving other speakers' IPs alone."""
+    hass = await _resolve_hass(hass)
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        options={
+            CONF_MANUAL_SPEAKERS: {"spk_m": "Den"},
+            CONF_SPEAKER_IPS: {"spk_m": "192.168.1.5", "spk_1": "192.168.1.6"},
+        },
+    )
+    entry.add_to_hass(hass)
+
+    result = await _open_manual_options(hass, entry)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {CONF_SPEAKER_UID: "spk_m", CONF_MANUAL_SPEAKER_REMOVE: True}
+    )
+
+    result_data = _as_dict(result)
+    assert result_data["data"][CONF_MANUAL_SPEAKERS] == {}
+    assert result_data["data"][CONF_SPEAKER_IPS] == {"spk_1": "192.168.1.6"}
+
+
+@pytest.mark.parametrize(
+    ("user_input", "field", "error"),
+    [
+        ({CONF_SPEAKER_UID: "../etc"}, CONF_SPEAKER_UID, "invalid_speaker_uid"),
+        ({CONF_SPEAKER_UID: "spk_1", CONF_SPEAKER_IP: "nope"}, CONF_SPEAKER_IP, "invalid_ip"),
+    ],
+)
+async def test_options_flow_manual_speaker_rejects_bad_input(
+    hass: HomeAssistant, user_input: dict[str, str], field: str, error: str
+) -> None:
+    hass = await _resolve_hass(hass)
+    entry = MockConfigEntry(domain=DOMAIN, options={})
+    entry.add_to_hass(hass)
+
+    result = await _open_manual_options(hass, entry)
+    result = await hass.config_entries.options.async_configure(result["flow_id"], user_input)
+
+    assert result.get("type") is FlowResultType.FORM
+    assert _as_dict(result.get("errors")) == {field: error}
 
 
 async def test_options_flow_single_speaker_goes_to_ip_step(hass: HomeAssistant) -> None:
@@ -898,7 +976,7 @@ async def test_options_flow_clearing_speaker_ip_also_drops_legacy_key(
 async def test_options_flow_unresolved_speaker_leaves_options_alone(
     hass: HomeAssistant,
 ) -> None:
-    """A baby whose speaker can't be resolved offers nothing and keeps its legacy IP."""
+    """A baby whose speaker can't be resolved gets the manual form and keeps its legacy IP."""
     hass = await _resolve_hass(hass)
     baby = Baby(uid="baby_1", name="Nursery", camera_uid="cam_1", speaker_uid=None)
     entry = MockConfigEntry(
@@ -910,8 +988,7 @@ async def test_options_flow_unresolved_speaker_leaves_options_alone(
 
     result = await _open_device_options(hass, entry)
 
-    assert result.get("type") is FlowResultType.ABORT
-    assert result.get("reason") == "no_speakers"
+    assert result.get("step_id") == "manual_speaker"
     assert entry.options[CONF_SPEAKER_IPS] == {"cam_1": "192.168.1.90"}
 
 
@@ -1113,6 +1190,7 @@ def test_options_flow_reasons_are_translated() -> None:
         options = json.loads((base / name).read_text())["options"]
         assert "no_speakers" in options["abort"]
         assert "invalid_ip" in options["error"]
+        assert "invalid_speaker_uid" in options["error"]
 
 
 def test_translations_match_strings_byte_for_byte() -> None:

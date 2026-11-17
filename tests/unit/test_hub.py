@@ -1367,6 +1367,47 @@ async def test_speakers_paired_elsewhere_are_ignored(
     assert hub.unpaired_speakers == {}
 
 
+async def test_manual_speaker_set_up_on_an_account_with_no_babies(
+    hass: HomeAssistant, mock_nanit_client
+) -> None:
+    """A Sound + Light app-only account reports no babies; a hand-added speaker still works."""
+    mock_nanit_client.async_get_babies.return_value = []
+    entry = _make_entry(
+        hass,
+        options={
+            "manual_speakers": {"L151AMA255206P": "Nursery", "../bad": "Bad"},
+            "speaker_ips": {"L151AMA255206P": "192.168.1.72"},
+        },
+    )
+    hub = NanitHub(hass, MagicMock(), entry)
+    sl_patch, coord_patch = _speaker_patches()
+    with sl_patch as sl_cls, coord_patch as coord_cls:
+        coord_cls.return_value = MagicMock(async_setup=AsyncMock())
+        await hub.async_setup()
+
+    assert set(hub.speaker_data) == {"L151AMA255206P"}
+    placeholder = hub.speaker_data["L151AMA255206P"].baby
+    assert (placeholder.uid, placeholder.name) == ("", "Nursery")
+    assert sl_cls.call_args.kwargs["device_ip"] == "192.168.1.72"
+    assert hub.manual_speakers == {"L151AMA255206P": "Nursery"}
+
+
+async def test_manual_speaker_already_reported_is_not_set_up_twice(
+    hass: HomeAssistant, mock_nanit_client
+) -> None:
+    mock_nanit_client.async_get_babies.return_value = [MOCK_BABY_SPEAKER_ONLY]
+    mock_nanit_client.async_get_speaker_candidates.return_value = []
+    entry = _make_entry(hass, options={"manual_speakers": {"spk_5": "Den"}})
+    hub = NanitHub(hass, MagicMock(), entry)
+    sl_patch, coord_patch = _speaker_patches()
+    with sl_patch, coord_patch as coord_cls:
+        coord_cls.return_value = MagicMock(async_setup=AsyncMock())
+        await hub.async_setup()
+
+    assert set(hub.speaker_data) == {"spk_5"}
+    assert coord_cls.call_count == 1
+
+
 async def test_unpaired_lookup_failure_falls_back_to_stored(
     hass: HomeAssistant, mock_nanit_client
 ) -> None:

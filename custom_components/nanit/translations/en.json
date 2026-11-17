@@ -56,6 +56,7 @@
         "title": "Nanit Options",
         "menu_options": {
           "device": "Sound & Light IP address",
+          "manual_speaker": "Add Sound & Light Machine by ID",
           "read_only": "Read-only mode",
           "local_stream": "Local streaming",
           "stream_stills": "Stills from the live stream"
@@ -101,10 +102,21 @@
         "data": {
           "stream_stills": "Stills from the live stream"
         }
+      },
+      "manual_speaker": {
+        "title": "Add Sound & Light Machine by ID",
+        "description": "For a machine Nanit's cloud doesn't report, for example one set up only in the Nanit Sound + Light app. Enter its ID (the part after \"Nanit-\" in its network name, e.g. L151AMA255206P). Saving reloads the integration.",
+        "data": {
+          "speaker_uid": "Machine ID",
+          "manual_speaker_name": "Name",
+          "speaker_ip": "IP address (optional)",
+          "manual_speaker_remove": "Remove this machine"
+        }
       }
     },
     "error": {
-      "invalid_ip": "Invalid IP address"
+      "invalid_ip": "Invalid IP address",
+      "invalid_speaker_uid": "Invalid machine ID"
     },
     "abort": {
       "no_speakers": "This account has no Sound & Light Machine paired with a baby. Unpaired machines are found automatically and need no address."

@@ -56,6 +56,12 @@ CONF_SPEAKER_IP = "speaker_ip"
 CONF_SPEAKER_IPS = "speaker_ips"
 # speaker_uid → name for machines no baby is paired with (entry data).
 CONF_UNPAIRED_SPEAKERS = "unpaired_speakers"
+# speaker_uid → name for machines the user added by hand (options). For
+# accounts set up only in the Nanit Sound + Light app, where the cloud
+# reports no baby and so no speaker.
+CONF_MANUAL_SPEAKERS = "manual_speakers"
+CONF_MANUAL_SPEAKER_NAME = "manual_speaker_name"
+CONF_MANUAL_SPEAKER_REMOVE = "manual_speaker_remove"
 CONF_READ_ONLY = "read_only"
 # Local streaming (#175): the camera pushes to Home Assistant over the LAN.
 CONF_LOCAL_STREAM = "local_stream"

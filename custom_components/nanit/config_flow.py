@@ -24,7 +24,6 @@ from .const import (
     CONF_LOCAL_STREAM_HOST,
     CONF_LOCAL_STREAM_PORT,
     CONF_MANUAL_SPEAKER_NAME,
-    CONF_MANUAL_SPEAKER_REMOVE,
     CONF_MANUAL_SPEAKERS,
     CONF_MFA_CODE,
     CONF_READ_ONLY,
@@ -41,6 +40,7 @@ from .const import (
     is_stream_stills,
     local_stream_default,
 )
+from .hub import _clean_uid
 from .sanitize import display_name
 
 # Home Assistant types its flow schemas with probatio from 2026.10. At runtime
@@ -52,8 +52,16 @@ if TYPE_CHECKING:
 else:
     import voluptuous as vol
 
-# Same shape the hub accepts for device uids (e.g. L151AMA255206P).
-_SPEAKER_UID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+_NANIT_HOST_PREFIX = re.compile(r"^nanit-", re.IGNORECASE)
+
+
+def _normalize_speaker_uid(value: str) -> str | None:
+    """Return a typed machine uid ready to use, or None when it isn't one.
+
+    Router client lists show the machine as "Nanit-<uid>", so that prefix
+    is dropped. The uid goes into Nanit's URLs as stored.
+    """
+    return _clean_uid(_NANIT_HOST_PREFIX.sub("", value.strip()))
 
 
 class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -415,10 +423,13 @@ class NanitOptionsFlow(OptionsFlow):
     async def async_step_manual_speaker(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Add, update or remove a Sound & Light Machine by its uid.
+        """Add a Sound & Light Machine by its uid, or update one added earlier.
 
         For accounts where Nanit's cloud reports no machine (set up only in
         the Nanit Sound + Light app), so automatic discovery finds nothing.
+        Machines the cloud does report are rejected, so this form can never
+        touch their IP override. Removal is done by deleting the device,
+        which also prunes it from the options.
         """
         options = self.config_entry.options
         manual: dict[str, str] = dict(options.get(CONF_MANUAL_SPEAKERS, {}))
@@ -426,26 +437,33 @@ class NanitOptionsFlow(OptionsFlow):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            uid = str(user_input.get(CONF_SPEAKER_UID, "")).strip()
+            uid = _normalize_speaker_uid(str(user_input.get(CONF_SPEAKER_UID, "")))
             name = str(user_input.get(CONF_MANUAL_SPEAKER_NAME, "")).strip()
             speaker_ip = str(user_input.get(CONF_SPEAKER_IP, "")).strip()
-            if not _SPEAKER_UID_RE.fullmatch(uid):
+            hub = getattr(getattr(self.config_entry, "runtime_data", None), "hub", None)
+            paired = {u.upper() for u in getattr(hub, "speaker_uid_map", {}).values()}
+            unpaired = {u.upper() for u in getattr(hub, "unpaired_speakers", {})}
+            if uid is None:
                 errors[CONF_SPEAKER_UID] = "invalid_speaker_uid"
+            elif uid.upper() in paired:
+                errors[CONF_SPEAKER_UID] = "speaker_already_paired"
+            elif uid.upper() in unpaired:
+                errors[CONF_SPEAKER_UID] = "speaker_already_found"
             if speaker_ip:
                 try:
                     ipaddress.ip_address(speaker_ip)
                 except ValueError:
                     errors[CONF_SPEAKER_IP] = "invalid_ip"
-            if not errors:
-                if user_input.get(CONF_MANUAL_SPEAKER_REMOVE):
-                    manual.pop(uid, None)
-                    speaker_ips.pop(uid, None)
+            if uid is not None and not errors:
+                # Editing one added earlier keeps its stored spelling and name.
+                existing = next((key for key in manual if key.upper() == uid.upper()), None)
+                if existing is not None:
+                    uid = existing
+                manual[uid] = name or manual.get(uid) or "Sound & Light"
+                if speaker_ip:
+                    speaker_ips[uid] = speaker_ip
                 else:
-                    manual[uid] = name or "Sound & Light"
-                    if speaker_ip:
-                        speaker_ips[uid] = speaker_ip
-                    else:
-                        speaker_ips.pop(uid, None)
+                    speaker_ips.pop(uid, None)
                 return self.async_create_entry(
                     title="",
                     data={
@@ -455,23 +473,13 @@ class NanitOptionsFlow(OptionsFlow):
                     },
                 )
 
-        current_uid, current_name = next(iter(manual.items()), ("", ""))
         return self.async_show_form(
             step_id="manual_speaker",
             data_schema=vol.Schema(
                 {
-                    vol.Required(
-                        CONF_SPEAKER_UID, description={"suggested_value": current_uid}
-                    ): cv.string,
-                    vol.Optional(
-                        CONF_MANUAL_SPEAKER_NAME,
-                        description={"suggested_value": current_name or "Sound & Light"},
-                    ): cv.string,
-                    vol.Optional(
-                        CONF_SPEAKER_IP,
-                        description={"suggested_value": speaker_ips.get(current_uid, "")},
-                    ): cv.string,
-                    vol.Optional(CONF_MANUAL_SPEAKER_REMOVE, default=False): cv.boolean,
+                    vol.Required(CONF_SPEAKER_UID): cv.string,
+                    vol.Optional(CONF_MANUAL_SPEAKER_NAME): cv.string,
+                    vol.Optional(CONF_SPEAKER_IP): cv.string,
                 }
             ),
             errors=errors,
@@ -573,7 +581,9 @@ class NanitOptionsFlow(OptionsFlow):
         babies = [baby for baby in hub.babies if hub.speaker_uid_map.get(baby.uid)]
 
         if not babies:
-            # Nothing the cloud reports takes an IP: offer to add one by uid.
+            if hub.unpaired_speakers:
+                return self.async_abort(reason="no_speakers")
+            # The cloud reports no machine at all: offer to add one by uid.
             return await self.async_step_manual_speaker()
 
         # Single baby — skip selection, go straight to IP config

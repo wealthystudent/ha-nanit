@@ -1408,6 +1408,19 @@ async def test_manual_speaker_already_reported_is_not_set_up_twice(
     assert coord_cls.call_count == 1
 
 
+async def test_manual_speaker_reported_as_unpaired_is_not_set_up_twice(
+    hass: HomeAssistant, mock_nanit_client
+) -> None:
+    """The cloud's unpaired list also counts, compared regardless of case."""
+    entry = _make_entry(hass, options={"manual_speakers": {"SPK_9": "Den"}})
+    hub, coord_cls = await _setup_with_candidates(
+        hass, mock_nanit_client, [_candidate("spk_9", "available")], entry=entry
+    )
+
+    assert set(hub.speaker_data) == {"spk_5", "spk_9"}
+    assert coord_cls.call_count == 2
+
+
 async def test_unpaired_lookup_failure_falls_back_to_stored(
     hass: HomeAssistant, mock_nanit_client
 ) -> None:

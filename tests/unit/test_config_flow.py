@@ -22,7 +22,6 @@ from custom_components.nanit import config_flow as nanit_config_flow
 from custom_components.nanit.const import (
     CONF_CAMERA_IPS,
     CONF_MANUAL_SPEAKER_NAME,
-    CONF_MANUAL_SPEAKER_REMOVE,
     CONF_MANUAL_SPEAKERS,
     CONF_MFA_CODE,
     CONF_REFRESH_TOKEN,
@@ -746,7 +745,7 @@ async def test_options_flow_no_speakers_offers_manual_entry(hass: HomeAssistant)
     hass = await _resolve_hass(hass)
     entry = MockConfigEntry(domain=DOMAIN, options={})
     entry.runtime_data = SimpleNamespace(
-        hub=SimpleNamespace(babies=[MOCK_BABY_1], speaker_uid_map={})
+        hub=SimpleNamespace(babies=[MOCK_BABY_1], speaker_uid_map={}, unpaired_speakers={})
     )
     entry.add_to_hass(hass)
 
@@ -764,6 +763,7 @@ async def _open_manual_options(hass: HomeAssistant, entry: MockConfigEntry) -> A
 
 
 async def test_options_flow_manual_speaker_is_added_with_its_ip(hass: HomeAssistant) -> None:
+    """A router's "Nanit-" prefix is dropped from the typed ID."""
     hass = await _resolve_hass(hass)
     entry = MockConfigEntry(domain=DOMAIN, options={"read_only": True})
     entry.add_to_hass(hass)
@@ -772,7 +772,7 @@ async def test_options_flow_manual_speaker_is_added_with_its_ip(hass: HomeAssist
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
         {
-            CONF_SPEAKER_UID: " L151AMA255206P ",
+            CONF_SPEAKER_UID: " Nanit-L151AMA255206P ",
             CONF_MANUAL_SPEAKER_NAME: "Nursery",
             CONF_SPEAKER_IP: "192.168.1.72",
         },
@@ -787,26 +787,93 @@ async def test_options_flow_manual_speaker_is_added_with_its_ip(hass: HomeAssist
     }
 
 
-async def test_options_flow_manual_speaker_remove(hass: HomeAssistant) -> None:
-    """Removing drops the speaker and its IP, leaving other speakers' IPs alone."""
+async def test_options_flow_manual_speaker_form_starts_empty(hass: HomeAssistant) -> None:
+    """Adding a second machine never inherits the first one's name or IP."""
     hass = await _resolve_hass(hass)
     entry = MockConfigEntry(
         domain=DOMAIN,
         options={
             CONF_MANUAL_SPEAKERS: {"spk_m": "Den"},
-            CONF_SPEAKER_IPS: {"spk_m": "192.168.1.5", "spk_1": "192.168.1.6"},
+            CONF_SPEAKER_IPS: {"spk_m": "192.168.1.5"},
         },
     )
     entry.add_to_hass(hass)
 
     result = await _open_manual_options(hass, entry)
+    for key in _as_dict(result)["data_schema"].schema:
+        assert not (key.description or {}).get("suggested_value")
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {CONF_SPEAKER_UID: "spk_m", CONF_MANUAL_SPEAKER_REMOVE: True}
+        result["flow_id"], {CONF_SPEAKER_UID: "spk_n"}
     )
 
     result_data = _as_dict(result)
-    assert result_data["data"][CONF_MANUAL_SPEAKERS] == {}
-    assert result_data["data"][CONF_SPEAKER_IPS] == {"spk_1": "192.168.1.6"}
+    assert result_data["data"][CONF_MANUAL_SPEAKERS] == {"spk_m": "Den", "spk_n": "Sound & Light"}
+    assert result_data["data"][CONF_SPEAKER_IPS] == {"spk_m": "192.168.1.5"}
+
+
+async def test_options_flow_manual_speaker_edit_keeps_stored_id_and_name(
+    hass: HomeAssistant,
+) -> None:
+    """Re-entering an added machine in another case updates it instead of adding a copy."""
+    hass = await _resolve_hass(hass)
+    entry = MockConfigEntry(domain=DOMAIN, options={CONF_MANUAL_SPEAKERS: {"SPK_M": "Den"}})
+    entry.add_to_hass(hass)
+
+    result = await _open_manual_options(hass, entry)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {CONF_SPEAKER_UID: "spk_m", CONF_SPEAKER_IP: "192.168.1.9"}
+    )
+
+    result_data = _as_dict(result)
+    assert result_data["data"][CONF_MANUAL_SPEAKERS] == {"SPK_M": "Den"}
+    assert result_data["data"][CONF_SPEAKER_IPS] == {"SPK_M": "192.168.1.9"}
+
+
+@pytest.mark.parametrize(
+    ("typed", "error"),
+    [("nanit-spk_1", "speaker_already_paired"), ("SPK_9", "speaker_already_found")],
+)
+async def test_options_flow_manual_speaker_rejects_a_machine_the_cloud_reports(
+    hass: HomeAssistant, typed: str, error: str
+) -> None:
+    """A reported machine is refused, so its IP override set elsewhere survives."""
+    hass = await _resolve_hass(hass)
+    entry = MockConfigEntry(domain=DOMAIN, options={CONF_SPEAKER_IPS: {"spk_1": "192.168.1.6"}})
+    entry.runtime_data = SimpleNamespace(
+        hub=SimpleNamespace(
+            babies=[_BABY_WITH_SPEAKER],
+            speaker_uid_map={"baby_1": "spk_1"},
+            unpaired_speakers={"spk_9": "Living Room"},
+        )
+    )
+    entry.add_to_hass(hass)
+
+    result = await _open_manual_options(hass, entry)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {CONF_SPEAKER_UID: typed}
+    )
+
+    assert result.get("type") is FlowResultType.FORM
+    assert _as_dict(result.get("errors")) == {CONF_SPEAKER_UID: error}
+    assert entry.options[CONF_SPEAKER_IPS] == {"spk_1": "192.168.1.6"}
+
+
+async def test_options_flow_only_unpaired_machines_keeps_the_found_automatically_message(
+    hass: HomeAssistant,
+) -> None:
+    hass = await _resolve_hass(hass)
+    entry = MockConfigEntry(domain=DOMAIN, options={})
+    entry.runtime_data = SimpleNamespace(
+        hub=SimpleNamespace(
+            babies=[MOCK_BABY_1], speaker_uid_map={}, unpaired_speakers={"spk_9": "Den"}
+        )
+    )
+    entry.add_to_hass(hass)
+
+    result = await _open_device_options(hass, entry)
+
+    assert result.get("type") is FlowResultType.ABORT
+    assert result.get("reason") == "no_speakers"
 
 
 @pytest.mark.parametrize(
@@ -983,7 +1050,9 @@ async def test_options_flow_unresolved_speaker_leaves_options_alone(
         domain=DOMAIN,
         options={CONF_SPEAKER_IPS: {"cam_1": "192.168.1.90"}},
     )
-    entry.runtime_data = SimpleNamespace(hub=SimpleNamespace(babies=[baby], speaker_uid_map={}))
+    entry.runtime_data = SimpleNamespace(
+        hub=SimpleNamespace(babies=[baby], speaker_uid_map={}, unpaired_speakers={})
+    )
     entry.add_to_hass(hass)
 
     result = await _open_device_options(hass, entry)
@@ -1191,6 +1260,8 @@ def test_options_flow_reasons_are_translated() -> None:
         assert "no_speakers" in options["abort"]
         assert "invalid_ip" in options["error"]
         assert "invalid_speaker_uid" in options["error"]
+        assert "speaker_already_paired" in options["error"]
+        assert "speaker_already_found" in options["error"]
 
 
 def test_translations_match_strings_byte_for_byte() -> None:

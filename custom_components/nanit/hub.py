@@ -330,9 +330,10 @@ class NanitHub:
         # Machines added by hand, for accounts where the cloud reports none
         # (e.g. set up only in the Nanit Sound + Light app). Skipped when
         # the cloud already reports the uid, so nothing is set up twice.
-        handled = set(speaker_uid_map.values()) | set(self._unpaired_speakers)
+        # Compared case-insensitively: a uid typed by hand may differ in case.
+        handled = {uid.upper() for uid in [*speaker_uid_map.values(), *self._unpaired_speakers]}
         for speaker_uid, name in self._manual_speakers.items():
-            if speaker_uid in handled:
+            if speaker_uid.upper() in handled:
                 continue
             placeholder = Baby(uid="", name=name, camera_uid="", speaker_uid=speaker_uid)
             tasks.append(

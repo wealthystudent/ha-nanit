@@ -49,7 +49,7 @@ Use the release zip, not a copy of the repository: the source on `main` carries 
 
 A Sound & Light Machine that isn't paired to any baby in the Nanit app is picked up too, as its own device named after the machine. This is new, so please open an issue if one shows up but doesn't respond.
 
-If you set the machine up in the **Nanit Sound + Light** app (the standard Nanit app no longer lets you pair a Sound & Light Machine), Nanit's cloud may not report it at all, so it isn't found. Add it by hand under **Settings → Devices & Services → Nanit → Configure → Add Sound & Light Machine by ID**. The ID is the part after `Nanit-` in the machine's network name (for example `L151AMA255206P`, shown in your router's client list), and the IP address is optional. The same form removes it again.
+If you set the machine up in the **Nanit Sound + Light** app (the standard Nanit app no longer lets you pair a Sound & Light Machine), Nanit's cloud may not report it at all, so it isn't found. Add it by hand under **Settings → Devices & Services → Nanit → Configure → Add Sound & Light Machine by ID**. The ID is the part after `Nanit-` in the machine's network name (for example `L151AMA255206P`, shown in your router's client list), and the IP address is optional. To remove it again, delete its device on the device page.
 
 ## What you get
 

@@ -61,7 +61,6 @@ CONF_UNPAIRED_SPEAKERS = "unpaired_speakers"
 # reports no baby and so no speaker.
 CONF_MANUAL_SPEAKERS = "manual_speakers"
 CONF_MANUAL_SPEAKER_NAME = "manual_speaker_name"
-CONF_MANUAL_SPEAKER_REMOVE = "manual_speaker_remove"
 CONF_READ_ONLY = "read_only"
 # Local streaming (#175): the camera pushes to Home Assistant over the LAN.
 CONF_LOCAL_STREAM = "local_stream"

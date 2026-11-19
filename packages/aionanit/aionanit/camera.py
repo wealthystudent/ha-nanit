@@ -16,8 +16,11 @@ from .exceptions import (
     NanitAuthError,
     NanitCameraUnavailable,
     NanitConnectionError,
+    NanitError,
     NanitRequestTimeout,
     NanitTransportError,
+    NanitWebRtcClosed,
+    NanitWebRtcRefused,
 )
 from .models import (
     CameraEvent,
@@ -32,6 +35,8 @@ from .models import (
     SettingsState,
     StatusState,
     TransportKind,
+    WebRtcCandidate,
+    WebRtcClosed,
 )
 from .parsers import (
     _parse_control,
@@ -49,6 +54,12 @@ from .proto import (
     ControlNightLight,
     ControlSensorDataTransfer,
     StreamingStatus,
+    WebRtc,
+    WebRtcClose,
+    WebRtcError,
+    WebRtcIceCandidate,
+    WebRtcSdpType,
+    WebRtcSessionDescription,
 )
 from .proto import nanit_pb2 as proto
 from .rest import NANIT_API_HEADERS, NanitRestClient
@@ -109,6 +120,27 @@ _TOKEN_REFRESH_MIN_TTL: float = 360.0  # pre-emptive refresh threshold (> the 33
 _DEFAULT_SENSOR_POLL_INTERVAL: float = 120.0  # 2 min — poll sensors camera doesn't push
 _DEFAULT_PLAYBACK_POLL_INTERVAL: float = 30.0  # 30s — poll GET_PLAYBACK for external changes
 _STREAM_TOKEN_MIN_TTL: float = 3300.0  # Keep 45-minute HA sources inside JWT lifetime
+# The Nanit app waits 5 s for a WebRTC answer; the camera answered in ~0.3 s.
+_WEBRTC_ANSWER_TIMEOUT: float = 5.0
+_WEBRTC_SEND_TIMEOUT: float = 5.0
+_INT64_MAX = 2**63 - 1
+
+type WebRtcEvent = WebRtcCandidate | WebRtcClosed
+
+
+@dataclasses.dataclass(slots=True)
+class _WebRtcSession:
+    """One WebRTC session this client started on the camera."""
+
+    answer: asyncio.Future[str]
+    on_event: Callable[[WebRtcEvent], None]
+    # Set once the camera accepted the offer, or once the session ended, so
+    # candidate sends waiting on it never wait forever.
+    settled: asyncio.Event
+    # Closed by this client before the camera acked the offer: the offer
+    # call then owns telling the camera, since the offer may not even have
+    # been sent yet.
+    closed_early: bool = False
 
 
 class NanitCamera:
@@ -167,6 +199,8 @@ class NanitCamera:
         # The URL of the last push the camera accepted, for a STOPPED that
         # doesn't name one.
         self._stream_url: str = ""
+        self._webrtc_sessions: dict[int, _WebRtcSession] = {}
+        self._webrtc_tasks: set[asyncio.Task[None]] = set()
 
     # ------------------------------------------------------------------
     # Properties
@@ -261,6 +295,9 @@ class NanitCamera:
         self._cancel_reconnected_task()
         self._cancel_inline_reconnect()
         self._pending.cancel_all()
+        self._end_webrtc_sessions("Camera connection stopped")
+        for task in self._webrtc_tasks:
+            task.cancel()
         await self._transport.async_close()
 
     # ------------------------------------------------------------------
@@ -619,6 +656,274 @@ class NanitCamera:
         return status
 
     # ------------------------------------------------------------------
+    # WebRTC (the camera's own stream, signaled over this socket)
+    # ------------------------------------------------------------------
+
+    async def async_webrtc_offer(
+        self,
+        session_id: int,
+        offer_sdp: str,
+        on_event: Callable[[WebRtcEvent], None],
+        *,
+        timeout: float = _WEBRTC_ANSWER_TIMEOUT,
+    ) -> str:
+        """Send a WebRTC offer to the camera and return its answer SDP.
+
+        ``session_id`` identifies the session in every later message and
+        must be a positive int64 not already in use by this client. Later
+        ICE candidates from the camera, and its close, go to ``on_event``.
+        The camera acks the offer with a status, then sends the answer as a
+        request of its own; nothing acks that, matching the Nanit app.
+
+        A lost or late ack is not retried over a fresh connection, since a
+        reconnect stops any RTMP push other viewers rely on. (A socket that is
+        already down, or idle past the stale threshold, is still reconnected
+        before the send, as for every request.)
+
+        A non-200 ack refuses the offer only if no answer follows within
+        ``timeout``, since the relay copies other apps' acks here and one may
+        share our request id.
+
+        Raises NanitCameraUnavailable if the camera is stopped meanwhile,
+        NanitWebRtcRefused for such a refusal, NanitWebRtcClosed if
+        the session is closed (by the camera or by async_webrtc_close) before
+        the answer, or by async_webrtc_close before this call resumes after
+        a non-200 ack and its answer, NanitRequestTimeout when the ack or the answer is late,
+        and the transport errors of any other request. ``timeout`` bounds
+        the ack and the answer; a send on a socket that is down first waits
+        for the reconnect, as every request does.
+        """
+        if not 0 < session_id <= _INT64_MAX:
+            raise ValueError(f"WebRTC session id out of range: {session_id}")
+        if session_id in self._webrtc_sessions:
+            raise ValueError(f"WebRTC session {session_id} is already open")
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        session = _WebRtcSession(loop.create_future(), on_event, asyncio.Event())
+        # Registered before sending, since the answer follows the ack closely.
+        self._webrtc_sessions[session_id] = session
+        offer = WebRtc(
+            session_description=WebRtcSessionDescription(
+                session_id=session_id,
+                sdp_type=WebRtcSdpType.OFFER,
+                description=offer_sdp,
+            )
+        )
+        close_sent = False
+        try:
+            try:
+                response = await self._send_request(
+                    RequestType.PUT_WEBRTC_SERVICE_MESSAGE,
+                    timeout=timeout,
+                    reconnect_on_failure=False,
+                    webrtc=offer,
+                )
+            except asyncio.CancelledError:
+                # async_stop cancels pending acks; that is not this call
+                # being cancelled, so it must not surface as one.
+                task = asyncio.current_task()
+                if self._stopped and task is not None and not task.cancelling():
+                    raise NanitCameraUnavailable(f"Camera {self._uid} is stopped") from None
+                raise
+            status = getattr(response, "status_code", None)
+            if getattr(response, "request_type", None) != RequestType.PUT_WEBRTC_SERVICE_MESSAGE:
+                # Another app's response that shares our request id (the relay
+                # copies them all here) resolved the wait, so our ack's status
+                # is unknown. The answer, or its absence, decides.
+                _LOGGER.debug("WebRTC offer %s: ack status unknown", session_id)
+                status = 200
+            if session.closed_early:
+                # Closed while the offer waited (for a reconnect, say). The
+                # camera may have the session now; end it.
+                close_sent = True
+                self._spawn_webrtc_close(session_id)
+                raise NanitWebRtcClosed(WebRtcError.OK, "Closed before the camera answered")
+            if status == 200:
+                session.settled.set()
+            try:
+                answer = await asyncio.wait_for(session.answer, max(0.0, deadline - loop.time()))
+            except TimeoutError:
+                if status != 200:
+                    # Refused for real. The close that follows (the except
+                    # block below) is harmless if the camera has nothing.
+                    raise NanitWebRtcRefused(
+                        status if isinstance(status, int) else None,
+                        getattr(response, "status_message", "") or "",
+                    ) from None
+                raise NanitRequestTimeout("PUT_WEBRTC_SERVICE_MESSAGE answer", 0, timeout) from None
+            if session.closed_early:
+                # Closed by this client after the answer arrived but before
+                # this call resumed (only possible after a non-200 ack, since
+                # a 200 ack lets async_webrtc_close tell the camera itself).
+                close_sent = True
+                self._spawn_webrtc_close(session_id)
+                raise NanitWebRtcClosed(WebRtcError.OK, "Closed before the camera answered")
+            # A non-200 ack followed by the answer was another app's ack
+            # sharing our request id, of the same type.
+            session.settled.set()
+            return answer
+        except BaseException:
+            # A session ended while the offer was still in flight leaves an
+            # exception on the answer that nothing else will read.
+            if session.answer.done() and not session.answer.cancelled():
+                session.answer.exception()
+            # Ours to clean up only if the session is still registered: a
+            # close from either side already removed it.
+            ours = self._webrtc_sessions.get(session_id) is session
+            if ours:
+                self._forget_webrtc_session(session_id)
+            # The camera may hold the session unless it closed it itself (then
+            # the session is neither ours nor closed early) or was already told.
+            if not close_sent and (ours or session.closed_early):
+                self._spawn_webrtc_close(session_id)
+            raise
+
+    async def async_webrtc_candidate(
+        self,
+        session_id: int,
+        candidate: str,
+        sdp_mid: str | None = None,
+        sdp_m_line_index: int | None = None,
+    ) -> None:
+        """Send one of the viewer's ICE candidates to the camera.
+
+        Waits until the camera has accepted the offer, so a candidate never
+        overtakes it. Does nothing for a session that is not open.
+        """
+        session = self._webrtc_sessions.get(session_id)
+        if session is None:
+            _LOGGER.debug("Dropping ICE candidate for closed WebRTC session %s", session_id)
+            return
+        try:
+            await asyncio.wait_for(session.settled.wait(), _WEBRTC_ANSWER_TIMEOUT)
+        except TimeoutError:
+            return
+        if self._webrtc_sessions.get(session_id) is not session:
+            return
+        if not self._transport.connected:
+            # Waiting for a reconnect would hold up the viewer's other
+            # candidates; ICE gets by on the ones that do arrive.
+            _LOGGER.debug("Dropping ICE candidate while disconnected from camera %s", self._uid)
+            return
+        ice = WebRtcIceCandidate(session_id=session_id, sdp=candidate)
+        if sdp_mid is not None:
+            ice.sdp_mid = sdp_mid
+        if sdp_m_line_index is not None:
+            ice.sdp_m_line_index = sdp_m_line_index
+        await self._send_request(
+            RequestType.PUT_WEBRTC_SERVICE_MESSAGE,
+            timeout=_WEBRTC_SEND_TIMEOUT,
+            reconnect_on_failure=False,
+            webrtc=WebRtc(ice_candidate=ice),
+        )
+
+    async def async_webrtc_close(self, session_id: int) -> None:
+        """Close a WebRTC session on the camera. Best effort, never raises."""
+        session = self._webrtc_sessions.get(session_id)
+        if session is None:
+            return
+        acked = session.settled.is_set()
+        self._forget_webrtc_session(session_id)
+        if not session.answer.done():
+            session.answer.set_exception(
+                NanitWebRtcClosed(WebRtcError.OK, "Closed before the camera answered")
+            )
+        if not acked:
+            session.closed_early = True
+            return
+        await self._async_send_webrtc_close(session_id)
+
+    def _forget_webrtc_session(self, session_id: int) -> _WebRtcSession | None:
+        session = self._webrtc_sessions.pop(session_id, None)
+        if session is not None:
+            session.settled.set()
+        return session
+
+    def _spawn_webrtc_close(self, session_id: int) -> None:
+        if self._stopped:
+            return
+        task = asyncio.get_running_loop().create_task(self._async_send_webrtc_close(session_id))
+        self._webrtc_tasks.add(task)
+        task.add_done_callback(self._webrtc_tasks.discard)
+
+    async def _async_send_webrtc_close(self, session_id: int) -> None:
+        if self._stopped or not self._transport.connected:
+            return
+        try:
+            await self._send_request(
+                RequestType.PUT_WEBRTC_SERVICE_MESSAGE,
+                timeout=_WEBRTC_SEND_TIMEOUT,
+                reconnect_on_failure=False,
+                webrtc=WebRtc(close=WebRtcClose(session_id=session_id)),
+            )
+        except NanitError as err:
+            _LOGGER.debug("WebRTC close for session %s failed: %s", session_id, err)
+
+    def _end_webrtc_sessions(self, reason: str) -> None:
+        """End every open session locally, without telling the camera (on stop)."""
+        for session_id in list(self._webrtc_sessions):
+            session = self._forget_webrtc_session(session_id)
+            if session is None:
+                continue
+            if not session.answer.done():
+                session.answer.set_exception(NanitTransportError(reason))
+            else:
+                self._emit_webrtc(
+                    session, WebRtcClosed(session_id, WebRtcError.INTERNAL_ERROR, reason)
+                )
+
+    def _emit_webrtc(self, session: _WebRtcSession, event: WebRtcEvent) -> None:
+        try:
+            session.on_event(event)
+        except Exception:
+            _LOGGER.exception("Error in WebRTC event callback")
+
+    def _handle_webrtc(self, webrtc: Any) -> None:
+        """Route a camera-originated WebRTC message to its session.
+
+        The relay copies traffic to every app socket on the camera, so
+        messages for sessions this client did not start are expected and
+        ignored.
+        """
+        command = webrtc.WhichOneof("command")
+        if command == "session_description":
+            desc = webrtc.session_description
+            session = self._webrtc_sessions.get(desc.session_id)
+            if session is None or desc.sdp_type != WebRtcSdpType.ANSWER:
+                return
+            if session.answer.done():
+                _LOGGER.debug("Repeated WebRTC answer for session %s", desc.session_id)
+                return
+            session.answer.set_result(desc.description)
+        elif command == "ice_candidate":
+            ice = webrtc.ice_candidate
+            session = self._webrtc_sessions.get(ice.session_id)
+            if session is None:
+                return
+            self._emit_webrtc(
+                session,
+                WebRtcCandidate(
+                    session_id=ice.session_id,
+                    candidate=ice.sdp,
+                    sdp_mid=ice.sdp_mid if ice.HasField("sdp_mid") else None,
+                    sdp_m_line_index=(
+                        ice.sdp_m_line_index if ice.HasField("sdp_m_line_index") else None
+                    ),
+                ),
+            )
+        elif command == "close":
+            close = webrtc.close
+            session = self._forget_webrtc_session(close.session_id)
+            if session is None:
+                return
+            if not session.answer.done():
+                session.answer.set_exception(NanitWebRtcClosed(close.error, close.error_message))
+            else:
+                self._emit_webrtc(
+                    session, WebRtcClosed(close.session_id, close.error, close.error_message)
+                )
+
+    # ------------------------------------------------------------------
     # Snapshot
     # ------------------------------------------------------------------
 
@@ -743,6 +1048,10 @@ class NanitCamera:
                     pb = dataclasses.replace(pb, available_tracks=current_tracks)
                 self._update_state(playback=pb, kind=CameraEventKind.PLAYBACK_UPDATE)
 
+        elif req_type == RequestType.PUT_WEBRTC_SERVICE_MESSAGE:
+            if proto_request.HasField("webrtc"):
+                self._handle_webrtc(proto_request.webrtc)
+
         else:
             _LOGGER.debug("Unhandled push request type: %s", req_type)
 
@@ -794,6 +1103,9 @@ class NanitCamera:
                 else "Connection reconnecting"
             )
             self._pending.cancel_all(NanitTransportError(reason))
+            # WebRTC sessions are left alone: they keep streaming without this
+            # socket, and the camera's later messages for them (and our close)
+            # go over the next one.
 
         self._notify_subscribers(CameraEventKind.CONNECTION_CHANGE)
 

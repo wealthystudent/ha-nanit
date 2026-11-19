@@ -16,6 +16,7 @@ from aionanit.proto import (
     Response,
     Settings,
     Streaming,
+    WebRtc,
 )
 
 
@@ -53,6 +54,7 @@ def build_request(
     get_settings: GetSettings | None = None,
     get_sensor_data: GetSensorData | None = None,
     get_control: GetControl | None = None,
+    webrtc: WebRtc | None = None,
 ) -> bytes:
     """Build a REQUEST message with the given payload.
 
@@ -69,6 +71,7 @@ def build_request(
             get_settings=get_settings,
             get_sensor_data=get_sensor_data,
             get_control=get_control,
+            webrtc=webrtc,
         ).items()
         if v is not None
     }

@@ -15,6 +15,8 @@ from .exceptions import (
     NanitProtocolError,
     NanitRequestTimeout,
     NanitTransportError,
+    NanitWebRtcClosed,
+    NanitWebRtcRefused,
 )
 from .models import (
     Baby,
@@ -35,6 +37,8 @@ from .models import (
     SpeakerCandidate,
     StatusState,
     TransportKind,
+    WebRtcCandidate,
+    WebRtcClosed,
 )
 
 if TYPE_CHECKING:
@@ -88,6 +92,8 @@ __all__ = [
     "NanitRequestTimeout",
     "NanitRestClient",
     "NanitTransportError",
+    "NanitWebRtcClosed",
+    "NanitWebRtcRefused",
     "NetworkInfo",
     "NightLightState",
     "PlaybackState",
@@ -99,4 +105,6 @@ __all__ = [
     "StatusState",
     "TokenManager",
     "TransportKind",
+    "WebRtcCandidate",
+    "WebRtcClosed",
 ]

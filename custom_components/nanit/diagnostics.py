@@ -30,6 +30,7 @@ TO_REDACT = {
     "speaker_uid_map",
     "unpaired_speakers",
     "local_stream_state",
+    "cloud_push",
     "advertised_host",
     "local_stream_host",
     "publisher_peer",

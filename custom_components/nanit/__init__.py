@@ -32,6 +32,7 @@ from .const import (
     PLATFORMS,
     READ_ONLY_PLATFORMS,
     is_read_only,
+    unloaded_marker,
 )
 from .coordinator import NanitPushCoordinator, NanitSoundLightCoordinator
 from .device_links import async_get_device
@@ -176,6 +177,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: NanitConfigEntry) -> boo
 
 async def async_unload_entry(hass: HomeAssistant, entry: NanitConfigEntry) -> bool:
     """Unload a config entry."""
+    # Tells the next setup in this run that it's a reload, which ends a local
+    # streaming pause (#206). A restart keeps the pause.
+    hass.data.setdefault(DOMAIN, {})[unloaded_marker(entry.entry_id)] = True
     unload_ok = await hass.config_entries.async_unload_platforms(
         entry, entry.runtime_data.platforms
     )

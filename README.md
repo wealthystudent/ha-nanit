@@ -183,7 +183,7 @@ Good to know:
 - The camera keeps sending video to Home Assistant until it's told to stop, so Home Assistant stops it about two minutes after the last viewer leaves. Opening the camera again starts it again within a few seconds.
 - If your go2rtc server's URL (`go2rtc: url:` in your configuration) isn't `localhost` or a loopback address, it can't reach the local stream, so WebRTC would fall back to HLS. Local streaming therefore starts off on those setups. You can still turn it on in the options.
 - A camera that falls back to the cloud goes back to local when the wait is over, even while it's being watched, preloaded, or asked for stills. Home Assistant first tells the camera to stop its own cloud stream, which would otherwise hold one of the camera's slots. A WebRTC viewer's picture pauses until the player reconnects, which the Nanit card does on its own.
-- Reloading the integration ends that wait, so local is tried again on the next view. It doesn't end the pause after two misses in a row, which the repair's retry button does.
+- Reloading the integration ends that wait, so local is tried again on the next view. It also ends the pause after two misses in a row, as the repair's retry button does. Restarting Home Assistant keeps the pause.
 
 ## Troubleshooting
 

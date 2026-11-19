@@ -51,6 +51,7 @@ from .const import (
     DEFAULT_LOCAL_STREAM_PORT,
     DOMAIN,
     local_stream_default,
+    unloaded_marker,
 )
 
 # The routing table's own answer for one target is a Home Assistant internal.
@@ -599,6 +600,7 @@ async def async_setup_local_stream(
     A receiver that cannot bind raises a repair issue and leaves the entry
     on the cloud stream rather than failing setup.
     """
+    reloaded = hass.data.get(DOMAIN, {}).pop(unloaded_marker(entry.entry_id), False)
     if not local_stream_enabled(hass, entry):
         for issue in (ISSUE_PORT_IN_USE, ISSUE_UNREACHABLE, ISSUE_PROTOCOL):
             ir.async_delete_issue(hass, DOMAIN, f"{issue}_{entry.entry_id}")
@@ -631,9 +633,9 @@ async def async_setup_local_stream(
     local = LocalStreamEntry(hass, entry, server)
     if local._stored_options_fp is None:
         local._persist()  # record the fingerprint for the next setup
-    elif local.options_changed():
-        # Any options change (port or address) is likely the fix
-        # for whatever paused local streaming, so retry right away.
+    elif reloaded or local.options_changed():
+        # A reload, or any options change (port or address), is likely the
+        # fix for whatever paused local streaming, so retry right away.
         local.clear_pause()
     if local.paused and local.paused_reason:
         local.async_raise_issue(local.paused_reason, local.last_host or "")

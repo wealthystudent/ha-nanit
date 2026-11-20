@@ -105,7 +105,7 @@
       },
       "manual_speaker": {
         "title": "Add Sound & Light Machine by ID",
-        "description": "For a machine Nanit's cloud doesn't report, for example one set up only in the Nanit Sound + Light app. Enter its ID, e.g. L151AMA255206P (a router showing it as Nanit-L151AMA255206P is fine too). To change a machine you added, enter its ID again. To remove one, delete its device. Saving reloads the integration.",
+        "description": "For a machine Nanit's cloud doesn't report, for example one set up only in the Nanit Sound + Light app. Enter its ID, e.g. L151ABC1234567 (a router showing it as Nanit-L151ABC1234567 is fine too). To change a machine you added, enter its ID again. To remove one, delete its device. Saving reloads the integration.",
         "data": {
           "speaker_uid": "Machine ID",
           "manual_speaker_name": "Name",

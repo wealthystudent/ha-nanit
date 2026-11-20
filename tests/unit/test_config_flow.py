@@ -772,7 +772,7 @@ async def test_options_flow_manual_speaker_is_added_with_its_ip(hass: HomeAssist
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
         {
-            CONF_SPEAKER_UID: " Nanit-L151AMA255206P ",
+            CONF_SPEAKER_UID: " Nanit-L151ABC1234567 ",
             CONF_MANUAL_SPEAKER_NAME: "Nursery",
             CONF_SPEAKER_IP: "192.168.1.72",
         },
@@ -782,8 +782,8 @@ async def test_options_flow_manual_speaker_is_added_with_its_ip(hass: HomeAssist
     assert result_data.get("type") is FlowResultType.CREATE_ENTRY
     assert result_data["data"] == {
         "read_only": True,
-        CONF_MANUAL_SPEAKERS: {"L151AMA255206P": "Nursery"},
-        CONF_SPEAKER_IPS: {"L151AMA255206P": "192.168.1.72"},
+        CONF_MANUAL_SPEAKERS: {"L151ABC1234567": "Nursery"},
+        CONF_SPEAKER_IPS: {"L151ABC1234567": "192.168.1.72"},
     }
 
 
@@ -807,7 +807,7 @@ async def test_options_flow_manual_speaker_form_starts_empty(hass: HomeAssistant
     )
 
     result_data = _as_dict(result)
-    assert result_data["data"][CONF_MANUAL_SPEAKERS] == {"spk_m": "Den", "spk_n": "Sound & Light"}
+    assert result_data["data"][CONF_MANUAL_SPEAKERS] == {"spk_m": "Den", "spk_n": ""}
     assert result_data["data"][CONF_SPEAKER_IPS] == {"spk_m": "192.168.1.5"}
 
 

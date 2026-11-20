@@ -459,7 +459,9 @@ class NanitOptionsFlow(OptionsFlow):
                 existing = next((key for key in manual if key.upper() == uid.upper()), None)
                 if existing is not None:
                     uid = existing
-                manual[uid] = name or manual.get(uid) or "Sound & Light"
+                # Left empty when no name is given: the device name then falls
+                # back to speaker_display_name, which isn't HTML-escaped.
+                manual[uid] = name or manual.get(uid) or ""
                 if speaker_ip:
                     speaker_ips[uid] = speaker_ip
                 else:

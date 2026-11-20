@@ -1375,8 +1375,8 @@ async def test_manual_speaker_set_up_on_an_account_with_no_babies(
     entry = _make_entry(
         hass,
         options={
-            "manual_speakers": {"L151AMA255206P": "Nursery", "../bad": "Bad"},
-            "speaker_ips": {"L151AMA255206P": "192.168.1.72"},
+            "manual_speakers": {"L151ABC1234567": "Nursery", "../bad": "Bad"},
+            "speaker_ips": {"L151ABC1234567": "192.168.1.72"},
         },
     )
     hub = NanitHub(hass, MagicMock(), entry)
@@ -1385,11 +1385,29 @@ async def test_manual_speaker_set_up_on_an_account_with_no_babies(
         coord_cls.return_value = MagicMock(async_setup=AsyncMock())
         await hub.async_setup()
 
-    assert set(hub.speaker_data) == {"L151AMA255206P"}
-    placeholder = hub.speaker_data["L151AMA255206P"].baby
+    assert set(hub.speaker_data) == {"L151ABC1234567"}
+    placeholder = hub.speaker_data["L151ABC1234567"].baby
     assert (placeholder.uid, placeholder.name) == ("", "Nursery")
     assert sl_cls.call_args.kwargs["device_ip"] == "192.168.1.72"
-    assert hub.manual_speakers == {"L151AMA255206P": "Nursery"}
+    assert hub.manual_speakers == {"L151ABC1234567": "Nursery"}
+
+
+async def test_unnamed_manual_speaker_gets_a_clean_device_name(
+    hass: HomeAssistant, mock_nanit_client
+) -> None:
+    """No name stored means the uid fallback, never an HTML-escaped "&amp;"."""
+    from custom_components.nanit.sanitize import speaker_display_name
+
+    mock_nanit_client.async_get_babies.return_value = []
+    entry = _make_entry(hass, options={"manual_speakers": {"L151ABC1234567": ""}})
+    hub = NanitHub(hass, MagicMock(), entry)
+    sl_patch, coord_patch = _speaker_patches()
+    with sl_patch, coord_patch as coord_cls:
+        coord_cls.return_value = MagicMock(async_setup=AsyncMock())
+        await hub.async_setup()
+
+    placeholder = hub.speaker_data["L151ABC1234567"].baby
+    assert speaker_display_name(placeholder.name, "L151ABC1234567") == "Sound & Light L151ABC1"
 
 
 async def test_manual_speaker_already_reported_is_not_set_up_twice(

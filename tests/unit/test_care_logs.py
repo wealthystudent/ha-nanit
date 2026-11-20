@@ -6,6 +6,7 @@ from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 from freezegun.api import FrozenDateTimeFactory
@@ -79,6 +80,41 @@ def test_summary_today_is_since_local_midnight_oldest_first() -> None:
 
     assert data.today == (early, late)
     assert data.day_start == DAY_START
+
+
+def test_summary_leaves_an_entry_dated_after_midnight_for_tomorrow() -> None:
+    """Fetched at 23:30, an entry dated 00:10 is tomorrow's, not also today's."""
+    tonight = _log("d1", "diaper_change", 23 * 3600)
+    after_midnight = _log("d2", "diaper_change", 24 * 3600 + 600)
+
+    data = _summary([tonight, after_midnight])
+
+    assert data.today == (tonight,)
+    assert data.latest["diaper_change"] == after_midnight
+
+
+def test_summary_counts_the_whole_local_day_when_the_clocks_go_back() -> None:
+    """A 25 hour day keeps its last hour: the day ends at the next local midnight."""
+    pacific = ZoneInfo("America/Los_Angeles")
+    day_start = datetime(2026, 11, 1, tzinfo=pacific)  # clocks go back at 02:00
+
+    def at(day: int, hour: int, minute: int) -> CareLog:
+        when = datetime(2026, 11, day, hour, minute, tzinfo=pacific)
+        return CareLog(
+            uid=f"d{day}{hour}", log_type="diaper_change", timestamp=when.timestamp(), baby_uid="b"
+        )
+
+    late_evening = at(1, 23, 30)  # 24.5 hours after that day's midnight
+    next_day = at(2, 0, 10)
+
+    data = build_care_log_data(
+        [late_evening, next_day],
+        window_start=day_start.timestamp() - 86400,
+        day_start=day_start,
+        previous=None,
+    )
+
+    assert data.today == (late_evening,)
 
 
 def test_summary_leaves_out_sleep() -> None:

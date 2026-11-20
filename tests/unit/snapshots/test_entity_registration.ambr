@@ -421,6 +421,45 @@
 # name: TestEntityRegistration.test_sensor[full]
   list([
     dict({
+      'class': 'NanitCareLogSensor',
+      'device_class': <SensorDeviceClass.VOLUME: 'volume'>,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1',
+        ),
+      ]),
+      'entity_category': None,
+      'translation_key': 'bottle_volume_today',
+      'unique_id': 'cam_1_bottle_volume_today',
+    }),
+    dict({
+      'class': 'NanitCareLogSensor',
+      'device_class': None,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1',
+        ),
+      ]),
+      'entity_category': None,
+      'translation_key': 'diaper_changes_today',
+      'unique_id': 'cam_1_diaper_changes_today',
+    }),
+    dict({
+      'class': 'NanitCareLogSensor',
+      'device_class': None,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1',
+        ),
+      ]),
+      'entity_category': None,
+      'translation_key': 'feedings_today',
+      'unique_id': 'cam_1_feedings_today',
+    }),
+    dict({
       'class': 'NanitSensor',
       'device_class': <SensorDeviceClass.HUMIDITY: 'humidity'>,
       'device_identifiers': list([
@@ -434,6 +473,45 @@
       'unique_id': 'cam_1_humidity',
     }),
     dict({
+      'class': 'NanitCareLogSensor',
+      'device_class': <SensorDeviceClass.TIMESTAMP: 'timestamp'>,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1',
+        ),
+      ]),
+      'entity_category': None,
+      'translation_key': 'last_diaper_change',
+      'unique_id': 'cam_1_last_diaper_change',
+    }),
+    dict({
+      'class': 'NanitCareLogSensor',
+      'device_class': <SensorDeviceClass.TIMESTAMP: 'timestamp'>,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1',
+        ),
+      ]),
+      'entity_category': None,
+      'translation_key': 'last_feeding',
+      'unique_id': 'cam_1_last_feeding',
+    }),
+    dict({
+      'class': 'NanitCareLogSensor',
+      'device_class': <SensorDeviceClass.TIMESTAMP: 'timestamp'>,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1',
+        ),
+      ]),
+      'entity_category': None,
+      'translation_key': 'last_pumping',
+      'unique_id': 'cam_1_last_pumping',
+    }),
+    dict({
       'class': 'NanitSensor',
       'device_class': <SensorDeviceClass.ILLUMINANCE: 'illuminance'>,
       'device_identifiers': list([
@@ -445,6 +523,32 @@
       'entity_category': None,
       'translation_key': None,
       'unique_id': 'cam_1_light',
+    }),
+    dict({
+      'class': 'NanitCareLogSensor',
+      'device_class': <SensorDeviceClass.DURATION: 'duration'>,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1',
+        ),
+      ]),
+      'entity_category': None,
+      'translation_key': 'nursing_time_today',
+      'unique_id': 'cam_1_nursing_time_today',
+    }),
+    dict({
+      'class': 'NanitCareLogSensor',
+      'device_class': <SensorDeviceClass.VOLUME: 'volume'>,
+      'device_identifiers': list([
+        tuple(
+          'nanit',
+          'cam_1',
+        ),
+      ]),
+      'entity_category': None,
+      'translation_key': 'pumped_volume_today',
+      'unique_id': 'cam_1_pumped_volume_today',
     }),
     dict({
       'class': 'NanitSensor',

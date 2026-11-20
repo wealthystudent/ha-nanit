@@ -42,6 +42,12 @@ CLOUD_POLL_INTERVAL = 30
 # Network info poll interval (seconds)
 NETWORK_POLL_INTERVAL = 300
 
+# Care Logs poll interval (seconds)
+CARE_LOG_POLL_INTERVAL = 300
+
+# How many days the first Care Logs fetch looks back for each type's latest entry
+CARE_LOG_SEED_DAYS = 7
+
 # Config Keys
 CONF_MFA_CODE = "mfa_code"
 CONF_MFA_TOKEN = "mfa_token"

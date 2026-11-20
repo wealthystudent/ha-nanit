@@ -10,7 +10,7 @@ import pytest
 
 from aionanit.client import NanitClient
 from aionanit.exceptions import NanitAuthError, NanitConnectionError, NanitMfaRequiredError
-from aionanit.models import Baby, CloudEvent
+from aionanit.models import Baby, CareLog, CloudEvent
 
 
 def _make_client() -> tuple[NanitClient, MagicMock]:
@@ -301,6 +301,29 @@ class TestRetryOn401:
 
         assert result == expected
         mock_refresh.assert_awaited_once()
+
+    async def test_get_calendar_retries_on_401(self) -> None:
+        client = _make_authenticated_client()
+        expected = [CareLog(uid="d1", log_type="diaper_change", timestamp=1.0, baby_uid="b1")]
+        with (
+            patch.object(
+                client.rest_client,
+                "async_get_calendar",
+                new_callable=AsyncMock,
+                side_effect=[NanitAuthError("Access token invalid"), expected],
+            ) as mock_get,
+            patch.object(
+                client.rest_client,
+                "async_refresh_token",
+                new_callable=AsyncMock,
+                return_value={"access_token": "fresh_at", "refresh_token": "fresh_rt"},
+            ) as mock_refresh,
+        ):
+            result = await client.async_get_calendar("b1", 100, 200)
+
+        assert result == expected
+        mock_refresh.assert_awaited_once()
+        assert mock_get.await_args_list[-1].args == ("fresh_at", "b1", 100, 200)
 
     async def test_get_device_token_retries_on_401(self) -> None:
         client = _make_authenticated_client()

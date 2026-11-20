@@ -11,6 +11,9 @@ NanitPushCoordinator: Push-based coordinator that wraps NanitCamera.subscribe().
 NanitCloudCoordinator: Polls the Nanit cloud API for motion/sound events every
     CLOUD_POLL_INTERVAL seconds.
 
+NanitCareLogCoordinator: Polls a baby's Care Logs (diaper changes, feedings,
+    pumping) every CARE_LOG_POLL_INTERVAL seconds.
+
 NanitSoundLightCoordinator: Push-based coordinator wrapping NanitSoundLight.subscribe().
     Receives state updates from the S&L device's local WebSocket.
 """
@@ -20,8 +23,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-from collections.abc import Awaitable, Callable
-from datetime import timedelta
+from collections.abc import Awaitable, Callable, Iterable, Mapping
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.config_entries import ConfigEntryState
@@ -30,13 +34,20 @@ from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
 from aionanit.exceptions import NanitAuthError, NanitConnectionError
-from aionanit.models import Baby, CameraEvent, CameraState, CloudEvent, NetworkInfo
+from aionanit.models import Baby, CameraEvent, CameraState, CareLog, CloudEvent, NetworkInfo
 
 from .aionanit_sl.models import SoundLightEvent, SoundLightEventKind, SoundLightFullState
 from .aionanit_sl.sound_light import NanitSoundLight
-from .const import CLOUD_POLL_INTERVAL, DOMAIN, NETWORK_POLL_INTERVAL
+from .const import (
+    CARE_LOG_POLL_INTERVAL,
+    CARE_LOG_SEED_DAYS,
+    CLOUD_POLL_INTERVAL,
+    DOMAIN,
+    NETWORK_POLL_INTERVAL,
+)
 
 if TYPE_CHECKING:
     from aionanit import NanitCamera
@@ -276,6 +287,155 @@ class NanitNetworkCoordinator(DataUpdateCoordinator[NetworkInfo | None]):
             if baby.camera_uid == self.baby.camera_uid:
                 return baby.network
         return None
+
+
+# Care Log types the sensors summarise. The calendar also returns naps
+# ("sleep") and the camera's own sleep sessions ("auto_sleep"), which no
+# sensor uses yet.
+CARE_LOG_DIAPER = "diaper_change"
+CARE_LOG_BOTTLE = "bottle_feed"
+CARE_LOG_NURSING = "nursing"
+CARE_LOG_PUMPING = "pumping"
+CARE_LOG_TYPES = frozenset({CARE_LOG_DIAPER, CARE_LOG_BOTTLE, CARE_LOG_NURSING, CARE_LOG_PUMPING})
+
+# The fetch runs a little past now, so an entry logged for a few minutes
+# ahead still counts.
+_CARE_LOG_END_SLACK = timedelta(hours=1)
+
+# How far back each poll after the first looks. Parents often log after the
+# fact (a night feed entered in the morning), and an entry from before
+# midnight still has to be seen, as do later edits and deletions of it.
+_CARE_LOG_LOOKBACK = timedelta(hours=24)
+
+
+@dataclass(frozen=True)
+class CareLogData:
+    """A summary of one baby's Care Logs.
+
+    ``latest`` holds the newest entry of each type and ``today`` every entry
+    since ``day_start`` (local midnight), oldest first. ``entries`` is every
+    entry the last fetch returned, and ``before_window`` the newest entry of
+    each type older than that fetch's start: the next summary needs both to
+    know what came before its own, shorter, fetch.
+    """
+
+    latest: Mapping[str, CareLog]
+    today: tuple[CareLog, ...]
+    day_start: datetime
+    entries: tuple[CareLog, ...] = ()
+    before_window: Mapping[str, CareLog] = field(default_factory=dict)
+
+
+def _keep_newest(newest: dict[str, CareLog], log: CareLog) -> None:
+    """Store ``log`` under its type unless a newer entry of that type is there."""
+    current = newest.get(log.log_type)
+    if current is None or log.timestamp > current.timestamp:
+        newest[log.log_type] = log
+
+
+def build_care_log_data(
+    logs: Iterable[CareLog],
+    *,
+    window_start: float,
+    day_start: datetime,
+    previous: CareLogData | None,
+) -> CareLogData:
+    """Summarise one calendar fetch covering ``window_start`` up to now.
+
+    Later polls fetch a shorter window than the first, so a type with no
+    entry since ``window_start`` falls back to the newest older entry an
+    earlier fetch returned. An entry inside the window that the API no longer returns was
+    deleted in the app, so it no longer counts.
+    """
+    entries = tuple(log for log in logs if log.log_type in CARE_LOG_TYPES)
+
+    before_window: dict[str, CareLog] = {}
+    if previous is not None:
+        for log in (*previous.before_window.values(), *previous.entries):
+            if log.timestamp < window_start:
+                _keep_newest(before_window, log)
+
+    latest = dict(before_window)
+    for log in entries:
+        _keep_newest(latest, log)
+
+    day_start_ts = day_start.timestamp()
+    today = tuple(
+        sorted(
+            (log for log in entries if log.timestamp >= day_start_ts),
+            key=lambda log: log.timestamp,
+        )
+    )
+    return CareLogData(
+        latest=latest,
+        today=today,
+        day_start=day_start,
+        entries=entries,
+        before_window=before_window,
+    )
+
+
+class NanitCareLogCoordinator(DataUpdateCoordinator[CareLogData]):
+    """Polling coordinator for a baby's Care Logs.
+
+    Polls GET /babies/{uid}/calendar every CARE_LOG_POLL_INTERVAL seconds.
+    The first poll looks back CARE_LOG_SEED_DAYS days to find the newest
+    entry of each type; later polls fetch the last 24 hours (and at least
+    since midnight) and carry older entries forward, which keeps each poll
+    small.
+    """
+
+    config_entry: NanitConfigEntry
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: NanitConfigEntry,
+        hub: NanitHub,
+        baby: Baby,
+    ) -> None:
+        """Initialize the care log coordinator."""
+        super().__init__(
+            hass,
+            _LOGGER,
+            config_entry=entry,
+            name=f"{DOMAIN}_{baby.uid}_care_logs",
+            update_interval=timedelta(seconds=CARE_LOG_POLL_INTERVAL),
+        )
+        self._hub = hub
+        self.baby = baby
+
+    async def _async_update_data(self) -> CareLogData:
+        """Fetch Care Logs from the Nanit API and summarise them."""
+        now = dt_util.utcnow()
+        day_start = dt_util.start_of_local_day()
+        lookback = (
+            _CARE_LOG_LOOKBACK if self.data is not None else timedelta(days=CARE_LOG_SEED_DAYS)
+        )
+        window_start = min(day_start, now - lookback)
+        start = int(window_start.timestamp())
+        end = int((now + _CARE_LOG_END_SLACK).timestamp())
+        try:
+            client = self._hub.client
+            logs = await _async_fetch_with_retries(
+                self, lambda: client.async_get_calendar(self.baby.uid, start, end)
+            )
+        except NanitAuthError as err:
+            raise ConfigEntryAuthFailed(
+                translation_domain=DOMAIN,
+                translation_key="auth_failed",
+                translation_placeholders={"error": str(err)},
+            ) from err
+        except NanitConnectionError as err:
+            raise UpdateFailed(
+                translation_domain=DOMAIN,
+                translation_key="care_log_fetch_failed",
+                translation_placeholders={"error": str(err)},
+            ) from err
+
+        return build_care_log_data(
+            logs, window_start=start, day_start=day_start, previous=self.data
+        )
 
 
 _SL_STORE_VERSION = 1

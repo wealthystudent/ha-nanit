@@ -155,6 +155,9 @@
     },
     "read_only": {
       "message": "This Nanit account is in read-only mode, so Home Assistant can't change the camera. Use the Nanit app, or turn read-only mode off in the integration's options."
+    },
+    "care_log_fetch_failed": {
+      "message": "Failed to fetch Care Logs: {error}"
     }
   },
   "issues": {
@@ -251,6 +254,89 @@
       },
       "sl_firmware": {
         "name": "Firmware"
+      },
+      "last_diaper_change": {
+        "name": "Last diaper change",
+        "state_attributes": {
+          "change_type": {
+            "name": "Type",
+            "state": {
+              "pee": "Pee",
+              "poo": "Poo",
+              "mixed": "Mixed",
+              "dry": "Dry"
+            }
+          }
+        }
+      },
+      "last_feeding": {
+        "name": "Last feeding",
+        "state_attributes": {
+          "feeding_type": {
+            "name": "Type",
+            "state": {
+              "bottle": "Bottle",
+              "nursing": "Nursing"
+            }
+          },
+          "amount_ml": {
+            "name": "Amount (mL)"
+          },
+          "left_minutes": {
+            "name": "Left side (minutes)"
+          },
+          "right_minutes": {
+            "name": "Right side (minutes)"
+          }
+        }
+      },
+      "last_pumping": {
+        "name": "Last pumping",
+        "state_attributes": {
+          "amount_ml": {
+            "name": "Amount (mL)"
+          },
+          "duration_minutes": {
+            "name": "Duration (minutes)"
+          }
+        }
+      },
+      "diaper_changes_today": {
+        "name": "Diaper changes today",
+        "state_attributes": {
+          "pee": {
+            "name": "Pee"
+          },
+          "poo": {
+            "name": "Poo"
+          },
+          "mixed": {
+            "name": "Mixed"
+          },
+          "dry": {
+            "name": "Dry"
+          }
+        }
+      },
+      "feedings_today": {
+        "name": "Feedings today",
+        "state_attributes": {
+          "bottle": {
+            "name": "Bottle"
+          },
+          "nursing": {
+            "name": "Nursing"
+          }
+        }
+      },
+      "bottle_volume_today": {
+        "name": "Bottle volume today"
+      },
+      "nursing_time_today": {
+        "name": "Nursing time today"
+      },
+      "pumped_volume_today": {
+        "name": "Pumped volume today"
       }
     },
     "binary_sensor": {

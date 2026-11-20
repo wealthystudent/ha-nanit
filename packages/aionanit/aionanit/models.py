@@ -155,6 +155,29 @@ class CloudEvent:
 
 
 @dataclass(frozen=True)
+class CareLog:
+    """An entry from the Nanit app's Care Logs (Insights plan).
+
+    Parents log these by hand in the app: diaper changes, bottles, nursing,
+    pumping and naps. The calendar also carries the camera's own sleep
+    sessions (``auto_sleep``). Only the fields that apply to ``log_type``
+    are set; the rest stay None.
+    """
+
+    uid: str
+    log_type: str  # "diaper_change", "bottle_feed", "nursing", "pumping", "sleep", ...
+    timestamp: float  # Unix timestamp of the start of the entry
+    baby_uid: str
+    change_type: str | None = None  # diaper_change: "pee", "poo", "mixed" or "dry"
+    feed_amount_ml: float | None = None  # bottle_feed
+    left_duration_s: float | None = None  # nursing
+    right_duration_s: float | None = None  # nursing
+    left_amount_ml: float | None = None  # pumping
+    right_amount_ml: float | None = None  # pumping
+    duration_s: float | None = None  # pumping, sleep, auto_sleep
+
+
+@dataclass(frozen=True)
 class SpeakerCandidate:
     """A Sound & Light Machine as the app's pairing view lists it.
 

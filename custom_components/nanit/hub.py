@@ -40,6 +40,7 @@ from .const import (
     DOMAIN,
 )
 from .coordinator import (
+    NanitCareLogCoordinator,
     NanitCloudCoordinator,
     NanitNetworkCoordinator,
     NanitPushCoordinator,
@@ -111,6 +112,7 @@ class CameraData:
     push_coordinator: NanitPushCoordinator
     cloud_coordinator: NanitCloudCoordinator | None
     network_coordinator: NanitNetworkCoordinator | None = None
+    care_log_coordinator: NanitCareLogCoordinator | None = None
     stream_still: StreamStillInfo = field(default_factory=StreamStillInfo)
 
 
@@ -383,6 +385,12 @@ class NanitHub:
             raise NanitConnectionError(
                 f"No devices could be set up: {', '.join(failed_cameras + failed_speakers)}"
             )
+
+        # Care Logs start once the cameras are up, together, so their fetches
+        # never count against a camera's setup timeout.
+        await asyncio.gather(
+            *(self._async_setup_care_logs(cam_data) for cam_data in self._camera_data.values())
+        )
 
         # via_device must point at a camera device that actually registered
         # this run. The speaker tasks ran concurrently with the camera
@@ -764,6 +772,23 @@ class NanitHub:
             cloud_coordinator=cloud_coordinator,
             network_coordinator=network_coordinator,
         )
+
+    async def _async_setup_care_logs(self, cam_data: CameraData) -> None:
+        """Start the optional Care Logs coordinator for a camera's baby."""
+        coordinator = NanitCareLogCoordinator(self._hass, self._entry, self, cam_data.baby)
+        try:
+            await coordinator.async_config_entry_first_refresh()
+        except ConfigEntryNotReady as err:
+            # Optional, like the cloud and network coordinators: degrade to
+            # no Care Log sensors instead of retry-looping the whole entry.
+            # ConfigEntryAuthFailed still propagates, so HA starts reauth.
+            _LOGGER.warning(
+                "Care log coordinator for %s failed to start; care log sensors disabled (%s)",
+                cam_data.baby.name,
+                err,
+            )
+            return
+        cam_data.care_log_coordinator = coordinator
 
     async def _setup_speaker(
         self,

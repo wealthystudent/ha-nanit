@@ -57,6 +57,7 @@ A Sound & Light Machine that isn't paired to any baby in the Nanit app is picked
 - 👁️ Motion & sound detection
 - 💡 Night light switch
 - 🔌 Camera power switch
+- 🍼 Care Logs: last diaper change, feeding and pumping, plus today's diaper and feeding counts, bottle and pumped volume, and nursing time (see [Care Logs](#care-logs))
 
 **Sound & Light Machine** (works standalone or paired with a camera):
 - Power, sound, and light switches
@@ -70,6 +71,27 @@ A Sound & Light Machine that isn't paired to any baby in the Nanit app is picked
 Some entities are disabled by default. Enable them in **Settings → Devices & Services → Nanit → Entities**.
 
 > Coming from [nanit-sound-light](https://github.com/com6056/nanit-sound-light)? That integration has merged into this one. Its [migration guide](https://github.com/com6056/nanit-sound-light/blob/main/MIGRATION.md) maps every entity id.
+
+## Care Logs
+
+The diaper changes, bottles, nursing and pumping sessions you log in the Nanit app's Care Logs show up as sensors on the camera's device. Care Logs are part of Nanit's Insights plan.
+
+| Sensor | Shows |
+|---|---|
+| Last diaper change | When, with the type (pee, poo, mixed or dry) as an attribute |
+| Last feeding | The newer of the last bottle and the last nursing session, with the bottle's amount in mL or each side's minutes as attributes |
+| Last pumping | When, with the amount in mL and the minutes as attributes |
+| Diaper changes today | How many since midnight, with a count for each type as attributes |
+| Feedings today | Bottles and nursing sessions since midnight, with a count of each as attributes |
+| Bottle volume today | Total logged in bottles since midnight |
+| Nursing time today | Minutes of nursing since midnight, both sides together |
+| Pumped volume today | Total pumped since midnight |
+
+The volume sensors report millilitres, which Home Assistant shows in fluid ounces when your unit system is US customary. The "today" sensors start again from zero at midnight in Home Assistant's time zone.
+
+The sensors are read-only: entries are added, changed and deleted in the Nanit app. A change to an entry from the last 24 hours, including one logged after the fact, shows up within 5 minutes. A change to an older entry shows up after the integration next reloads. If the account has no Care Logs from the last 7 days when the sensors are first added, they are added disabled. Enable them under **Settings → Devices & Services → Nanit → Entities** once you start logging.
+
+Like any sensor, these are kept in Home Assistant's history, visible to everyone who can use your Home Assistant, and available to voice assistants you expose them to.
 
 ## Read-only mode (optional)
 
@@ -153,6 +175,7 @@ How each piece of data reaches Home Assistant:
 - **Camera sensors** (temperature, humidity, night light, connectivity) arrive as push updates over the camera's WebSocket, so they update in real time.
 - **Motion and sound events** come from the Nanit cloud API, polled every 30 seconds.
 - **Network diagnostics** (WiFi details) are polled every 5 minutes.
+- **Care Logs** are polled every 5 minutes. The first poll after setup looks back 7 days for the last entry of each type; later polls fetch the last 24 hours.
 - **Sound & Light state** (power, sound, light, volume) arrives as push updates over the speaker's WebSocket, local or relay. A light 30 second poll reconciles state and refreshes battery and WiFi diagnostics. The firmware version is requested with the poll until known, then left alone.
 - **Video** streams on demand when a viewer opens the camera: straight from the camera over your network with [local streaming](#local-streaming), or through the Nanit cloud over RTMPS.
 

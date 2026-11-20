@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 import unicodedata
 from typing import Any
@@ -13,7 +14,7 @@ from .exceptions import (
     NanitConnectionError,
     NanitMfaRequiredError,
 )
-from .models import Baby, CloudEvent, NetworkInfo, SpeakerCandidate
+from .models import Baby, CareLog, CloudEvent, NetworkInfo, SpeakerCandidate
 
 DEFAULT_BASE_URL = "https://api.nanit.com"
 _DEFAULT_TIMEOUT = aiohttp.ClientTimeout(total=15)
@@ -99,6 +100,39 @@ def _parse_camera_last_seen(baby_json: dict[str, Any]) -> int | None:
         return None
     val = cam.get("last_seen")
     return int(val) if isinstance(val, int | float) else None
+
+
+def _finite_number(value: Any) -> float | None:
+    """Return value as a float when it is a finite number (not a bool), else None."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
+def _parse_care_log(row: Any, baby_uid: str) -> CareLog | None:
+    """Parse one /calendar row, or return None when it lacks a uid, type or time."""
+    if not isinstance(row, dict):
+        return None
+    uid = row.get("uid")
+    log_type = row.get("type")
+    timestamp = _finite_number(row.get("time"))
+    if not isinstance(uid, str) or not isinstance(log_type, str) or timestamp is None:
+        return None
+    change_type = row.get("change_type")
+    return CareLog(
+        uid=uid,
+        log_type=log_type,
+        timestamp=timestamp,
+        baby_uid=baby_uid,
+        change_type=change_type if isinstance(change_type, str) else None,
+        feed_amount_ml=_finite_number(row.get("feed_amount")),
+        left_duration_s=_finite_number(row.get("left_duration")),
+        right_duration_s=_finite_number(row.get("right_duration")),
+        left_amount_ml=_finite_number(row.get("left_amount")),
+        right_amount_ml=_finite_number(row.get("right_amount")),
+        duration_s=_finite_number(row.get("duration")),
+    )
 
 
 # Headers required by the Nanit API. The API rejects requests without
@@ -357,6 +391,45 @@ class NanitRestClient:
             )
             for msg in body.get("messages", [])
         ]
+
+    async def async_get_calendar(
+        self,
+        access_token: str,
+        baby_uid: str,
+        start: int,
+        end: int,
+    ) -> list[CareLog]:
+        """Fetch a baby's Care Logs and camera sleep sessions between two Unix times.
+
+        Both bounds are required whole seconds: the API answers 422 to a
+        missing or fractional one. Rows that lack a uid, type or time are
+        skipped rather than failing the whole fetch.
+        """
+        try:
+            resp = await self._session.get(
+                f"{self._base_url}/babies/{baby_uid}/calendar",
+                params={"start": start, "end": end},
+                headers={**NANIT_API_HEADERS, "Authorization": access_token},
+                timeout=_DEFAULT_TIMEOUT,
+            )
+        except (TimeoutError, aiohttp.ClientError) as err:
+            raise NanitConnectionError(str(err) or type(err).__name__) from err
+
+        if resp.status == 401:
+            raise NanitAuthError("Access token invalid")
+
+        _classify_http_error(resp, "Calendar fetch")
+        try:
+            body = await resp.json()
+        except (TimeoutError, aiohttp.ClientError, ValueError) as err:
+            # The error's own text can carry the request URL, and with it the
+            # baby's uid, which diagnostics would then show unredacted.
+            raise NanitConnectionError(f"Invalid calendar response: {type(err).__name__}") from err
+
+        rows = body.get("calendar") if isinstance(body, dict) else None
+        if not isinstance(rows, list):
+            raise NanitConnectionError("Invalid calendar response: no calendar list")
+        return [log for row in rows if (log := _parse_care_log(row, baby_uid)) is not None]
 
     async def async_get_speaker_candidates(
         self,

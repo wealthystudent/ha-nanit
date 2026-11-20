@@ -12,7 +12,7 @@ from aionanit.exceptions import (
     NanitConnectionError,
     NanitMfaRequiredError,
 )
-from aionanit.models import Baby, CloudEvent, SpeakerCandidate
+from aionanit.models import Baby, CareLog, CloudEvent, SpeakerCandidate
 from aionanit.rest import DEFAULT_BASE_URL, NanitRestClient
 
 from .fake_http import FakeSession, mock_api
@@ -21,6 +21,7 @@ LOGIN_URL = f"{DEFAULT_BASE_URL}/login"
 REFRESH_URL = f"{DEFAULT_BASE_URL}/tokens/refresh"
 BABIES_URL = f"{DEFAULT_BASE_URL}/babies"
 EVENTS_URL = f"{DEFAULT_BASE_URL}/babies/baby123/messages?limit=20"
+CALENDAR_URL = f"{DEFAULT_BASE_URL}/babies/baby123/calendar?start=1700000000&end=1700086400"
 CANDIDATES_URL = f"{DEFAULT_BASE_URL}/babies/baby123/candidates/speakers"
 DEVICE_TOKEN_URL = f"{DEFAULT_BASE_URL}/speakers/spk001/udtokens"
 
@@ -536,6 +537,176 @@ class TestGetEvents:
 
             with pytest.raises(NanitConnectionError, match="Invalid events response"):
                 await client.async_get_events("token123", "baby123")
+
+
+class TestGetCalendar:
+    """Rows are shaped like a live /calendar response (names and notes left out)."""
+
+    async def _fetch(self, client: NanitRestClient) -> list[CareLog]:
+        return await client.async_get_calendar("token123", "baby123", 1700000000, 1700086400)
+
+    async def test_get_calendar_parses_each_type(self, client: NanitRestClient) -> None:
+        with mock_api() as m:
+            m.get(
+                CALENDAR_URL,
+                payload={
+                    "calendar": [
+                        {
+                            "uid": "d1",
+                            "type": "diaper_change",
+                            "change_type": "mixed",
+                            "time": 1700000100,
+                            "status": "eligible",
+                            "comment": "",
+                            "user": {"name": "Parent", "relation": "dad"},
+                        },
+                        {
+                            "uid": "b1",
+                            "type": "bottle_feed",
+                            "time": 1700000200,
+                            "feed_amount": 118.294,
+                        },
+                        {
+                            "uid": "n1",
+                            "type": "nursing",
+                            "time": 1700000300,
+                            "left_duration": 610,
+                            "right_duration": 893,
+                        },
+                        {
+                            "uid": "p1",
+                            "type": "pumping",
+                            "time": 1700000400,
+                            "duration": 900,
+                            "left_amount": 7.39,
+                            "right_amount": 7.39,
+                        },
+                        {
+                            "uid": "s1",
+                            "type": "auto_sleep",
+                            "time": 1700000500,
+                            "begin_ts": 1700000500,
+                            "end_ts": 1700000965,
+                            "duration": 465,
+                        },
+                    ]
+                },
+            )
+            logs = await self._fetch(client)
+
+        assert logs == [
+            CareLog(
+                uid="d1",
+                log_type="diaper_change",
+                timestamp=1700000100.0,
+                baby_uid="baby123",
+                change_type="mixed",
+            ),
+            CareLog(
+                uid="b1",
+                log_type="bottle_feed",
+                timestamp=1700000200.0,
+                baby_uid="baby123",
+                feed_amount_ml=118.294,
+            ),
+            CareLog(
+                uid="n1",
+                log_type="nursing",
+                timestamp=1700000300.0,
+                baby_uid="baby123",
+                left_duration_s=610.0,
+                right_duration_s=893.0,
+            ),
+            CareLog(
+                uid="p1",
+                log_type="pumping",
+                timestamp=1700000400.0,
+                baby_uid="baby123",
+                left_amount_ml=7.39,
+                right_amount_ml=7.39,
+                duration_s=900.0,
+            ),
+            CareLog(
+                uid="s1",
+                log_type="auto_sleep",
+                timestamp=1700000500.0,
+                baby_uid="baby123",
+                duration_s=465.0,
+            ),
+        ]
+
+    async def test_get_calendar_skips_malformed_rows(self, client: NanitRestClient) -> None:
+        with mock_api() as m:
+            m.get(
+                CALENDAR_URL,
+                payload={
+                    "calendar": [
+                        "not a row",
+                        {"type": "diaper_change", "time": 1700000100},
+                        {"uid": "x", "time": 1700000100},
+                        {"uid": "x", "type": "diaper_change", "time": "soon"},
+                        {"uid": "x", "type": "diaper_change", "time": True},
+                        {
+                            "uid": "ok",
+                            "type": "bottle_feed",
+                            "time": 1700000100,
+                            "feed_amount": "lots",
+                        },
+                    ]
+                },
+            )
+            logs = await self._fetch(client)
+
+        assert logs == [
+            CareLog(uid="ok", log_type="bottle_feed", timestamp=1700000100.0, baby_uid="baby123")
+        ]
+
+    async def test_get_calendar_empty(self, client: NanitRestClient) -> None:
+        with mock_api() as m:
+            m.get(CALENDAR_URL, payload={"calendar": []})
+            assert await self._fetch(client) == []
+
+    async def test_get_calendar_without_list_is_connection_error(
+        self, client: NanitRestClient
+    ) -> None:
+        with mock_api() as m:
+            m.get(CALENDAR_URL, payload={"start": "must be a number"})
+
+            with pytest.raises(NanitConnectionError, match="no calendar list"):
+                await self._fetch(client)
+
+    async def test_get_calendar_unauthorized(self, client: NanitRestClient) -> None:
+        with mock_api() as m:
+            m.get(CALENDAR_URL, status=401)
+
+            with pytest.raises(NanitAuthError):
+                await self._fetch(client)
+
+    async def test_get_calendar_forbidden_is_connection_error(
+        self, client: NanitRestClient
+    ) -> None:
+        with mock_api() as m:
+            m.get(CALENDAR_URL, status=403)
+
+            with pytest.raises(NanitConnectionError, match="HTTP 403"):
+                await self._fetch(client)
+
+    async def test_get_calendar_timeout_is_connection_error(self, client: NanitRestClient) -> None:
+        with mock_api() as m:
+            m.get(CALENDAR_URL, exception=TimeoutError())
+
+            with pytest.raises(NanitConnectionError):
+                await self._fetch(client)
+
+    async def test_get_calendar_non_json_is_connection_error(self, client: NanitRestClient) -> None:
+        with mock_api() as m:
+            m.get(CALENDAR_URL, status=200, body="<html>oops</html>", content_type="text/html")
+
+            with pytest.raises(NanitConnectionError, match="Invalid calendar response") as err:
+                await self._fetch(client)
+
+        # The message never repeats the URL, which carries the baby's uid.
+        assert "baby123" not in str(err.value)
 
 
 class TestGetDeviceToken:

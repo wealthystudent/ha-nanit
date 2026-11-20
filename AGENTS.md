@@ -160,7 +160,7 @@ Full checklist: [`docs/SECURITY_AUDIT_CHECKLIST.md`](docs/SECURITY_AUDIT_CHECKLI
 - Add dependencies without full supply chain review (Section 10 of security checklist).
 - Pin aionanit's runtime dependencies (`aiohttp`, `protobuf` in `[project] dependencies`) exactly. They stay broad ranges (e.g. `>=3.9.0,<4`) because exact pins fight Home Assistant's own dependency resolution. Exact pins belong in `uv.lock` only.
 - Commit directly to `main` — always use a PR.
-- Disable or reconfigure the host's commit signing, or bypass pre-commit hooks with `--no-verify`. (Signing isn't required for PR commits, since squash merges are signed by GitHub, but agents never turn it off where it is set up.)
+- Disable or reconfigure the host's commit signing, or bypass pre-commit hooks with `--no-verify`. (PR commits need to be signed for the PR to merge. See [Signed commits](CONTRIBUTING.md#signed-commits).)
 - Merge with `--admin`, or force-push to a branch you did not create.
 - **Release anything**: never run `just release`, create or edit tags and GitHub releases, or dispatch workflows. Releases are human actions.
 - **Edit `AGENTS.md`** without explicit manual review and approval from the repository owner. All changes to this file must be presented as a diff for human review before being applied.

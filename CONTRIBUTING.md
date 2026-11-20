@@ -115,10 +115,9 @@ with `--no-verify`.
 
 ### Signed commits
 
-`main` only accepts signed commits. PRs are squash-merged and GitHub signs the
-squash commit, so **your PR commits don't need to be signed**. Signing them is
-still encouraged, and the owner signs stable release tags. GitHub accepts GPG
-or SSH signatures
+`main` only accepts signed commits, and that applies to the commits in a PR
+too. **An unsigned commit, or one GitHub can't verify, blocks the merge.** The
+owner also signs stable release tags. GitHub accepts GPG or SSH signatures
 ([docs](https://docs.github.com/en/authentication/managing-commit-signature-verification));
 SSH is the quickest to set up:
 
@@ -128,6 +127,25 @@ git config --global user.signingkey ~/.ssh/id_ed25519.pub
 git config --global commit.gpgsign true
 git config --global tag.gpgsign true
 ```
+
+Add the same public key to your GitHub account as a signing key, or the commits
+show up as unverified.
+
+If a branch you already pushed has unsigned commits, sign them in place (same
+base, same changes) and force-push. From a fork, use your remote for this repo
+(often `upstream`) instead of `origin`:
+
+```bash
+git fetch origin main
+git rebase --force-rebase --gpg-sign "$(git merge-base HEAD origin/main)"
+git push --force-with-lease
+```
+
+The force-push needs a fresh approval before the PR can merge.
+
+If the branch has merge commits and the rebase stops on a conflict, run
+`git rebase --abort` and squash it into one signed commit instead with
+`git reset --soft "$(git merge-base HEAD origin/main)"` and `git commit -S`.
 
 Agents use whatever signing the host has configured. A hardware key that needs
 a touch (e.g. a YubiKey) makes every agent commit a deliberate human action.

@@ -72,6 +72,17 @@ async def async_get_config_entry_diagnostics(
                 "data": ([asdict(e) for e in cloud.data] if cloud.data is not None else None),
             }
 
+        care = cam_data.care_log_coordinator
+        if care is not None:
+            # Counts only: the entries themselves are a record of the baby's day.
+            care_data = care.data
+            cam_diag["care_log_coordinator"] = {
+                "last_update_success": care.last_update_success,
+                "last_exception": (str(care.last_exception) if care.last_exception else None),
+                "latest_types": sorted(care_data.latest) if care_data is not None else None,
+                "today_count": len(care_data.today) if care_data is not None else None,
+            }
+
         cameras_diag[f"camera_{index}"] = cam_diag
 
     speakers_diag: dict[str, Any] = {}

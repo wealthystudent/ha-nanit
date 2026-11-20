@@ -17,6 +17,7 @@ from __future__ import annotations
 import importlib
 import sys
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -28,6 +29,7 @@ _ = sys.modules.setdefault("turbojpeg", MagicMock(TurboJPEG=MagicMock()))
 _MODELS = importlib.import_module("aionanit.models")
 Baby = _MODELS.Baby
 CameraState = _MODELS.CameraState
+CareLog = _MODELS.CareLog
 ConnectionInfo = _MODELS.ConnectionInfo
 ConnectionState = _MODELS.ConnectionState
 ControlState = _MODELS.ControlState
@@ -69,6 +71,7 @@ from custom_components.nanit import (
     switch as switch_platform,
 )
 from custom_components.nanit.aionanit_sl.models import SoundLightFullState
+from custom_components.nanit.coordinator import CareLogData
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -184,6 +187,21 @@ def _network_coordinator() -> MagicMock:
     return coordinator
 
 
+def _care_log_coordinator() -> MagicMock:
+    diaper = CareLog(
+        uid="d1", log_type="diaper_change", timestamp=1.0, baby_uid="baby_1", change_type="pee"
+    )
+    coordinator = MagicMock()
+    coordinator.data = CareLogData(
+        latest={"diaper_change": diaper},
+        today=(diaper,),
+        day_start=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    coordinator.baby = Baby(uid="baby_1", name="Nursery", camera_uid="cam_1")
+    coordinator.last_update_success = True
+    return coordinator
+
+
 # ---------------------------------------------------------------------------
 # Scenario builders
 # ---------------------------------------------------------------------------
@@ -197,6 +215,7 @@ def _baseline_scenario() -> tuple[dict[str, Any], dict[str, Any]]:
     cam_data.camera = push.camera
     cam_data.cloud_coordinator = None
     cam_data.network_coordinator = None
+    cam_data.care_log_coordinator = None
     return {"cam_1": cam_data}, {}
 
 
@@ -208,6 +227,7 @@ def _full_scenario() -> tuple[dict[str, Any], dict[str, Any]]:
     cam_data.camera = push.camera
     cam_data.cloud_coordinator = _cloud_coordinator()
     cam_data.network_coordinator = _network_coordinator()
+    cam_data.care_log_coordinator = _care_log_coordinator()
     speaker_data = MagicMock()
     speaker_data.coordinator = _sl_coordinator()
     speaker_data.speaker_uid = "speaker_1"

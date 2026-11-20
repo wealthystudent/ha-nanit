@@ -176,10 +176,12 @@ def mock_nanit_client():
 
         mock_cloud_cls.return_value = MagicMock(async_config_entry_first_refresh=AsyncMock())
         mock_net_cls.return_value = MagicMock(async_config_entry_first_refresh=AsyncMock())
-        # An account without Care Logs: its sensors register disabled.
-        mock_care_cls.return_value = MagicMock(
+        # An account without Care Logs: its sensors register disabled. Each
+        # coordinator belongs to the baby it was created for, as the real one
+        # does, so its sensors land on that baby's camera device.
+        mock_care_cls.side_effect = lambda _hass, _entry, _hub, baby: MagicMock(
             async_config_entry_first_refresh=AsyncMock(),
-            baby=MOCK_BABY_1,
+            baby=baby,
             data=CareLogData(latest={}, today=(), day_start=dt_util.start_of_local_day()),
         )
 

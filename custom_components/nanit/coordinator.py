@@ -313,10 +313,11 @@ class CareLogData:
     """A summary of one baby's Care Logs.
 
     ``latest`` holds the newest entry of each type and ``today`` every entry
-    since ``day_start`` (local midnight), oldest first. ``entries`` is every
-    entry the last fetch returned, and ``before_window`` the newest entry of
-    each type older than that fetch's start: the next summary needs both to
-    know what came before its own, shorter, fetch.
+    on the local day that starts at ``day_start`` (local midnight), oldest
+    first. ``entries`` is every entry the last fetch returned, and
+    ``before_window`` the newest entry of each type older than that fetch's
+    start: the next summary needs both to know what came before its own,
+    shorter, fetch.
     """
 
     latest: Mapping[str, CareLog]
@@ -344,8 +345,8 @@ def build_care_log_data(
 
     Later polls fetch a shorter window than the first, so a type with no
     entry since ``window_start`` falls back to the newest older entry an
-    earlier fetch returned. An entry inside the window that the API no longer returns was
-    deleted in the app, so it no longer counts.
+    earlier fetch returned. An entry inside the window that the API no
+    longer returns was deleted in the app, so it no longer counts.
     """
     entries = tuple(log for log in logs if log.log_type in CARE_LOG_TYPES)
 
@@ -359,10 +360,15 @@ def build_care_log_data(
     for log in entries:
         _keep_newest(latest, log)
 
+    # Only the local day itself. The fetch runs a little past now, so close
+    # to midnight it can return an entry dated just after it; that entry
+    # belongs to tomorrow's totals and must not count in today's as well.
+    # Adding a day to the local midnight keeps a 23 or 25 hour day whole.
     day_start_ts = day_start.timestamp()
+    day_end_ts = (day_start + timedelta(days=1)).timestamp()
     today = tuple(
         sorted(
-            (log for log in entries if log.timestamp >= day_start_ts),
+            (log for log in entries if day_start_ts <= log.timestamp < day_end_ts),
             key=lambda log: log.timestamp,
         )
     )

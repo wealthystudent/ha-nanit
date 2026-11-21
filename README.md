@@ -97,6 +97,7 @@ A few limits to know about:
 - A nursing session counts toward the day it started, even when it runs past midnight.
 - The "today" sensors start again at the first poll after midnight, so up to 5 minutes late.
 - An entry dated up to an hour in the future already counts.
+- Home Assistant's long-term statistics for the "today" sensors add up the changes it sees during the day. An entry logged after midnight for the day before is missed there, so those charts can run slightly low. The Nanit app is the record.
 
 Like any sensor, these are kept in Home Assistant's history, visible to everyone who can use your Home Assistant, and available to voice assistants you expose them to.
 

@@ -75,12 +75,15 @@ async def async_get_config_entry_diagnostics(
         care = cam_data.care_log_coordinator
         if care is not None:
             # Only whether any entry was found: even which kinds of entry, or
-            # how many, would be a record of the baby's day.
+            # how many, would be a record of the baby's day. The count of
+            # malformed rows the last fetch skipped says nothing about it.
             care_data = care.data
+            coverage = care_data.request_coverage if care_data is not None else None
             cam_diag["care_log_coordinator"] = {
                 "last_update_success": care.last_update_success,
                 "last_exception": (str(care.last_exception) if care.last_exception else None),
                 "has_data": care_data is not None and bool(care_data.latest),
+                "dropped_rows": coverage.dropped if coverage is not None else None,
             }
 
         cameras_diag[f"camera_{index}"] = cam_diag

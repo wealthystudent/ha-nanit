@@ -98,10 +98,10 @@ class Area:
 # ─── Helpers ──────────────────────────────────────────────────────────
 
 
-def run(*args: str, cwd: Path = ROOT) -> subprocess.CompletedProcess[str]:
+def run(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
     """Run a command, capturing stdout and stderr together."""
     return subprocess.run(
-        args, cwd=cwd, capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL
+        args, cwd=cwd or ROOT, capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL
     )
 
 
@@ -735,8 +735,17 @@ def cmd_commit_msg(path: str) -> int:
 
 PRE_PUSH_HOOK = """#!/bin/sh
 # Installed by `just setup`: every commit you push is signed (tools/verify.py).
-[ -f tools/verify.py ] || exit 0  # a branch from before the hook existed
-exec uv run --frozen --only-group lint python tools/verify.py pre-push "$@"
+# Your own pre-push hook can live next to this one as pre-push.local; it runs
+# after, with the same input.
+input=$(cat)
+if [ -f tools/verify.py ]; then  # not on branches from before the hook existed
+  printf '%s\\n' "$input" | uv run --frozen --only-group lint python tools/verify.py pre-push "$@" || exit 1
+fi
+own="$(dirname "$0")/pre-push.local"
+if [ -x "$own" ]; then
+  printf '%s\\n' "$input" | "$own" "$@" || exit 1
+fi
+exit 0
 """
 
 
@@ -752,8 +761,8 @@ def cmd_install_hooks() -> int:
             return 0  # your own hook already calls it
         if not ours and (not generated or (hook.parent / "pre-push.legacy").exists()):
             print(
-                f"{hook} is your own hook, so it stays. Add this line to it:\n"
-                '  uv run --frozen --only-group lint python tools/verify.py pre-push "$@"'
+                f"{hook} is your own hook, so it stays. Rename it to pre-push.local and run "
+                "`just setup` again: ours then runs it after, with the same input."
             )
             return 1
     hook.parent.mkdir(parents=True, exist_ok=True)
@@ -767,8 +776,16 @@ def cmd_pre_push(remote: str, updates: Iterable[str]) -> int:
 
     updates are git's stdin lines: <local ref> <local sha> <remote ref> <remote sha>.
     """
-    base_ref = f"{upstream_remote()}/main"
-    not_main = ["^" + base_ref] if _exists(base_ref) else []
+    upstream = upstream_remote()
+    base_ref = f"{upstream}/main"
+    if not _exists(base_ref):
+        print(
+            f"pre-push: {base_ref} is missing, so there is no way to tell which commits are "
+            f"new. Run `git fetch {upstream} main:refs/remotes/{upstream}/main` and push again.",
+            file=sys.stderr,
+        )
+        return 1
+    not_main = ["^" + base_ref]
     commits: list[str] = []
     for line in updates:
         parts = line.split()

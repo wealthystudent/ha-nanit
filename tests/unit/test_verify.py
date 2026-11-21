@@ -403,3 +403,40 @@ def test_pre_push_checks_every_pushed_ref(
     assert verify.cmd_pre_push("origin", [good, bad]) == 1
     assert verify.cmd_pre_push("origin", [new_branch]) == 1
     assert "fix: unsigned is not signed" in capsys.readouterr().err
+
+
+def test_pre_push_checks_a_recreated_branch_with_a_stale_tracking_ref(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import subprocess
+
+    for role in ("AUTHOR", "COMMITTER"):
+        monkeypatch.setenv(f"GIT_{role}_NAME", "Test")
+        monkeypatch.setenv(f"GIT_{role}_EMAIL", "test@example.com")
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(tmp_path), *args], check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+    git("init", "-q", "-b", "main")
+    git("commit", "-q", "--allow-empty", "--no-gpg-sign", "-m", "chore: base")
+    git("update-ref", "refs/remotes/origin/main", "HEAD")
+    unsigned = git("commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "fix: unsigned")
+    # The branch was deleted on GitHub but this clone still tracks its old tip.
+    git("update-ref", "refs/remotes/origin/fix-x", unsigned)
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    push = f"refs/heads/fix-x {unsigned} refs/heads/fix-x {'0' * 40}"
+    assert verify.cmd_pre_push("origin", [push]) == 1
+    assert "fix: unsigned is not signed" in capsys.readouterr().err
+
+
+def test_pre_push_needs_upstream_main(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import subprocess
+
+    subprocess.run(["git", "init", "-q", "-b", "main", str(tmp_path)], check=True)
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    assert verify.cmd_pre_push("origin", [f"refs/heads/x {'a' * 40} refs/heads/x {'0' * 40}"]) == 1
+    assert "git fetch origin main" in capsys.readouterr().err

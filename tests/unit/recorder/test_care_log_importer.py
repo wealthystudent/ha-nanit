@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -39,6 +40,9 @@ from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
     async_fire_time_changed_exact,
+)
+from pytest_homeassistant_custom_component.components.recorder.common import (
+    async_wait_recording_done,
 )
 
 from aionanit.exceptions import NanitAuthError, NanitConnectionError
@@ -1413,3 +1417,237 @@ async def test_no_entry_id_baby_id_name_or_code_in_logs_or_diagnostics(
         assert value is None or isinstance(value, int | bool | str)
     assert diagnostics["state"] == "stopped"
     assert calls == 2
+
+
+# ---------------------------------------------------------------------------
+# A batch whose outcome is unknown
+# ---------------------------------------------------------------------------
+
+# The settle bound in these tests; time moves only with the freezer.
+SETTLE = 10.0
+
+
+@pytest.fixture
+def settle_bound() -> Iterator[None]:
+    # create: the same tests run against code from before the bound existed.
+    with patch.object(care_log_recorder, "SETTLE_TIMEOUT", SETTLE, create=True):
+        yield
+
+
+@dataclass
+class _Nothing(RecorderTask):
+    """Queued behind a held task, so the recorder's queue is not empty."""
+
+    def run(self, instance: Recorder) -> None:
+        """Do nothing."""
+
+
+def _hold_recorder(hass: HomeAssistant, gate: threading.Event) -> threading.Event:
+    """Hold the recorder's thread until ``gate`` is set, with a task queued behind."""
+    entered = threading.Event()
+    instance = get_instance(hass)
+    instance.queue_task(_HoldRecorder(entered, gate))
+    instance.queue_task(_Nothing())
+    return entered
+
+
+async def _tick_until_idle(harness: Harness) -> None:
+    """Move time on past the settle bound, now and then, until the worker idles.
+
+    Between the steps, real time passes for the executor jobs to finish.
+    """
+    for attempt in range(300):
+        await harness.hass.async_block_till_done()
+        if harness.importer._idle.is_set():
+            return
+        if attempt % 25 == 24:
+            harness.freezer.tick(timedelta(seconds=SETTLE + 1))
+            async_fire_time_changed_exact(harness.hass, dt_util.utcnow())
+        await harness.hass.async_add_executor_job(time.sleep, 0.02)
+    raise AssertionError("the importer never had nothing to do")
+
+
+@contextmanager
+def _counting_compares() -> Iterator[list[int]]:
+    calls: list[int] = []
+    real_compare = care_log_importer.async_compare_care_log_statistics
+
+    async def compare(*args: Any, **kwargs: Any) -> Any:
+        calls.append(1)
+        return await real_compare(*args, **kwargs)
+
+    with patch.object(care_log_importer, "async_compare_care_log_statistics", compare):
+        yield calls
+
+
+async def test_a_read_back_that_stalls_ends_the_stop_in_time_and_the_next_importer_waits(
+    make: Callable[..., Harness],
+    hass: HomeAssistant,
+    freezer: FrozenDateTimeFactory,
+    sent: Sent,
+    settle_bound: None,
+) -> None:
+    """The database read verifying the first batch never returns; the importer is stopped."""
+    truth = Truth(BASE)
+    entered = threading.Event()
+    release = threading.Event()
+    real_read = care_log_recorder._read_rows
+
+    def read(hass: HomeAssistant, sid: str, start: int, end: int) -> Any:
+        if sent and not release.is_set():
+            entered.set()
+            release.wait(30)
+        return real_read(hass, sid, start, end)
+
+    harness = make(truth)
+    try:
+        with patch.object(care_log_recorder, "_read_rows", read):
+            harness.start()
+            await harness.coordinator.async_refresh()
+            assert await hass.async_add_executor_job(entered.wait, 30)
+            stop = hass.async_create_task(harness.importer.async_stop())
+            for _ in range(20):
+                await asyncio.sleep(0)
+            assert not stop.done()
+
+            freezer.tick(timedelta(seconds=SETTLE + 1))
+            async_fire_time_changed_exact(hass, dt_util.utcnow())
+            for _ in range(50):
+                await asyncio.sleep(0)
+                if stop.done():
+                    break
+            stopped_in_time = stop.done()
+    finally:
+        release.set()
+    await stop
+    assert stopped_in_time
+    assert harness.diag()["state"] == "stopped"
+    assert len(sent) == 1
+    assert care_log_recorder.care_log_unsettled(hass, CODE)
+    assert await care_log_recorder.async_has_care_log_statistics(hass, CODE) is None
+
+    # The next importer waits for the recorder's queue before anything else.
+    gate = threading.Event()
+    try:
+        assert await hass.async_add_executor_job(_hold_recorder(hass, gate).wait, 30)
+        again = make(truth)
+        own = len(truth.own)
+        with _counting_compares() as compares:
+            again.start()
+            await again.coordinator.async_refresh()
+            await _tick_until_idle(again)
+            assert again.diag()["state"] == "waiting_for_recorder"
+            assert again.importer._unsub_timer is None
+            assert compares == []
+            assert len(truth.own) == own
+            assert len(sent) == 1
+    finally:
+        gate.set()
+
+    with _counting_compares() as compares:
+        await again.poll()
+    assert compares == [1]
+    assert again.diag()["state"] == "running"
+    assert not care_log_recorder.care_log_unsettled(hass, CODE)
+    assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(OLD)] == 90.0
+
+
+async def test_a_batch_that_lands_after_its_verification_failed_is_compared_as_stored(
+    make: Callable[..., Harness], hass: HomeAssistant, sent: Sent, settle_bound: None
+) -> None:
+    """Every read-back of the first batch finds nothing: the recorder holds it."""
+    truth = Truth(BASE)
+    entered = threading.Event()
+    gate = threading.Event()
+    spy = care_log_recorder.async_add_external_statistics
+
+    def busy_first(hass: HomeAssistant, metadata: Any, rows: Any) -> None:
+        if not entered.is_set():
+            # The batch queues behind a task that holds the recorder.
+            get_instance(hass).queue_task(_HoldRecorder(entered, gate))
+        spy(hass, metadata, rows)
+
+    harness = make(truth)
+    try:
+        with (
+            patch.object(care_log_recorder, "BATCH_ROWS", 50),
+            patch.object(care_log_recorder, "async_add_external_statistics", busy_first),
+            # Each wait before a read-back ends at once; all of them fail.
+            patch.object(care_log_recorder, "WRITE_TIMEOUT", 0.0),
+        ):
+            harness.start()
+            await harness.poll()
+        assert harness.diag()["sync_failures"] == 1
+        assert len(sent) == 1
+        await harness.stop()
+        first_sid, first_rows = sent[0]
+        assert await _rows(hass, S.DIAPER_CHANGES) == {}  # not landed yet
+
+        again = make(truth)
+        own = len(truth.own)
+        with _counting_compares() as compares:
+            again.start()
+            await again.coordinator.async_refresh()
+            await _tick_until_idle(again)
+            assert again.diag()["state"] == "waiting_for_recorder"
+            assert compares == []
+            assert len(truth.own) == own
+            assert len(sent) == 1
+        assert care_log_recorder.care_log_unsettled(hass, CODE)
+    finally:
+        gate.set()
+
+    # The batch lands; then the next reader update drains, compares, and imports.
+    await async_wait_recording_done(hass)
+    stored = await _rows(hass, S.DIAPER_CHANGES)
+    assert [(hour, *stored[hour]) for hour, _s, _t in first_rows] == first_rows
+    with _counting_compares() as compares:
+        await again.poll()
+    assert compares == [1]
+    assert again.diag()["state"] == "running"
+    assert not care_log_recorder.care_log_unsettled(hass, CODE)
+    assert first_rows[0][0] not in [
+        hour for sid, rows in sent[1:] if sid == first_sid for hour, _s, _t in rows
+    ]
+    assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(OLD)] == 90.0
+    after = await _rows(hass, S.DIAPER_CHANGES)
+    assert {hour: after[hour] for hour, _s, _t in first_rows} == {
+        hour: (state, total) for hour, state, total in first_rows
+    }
+
+
+async def test_a_queue_that_does_not_drain_at_start_up_waits_for_the_next_reader_update(
+    make: Callable[..., Harness], hass: HomeAssistant, settle_bound: None
+) -> None:
+    truth = Truth(BASE)
+    gate = threading.Event()
+    harness = make(truth)
+    try:
+        assert await hass.async_add_executor_job(_hold_recorder(hass, gate).wait, 30)
+        with _counting_compares() as compares:
+            harness.start()
+            await harness.coordinator.async_refresh()
+            await _tick_until_idle(harness)
+            # The first pass was read; the comparison found the queue still busy.
+            assert compares == [1]
+        assert harness.diag()["state"] == "waiting_for_recorder"
+        assert care_log_recorder.care_log_unsettled(hass, CODE)
+        own = len(truth.own)
+
+        with _counting_steps(harness) as steps:
+            for _ in range(4):
+                await harness.advance(timedelta(minutes=1))
+            assert steps == []
+            assert harness.importer._unsub_timer is None
+            await harness.coordinator.async_refresh()  # the next reader update
+            await _tick_until_idle(harness)
+            assert steps == [1]
+        assert harness.diag()["state"] == "waiting_for_recorder"
+        assert len(truth.own) == own
+    finally:
+        gate.set()
+
+    await harness.poll()
+    assert harness.diag()["state"] == "running"
+    assert not care_log_recorder.care_log_unsettled(hass, CODE)
+    assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(OLD)] == 90.0

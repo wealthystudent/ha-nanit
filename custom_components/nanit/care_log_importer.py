@@ -44,6 +44,14 @@ written, while the recorder is not ready (not loaded, its database not
 ready, or recording paused with the ``recorder.disable`` action), and
 nothing at all when the config entry has polling disabled.
 
+When a batch's outcome is unknown (``care_log_recorder``: the baby is
+unsettled, by this importer or an earlier one), every step first waits, at
+most ``SETTLE_TIMEOUT``, for the recorder's queue to drain. Until it has,
+nothing is compared, synced or asked of Nanit, the state is
+``waiting_for_recorder``, and no timer runs: the next reader update tries
+again. Once it has, an importer still starting up compares as usual, and a
+running one makes its next sync a full one.
+
 Privacy: no entry id, baby uid, baby name or baby code appears in a log
 line, an exception or ``diagnostics`` here. Unexpected errors are logged by
 their type only.
@@ -73,8 +81,10 @@ from .care_log_recorder import (
     CareLogRecorderUnavailableError,
     CareLogSyncError,
     async_compare_care_log_statistics,
+    async_settle_care_log_statistics,
     async_sync_care_log_statistics,
     care_log_recorder_ready,
+    care_log_unsettled,
 )
 from .care_log_statistics import async_statistic_names, statistic_baby_name
 from .const import CARE_LOG_POLL_INTERVAL
@@ -329,8 +339,8 @@ class CareLogStatisticsImporter:
         if task is not None and not task.done():
             # A sync in flight sees ``should_stop`` first and sends nothing
             # more; the cancellation then ends whatever wait it is in, except
-            # that a batch already sent is verified first (every write is
-            # safe to repeat).
+            # that a batch already sent is verified first, for at most
+            # ``SETTLE_TIMEOUT`` (unverified, it leaves the baby unsettled).
             task.cancel()
             await asyncio.wait([task])
         self._state = STATE_STOPPED
@@ -437,10 +447,28 @@ class CareLogStatisticsImporter:
             self._startup_due = self._retry_at
 
     async def _async_step(self) -> None:
+        if not await self._async_settled():
+            return
         if self._book.established:
             await self._async_running_step()
         else:
             await self._async_starting_step()
+
+    async def _async_settled(self) -> bool:
+        """Return whether the stored rows can be relied on (see the module docstring)."""
+        if not care_log_unsettled(self._hass, self._code):
+            return True
+        if not self._recorder_ready() or not await async_settle_care_log_statistics(
+            self._hass, self._code
+        ):
+            # Tried again at the next reader update.
+            self._state = STATE_WAITING_FOR_RECORDER
+            return False
+        if self._book.established:
+            # Whatever landed meanwhile is compared by a full sync.
+            self._need_full = True
+            self._sync_wanted = True
+        return True
 
     def _polling_disabled(self) -> bool:
         return self._entry.pref_disable_polling
@@ -456,11 +484,11 @@ class CareLogStatisticsImporter:
     def _next_due(self) -> datetime | None:
         """Return when the worker next has something to do without a reader update.
 
-        Nothing while the recorder is not ready: every step needs it, and a
-        deadline already passed would otherwise wake the worker every
-        second. The next reader update looks again.
+        Nothing while the recorder is not ready or the baby is unsettled:
+        every step needs it, and a deadline already passed would otherwise
+        wake the worker every second. The next reader update looks again.
         """
-        if not self._recorder_ready():
+        if not self._recorder_ready() or care_log_unsettled(self._hass, self._code):
             return None
         dues: list[datetime] = []
         if self._book.established:

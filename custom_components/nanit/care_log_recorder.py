@@ -36,9 +36,27 @@ more than ``TOLERANCE`` (absolute, in the series' unit, on ``state`` and on
 ``sum``; see ``_differs``). A batch is at most ``BATCH_ROWS`` rows and never
 spans more than one chunk. After each batch the recorder is waited for and
 the batch is read back; it counts as written only when the stored rows
-equal what was sent. A batch that cannot be verified stops the sync with
-``CareLogSyncError`` and nothing after it is sent. Every write is safe to
-repeat: the next sync finds what still differs and continues from there.
+equal what was sent. Every write is safe to repeat: the next sync finds what
+still differs and continues from there.
+
+A batch ends in one of three ways, kept apart:
+
+- verified: the stored rows equal what was sent;
+- failed before submission: the recorder refused it, nothing was sent
+  (``CareLogSyncError``);
+- submitted with its outcome unknown: it was sent, but the read-back did
+  not match, failed, took longer than ``SETTLE_TIMEOUT`` in all, or was cut
+  short by a cancellation (``CareLogWriteUnknownError``, or the
+  cancellation itself). It may still land later.
+
+Either failure stops the sync, and nothing after the batch is sent. An
+unknown outcome also marks the baby unsettled for this Home Assistant run
+(in ``hass.data``, so it outlasts the importer and the writer registry).
+While a baby is unsettled nothing relies on its stored rows:
+``async_has_care_log_statistics`` cannot tell, and a sync or a comparison
+first waits, at most ``SETTLE_TIMEOUT``, for the recorder to work through
+its queue. Only a queue that drained in time clears the mark; otherwise
+they raise ``CareLogUnsettledError`` and leave it set.
 
 Finding a series' first stored row: Home Assistant has no public query for
 it, and the rows need not be dense: a backfill interrupted after its first
@@ -89,11 +107,13 @@ from homeassistant.components.recorder.util import get_instance
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.recorder import DATA_INSTANCE
+from homeassistant.util.hass_dict import HassKey
 from sqlalchemy.exc import SQLAlchemyError
 
 from .care_log_hours import HOUR_SECONDS, CareLogSeries, hour_start
 from .care_log_ledger import Ledger
 from .care_log_statistics import statistic_id, statistic_metadata
+from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -117,6 +137,17 @@ WRITE_TIMEOUT = 30.0
 # queued, async_block_till_done returns at once.
 VERIFY_ATTEMPTS = 8
 VERIFY_RETRY_DELAY = 0.1
+# The most time spent, in all, verifying a batch from when it was sent
+# (every wait and read-back, an executor read included: the wait for it
+# ends, the read itself cannot be cancelled), and the most time a wait for
+# the recorder's queue takes before a baby's rows are relied on again. A
+# minute: more than six times what a verification normally needs (12.7 s
+# of pauses at most, plus reads), and well inside the 100 s Home Assistant
+# gives the stop stage, in which an unload at shutdown waits for it.
+SETTLE_TIMEOUT = 60.0
+
+# The codes of the babies with a batch whose outcome is unknown, for this run.
+UNSETTLED_KEY: HassKey[set[str]] = HassKey(f"{DOMAIN}_care_log_unsettled")
 
 type _Row = tuple[float | None, float | None]  # stored (state, sum)
 
@@ -133,8 +164,22 @@ class CareLogRecorderUnavailableError(CareLogStatisticsError):
         super().__init__("The recorder is not available for care log statistics")
 
 
+class CareLogUnsettledError(CareLogRecorderUnavailableError):
+    """The recorder did not work through its queue in time: a batch may still land."""
+
+    def __init__(self) -> None:
+        """Use a fixed message."""
+        CareLogStatisticsError.__init__(
+            self, "The recorder has not settled the care log statistics yet"
+        )
+
+
 class CareLogSyncError(CareLogStatisticsError):
     """A batch of care log statistics could not be written and verified."""
+
+
+class CareLogWriteUnknownError(CareLogSyncError):
+    """A batch of care log statistics was sent, but whether it was stored is not known."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,6 +258,59 @@ def _require_database(hass: HomeAssistant) -> None:
         raise CareLogRecorderUnavailableError
 
 
+def care_log_unsettled(hass: HomeAssistant, code: str) -> bool:
+    """Whether a baby has a batch whose outcome is unknown, in this Home Assistant run."""
+    return code in hass.data.get(UNSETTLED_KEY, ())
+
+
+def _mark_unsettled(hass: HomeAssistant, code: str) -> None:
+    hass.data.setdefault(UNSETTLED_KEY, set()).add(code)
+
+
+def _clear_unsettled(hass: HomeAssistant, code: str) -> None:
+    hass.data.get(UNSETTLED_KEY, set()).discard(code)
+
+
+async def _async_drain(hass: HomeAssistant) -> bool:
+    """Wait, at most ``SETTLE_TIMEOUT``, for the recorder's queue; return whether it drained."""
+    try:
+        async with asyncio.timeout(SETTLE_TIMEOUT):
+            await get_instance(hass).async_block_till_done()
+    except TimeoutError:
+        return False
+    return True
+
+
+async def async_settle_care_log_statistics(hass: HomeAssistant, code: str) -> bool:
+    """Return whether a baby's stored rows can be relied on, waiting for the recorder if need be.
+
+    True at once for a baby that is not unsettled. For one that is, the
+    recorder's queue is waited for, at most ``SETTLE_TIMEOUT``: the mark is
+    cleared, and True returned, only when it drained in time. False when it
+    did not, or the database is not ready.
+    """
+    if not care_log_unsettled(hass, code):
+        return True
+    if not _database_ready(hass) or not await _async_drain(hass):
+        return False
+    _clear_unsettled(hass, code)
+    return True
+
+
+async def _async_require_settled(hass: HomeAssistant, code: str, *, drain: bool) -> None:
+    """Raise ``CareLogUnsettledError`` unless the baby's rows can be relied on.
+
+    The recorder's queue is waited for when the baby is unsettled, or always
+    with ``drain``; a wait that times out marks the baby unsettled.
+    """
+    if not drain and not care_log_unsettled(hass, code):
+        return
+    if not await _async_drain(hass):
+        _mark_unsettled(hass, code)
+        raise CareLogUnsettledError
+    _clear_unsettled(hass, code)
+
+
 def _read_any_row(hass: HomeAssistant, sids: list[str]) -> bool:
     return any(get_last_statistics(hass, 1, sid, False, {"sum"}).get(sid) for sid in sids)
 
@@ -220,11 +318,11 @@ def _read_any_row(hass: HomeAssistant, sids: list[str]) -> bool:
 async def async_has_care_log_statistics(hass: HomeAssistant, code: str) -> bool | None:
     """Whether any of a baby's statistics has a stored row; None when that cannot be told.
 
-    None when the recorder is not ready, or the read failed or took longer
-    than ``WRITE_TIMEOUT``. One newest-row query per series, in the
-    recorder's executor.
+    None when the baby is unsettled (a batch may still land), the recorder
+    is not ready, or the read failed or took longer than ``WRITE_TIMEOUT``.
+    One newest-row query per series, in the recorder's executor.
     """
-    if not care_log_recorder_ready(hass):
+    if care_log_unsettled(hass, code) or not care_log_recorder_ready(hass):
         return None
     sids = [statistic_id(code, series) for series in CareLogSeries]
     try:
@@ -524,11 +622,13 @@ class _Sync:
     ) -> None:
         """Send one batch, wait for the recorder, and read it back until it matches.
 
-        Nothing is sent once a stop was asked for. Once a batch is sent, a
-        cancellation does not abandon it: its verification runs to the end
-        (bounded by ``WRITE_TIMEOUT`` and ``VERIFY_ATTEMPTS``), and then the
-        cancellation goes on. So a batch never lands after the caller has
-        stopped, where the next importer could compare against old rows.
+        Nothing is sent once a stop was asked for. A refused batch raises
+        ``CareLogSyncError`` (nothing was sent). Once a batch is sent, a
+        cancellation does not abandon it at once: its verification goes on,
+        bounded by ``SETTLE_TIMEOUT`` from when it was sent, and then the
+        cancellation goes on. A sent batch that is not verified, for any
+        reason, marks the baby unsettled (see the module docstring) and
+        raises ``CareLogWriteUnknownError``, or the cancellation.
         """
         self._check_stop()
         _require_ready(self.hass)
@@ -542,18 +642,41 @@ class _Sync:
             raise CareLogSyncError("A batch of care log statistics was refused") from err
         self.batches += 1
         verify = asyncio.ensure_future(self._verify(metadata["statistic_id"], batch))
+        verified = False
         try:
-            await asyncio.shield(verify)
-        except asyncio.CancelledError:
-            # Let the batch settle first; its outcome no longer matters here.
-            await asyncio.wait([verify])
-            if not verify.cancelled():
-                verify.exception()
-            raise
+            try:
+                await asyncio.shield(verify)
+            except asyncio.CancelledError:
+                # Let the batch settle first (bounded by SETTLE_TIMEOUT).
+                await asyncio.wait([verify])
+                verified = not verify.cancelled() and verify.exception() is None
+                raise
+            except CareLogStatisticsError as err:
+                raise CareLogWriteUnknownError(
+                    "A batch of care log statistics was sent but not verified"
+                ) from err
+            verified = True
+        finally:
+            if not verified:
+                # Sent, and maybe still to land: nothing relies on this
+                # baby's stored rows until the recorder has drained.
+                _mark_unsettled(self.hass, self.code)
+                verify.add_done_callback(_retrieve)
         self.rows_written += len(batch)
         self._check_stop()
 
     async def _verify(self, sid: str, batch: list[tuple[int, float, float]]) -> None:
+        """Read a sent batch back until it matches, for at most ``SETTLE_TIMEOUT`` in all."""
+        try:
+            async with asyncio.timeout(SETTLE_TIMEOUT):
+                if await self._read_back(sid, batch):
+                    return
+        except TimeoutError:
+            pass
+        _LOGGER.warning("A batch of care log statistics could not be verified; stopping this sync")
+        raise CareLogSyncError("A batch of care log statistics could not be verified")
+
+    async def _read_back(self, sid: str, batch: list[tuple[int, float, float]]) -> bool:
         low, high = batch[0][0], batch[-1][0] + HOUR_SECONDS
         for attempt in range(VERIFY_ATTEMPTS):
             if attempt:
@@ -566,13 +689,22 @@ class _Sync:
                 and not _differs(row[1], total)
                 for hour, state, total in batch
             ):
-                return
-        _LOGGER.warning("A batch of care log statistics could not be verified; stopping this sync")
-        raise CareLogSyncError("A batch of care log statistics could not be verified")
+                return True
+        return False
+
+
+def _retrieve(task: asyncio.Future[None]) -> None:
+    """Retrieve a finished verification's outcome, so asyncio does not report it."""
+    if not task.cancelled():
+        task.exception()
 
 
 async def _async_wait_for_recorder(hass: HomeAssistant) -> None:
-    """Wait, at most ``WRITE_TIMEOUT``, for the recorder to work through its queue."""
+    """Wait, at most ``WRITE_TIMEOUT``, for the recorder to work through its queue.
+
+    Only before a read-back, which tells whether the batch is there: a wait
+    that times out is followed by the read all the same.
+    """
     try:
         async with asyncio.timeout(WRITE_TIMEOUT):
             await get_instance(hass).async_block_till_done()
@@ -618,9 +750,13 @@ async def async_sync_care_log_statistics(
     ``should_stop`` is checked between batches, chunks and series; when it
     returns True the sync returns what it did so far, with ``stopped`` set.
 
-    Raises ``CareLogRecorderUnavailableError`` when the recorder is not ready,
-    and ``CareLogSyncError`` when a batch could not be written and
-    verified (nothing after it is sent).
+    An unsettled baby is synced only after the recorder's queue drained
+    (see the module docstring).
+
+    Raises ``CareLogRecorderUnavailableError`` when the recorder is not ready
+    (``CareLogUnsettledError`` when the baby stays unsettled), and
+    ``CareLogSyncError`` when a batch could not be written and verified
+    (``CareLogWriteUnknownError`` when it was sent; nothing after it is sent).
     """
     _check_end(end_hour)
     _require_ready(hass)
@@ -629,6 +765,8 @@ async def async_sync_care_log_statistics(
         raise ValueError("names must name every series")
     for series in CareLogSeries:
         statistic_id(code, series)  # Raises for anything but a baby code.
+    await _async_require_settled(hass, code, drain=False)
+    _require_ready(hass)
     sync = _Sync(
         hass,
         code=code,
@@ -667,14 +805,18 @@ async def async_compare_care_log_statistics(
 
     ``coverage_start`` is as for ``async_sync_care_log_statistics``: rows
     before it, rounded up to an hour, are not compared. The recorder is
-    first given up to ``WRITE_TIMEOUT`` to work through what it has queued,
-    so a batch a previous importer sent is compared as stored.
+    first given up to ``SETTLE_TIMEOUT`` to work through what it has queued,
+    so a batch a previous importer sent is compared as stored; when it does
+    not drain in time the baby is marked unsettled and nothing is compared.
 
-    Raises ``CareLogRecorderUnavailableError`` when the recorder is not ready.
+    Raises ``CareLogRecorderUnavailableError`` when the recorder is not ready,
+    ``CareLogUnsettledError`` when its queue did not drain in time.
     """
     _check_end(end_hour)
     _require_ready(hass)
-    await _async_wait_for_recorder(hass)
+    for series in CareLogSeries:
+        statistic_id(code, series)  # Raises for anything but a baby code.
+    await _async_require_settled(hass, code, drain=True)
     _require_ready(hass)
     cov = coverage_hour(coverage_start)
     reader = _Reader(hass)

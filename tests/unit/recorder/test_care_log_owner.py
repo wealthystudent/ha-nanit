@@ -450,3 +450,47 @@ async def test_a_marker_that_is_not_saved_starts_no_importer_and_is_tried_again(
     assert len(started) == 1
     assert _writer(hass) is None
     assert await _all_rows(hass) == stored
+
+
+async def test_deleting_the_statistics_while_a_batch_is_unsettled_does_not_void_the_marker(
+    env: Callable[[str, str], MockConfigEntry],
+    hass: HomeAssistant,
+    freezer: FrozenDateTimeFactory,
+    started: list[CareLogStatisticsImporter],
+    hass_storage: dict[str, Any],
+) -> None:
+    """The owner's bottle volume batch never shows up: whether it lands later is unknown."""
+    from homeassistant.components.recorder.statistics import async_add_external_statistics
+
+    volume = statistic_id(CODE, CareLogSeries.BOTTLE_VOLUME)
+
+    def lost(hass: HomeAssistant, metadata: Any, rows: Any) -> None:
+        if metadata["statistic_id"] != volume:
+            async_add_external_statistics(hass, metadata, rows)
+
+    owner = env(OWNER_ID, OWNER_EMAIL)
+    with patch.object(care_log_recorder, "async_add_external_statistics", lost):
+        await _set_up(hass, owner)
+        (importer,) = started
+        await _settled(hass, importer)
+    assert importer.diagnostics()["sync_failures"] == 1
+    assert await hass.config_entries.async_remove(owner.entry_id)
+    await hass.async_block_till_done()
+
+    ids = [statistic_id(CODE, series) for series in CareLogSeries]
+    get_instance(hass).async_clear_statistics(ids)
+    await async_wait_recording_done(hass)
+    empty: dict[CareLogSeries, dict[int, tuple[float, float]]] = {
+        series: {} for series in CareLogSeries
+    }
+    assert await _all_rows(hass) == empty
+    other = env(OTHER_ID, OTHER_EMAIL)
+    await _set_up(hass, other)
+    for _ in range(3):
+        await _check_owners(hass, freezer)
+
+    assert len(started) == 1
+    assert _writer(hass) is None
+    assert hass_storage[STORE_KEY]["data"] == {"owners": {CODE: _owner_code(OWNER_EMAIL)}}
+    assert await _all_rows(hass) == empty
+    assert care_log_recorder.care_log_unsettled(hass, CODE)

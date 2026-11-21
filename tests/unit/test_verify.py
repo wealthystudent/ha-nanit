@@ -384,7 +384,12 @@ def test_guard_blocks_an_implicit_push_from_main(tmp_path: Path) -> None:
     assert guard.problem(guard.segments("git push")[0], str(tmp_path)) is None
 
 
-def test_pre_push_checks_every_pushed_ref(capsys: pytest.CaptureFixture[str]) -> None:
+def test_pre_push_checks_every_pushed_ref(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    for role in ("AUTHOR", "COMMITTER"):  # CI runners have no git identity
+        monkeypatch.setenv(f"GIT_{role}_NAME", "Test")
+        monkeypatch.setenv(f"GIT_{role}_EMAIL", "test@example.com")
     head = verify.git("rev-parse", "HEAD")
     tree = verify.git("rev-parse", "HEAD^{tree}")
     # Objects only, no refs or checkout change: commit-tree never signs without -S.
@@ -393,6 +398,8 @@ def test_pre_push_checks_every_pushed_ref(capsys: pytest.CaptureFixture[str]) ->
     good = f"refs/heads/a {head} refs/heads/a {head}"
     bad = f"refs/heads/b {unsigned} refs/heads/b {head}"
     deletion = f"(delete) {zero} refs/heads/c {head}"
+    new_branch = f"refs/heads/d {unsigned} refs/heads/d {zero}"
     assert verify.cmd_pre_push("origin", [good, deletion]) == 0
     assert verify.cmd_pre_push("origin", [good, bad]) == 1
+    assert verify.cmd_pre_push("origin", [new_branch]) == 1
     assert "fix: unsigned is not signed" in capsys.readouterr().err

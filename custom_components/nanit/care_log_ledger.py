@@ -48,6 +48,7 @@ from bisect import bisect_left
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from functools import lru_cache
 from itertools import pairwise
 from types import MappingProxyType
 
@@ -248,6 +249,62 @@ def _merge_earliest(into: dict[CareLogSeries, int], other: Mapping[CareLogSeries
 # ---------------------------------------------------------------------------
 
 
+# How the ledger stores an accepted entry: one exact tuple of numbers only,
+# (timestamp, hour, series bits, invalid bits, value, ...). Bit i stands for
+# _SERIES[i], the series in the order ``EntryFacts.raw`` keeps them, and the
+# values are those of the series whose bit is set, in that order. Python's
+# cyclic garbage collector stops tracking such a tuple at its first
+# collection, so the many entries a ledger holds for the life of the process
+# add nothing to every later collection. Facts, their pair tuples and
+# frozensets would each stay tracked.
+type _Record = tuple[float, int, int, int, *tuple[float, ...]]
+
+_SERIES: tuple[CareLogSeries, ...] = tuple(sorted(CareLogSeries, key=lambda series: series.value))
+_BITS: Mapping[CareLogSeries, int] = {series: 1 << index for index, series in enumerate(_SERIES)}
+
+
+@lru_cache(maxsize=1024)
+def _series_in(bits: int) -> tuple[CareLogSeries, ...]:
+    """Return the series whose bits are set, in stored order."""
+    return tuple(series for series in _SERIES if bits & _BITS[series])
+
+
+@lru_cache(maxsize=1024)
+def _series_set(bits: int) -> frozenset[CareLogSeries]:
+    """Return the series whose bits are set, as a set."""
+    return frozenset(_series_in(bits))
+
+
+def _to_record(facts: EntryFacts) -> _Record:
+    """Return the stored form of an entry's facts."""
+    bits = 0
+    values: list[float] = []
+    for series, value in facts.raw:
+        bits |= _BITS[series]
+        values.append(value)
+    if bits.bit_count() != len(values):
+        raise ValueError("an entry adds to each series at most once")
+    invalid = 0
+    for series in facts.invalid:
+        invalid |= _BITS[series]
+    return (facts.timestamp, facts.hour, bits, invalid, *values)
+
+
+def _pairs(record: _Record) -> tuple[tuple[CareLogSeries, float], ...]:
+    """Return what a stored entry adds, as ``EntryFacts.raw`` holds it."""
+    return tuple(zip(_series_in(record[2]), record[4:], strict=True))
+
+
+def _to_facts(record: _Record) -> EntryFacts:
+    return EntryFacts(
+        timestamp=record[0], hour=record[1], raw=_pairs(record), invalid=_series_set(record[3])
+    )
+
+
+def _contribution(record: _Record) -> EntryContribution:
+    return EntryContribution(hour=record[1], raw=_pairs(record), invalid=_series_set(record[3]))
+
+
 class Ledger:
     """The accepted entries of one baby: uid to facts, indexed by hour.
 
@@ -256,14 +313,18 @@ class Ledger:
     changes) and searched with ``bisect``. ``first_hour`` of every series is
     cached, kept up to date by additions and recomputed in one pass only
     after a change touched an entry at a cached first hour.
+
+    Each entry is stored as a tuple of numbers, and each hour's uids as a
+    tuple of strings, so that the garbage collector need not track them (see
+    ``_Record``); ``get`` builds the facts on demand.
     """
 
     __slots__ = ("_by_hour", "_entries", "_first", "_hours")
 
     def __init__(self) -> None:
         """Start empty."""
-        self._entries: dict[str, EntryFacts] = {}
-        self._by_hour: dict[int, set[str]] = {}
+        self._entries: dict[str, _Record] = {}
+        self._by_hour: dict[int, tuple[str, ...]] = {}
         self._hours: list[int] | None = []
         self._first: dict[CareLogSeries, int] | None = {}
 
@@ -281,7 +342,8 @@ class Ledger:
 
     def get(self, uid: str) -> EntryFacts | None:
         """Return an accepted entry's facts, or None."""
-        return self._entries.get(uid)
+        record = self._entries.get(uid)
+        return None if record is None else _to_facts(record)
 
     def _hours_within(self, start_hour: int, end_hour: int) -> list[int]:
         """Return the indexed hours in ``[start_hour, end_hour)``, oldest first."""
@@ -292,10 +354,11 @@ class Ledger:
 
     def uids_between(self, start: int, end: int) -> set[str]:
         """Return the uids whose accepted time lies within inclusive bounds."""
+        entries = self._entries
         result: set[str] = set()
         for hour in self._hours_within(hour_start(start), end + 1):
             for uid in self._by_hour[hour]:
-                if start <= self._entries[uid].timestamp <= end:
+                if start <= entries[uid][0] <= end:
                     result.add(uid)
         return result
 
@@ -306,12 +369,17 @@ class Ledger:
 
         Only hours in which some entry adds to the series are included.
         """
+        entries = self._entries
+        bit = _BITS[series]
+        below = bit - 1
         result: dict[int, float] = {}
         for hour in self._hours_within(start_hour, end_hour):
+            # A value's place among the stored values is the number of set
+            # series bits below its own.
             values = [
-                value
+                record[4 + (record[2] & below).bit_count()]
                 for uid in self._by_hour[hour]
-                if (value := self._entries[uid].amount(series)) is not None
+                if (record := entries[uid])[2] & bit
             ]
             if values:
                 result[hour] = series_total(series, values)
@@ -319,25 +387,28 @@ class Ledger:
 
     def keep_hours(self, series: CareLogSeries, start_hour: int, end_hour: int) -> set[int]:
         """Return the hours in ``[start_hour, end_hour)`` holding a rejected amount of a series."""
+        entries = self._entries
+        bit = _BITS[series]
         return {
             hour
             for hour in self._hours_within(start_hour, end_hour)
-            if any(series in self._entries[uid].invalid for uid in self._by_hour[hour])
+            if any(entries[uid][3] & bit for uid in self._by_hour[hour])
         }
 
     def first_hour(self, series: CareLogSeries) -> int | None:
         """Return the earliest hour in which an entry adds a positive amount to a series."""
         if self._first is None:
             first: dict[CareLogSeries, int] = {}
-            for facts in self._entries.values():
-                _note_first(first, facts)
+            for record in self._entries.values():
+                _note_first(first, record)
             self._first = first
         return self._first.get(series)
 
     def amounts(self, start_hour: int, end_hour: int) -> HourlyAmounts:
         """Return every series' amounts in ``[start_hour, end_hour)``, like ``hourly_amounts``."""
+        entries = self._entries
         return sum_contributions(
-            self._entries[uid].contribution()
+            _contribution(entries[uid])
             for hour in self._hours_within(start_hour, end_hour)
             for uid in self._by_hour[hour]
         )
@@ -350,21 +421,26 @@ class Ledger:
         """
         changed: dict[CareLogSeries, int] = {}
         for change in changes:
-            if self._entries.get(change.uid) != change.before:
+            stored = self._entries.get(change.uid)
+            before = None if change.before is None else _to_record(change.before)
+            if stored != before:
                 raise ValueError("a change does not start from the accepted entry")
-            if change.before is not None:
-                self._unindex(change.uid, change.before)
-            if change.after is None:
+            after = None if change.after is None else _to_record(change.after)
+            if stored is not None:
+                self._unindex(change.uid, stored)
+            if after is None:
                 del self._entries[change.uid]
             else:
-                self._entries[change.uid] = change.after
-                uids = self._by_hour.get(change.after.hour)
+                self._entries[change.uid] = after
+                hour = after[1]
+                uids = self._by_hour.get(hour)
                 if uids is None:
-                    uids = self._by_hour[change.after.hour] = set()
+                    self._by_hour[hour] = (change.uid,)
                     self._hours = None
-                uids.add(change.uid)
+                else:
+                    self._by_hour[hour] = (*uids, change.uid)
                 if self._first is not None:
-                    _note_first(self._first, change.after)
+                    _note_first(self._first, after)
             if (
                 change.before is None
                 or change.after is None
@@ -373,27 +449,31 @@ class Ledger:
                 _merge_earliest(changed, _changed_hours(change))
         return changed
 
-    def _unindex(self, uid: str, before: EntryFacts) -> None:
-        uids = self._by_hour[before.hour]
-        uids.discard(uid)
-        if not uids:
-            del self._by_hour[before.hour]
+    def _unindex(self, uid: str, before: _Record) -> None:
+        hour = before[1]
+        uids = tuple(other for other in self._by_hour[hour] if other != uid)
+        if uids:
+            self._by_hour[hour] = uids
+        else:
+            del self._by_hour[hour]
             self._hours = None
         first = self._first
         if first is not None and any(
-            value > 0 and first.get(series) == before.hour for series, value in before.raw
+            value > 0 and first.get(series) == hour
+            for series, value in zip(_series_in(before[2]), before[4:], strict=True)
         ):
             # The entry may have been the only one there: recompute when asked.
             self._first = None
 
 
-def _note_first(first: dict[CareLogSeries, int], facts: EntryFacts) -> None:
-    """Lower the cached first hours for what an entry adds."""
-    for series, value in facts.raw:
-        if value > 0:
+def _note_first(first: dict[CareLogSeries, int], record: _Record) -> None:
+    """Lower the cached first hours for what a stored entry adds."""
+    hour = record[1]
+    for index, series in enumerate(_series_in(record[2]), 4):
+        if record[index] > 0:
             current = first.get(series)
-            if current is None or facts.hour < current:
-                first[series] = facts.hour
+            if current is None or hour < current:
+                first[series] = hour
 
 
 # ---------------------------------------------------------------------------

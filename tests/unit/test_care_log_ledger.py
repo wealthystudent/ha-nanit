@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import dataclasses
+import gc
 import operator
 import random
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from datetime import UTC, datetime, timedelta
 from itertools import pairwise
 from typing import Any
@@ -459,6 +460,71 @@ def test_every_ledger_query_matches_a_naive_recomputation(seed: int) -> None:
         if step % 3 == 0:
             _check_ledger_against(ledger, naive, rng)
     _check_ledger_against(ledger, naive, rng)
+
+
+def _varied_ledger(count: int, seed: int) -> Ledger:
+    """Return a ledger of all four kinds, some amounts rejected, then some moved and removed."""
+    rng = random.Random(seed)
+    base = START - 3 * 3600
+
+    def when() -> float:
+        return base + rng.uniform(0, 500 * 3600)
+
+    ledger = Ledger()
+    ledger.apply(
+        Change(
+            uid=f"u{i}", before=None, after=_facts(_random_log(rng, f"u{i}", when(), _KINDS[i % 4]))
+        )
+        for i in range(count)
+    )
+    for i in range(0, count, 7):
+        uid = f"u{i}"
+        moved = _facts(_random_log(rng, uid, when(), _KINDS[i % 4]))
+        ledger.apply([Change(uid=uid, before=ledger.get(uid), after=moved)])
+    for i in range(3, count, 11):
+        uid = f"u{i}"
+        ledger.apply([Change(uid=uid, before=ledger.get(uid), after=None)])
+    # Fill the lazily built sorted hours and first-hour cache too.
+    for series in CareLogSeries:
+        ledger.first_hour(series)
+        ledger.series_hours(series, base, base + 500 * 3600)
+    return ledger
+
+
+def test_the_stored_entries_are_not_tracked_by_the_garbage_collector() -> None:
+    ledger = _varied_ledger(3000, seed=1)
+    gc.collect()
+    records = list(ledger._entries.values())
+    index = list(ledger._by_hour.values())
+    assert len(records) == len(ledger) > 2500
+    assert any(record[3] for record in records)  # some rejected amounts
+    assert {type(record) for record in records} == {tuple}
+    assert not any(gc.is_tracked(record) for record in records)
+    assert sum(len(uids) for uids in index) == len(ledger)
+    assert {type(uids) for uids in index} == {tuple}
+    assert not any(gc.is_tracked(uids) for uids in index)
+
+
+def _tracked_objects_added(build: Callable[[], Ledger]) -> tuple[Ledger, int]:
+    gc.collect()
+    before = len(gc.get_objects())
+    ledger = build()
+    gc.collect()
+    return ledger, len(gc.get_objects()) - before
+
+
+def test_the_tracked_objects_of_a_ledger_do_not_grow_with_its_entries() -> None:
+    enabled = gc.isenabled()
+    gc.disable()
+    try:
+        small, small_added = _tracked_objects_added(lambda: _varied_ledger(400, seed=2))
+        large, large_added = _tracked_objects_added(lambda: _varied_ledger(4000, seed=2))
+    finally:
+        if enabled:
+            gc.enable()
+    assert len(large) > 9 * len(small)
+    # The old layout added about six tracked objects per entry: some 20,000 here.
+    assert large_added - small_added < 300
 
 
 # ---------------------------------------------------------------------------

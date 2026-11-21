@@ -89,7 +89,14 @@ The diaper changes, bottles, nursing and pumping sessions you log in the Nanit a
 
 The volume sensors report millilitres, which Home Assistant shows in fluid ounces when your unit system is US customary. The "today" sensors start again from zero at midnight in Home Assistant's time zone.
 
-The sensors are read-only: entries are added, changed and deleted in the Nanit app. A change to an entry from the last 24 hours, including one logged after the fact, shows up within 5 minutes. A change to an older entry shows up after the integration next reloads. If the account has no Care Logs from the last 7 days when the sensors are first added, they are added disabled. Enable them under **Settings → Devices & Services → Nanit → Entities** once you start logging.
+The sensors are read-only: entries are added, changed and deleted in the Nanit app. A change to an entry from the last 24 hours, including one logged after the fact, shows up within 5 minutes. A change to an entry from the last 7 days shows up after the integration next reloads. If the account has no Care Logs from the last 7 days when the sensors are first added, they are added disabled. Enable them under **Settings → Devices & Services → Nanit → Entities** once you start logging.
+
+A few limits to know about:
+
+- After a restart or reload, the sensors look back only 7 days. A "last" sensor whose entry is older than that shows unknown until you log a newer one.
+- A nursing session counts toward the day it started, even when it runs past midnight.
+- The "today" sensors start again at the first poll after midnight, so up to 5 minutes late.
+- An entry dated up to an hour in the future already counts.
 
 Like any sensor, these are kept in Home Assistant's history, visible to everyone who can use your Home Assistant, and available to voice assistants you expose them to.
 
@@ -175,7 +182,7 @@ How each piece of data reaches Home Assistant:
 - **Camera sensors** (temperature, humidity, night light, connectivity) arrive as push updates over the camera's WebSocket, so they update in real time.
 - **Motion and sound events** come from the Nanit cloud API, polled every 30 seconds.
 - **Network diagnostics** (WiFi details) are polled every 5 minutes.
-- **Care Logs** are polled every 5 minutes. The first poll after setup looks back 7 days for the last entry of each type; later polls fetch the last 24 hours.
+- **Care Logs** are polled every 5 minutes. The first poll after setup looks back 7 days for the last entry of each type; later polls fetch the last 24 hours. A poll looks back 7 days again after more than 24 hours without a successful one.
 - **Sound & Light state** (power, sound, light, volume) arrives as push updates over the speaker's WebSocket, local or relay. A light 30 second poll reconciles state and refreshes battery and WiFi diagnostics. The firmware version is requested with the poll until known, then left alone.
 - **Video** streams on demand when a viewer opens the camera: straight from the camera over your network with [local streaming](#local-streaming), or through the Nanit cloud over RTMPS.
 

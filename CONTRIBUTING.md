@@ -145,9 +145,9 @@ The pre-push hook stops an unsigned commit before it leaves your machine,
 commit GitHub can't verify, and why.
 
 If a branch you already pushed has unsigned commits, sign them again and
-force-push. Commit everything first, so nothing else ends up in the new
-commits. From a fork, use your remote for this repo (often `upstream`) instead
-of `origin`:
+force-push. Start from a clean tree (`git stash` anything that isn't part of
+the PR), so nothing else ends up in the new commits. From a fork, use your
+remote for this repo (often `upstream`) instead of `origin`:
 
 ```bash
 git fetch origin main
@@ -158,18 +158,18 @@ git log --merges --oneline "$base..HEAD"   # any merge commits?
 With no merge commits, sign each commit in place (same base, same changes):
 
 ```bash
-git rebase --force-rebase --gpg-sign "$base"
+git rebase --force-rebase --gpg-sign "$base" && git push --force-with-lease
 ```
 
 With merge commits, don't rebase: it drops them, and any change made in them,
 without stopping. Squash the branch into one signed commit instead:
 
 ```bash
-git reset --soft "$base" && git commit -S
+git reset --soft "$base" && git commit -S && git push --force-with-lease
 ```
 
-Then `git push --force-with-lease`. The force-push needs a fresh approval
-before the PR can merge.
+If the commit fails, `git reset --soft ORIG_HEAD` puts the branch back. The
+force-push needs a fresh approval before the PR can merge.
 
 Agents use whatever signing the host has configured, and never change it. On a
 host without signing, an agent stops and asks its person to set it up rather

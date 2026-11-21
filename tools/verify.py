@@ -165,12 +165,11 @@ def sign_fix(base_ref: str) -> str:
     """How to sign the commits of a branch you already pushed."""
     base = f'"$(git merge-base HEAD {base_ref})"'
     return (
-        f"Set up signing ({SIGNING_DOCS}), commit everything, then sign the branch again.\n"
+        f"Set up signing ({SIGNING_DOCS}), start from a clean tree, then sign the branch again.\n"
         f"With no merge commits (git log --merges {base_ref}..HEAD), sign each in place:\n"
-        f"  git rebase --force-rebase --gpg-sign {base}\n"
+        f"  git rebase --force-rebase --gpg-sign {base} && git push --force-with-lease\n"
         "With merge commits, a rebase drops them, so squash into one signed commit:\n"
-        f"  git reset --soft {base} && git commit -S\n"
-        "Then: git push --force-with-lease"
+        f"  git reset --soft {base} && git commit -S && git push --force-with-lease"
     )
 
 

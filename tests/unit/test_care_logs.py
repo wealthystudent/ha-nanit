@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from freezegun.api import FrozenDateTimeFactory
-from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
+from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.config_entries import SOURCE_REAUTH, ConfigEntryState
 from homeassistant.const import STATE_UNAVAILABLE, Platform, UnitOfTime, UnitOfVolume
 from homeassistant.core import HomeAssistant
@@ -38,6 +38,15 @@ from custom_components.nanit.sensor import (
 )
 
 from .conftest import MOCK_BABY_1, MOCK_BABY_2, MOCK_EMAIL, mock_entry_data_v2
+
+# The five daily totals ("today" sensors).
+TODAY = (
+    "diaper_changes_today",
+    "feedings_today",
+    "bottle_volume_today",
+    "nursing_time_today",
+    "pumped_volume_today",
+)
 
 # Local midnight, as an aware datetime. Offsets below are seconds from it.
 DAY_START = datetime(2026, 11, 20, 8, 0, tzinfo=UTC)
@@ -672,7 +681,7 @@ async def test_daily_totals_reset_at_local_midnight(
     logs = [evening]
     coordinator = _coordinator(hass, _calendar(logs))
     await coordinator.async_refresh()
-    daily = {d.key: NanitCareLogSensor(coordinator, d) for d in CARE_LOG_SENSORS if d.daily}
+    daily = {d.key: NanitCareLogSensor(coordinator, d) for d in CARE_LOG_SENSORS if d.key in TODAY}
     last_feeding = NanitCareLogSensor(
         coordinator, next(d for d in CARE_LOG_SENSORS if d.key == "last_feeding")
     )
@@ -681,8 +690,10 @@ async def test_daily_totals_reset_at_local_midnight(
     assert daily["feedings_today"].native_value == 1
     assert daily["bottle_volume_today"].native_value == 90.0
     for sensor in daily.values():
-        assert sensor.entity_description.state_class == SensorStateClass.TOTAL
-        assert sensor.last_reset == datetime(2026, 11, 19, tzinfo=local)
+        # The imported statistics replace their own: no state class, no reset.
+        assert sensor.entity_description.state_class is None
+        assert sensor.state_class is None
+        assert sensor.last_reset is None
 
     after_midnight = CareLog(
         uid="b2",
@@ -699,8 +710,24 @@ async def test_daily_totals_reset_at_local_midnight(
     assert daily["bottle_volume_today"].native_value == 60.0
     assert daily["diaper_changes_today"].native_value == 0
     for sensor in daily.values():
-        assert sensor.last_reset == datetime(2026, 11, 20, tzinfo=local)
+        assert sensor.last_reset is None
     assert last_feeding.native_value == dt_util.utc_from_timestamp(after_midnight.timestamp)
+
+
+@pytest.mark.parametrize("key", TODAY)
+def test_the_today_sensors_record_no_long_term_statistics_of_their_own(key: str) -> None:
+    """The imported care log statistics replace them, whether or not the import is on."""
+    sensor = _sensor(key, DAY)
+
+    assert sensor.entity_description.state_class is None
+    assert sensor.state_class is None
+    assert sensor.last_reset is None
+    assert sensor.capability_attributes is None
+
+
+def test_the_other_sensors_have_no_state_class_either() -> None:
+    for description in CARE_LOG_SENSORS:
+        assert description.state_class is None, description.key
 
 
 def test_an_empty_day_reads_zero_and_unknown() -> None:
@@ -1014,6 +1041,10 @@ async def test_failed_first_fetch_shows_unavailable_sensors_until_a_poll_succeed
     diapers_today = hass.states.get(_care_entity_id(hass, "cam_1", "diaper_changes_today"))
     assert diapers_today.state == "1"
     assert diapers_today.attributes["pee"] == 1
+    for key in TODAY:
+        attributes = hass.states.get(_care_entity_id(hass, "cam_1", key)).attributes
+        assert "state_class" not in attributes, key
+        assert "last_reset" not in attributes, key
     feedings = hass.states.get(_care_entity_id(hass, "cam_1", "feedings_today"))
     assert feedings.state == "0"
     assert calendar.await_count == 2

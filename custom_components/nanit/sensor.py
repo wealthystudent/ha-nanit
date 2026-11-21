@@ -178,8 +178,6 @@ class NanitCareLogSensorDescription(SensorEntityDescription):
 
     value_fn: Callable[[CareLogData], datetime | float | int | None]
     attrs_fn: Callable[[CareLogData], CareLogAttributes] | None = None
-    # A total since local midnight: last_reset is the start of the day.
-    daily: bool = False
 
 
 def _time(log: CareLog | None) -> datetime | None:
@@ -278,16 +276,12 @@ CARE_LOG_SENSORS: tuple[NanitCareLogSensorDescription, ...] = (
     NanitCareLogSensorDescription(
         key="diaper_changes_today",
         translation_key="diaper_changes_today",
-        state_class=SensorStateClass.TOTAL,
-        daily=True,
         value_fn=lambda data: len(_today(data, CARE_LOG_DIAPER)),
         attrs_fn=_diapers_today_attrs,
     ),
     NanitCareLogSensorDescription(
         key="feedings_today",
         translation_key="feedings_today",
-        state_class=SensorStateClass.TOTAL,
-        daily=True,
         value_fn=lambda data: len(_today(data, CARE_LOG_BOTTLE, CARE_LOG_NURSING)),
         attrs_fn=_feedings_today_attrs,
     ),
@@ -296,9 +290,7 @@ CARE_LOG_SENSORS: tuple[NanitCareLogSensorDescription, ...] = (
         translation_key="bottle_volume_today",
         device_class=SensorDeviceClass.VOLUME,
         native_unit_of_measurement=UnitOfVolume.MILLILITERS,
-        state_class=SensorStateClass.TOTAL,
         suggested_display_precision=0,
-        daily=True,
         value_fn=lambda data: round(
             sum(log.feed_amount_ml or 0.0 for log in _today(data, CARE_LOG_BOTTLE)), 1
         ),
@@ -308,9 +300,7 @@ CARE_LOG_SENSORS: tuple[NanitCareLogSensorDescription, ...] = (
         translation_key="nursing_time_today",
         device_class=SensorDeviceClass.DURATION,
         native_unit_of_measurement=UnitOfTime.MINUTES,
-        state_class=SensorStateClass.TOTAL,
         suggested_display_precision=0,
-        daily=True,
         value_fn=lambda data: round(
             sum(_nursing_s(log) for log in _today(data, CARE_LOG_NURSING)) / 60, 1
         ),
@@ -320,9 +310,7 @@ CARE_LOG_SENSORS: tuple[NanitCareLogSensorDescription, ...] = (
         translation_key="pumped_volume_today",
         device_class=SensorDeviceClass.VOLUME,
         native_unit_of_measurement=UnitOfVolume.MILLILITERS,
-        state_class=SensorStateClass.TOTAL,
         suggested_display_precision=0,
-        daily=True,
         value_fn=lambda data: round(
             sum(_pumped_ml(log) or 0.0 for log in _today(data, CARE_LOG_PUMPING)), 1
         ),
@@ -534,13 +522,6 @@ class NanitCareLogSensor(NanitCareLogEntity, SensorEntity):
         if self.coordinator.data is None:
             return None
         return self.entity_description.value_fn(self.coordinator.data)
-
-    @property
-    def last_reset(self) -> datetime | None:
-        """Return the start of the local day for daily totals."""
-        if not self.entity_description.daily or self.coordinator.data is None:
-            return None
-        return self.coordinator.data.day_start
 
     @property
     def extra_state_attributes(self) -> CareLogAttributes | None:

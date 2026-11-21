@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 from contextlib import suppress
-from datetime import timedelta
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -996,6 +996,49 @@ async def test_raw_parse_skips_malformed_rows(hass: HomeAssistant, mock_nanit_cl
     assert {baby.uid for baby in hub.babies} == {"baby_8", "baby_9", "baby_10"}
     # Only the row with a clean speaker uid produced a speaker
     assert set(hub.speaker_data) == {"spk_10"}
+
+
+async def test_raw_parse_keeps_the_dates_of_a_valid_baby_beside_a_malformed_one(
+    hass: HomeAssistant, mock_nanit_client
+) -> None:
+    """One bad row sends /babies down the raw parse; the good rows keep every field."""
+    mock_nanit_client.async_get_babies.side_effect = KeyError("uid")
+
+    resp = MagicMock()
+    resp.status = 200
+    resp.raise_for_status = MagicMock()
+    resp.json = AsyncMock(
+        return_value={
+            "babies": [
+                {"name": "no uid", "birthdate": "2024-01-01"},
+                {
+                    "uid": "baby_11",
+                    "name": "Loft",
+                    "camera_uid": "cam_11",
+                    "birthdate": "2025-06-01",
+                    "created_at": "2025-06-02T08:00:00+00:00",
+                    "speaker": {"speaker": {"uid": "spk_11"}},
+                },
+            ]
+        }
+    )
+    resp_cm = MagicMock()
+    resp_cm.__aenter__ = AsyncMock(return_value=resp)
+    resp_cm.__aexit__ = AsyncMock(return_value=False)
+    mock_nanit_client.rest_client.base_url = "https://api.example.invalid"
+    mock_nanit_client.rest_client.session.get = MagicMock(return_value=resp_cm)
+    hub = NanitHub(hass, MagicMock(), _make_entry(hass))
+
+    (baby,) = await hub.async_get_babies_tolerant()
+
+    assert baby == Baby(
+        uid="baby_11",
+        name="Loft",
+        camera_uid="cam_11",
+        speaker_uid="spk_11",
+        birth_date=date(2025, 6, 1),
+        created_at=datetime(2025, 6, 2, 8, tzinfo=UTC).timestamp(),
+    )
 
 
 async def test_via_device_cleared_when_camera_fails(hass: HomeAssistant, mock_nanit_client) -> None:

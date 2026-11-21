@@ -80,7 +80,8 @@ def _sanitize_name(raw: str | None) -> str:
 
 
 def _parse_network(baby_json: dict[str, Any]) -> NetworkInfo | None:
-    net = (baby_json.get("camera") or {}).get("network")
+    cam = baby_json.get("camera")
+    net = cam.get("network") if isinstance(cam, dict) else None
     if not isinstance(net, dict):
         return None
     ssid = net.get("ssid")
@@ -111,6 +112,28 @@ def _parse_camera_last_seen(baby_json: dict[str, Any]) -> int | None:
         return None
     val = cam.get("last_seen")
     return int(val) if isinstance(val, int | float) else None
+
+
+def _parse_baby(baby_json: dict[str, Any]) -> Baby:
+    """Parse one /babies row. Raises KeyError when it has no uid.
+
+    A baby without a camera (standalone Sound & Light) has no camera_uid
+    in its row: it defaults to "" so mixed accounts parse instead of
+    raising KeyError on the camera-less row.
+    """
+    speaker = baby_json.get("speaker")
+    speaker_obj = speaker.get("speaker") if isinstance(speaker, dict) else None
+    return Baby(
+        uid=baby_json["uid"],
+        name=_sanitize_name(baby_json.get("name")),
+        camera_uid=baby_json.get("camera_uid") or "",
+        speaker_uid=speaker_obj.get("uid") if isinstance(speaker_obj, dict) else None,
+        network=_parse_network(baby_json),
+        camera_connected=_parse_camera_connected(baby_json),
+        camera_last_seen=_parse_camera_last_seen(baby_json),
+        birth_date=_calendar_date(baby_json.get("birthdate")),
+        created_at=_timestamp(baby_json.get("created_at")),
+    )
 
 
 def _finite_number(value: Any) -> float | None:
@@ -467,23 +490,7 @@ class NanitRestClient:
         except (TimeoutError, aiohttp.ClientError, ValueError) as err:
             raise NanitConnectionError(f"Invalid babies response: {err}") from err
 
-        # A baby without a camera (standalone Sound & Light) has no
-        # camera_uid in its row — default it to "" so mixed accounts parse
-        # instead of raising KeyError on the camera-less row.
-        return [
-            Baby(
-                uid=baby["uid"],
-                name=_sanitize_name(baby.get("name")),
-                camera_uid=baby.get("camera_uid") or "",
-                speaker_uid=((baby.get("speaker") or {}).get("speaker") or {}).get("uid"),
-                network=_parse_network(baby),
-                camera_connected=_parse_camera_connected(baby),
-                camera_last_seen=_parse_camera_last_seen(baby),
-                birth_date=_calendar_date(baby.get("birthdate")),
-                created_at=_timestamp(baby.get("created_at")),
-            )
-            for baby in body.get("babies", [])
-        ]
+        return [_parse_baby(baby) for baby in body.get("babies", [])]
 
     async def async_get_device_token(
         self,

@@ -320,6 +320,32 @@ class TestGetBabies:
         )
         assert babies[1] == Baby(uid="baby789", name="Max", camera_uid="cam012", speaker_uid=None)
 
+    async def test_get_babies_speaker_or_camera_not_an_object(
+        self, client: NanitRestClient
+    ) -> None:
+        """The shared row parser, which the hub's tolerant path reuses, never raises on them."""
+        with mock_api() as m:
+            m.get(
+                BABIES_URL,
+                payload={
+                    "babies": [
+                        {
+                            "uid": "baby1",
+                            "name": "Luna",
+                            "speaker": "not-an-object",
+                            "camera": "not-an-object",
+                        },
+                        {"uid": "baby2", "name": "Max", "speaker": {"speaker": "nope"}},
+                    ]
+                },
+            )
+            babies = await client.async_get_babies("token123")
+
+        assert babies == [
+            Baby(uid="baby1", name="Luna", camera_uid=""),
+            Baby(uid="baby2", name="Max", camera_uid=""),
+        ]
+
     async def test_get_babies_speaker_with_null_nested(self, client: NanitRestClient) -> None:
         with mock_api() as m:
             m.get(

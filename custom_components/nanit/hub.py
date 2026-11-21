@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import logging
 import re
 from collections.abc import Callable, Coroutine
@@ -523,13 +524,7 @@ class NanitHub:
         row is skipped rather than failing the whole scan. Transport-level
         failures surface as NanitConnectionError so setup retries.
         """
-        from aionanit.rest import (
-            NANIT_API_HEADERS,
-            _parse_camera_connected,
-            _parse_camera_last_seen,
-            _parse_network,
-            _sanitize_name,
-        )
+        from aionanit.rest import NANIT_API_HEADERS, _parse_baby
 
         tm = self._client.token_manager
         if tm is None:
@@ -558,21 +553,15 @@ class NanitHub:
             if uid is None:
                 _LOGGER.debug("Skipping /babies row without a usable uid")
                 continue
-            raw_name = baby.get("name")
-            speaker = baby.get("speaker")
-            speaker_obj = speaker.get("speaker") if isinstance(speaker, dict) else None
-            speaker_uid = (
-                _clean_uid(speaker_obj.get("uid")) if isinstance(speaker_obj, dict) else None
-            )
+            # The library's own parse, so the row keeps every field it does
+            # (the dates where care log history starts among them), with
+            # the device uids then checked like the baby's.
+            parsed = _parse_baby({**baby, "uid": uid})
             babies.append(
-                Baby(
-                    uid=uid,
-                    name=_sanitize_name(raw_name if isinstance(raw_name, str) else None),
-                    camera_uid=_clean_uid(baby.get("camera_uid")) or "",
-                    speaker_uid=speaker_uid,
-                    network=_parse_network(baby),
-                    camera_connected=_parse_camera_connected(baby),
-                    camera_last_seen=_parse_camera_last_seen(baby),
+                dataclasses.replace(
+                    parsed,
+                    camera_uid=_clean_uid(parsed.camera_uid) or "",
+                    speaker_uid=_clean_uid(parsed.speaker_uid),
                 )
             )
         return babies

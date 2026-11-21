@@ -20,6 +20,8 @@ from custom_components.nanit.care_log_hours import (
     HourlyAmounts,
     hour_start,
     hourly_amounts,
+    series_total,
+    sum_contributions,
 )
 from custom_components.nanit.care_log_ledger import (
     Assessment,
@@ -383,6 +385,80 @@ def test_the_ledger_sums_exactly_like_hourly_amounts_in_any_order(seed: int) -> 
             for series, value in amounts.items():
                 assert result.amounts[hour][series].hex() == value.hex()
                 assert ledger.series_hours(series, hour, hour + 3600)[hour].hex() == value.hex()
+
+
+def _check_ledger_against(ledger: Ledger, naive: dict[str, EntryFacts], rng: random.Random) -> None:
+    """Compare every query with a recomputation from a plain dict."""
+    assert len(ledger) == len(naive)
+    for series in CareLogSeries:
+        hours = [f.hour for f in naive.values() if (f.amount(series) or 0.0) > 0]
+        assert ledger.first_hour(series) == min(hours, default=None)
+    base = START - 3 * 3600
+    for _ in range(3):
+        lo = base + rng.randrange(-2, 40) * 3600
+        hi = lo + rng.randrange(0, 30) * 3600
+        inside = [f for f in naive.values() if lo <= f.hour < hi]
+        assert ledger.amounts(lo, hi) == sum_contributions(f.contribution() for f in inside)
+        series = rng.choice(list(CareLogSeries))
+        by_hour: defaultdict[int, list[float]] = defaultdict(list)
+        for f in inside:
+            if (value := f.amount(series)) is not None:
+                by_hour[f.hour].append(value)
+        assert ledger.series_hours(series, lo, hi) == {
+            hour: series_total(series, values) for hour, values in by_hour.items()
+        }
+        assert ledger.keep_hours(series, lo, hi) == {f.hour for f in inside if series in f.invalid}
+        start = lo + rng.randrange(-1800, 1800)
+        end = start + rng.randrange(-60, 20 * 3600)
+        assert ledger.uids_between(start, end) == {
+            uid for uid, f in naive.items() if start <= f.timestamp <= end
+        }
+
+
+@pytest.mark.parametrize("seed", range(4))
+def test_every_ledger_query_matches_a_naive_recomputation(seed: int) -> None:
+    rng = random.Random(seed)
+    ledger = Ledger()
+    naive: dict[str, EntryFacts] = {}
+    base = START - 3 * 3600
+
+    def random_facts(uid: str) -> EntryFacts:
+        # Few hours, so entries share hours and first hours come and go.
+        when = base + rng.randrange(0, 36) * 3600 + rng.uniform(0, 3599)
+        return _facts(_random_log(rng, uid, when))
+
+    for step in range(600):
+        roll = rng.random()
+        uid: str | None = None
+        after: EntryFacts | None = None
+        if roll < 0.45 or not naive:
+            uid = f"u{step}"
+            after = random_facts(uid)
+        elif roll < 0.65:
+            uid = rng.choice(sorted(naive))
+            after = random_facts(uid)  # an edit, often a move
+        elif roll < 0.8:
+            uid = rng.choice(sorted(naive))  # a removal
+        else:
+            # Lower or remove an entry at some series' first hour.
+            series = rng.choice(list(CareLogSeries))
+            first = ledger.first_hour(series)
+            candidates = sorted(u for u, f in naive.items() if f.hour == first)
+            if not candidates:
+                continue
+            uid = rng.choice(candidates)
+            old = naive[uid]
+            if rng.random() < 0.5:
+                zeroed = tuple((s, 0.0) for s, _ in old.raw)
+                after = EntryFacts(timestamp=old.timestamp, hour=old.hour, raw=zeroed)
+        ledger.apply([Change(uid=uid, before=naive.get(uid), after=after)])
+        if after is None:
+            naive.pop(uid, None)
+        else:
+            naive[uid] = after
+        if step % 3 == 0:
+            _check_ledger_against(ledger, naive, rng)
+    _check_ledger_against(ledger, naive, rng)
 
 
 # ---------------------------------------------------------------------------
@@ -855,20 +931,23 @@ def test_a_rejected_amount_on_a_known_entry_is_carried_forward_at_once() -> None
     assert book.ledger.keep_hours(S.BOTTLE_VOLUME, nine, nine + 3600) == set()
 
 
-def test_a_lowering_edit_with_a_rejected_amount_waits_until_it_is_valid() -> None:
+def test_a_lowering_edit_with_a_rejected_amount_is_not_held_until_it_is_valid() -> None:
     book = _book([_bottle("b1", AT_9, 90.0)])
     rejected = [_bottle("b1", AT_10, None, invalid_fields=frozenset({"feed_amount_ml"}))]
     at = T0
     for _ in range(5):
         outcome = book.process(_read(rejected, at=at))
         assert outcome.lowered == 0
-        assert outcome.confirm is not None
-        assert not outcome.gave_up
+        assert outcome.waiting == 1
+        assert outcome.confirm is None
+        assert book.pending_requests() == ()
         assert _amount(book, S.BOTTLE_FEEDS, AT_9) == 1
         assert _amount(book, S.BOTTLE_FEEDS, AT_10) == 0
         at += GAP
     valid = [_bottle("b1", AT_10, 60.0)]
-    assert not book.process(_read(valid, at=at)).confirmed  # disagrees with the rejected read
+    outcome = book.process(_read(valid, at=at))
+    assert not outcome.confirmed
+    assert outcome.confirm == ConfirmRequest(start=START, end=END, not_before=at + GAP)
     outcome = book.process(_read(valid, at=at + GAP))
     assert outcome.confirmed
     assert outcome.lowered == 1
@@ -876,24 +955,40 @@ def test_a_lowering_edit_with_a_rejected_amount_waits_until_it_is_valid() -> Non
     assert _amount(book, S.BOTTLE_VOLUME, AT_10) == 60.0
 
 
-def test_a_deletion_in_the_hour_running_at_the_first_read_waits_another_round() -> None:
-    running = datetime(2026, 3, 10, 15, 5, tzinfo=UTC)  # T0 is 15:20
-    book = _book([_bottle("b1", AT_9), _diaper("d1", running)])
+RUNNING = datetime(2026, 3, 10, 15, 5, tzinfo=UTC)  # T0 is 15:20
+AFTER_HOUR = datetime(2026, 3, 10, 16, 1, tzinfo=UTC)
+
+
+def test_a_deletion_in_the_running_hour_is_held_once_the_hour_has_finished() -> None:
+    book = _book([_bottle("b1", AT_9), _diaper("d1", RUNNING)])
     without = [_bottle("b1", AT_9)]
-    book.process(_read(without, at=T0))
-    outcome = book.process(_read(without, at=T0 + GAP))  # 15:30, cutoff 15:00
-    assert outcome.confirmed
-    assert outcome.lowered == 0
-    assert "d1" in book.ledger
-    assert outcome.confirm is not None
-    after_hour = datetime(2026, 3, 10, 16, 1, tzinfo=UTC)
-    outcome = book.process(_read(without, at=after_hour))  # cutoff still 15:00
-    assert outcome.confirmed
-    assert "d1" in book.ledger
-    outcome = book.process(_read(without, at=after_hour + GAP))  # cutoff 16:00
+    for at in (T0, T0 + GAP, T0 + 3 * GAP):  # 15:20, 15:30, 15:50
+        outcome = book.process(_read(without, at=at))
+        assert outcome.waiting == 1
+        assert outcome.confirm is None
+        assert book.pending_requests() == ()
+        assert "d1" in book.ledger
+    outcome = book.process(_read(without, at=AFTER_HOUR))
+    assert outcome.confirm == ConfirmRequest(start=START, end=END, not_before=AFTER_HOUR + GAP)
+    outcome = book.process(_read(without, at=AFTER_HOUR + GAP))
     assert outcome.confirmed
     assert outcome.lowered == 1
     assert "d1" not in book.ledger
+
+
+def test_a_move_into_the_running_hour_waits_counted_in_the_old_hour() -> None:
+    book = _book([_bottle("b1", AT_9, 90.0)])
+    moved = [_bottle("b1", RUNNING, 90.0)]
+    for at in (T0, T0 + GAP):
+        outcome = book.process(_read(moved, at=at))
+        assert outcome.confirm is None
+        assert _amount(book, S.BOTTLE_FEEDS, AT_9) == 1
+        assert _amount(book, S.BOTTLE_FEEDS, RUNNING) == 0
+    assert book.process(_read(moved, at=AFTER_HOUR)).confirm is not None
+    outcome = book.process(_read(moved, at=AFTER_HOUR + GAP))
+    assert outcome.confirmed
+    assert _amount(book, S.BOTTLE_FEEDS, AT_9) == 0
+    assert _amount(book, S.BOTTLE_FEEDS, RUNNING) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -933,15 +1028,91 @@ def test_a_disagreeing_reread_starts_the_next_round_and_the_book_gives_up() -> N
     assert "b1" not in book.ledger
 
 
-def test_a_confirmation_restarts_the_count_for_what_it_could_not_apply() -> None:
-    running = datetime(2026, 3, 10, 15, 5, tzinfo=UTC)
-    book = _book([_bottle("b1", AT_9), _diaper("d1", running)], max_attempts=1)
+def test_a_confirmation_re_holds_what_it_could_not_apply_at_attempt_one() -> None:
+    # d1 is in the hour running at the first read, finished at the confirming one.
+    first_at = datetime(2026, 3, 10, 15, 55, tzinfo=UTC)
+    book = _book([_bottle("b1", AT_9), _diaper("d1", RUNNING)], max_attempts=1)
     without: list[CareLog] = []
-    book.process(_read(without, at=T0))
-    outcome = book.process(_read(without, at=T0 + GAP))
+    assert book.process(_read(without, at=first_at)).waiting == 2
+    assert book.stats().waiting_entries == 1  # b1 only
+    outcome = book.process(_read(without, at=first_at + GAP))
+    assert outcome.confirmed
     assert outcome.lowered == 1  # b1
     assert not outcome.gave_up
-    assert outcome.confirm is not None  # d1 waits again, at attempt 1
+    assert outcome.confirm is not None  # d1 now waits, at attempt 1
+    assert book.stats().waiting_entries == 1
+    outcome = book.process(_read(without, at=first_at + 2 * GAP))
+    assert outcome.confirmed
+    assert "d1" not in book.ledger
+
+
+# ---------------------------------------------------------------------------
+# Running: a later sighting cancels a waiting change
+# ---------------------------------------------------------------------------
+
+NINE = int(AT_9.timestamp())
+LATER = T0 + timedelta(minutes=5)
+
+
+def test_a_later_sighting_by_other_bounds_cancels_a_waiting_removal() -> None:
+    book = _book([_bottle("b1", AT_9), _bottle("b2", AT_10), _bottle("b3", AT_10)])
+    book.process(_read([_bottle("b2", AT_10)], at=T0))  # b1 and b3 wait
+    assert book.stats().waiting_entries == 2
+    # Another read, taken later, returns b1: the first read missed it.
+    book.process(_read([_bottle("b1", AT_9)], at=LATER, start=NINE, end=NINE))
+    assert book.stats().waiting_entries == 1
+    # The re-read misses b1 again: only b3 goes, and b1 starts a fresh round.
+    outcome = book.process(_read([_bottle("b2", AT_10)], at=T0 + GAP))
+    assert outcome.confirmed
+    assert outcome.lowered == 1
+    assert "b3" not in book.ledger
+    assert "b1" in book.ledger
+    assert outcome.confirm is not None
+    outcome = book.process(_read([_bottle("b2", AT_10)], at=T0 + 2 * GAP))
+    assert outcome.confirmed
+    assert "b1" not in book.ledger
+
+
+def test_a_record_left_with_nothing_waiting_is_removed_by_a_later_sighting() -> None:
+    book = _book([_bottle("b1", AT_9), _bottle("b2", AT_10)])
+    book.process(_read([_bottle("b2", AT_10)], at=T0))
+    book.process(_read([_bottle("b1", AT_9)], at=LATER, start=NINE, end=NINE))
+    assert book.pending_requests() == ()
+    outcome = book.process(_read([_bottle("b2", AT_10)], at=T0 + GAP))
+    assert not outcome.confirmed
+    assert "b1" in book.ledger
+    assert outcome.confirm is not None  # a fresh round
+
+
+def test_a_later_sighting_with_the_old_values_cancels_a_waiting_lowering_edit() -> None:
+    book = _book([_bottle("b1", AT_9, 90.0)])
+    book.process(_read([_bottle("b1", AT_9, 60.0)], at=T0))
+    book.process(_read([_bottle("b1", AT_9, 90.0)], at=LATER, start=NINE, end=NINE))
+    assert book.pending_requests() == ()
+    outcome = book.process(_read([_bottle("b1", AT_9, 60.0)], at=T0 + GAP))
+    assert not outcome.confirmed
+    assert _amount(book, S.BOTTLE_VOLUME, AT_9) == 90.0
+
+
+def test_a_later_sighting_with_the_same_new_values_cancels_nothing() -> None:
+    book = _book([_bottle("b1", AT_9, 90.0)])
+    book.process(_read([_bottle("b1", AT_9, 60.0)], at=T0))
+    book.process(_read([_bottle("b1", AT_9, 60.0)], at=LATER, start=NINE, end=NINE))
+    assert book.stats().waiting_entries == 1
+    outcome = book.process(_read([_bottle("b1", AT_9, 60.0)], at=T0 + GAP))
+    assert outcome.confirmed
+    assert _amount(book, S.BOTTLE_VOLUME, AT_9) == 60.0
+
+
+def test_an_older_read_of_other_bounds_cancels_nothing() -> None:
+    book = _book([_bottle("b1", AT_9, 90.0)])
+    book.process(_read([_bottle("b1", AT_9, 60.0)], at=T0))
+    older = T0 - timedelta(minutes=5)
+    book.process(_read([_bottle("b1", AT_9, 90.0)], at=older, start=NINE, end=NINE))
+    assert book.stats().waiting_entries == 1
+    outcome = book.process(_read([_bottle("b1", AT_9, 60.0)], at=T0 + GAP))
+    assert outcome.confirmed
+    assert _amount(book, S.BOTTLE_VOLUME, AT_9) == 60.0
 
 
 def test_the_book_holds_at_most_max_pending_records() -> None:
@@ -1082,6 +1253,7 @@ class _World:
         self.ever_of: defaultdict[str, set[str]] = defaultdict(set)
         self.flaky = True
         self.next_uid = 0
+        self.processed: list[CareLogRead] = []  # every read processed, in order
 
     def _set(self, log: CareLog) -> None:
         self.truth[log.uid] = log
@@ -1185,6 +1357,77 @@ def _reads_agree(first: CareLogRead, second: CareLogRead) -> bool:
     return first.dropped == 0 and second.dropped == 0 and finished(first) == finished(second)
 
 
+def _lowers(old: EntryFacts, new: EntryFacts | None) -> bool:
+    """The test's own statement of a lowering change, written apart from the module."""
+    if new is None or new.hour != old.hour:
+        return True
+    new_raw = dict(new.raw)
+    return any(series not in new_raw or new_raw[series] < value for series, value in old.raw)
+
+
+def _same_state(a: EntryFacts | None, b: EntryFacts | None) -> bool:
+    if a is None or b is None:
+        return a is b
+    return (a.hour, a.raw, a.invalid) == (b.hour, b.raw, b.invalid)
+
+
+def _confirmable(ledger: dict[str, EntryFacts], read: CareLogRead) -> set[str]:
+    """The uids a re-read of this read could confirm a lowering change for."""
+    cutoff = hour_start(read.read_at.timestamp())
+    result = {
+        uid
+        for uid, old in ledger.items()
+        if read.start <= old.timestamp <= read.end and uid not in read.entries and old.hour < cutoff
+    }
+    for uid, seen in read.entries.items():
+        old = ledger.get(uid)
+        if (
+            old is not None
+            and not seen.invalid
+            and old.hour < cutoff
+            and seen.hour < cutoff
+            and _lowers(old, seen)
+        ):
+            result.add(uid)
+    return result
+
+
+def _snapshot(book: CareLogBook) -> dict[str, EntryFacts]:
+    result: dict[str, EntryFacts] = {}
+    for uid in book.ledger.uids_between(-(2**40), 2**40):
+        facts = book.ledger.get(uid)
+        assert facts is not None
+        result[uid] = facts
+    return result
+
+
+def _justified(
+    first: CareLogRead,
+    read: CareLogRead,
+    uid: str,
+    old: EntryFacts,
+    processed: Sequence[CareLogRead],
+    min_gap: timedelta,
+) -> bool:
+    """Whether a first read, then ``read``, may lower one entry."""
+    cutoff = hour_start(first.read_at.timestamp())
+    first_said = first.entries.get(uid)
+    now_said = read.entries.get(uid)
+    return (
+        read.read_at - first.read_at >= min_gap
+        and _reads_agree(first, read)
+        and old.hour < cutoff
+        and (now_said is None or now_said.hour < cutoff)
+        and _same_state(first_said, now_said)
+        and not any(
+            later.read_at > first.read_at
+            and (seen := later.entries.get(uid)) is not None
+            and not _same_state(first_said, seen)
+            for later in processed
+        )
+    )
+
+
 def _check_process(
     book: CareLogBook,
     world: _World,
@@ -1194,28 +1437,52 @@ def _check_process(
     span: tuple[int, int],
 ) -> Outcome:
     before = _cells(book.ledger.amounts(*span))
-    before_uids = set(book.ledger.uids_between(-(2**40), 2**40))
+    entries_before = _snapshot(book)
+    confirmable = _confirmable(entries_before, read)
     outcome = book.process(read)
     after = _cells(book.ledger.amounts(*span))
-    after_uids = set(book.ledger.uids_between(-(2**40), 2**40))
+    entries_after = _snapshot(book)
+    bounds = (read.start, read.end)
 
     lowered = {cell for cell, value in before.items() if after.get(cell, 0.0) < value}
     if lowered:
         assert outcome.confirmed
         hours = {hour for hour, _ in lowered}
-        earlier = history[(read.start, read.end)]
         assert any(
             read.read_at - first.read_at >= book.min_gap
             and _reads_agree(first, read)
             and max(hours) < hour_start(first.read_at.timestamp())
-            for first in earlier
+            for first in history[bounds]
         )
-    history[(read.start, read.end)].append(read)
+
+    # Per entry: lowered only when a fresh, agreeing first read of the same
+    # bounds said the same about it, and no read taken since said otherwise.
+    for uid, old in entries_before.items():
+        new = entries_after.get(uid)
+        if not _lowers(old, new):
+            continue
+        assert outcome.confirmed
+        assert any(
+            _justified(first, read, uid, old, world.processed, book.min_gap)
+            for first in history[bounds]
+        )
+
+    # A record this read made holds something a re-read could confirm.
+    if outcome.confirm is not None and outcome.confirm.not_before == read.read_at + book.min_gap:
+        still = {
+            uid
+            for uid in confirmable
+            if not _same_state(entries_after.get(uid), read.entries.get(uid))
+        }
+        assert still
+
+    history[bounds].append(read)
+    world.processed.append(read)
 
     # An entry left out of exactly one answer is never removed.
-    if omitted is not None and omitted in before_uids:
-        assert omitted in after_uids
-    assert (before_uids & world.stable) <= after_uids
+    if omitted is not None and omitted in entries_before:
+        assert omitted in entries_after
+    assert (entries_before.keys() & world.stable) <= entries_after.keys()
 
     # No double counting: per hour, never more entries than ever truly
     # dated in it; in all, never more than the distinct entries ever seen.

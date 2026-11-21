@@ -20,6 +20,14 @@ update the ledger under one rule:
   it stood then, and the second one, against the ledger now.
 - A re-read of the same bounds that comes before the gap and agrees with
   the first is neither: the change keeps waiting on the first read.
+- Only a change a re-read could confirm is held at all: one in hours that
+  had finished when its read was taken, and with no rejected amount in it.
+  Any other lowering change is left for a later read to find again, once
+  its hour has finished or its amount is valid, so nothing waits forever.
+- A later read of other bounds that returns a waiting entry in a state
+  other than the one the first read implied (present where it implied a
+  removal, or with other values) contradicts that read: the entry stops
+  waiting, and a fresh round has to start from a new first read.
 
 Every entry's change is applied as one unit keyed by uid, so an entry that
 moves from one hour to another is never counted in both.
@@ -36,6 +44,7 @@ logged from this module.
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -242,15 +251,21 @@ def _merge_earliest(into: dict[CareLogSeries, int], other: Mapping[CareLogSeries
 class Ledger:
     """The accepted entries of one baby: uid to facts, indexed by hour.
 
-    Changed only through ``apply``.
+    Changed only through ``apply``. Queries cost the hours they ask for: the
+    indexed hours are kept sorted (rebuilt lazily after the set of hours
+    changes) and searched with ``bisect``. ``first_hour`` of every series is
+    cached, kept up to date by additions and recomputed in one pass only
+    after a change touched an entry at a cached first hour.
     """
 
-    __slots__ = ("_by_hour", "_entries")
+    __slots__ = ("_by_hour", "_entries", "_first", "_hours")
 
     def __init__(self) -> None:
         """Start empty."""
         self._entries: dict[str, EntryFacts] = {}
         self._by_hour: dict[int, set[str]] = {}
+        self._hours: list[int] | None = []
+        self._first: dict[CareLogSeries, int] | None = {}
 
     def __len__(self) -> int:
         """Return the number of accepted entries."""
@@ -270,7 +285,10 @@ class Ledger:
 
     def _hours_within(self, start_hour: int, end_hour: int) -> list[int]:
         """Return the indexed hours in ``[start_hour, end_hour)``, oldest first."""
-        return sorted(hour for hour in self._by_hour if start_hour <= hour < end_hour)
+        if self._hours is None:
+            self._hours = sorted(self._by_hour)
+        hours = self._hours
+        return hours[bisect_left(hours, start_hour) : bisect_left(hours, end_hour)]
 
     def uids_between(self, start: int, end: int) -> set[str]:
         """Return the uids whose accepted time lies within inclusive bounds."""
@@ -309,12 +327,12 @@ class Ledger:
 
     def first_hour(self, series: CareLogSeries) -> int | None:
         """Return the earliest hour in which an entry adds a positive amount to a series."""
-        hours = [
-            facts.hour
-            for facts in self._entries.values()
-            if (value := facts.amount(series)) is not None and value > 0
-        ]
-        return min(hours, default=None)
+        if self._first is None:
+            first: dict[CareLogSeries, int] = {}
+            for facts in self._entries.values():
+                _note_first(first, facts)
+            self._first = first
+        return self._first.get(series)
 
     def amounts(self, start_hour: int, end_hour: int) -> HourlyAmounts:
         """Return every series' amounts in ``[start_hour, end_hour)``, like ``hourly_amounts``."""
@@ -335,12 +353,18 @@ class Ledger:
             if self._entries.get(change.uid) != change.before:
                 raise ValueError("a change does not start from the accepted entry")
             if change.before is not None:
-                self._unindex(change.uid, change.before.hour)
+                self._unindex(change.uid, change.before)
             if change.after is None:
-                self._entries.pop(change.uid, None)
+                del self._entries[change.uid]
             else:
                 self._entries[change.uid] = change.after
-                self._by_hour.setdefault(change.after.hour, set()).add(change.uid)
+                uids = self._by_hour.get(change.after.hour)
+                if uids is None:
+                    uids = self._by_hour[change.after.hour] = set()
+                    self._hours = None
+                uids.add(change.uid)
+                if self._first is not None:
+                    _note_first(self._first, change.after)
             if (
                 change.before is None
                 or change.after is None
@@ -349,11 +373,27 @@ class Ledger:
                 _merge_earliest(changed, _changed_hours(change))
         return changed
 
-    def _unindex(self, uid: str, hour: int) -> None:
-        uids = self._by_hour[hour]
+    def _unindex(self, uid: str, before: EntryFacts) -> None:
+        uids = self._by_hour[before.hour]
         uids.discard(uid)
         if not uids:
-            del self._by_hour[hour]
+            del self._by_hour[before.hour]
+            self._hours = None
+        first = self._first
+        if first is not None and any(
+            value > 0 and first.get(series) == before.hour for series, value in before.raw
+        ):
+            # The entry may have been the only one there: recompute when asked.
+            self._first = None
+
+
+def _note_first(first: dict[CareLogSeries, int], facts: EntryFacts) -> None:
+    """Lower the cached first hours for what an entry adds."""
+    for series, value in facts.raw:
+        if value > 0:
+            current = first.get(series)
+            if current is None or facts.hour < current:
+                first[series] = facts.hour
 
 
 # ---------------------------------------------------------------------------
@@ -446,7 +486,11 @@ class Outcome:
 
     ``changed_from`` is, per series, the earliest hour whose amount may have
     changed. ``confirm`` is set while a lowering change for these bounds is
-    waiting. ``confirmed`` says the read confirmed a waiting record.
+    waiting. ``accepted`` counts the safe changes applied and ``lowered`` the
+    lowering ones. ``waiting`` counts the lowering changes this read found
+    and did not apply, whether held for a re-read or not (one in a running
+    hour, with a rejected amount, or already waiting under other bounds).
+    ``confirmed`` says the read confirmed a waiting record.
     """
 
     changed_from: Mapping[CareLogSeries, int]
@@ -638,9 +682,19 @@ class CareLogBook:
     def _hold(
         self, key: tuple[int, int], read: CareLogRead, changes: Iterable[Change], attempts: int
     ) -> bool:
-        """Make the lowering changes the record for these bounds; return whether it gave up."""
+        """Make the lowering changes the record for these bounds; return whether it gave up.
+
+        Only what a re-read of these bounds could confirm is held: a change
+        covered by this read's own finished hours, with no rejected amount
+        in it, and not already waiting under other bounds.
+        """
         elsewhere = self._waiting_elsewhere(key)
-        uids = frozenset(change.uid for change in changes if change.uid not in elsewhere)
+        cutoff = hour_start(read.read_at.timestamp())
+        uids = frozenset(
+            change.uid
+            for change in changes
+            if change.uid not in elsewhere and _covered(change, cutoff) and not _blocked(change)
+        )
         if not uids:
             self._pending.pop(key, None)
             return False
@@ -652,6 +706,35 @@ class CareLogBook:
         self._pending[key] = _Pending(read=read, uids=uids, attempts=attempts)
         return False
 
+    def _cancel_contradicted(self, read: CareLogRead) -> None:
+        """Drop waiting uids that this later read, of other bounds, contradicts.
+
+        An entry returned since a record's first read, in a state other than
+        the one that read implied, was not as that read said: the older
+        answer must not count towards removing or lowering it.
+        """
+        key = (read.start, read.end)
+        for other, record in list(self._pending.items()):
+            if other == key or read.read_at <= record.read.read_at:
+                continue
+            contradicted = set()
+            for uid in record.uids:
+                seen = read.entries.get(uid)
+                if seen is None:
+                    continue
+                said = record.read.entries.get(uid)
+                if said is None or not said.same_for_charts(seen):
+                    contradicted.add(uid)
+            if not contradicted:
+                continue
+            remaining = record.uids - contradicted
+            if remaining:
+                self._pending[other] = _Pending(
+                    read=record.read, uids=remaining, attempts=record.attempts
+                )
+            else:
+                del self._pending[other]
+
     def process(self, read: CareLogRead) -> Outcome:
         """Take one read while running; see the module docstring for the rule."""
         if not self._established:
@@ -659,6 +742,7 @@ class CareLogBook:
         self._check_reader(read)
         assessment = assess(self._ledger, read)
         changed = self._ledger.apply(assessment.safe)
+        self._cancel_contradicted(read)
 
         key = (read.start, read.end)
         pending = self._pending.get(key)

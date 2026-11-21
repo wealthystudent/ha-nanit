@@ -11,7 +11,7 @@ import aiohttp
 from .auth import TokenManager
 from .camera import NanitCamera
 from .exceptions import NanitAuthError
-from .models import Baby, CareLog, CareLogFetch, CloudEvent, SpeakerCandidate
+from .models import Baby, CareLog, CareLogDetailFetch, CareLogFetch, CloudEvent, SpeakerCandidate
 from .rest import NanitRestClient
 
 _LOGGER = logging.getLogger(__name__)
@@ -158,6 +158,19 @@ class NanitClient:
         """
         return await self._async_with_retry(
             lambda token: self._rest.async_get_calendar_result(token, baby_uid, start, end),
+        )
+
+    async def async_get_calendar_details(
+        self, baby_uid: str, start: int, end: int
+    ) -> CareLogDetailFetch:
+        """Fetch a baby's calendar keeping each entry's note and who logged it.
+
+        Notes and names are personal data: use this only where they are
+        meant to be shown, and ``async_get_calendar`` everywhere else.
+        Retries once on a mid-token-life 401 by refreshing the token.
+        """
+        return await self._async_with_retry(
+            lambda token: self._rest.async_get_calendar_details(token, baby_uid, start, end),
         )
 
     async def async_get_speaker_candidates(self, baby_uid: str) -> list[SpeakerCandidate]:

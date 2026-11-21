@@ -15,7 +15,17 @@ from .exceptions import (
     NanitConnectionError,
     NanitMfaRequiredError,
 )
-from .models import Baby, CareLog, CareLogFetch, CloudEvent, NetworkInfo, SpeakerCandidate
+from .models import (
+    Baby,
+    CareLog,
+    CareLogDetail,
+    CareLogDetailFetch,
+    CareLogEntry,
+    CareLogFetch,
+    CloudEvent,
+    NetworkInfo,
+    SpeakerCandidate,
+)
 
 DEFAULT_BASE_URL = "https://api.nanit.com"
 _DEFAULT_TIMEOUT = aiohttp.ClientTimeout(total=15)
@@ -216,6 +226,43 @@ def _parse_care_log(row: Any, baby_uid: str) -> CareLog | None:
         start_source=_token(row.get("start_source")),
         end_source=_token(row.get("end_source")),
         invalid_fields=frozenset(invalid),
+    )
+
+
+# Caps on the personal text of an entry, after cleaning. Notes in the app
+# are a line or two; names and relations a few words.
+_MAX_COMMENT_LENGTH = 500
+_MAX_USER_NAME_LENGTH = 100
+_MAX_USER_RELATION_LENGTH = 50
+
+# Control, format (bidirectional overrides, zero-width characters) and
+# unpaired surrogate code points. Whitespace among them becomes a space.
+_REMOVED_CATEGORIES = frozenset({"Cc", "Cf", "Cs"})
+
+
+def _clean_text(value: Any, max_length: int) -> str | None:
+    """Return value as bounded plain text, or None when it is not a string or ends up empty.
+
+    Markup is left as it is: this is text, and whoever shows it escapes it.
+    """
+    if not isinstance(value, str):
+        return None
+    kept = "".join(
+        ch for ch in value if ch.isspace() or unicodedata.category(ch) not in _REMOVED_CATEGORIES
+    )
+    text = " ".join(kept.split())[:max_length].rstrip()
+    return text or None
+
+
+def _parse_care_log_detail(row: dict[str, Any]) -> CareLogDetail:
+    """Return the cleaned note and logger of a /calendar row that parsed as an entry."""
+    user = row.get("user")
+    if not isinstance(user, dict):
+        user = {}
+    return CareLogDetail(
+        comment=_clean_text(row.get("comment"), _MAX_COMMENT_LENGTH),
+        user_name=_clean_text(user.get("name"), _MAX_USER_NAME_LENGTH),
+        user_relation=_clean_text(user.get("relation"), _MAX_USER_RELATION_LENGTH),
     )
 
 
@@ -505,6 +552,28 @@ class NanitRestClient:
         rows = await self._async_get_calendar_rows(access_token, baby_uid, start, end)
         logs = tuple(log for row in rows if (log := _parse_care_log(row, baby_uid)) is not None)
         return CareLogFetch(logs=logs, start=start, end=end, dropped=len(rows) - len(logs))
+
+    async def async_get_calendar_details(
+        self,
+        access_token: str,
+        baby_uid: str,
+        start: int,
+        end: int,
+    ) -> CareLogDetailFetch:
+        """Fetch like ``async_get_calendar_result``, keeping each entry's note and logger.
+
+        Notes and names are personal data. This is the only method that
+        keeps them; use it only where they are meant to be shown.
+        """
+        rows = await self._async_get_calendar_rows(access_token, baby_uid, start, end)
+        entries: list[CareLogEntry] = []
+        for row in rows:
+            log = _parse_care_log(row, baby_uid)
+            if log is not None:
+                entries.append(CareLogEntry(log=log, detail=_parse_care_log_detail(row)))
+        return CareLogDetailFetch(
+            entries=tuple(entries), start=start, end=end, dropped=len(rows) - len(entries)
+        )
 
     async def _async_get_calendar_rows(
         self,

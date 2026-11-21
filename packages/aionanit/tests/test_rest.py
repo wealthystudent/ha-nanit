@@ -14,7 +14,16 @@ from aionanit.exceptions import (
     NanitConnectionError,
     NanitMfaRequiredError,
 )
-from aionanit.models import Baby, CareLog, CareLogFetch, CloudEvent, SpeakerCandidate
+from aionanit.models import (
+    Baby,
+    CareLog,
+    CareLogDetail,
+    CareLogDetailFetch,
+    CareLogEntry,
+    CareLogFetch,
+    CloudEvent,
+    SpeakerCandidate,
+)
 from aionanit.rest import DEFAULT_BASE_URL, NanitRestClient
 
 from .fake_http import FakeSession, mock_api
@@ -1206,6 +1215,192 @@ class TestGetCalendar:
         # aiohttp's own error quotes the URL, and with it the baby's uid; ours doesn't.
         assert "baby123" in str(err.value.__cause__)
         assert str(err.value) == "Invalid calendar response: ContentTypeError"
+
+
+class TestGetCalendarDetails:
+    """The one path that keeps notes and names. All text here is made up."""
+
+    async def _fetch(self, client: NanitRestClient, rows: list[object]) -> CareLogDetailFetch:
+        with mock_api() as m:
+            m.get(CALENDAR_URL, payload={"calendar": rows})
+            return await client.async_get_calendar_details(
+                "token123", "baby123", 1700000000, 1700086400
+            )
+
+    @staticmethod
+    def _row(**fields: object) -> dict[str, object]:
+        return {"uid": "d1", "type": "diaper_change", "time": 1700000100, **fields}
+
+    async def test_keeps_the_entry_with_its_note_and_logger(self, client: NanitRestClient) -> None:
+        result = await self._fetch(
+            client,
+            [
+                self._row(
+                    change_type="pee",
+                    status="logged",
+                    comment="Before the walk",
+                    user={"name": "Sam Example", "relation": "guardian"},
+                ),
+                {"uid": "bad", "time": 1700000100},
+            ],
+        )
+
+        assert result == CareLogDetailFetch(
+            entries=(
+                CareLogEntry(
+                    log=CareLog(
+                        uid="d1",
+                        log_type="diaper_change",
+                        timestamp=1700000100.0,
+                        baby_uid="baby123",
+                        change_type="pee",
+                        status="logged",
+                    ),
+                    detail=CareLogDetail(
+                        comment="Before the walk",
+                        user_name="Sam Example",
+                        user_relation="guardian",
+                    ),
+                ),
+            ),
+            start=1700000000,
+            end=1700086400,
+            dropped=1,
+        )
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("  two\t\tspaces \n and\r\nlines  ", "two spaces and lines"),
+            ("bell\x07 and nul\x00 and del\x7f", "bell and nul and del"),
+            ("c1\x85next\x9bcsi", "c1 nextcsi"),
+            ("right\u202eto left\u202c", "rightto left"),
+            ("zero\u200bwidth\u2060joiner\ufeff", "zerowidthjoiner"),
+            ("line\u2028sep\u2029para", "line sep para"),
+            ("lone \ud800 surrogate", "lone surrogate"),
+            ("<b>bold</b> & <script>alert(1)</script>", "<b>bold</b> & <script>alert(1)</script>"),
+            ("Café, naïve, 日本語, emoji 🍼", "Café, naïve, 日本語, emoji 🍼"),
+            ("", None),
+            ("   \t\n ", None),
+            ("\u200b\u202e", None),
+            (42, None),
+            (None, None),
+            (["a note"], None),
+            ({"text": "a note"}, None),
+        ],
+    )
+    async def test_cleans_the_note(
+        self, client: NanitRestClient, raw: object, expected: str | None
+    ) -> None:
+        result = await self._fetch(client, [self._row(comment=raw)])
+
+        assert result.entries[0].detail.comment == expected
+
+    async def test_caps_oversized_text(self, client: NanitRestClient) -> None:
+        result = await self._fetch(
+            client,
+            [
+                self._row(
+                    comment="n" * 10_000,
+                    user={"name": "a" * 99 + " bcd", "relation": "r" * 51},
+                ),
+            ],
+        )
+
+        detail = result.entries[0].detail
+        assert detail.comment == "n" * 500
+        # Cut at the cap, then trimmed: no trailing space is left.
+        assert detail.user_name == "a" * 99
+        assert detail.user_relation == "r" * 50
+
+    @pytest.mark.parametrize(
+        "user",
+        [
+            None,
+            "Sam Example",
+            ["Sam Example"],
+            {},
+            {"name": None, "relation": 3},
+        ],
+    )
+    async def test_missing_or_malformed_user(self, client: NanitRestClient, user: object) -> None:
+        result = await self._fetch(client, [self._row(user=user)])
+
+        assert result.entries[0].detail == CareLogDetail()
+
+    async def test_row_without_user_or_comment(self, client: NanitRestClient) -> None:
+        result = await self._fetch(client, [self._row()])
+
+        assert result.entries[0].detail == CareLogDetail()
+
+    async def test_repr_never_shows_the_text(self, client: NanitRestClient) -> None:
+        result = await self._fetch(
+            client,
+            [
+                self._row(
+                    comment="MARKER-NOTE-7f3a",
+                    user={"name": "MARKER-NAME-7f3a", "relation": "MARKER-RELATION-7f3a"},
+                )
+            ],
+        )
+
+        assert result.entries[0].detail.comment == "MARKER-NOTE-7f3a"
+        for shown in (repr(result), str(result), f"{result.entries[0].detail}"):
+            assert "MARKER" not in shown
+
+    async def test_skips_malformed_rows_like_the_numbers_only_fetch(
+        self, client: NanitRestClient
+    ) -> None:
+        result = await self._fetch(
+            client,
+            [
+                "not a row",
+                {"uid": "x", "type": "Bad Type", "time": 1700000100, "comment": "kept?"},
+                self._row(comment="kept"),
+            ],
+        )
+
+        assert [entry.detail.comment for entry in result.entries] == ["kept"]
+        assert result.dropped == 2
+
+    async def test_unauthorized(self, client: NanitRestClient) -> None:
+        with mock_api() as m:
+            m.get(CALENDAR_URL, status=401)
+
+            with pytest.raises(NanitAuthError):
+                await client.async_get_calendar_details(
+                    "token123", "baby123", 1700000000, 1700086400
+                )
+
+    async def test_timeout_error_names_only_its_type(self, client: NanitRestClient) -> None:
+        with mock_api() as m:
+            m.get(CALENDAR_URL, exception=TimeoutError())
+
+            with pytest.raises(NanitConnectionError) as err:
+                await client.async_get_calendar_details(
+                    "token123", "baby123", 1700000000, 1700086400
+                )
+
+        assert str(err.value) == "Calendar fetch failed: TimeoutError"
+
+    async def test_numbers_only_fetches_never_build_the_detail(
+        self, client: NanitRestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def forbidden(*args: object, **kwargs: object) -> CareLogDetail:
+            raise AssertionError("the numbers-only path built a CareLogDetail")
+
+        monkeypatch.setattr("aionanit.rest.CareLogDetail", forbidden)
+        row = self._row(comment="MARKER-NOTE-7f3a", user={"name": "MARKER-NAME-7f3a"})
+        with mock_api() as m:
+            m.get(CALENDAR_URL, payload={"calendar": [row]})
+            m.get(CALENDAR_URL, payload={"calendar": [row]})
+            logs = await client.async_get_calendar("token123", "baby123", 1700000000, 1700086400)
+            result = await client.async_get_calendar_result(
+                "token123", "baby123", 1700000000, 1700086400
+            )
+
+        assert [type(log) for log in (*logs, *result.logs)] == [CareLog, CareLog]
+        assert "MARKER" not in repr((logs, result))
 
 
 class TestGetDeviceToken:

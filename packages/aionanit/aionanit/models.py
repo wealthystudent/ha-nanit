@@ -205,6 +205,40 @@ class CareLogFetch:
 
 
 @dataclass(frozen=True)
+class CareLogDetail:
+    """The personal text of a Care Log entry: its note, and who logged it.
+
+    Only ``async_get_calendar_details`` builds this; the numbers-only
+    fetches never do. Each field is cleaned text (control and format
+    characters removed, whitespace collapsed, length capped) or None. The
+    text is kept out of ``repr``, so printing or logging one shows nothing
+    of it.
+    """
+
+    comment: str | None = field(default=None, repr=False)
+    user_name: str | None = field(default=None, repr=False)
+    user_relation: str | None = field(default=None, repr=False)
+
+
+@dataclass(frozen=True)
+class CareLogEntry:
+    """A Care Log entry together with its personal text."""
+
+    log: CareLog
+    detail: CareLogDetail
+
+
+@dataclass(frozen=True)
+class CareLogDetailFetch:
+    """One calendar fetch with personal text, otherwise like ``CareLogFetch``."""
+
+    entries: tuple[CareLogEntry, ...]
+    start: int
+    end: int
+    dropped: int
+
+
+@dataclass(frozen=True)
 class SpeakerCandidate:
     """A Sound & Light Machine as the app's pairing view lists it.
 

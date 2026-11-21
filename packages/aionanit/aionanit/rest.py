@@ -636,6 +636,7 @@ class NanitRestClient:
         unredacted. So every error here is fixed text with only an error's
         type or an HTTP status, and is raised outside the handler that
         caught the original: nothing of it is chained as a cause or context.
+        The response is released on every way out.
         """
         failure: str | None = None
         try:
@@ -650,19 +651,25 @@ class NanitRestClient:
         if failure is not None:
             raise NanitConnectionError(f"Calendar fetch failed: {failure}")
 
-        if resp.status == 401:
-            raise NanitAuthError("Access token invalid")
-
-        # Like _classify_http_error, without chaining aiohttp's error.
-        if not resp.ok:
-            raise NanitConnectionError(f"Calendar fetch failed with HTTP {resp.status}")
         body: Any = None
         try:
-            body = await resp.json()
-        except (TimeoutError, aiohttp.ClientError, ValueError) as err:
-            failure = type(err).__name__
-        if failure is not None:
-            raise NanitConnectionError(f"Invalid calendar response: {failure}")
+            if resp.status == 401:
+                raise NanitAuthError("Access token invalid")
+
+            # Like _classify_http_error, without chaining aiohttp's error.
+            if not resp.ok:
+                raise NanitConnectionError(f"Calendar fetch failed with HTTP {resp.status}")
+            try:
+                body = await resp.json()
+            except (TimeoutError, aiohttp.ClientError, ValueError) as err:
+                failure = type(err).__name__
+            if failure is not None:
+                raise NanitConnectionError(f"Invalid calendar response: {failure}")
+        finally:
+            # What raise_for_status() does before it raises: an unread body
+            # would keep its connection, and its timeout, until collected. A
+            # no-op once the body was read to its end.
+            resp.release()
 
         rows = body.get("calendar") if isinstance(body, dict) else None
         if not isinstance(rows, list):

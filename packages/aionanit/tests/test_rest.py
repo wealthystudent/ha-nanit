@@ -5,9 +5,16 @@ from __future__ import annotations
 import contextlib
 import traceback
 from datetime import date
+from typing import Any
 
 import pytest
-from aiohttp import ClientConnectionError, ClientResponseError, RequestInfo, TooManyRedirects
+from aiohttp import (
+    ClientConnectionError,
+    ClientResponse,
+    ClientResponseError,
+    RequestInfo,
+    TooManyRedirects,
+)
 from multidict import CIMultiDict, CIMultiDictProxy
 from yarl import URL
 
@@ -662,6 +669,22 @@ class TestGetEvents:
 
             with pytest.raises(NanitConnectionError, match="Invalid events response"):
                 await client.async_get_events("token123", "baby123")
+
+
+def _record_responses(
+    session: FakeSession, monkeypatch: pytest.MonkeyPatch
+) -> list[ClientResponse]:
+    """Keep every response the session hands the client, to check it was released."""
+    responses: list[ClientResponse] = []
+    real_get = session.get
+
+    async def get(url: str, **kwargs: Any) -> ClientResponse:
+        resp = await real_get(url, **kwargs)
+        responses.append(resp)
+        return resp
+
+    monkeypatch.setattr(session, "get", get)
+    return responses
 
 
 class TestGetCalendar:
@@ -1422,6 +1445,66 @@ class TestGetCalendar:
         assert err.value.__cause__ is None
         assert err.value.__context__ is None
         assert str(err.value) == "Invalid calendar response: ContentTypeError"
+
+    @pytest.mark.parametrize(
+        ("status", "content_type", "error"),
+        [
+            (401, "application/json", NanitAuthError),
+            (403, "application/json", NanitConnectionError),
+            (500, "application/json", NanitConnectionError),
+            (200, "text/html", NanitConnectionError),
+        ],
+        ids=["unauthorized", "forbidden", "server_error", "not_json"],
+    )
+    async def test_get_calendar_releases_the_response_on_every_error(
+        self,
+        client: NanitRestClient,
+        session: FakeSession,
+        monkeypatch: pytest.MonkeyPatch,
+        status: int,
+        content_type: str,
+        error: type[Exception],
+    ) -> None:
+        """An error body left unread would keep its connection out of the pool."""
+        responses = _record_responses(session, monkeypatch)
+        # Too long to arrive with the headers, so only a release frees it.
+        body = "x" * (4 * 1024 * 1024)
+        with mock_api() as m:
+            m.get(CALENDAR_URL, status=status, body=body, content_type=content_type)
+
+            with pytest.raises(error) as err:
+                await self._fetch(client)
+
+        (resp,) = responses
+        assert resp.closed
+        assert resp.connection is None
+        assert err.value.__cause__ is None
+        assert err.value.__context__ is None
+
+    async def test_get_calendar_transport_error_leaves_no_response_open(
+        self, client: NanitRestClient, session: FakeSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        responses = _record_responses(session, monkeypatch)
+        with mock_api() as m:
+            m.get(CALENDAR_URL, exception=ClientConnectionError("down"))
+
+            with pytest.raises(NanitConnectionError):
+                await self._fetch(client)
+
+        # No response was ever handed over, so there is nothing to release.
+        assert responses == []
+
+    async def test_get_calendar_releases_the_response_it_read(
+        self, client: NanitRestClient, session: FakeSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        responses = _record_responses(session, monkeypatch)
+        with mock_api() as m:
+            m.get(CALENDAR_URL, payload={"calendar": []})
+            assert await self._fetch(client) == []
+
+        (resp,) = responses
+        assert resp.closed
+        assert resp.connection is None
 
     @pytest.mark.parametrize(
         "method", ["async_get_calendar", "async_get_calendar_result", "async_get_calendar_details"]

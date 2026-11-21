@@ -142,8 +142,8 @@ class CareLogRead:
 
     ``start`` and ``end`` are the inclusive bounds sent (Unix seconds).
     ``reader`` is an opaque id for the sign-in that made the request.
-    ``entries`` maps uid to facts, for the counted kinds only; what is in it
-    is what Nanit returned for the bounds.
+    ``entries`` maps uid to facts, for the counted kinds only, each dated
+    within the bounds.
     """
 
     start: int
@@ -175,16 +175,29 @@ class CareLogRead:
     ) -> CareLogRead:
         """Build a read from returned entries.
 
-        One entry per uid (the later-dated copy), counted kinds only. Entries
-        are kept as returned: Nanit decides what is inside the bounds.
+        One entry per uid (the later-dated copy), counted kinds only. A
+        counted entry dated outside the inclusive bounds is left out and
+        counted in ``dropped``: such an answer is not what was asked for,
+        so it can never confirm a removal, and a wrong old date cannot
+        stretch the statistics back by years.
         """
         entries: dict[str, EntryFacts] = {}
+        outside = 0
         for log in latest_by_uid(logs):
             facts = EntryFacts.from_log(log)
-            if facts is not None:
+            if facts is None:
+                continue
+            if start <= facts.timestamp <= end:
                 entries[log.uid] = facts
+            else:
+                outside += 1
         return cls(
-            start=start, end=end, read_at=read_at, dropped=dropped, reader=reader, entries=entries
+            start=start,
+            end=end,
+            read_at=read_at,
+            dropped=dropped + outside,
+            reader=reader,
+            entries=entries,
         )
 
     def __repr__(self) -> str:
@@ -766,14 +779,16 @@ class CareLogBook:
         for previous, current in pairwise(reads):
             if current.start < previous.start:
                 raise ValueError("the reads of a pass must be sorted by start")
-            if current.start != previous.end + 1:
+            # Touching, or sharing the boundary second; no gap, no more overlap.
+            if not previous.end <= current.start <= previous.end + 1:
                 raise ValueError("the reads of a pass must be contiguous")
 
     def candidate(self, reads: Sequence[CareLogRead]) -> Ledger:
         """Build a ledger from one pass of contiguous reads, without changing the book.
 
-        An entry in more than one read keeps the facts from the read taken
-        last (the later ``read_at``; the later read in the pass on a tie).
+        Adjacent reads touch or share their boundary second. An entry in more
+        than one read keeps the facts from the read taken last (the later
+        ``read_at``; the later read in the pass on a tie).
         """
         self._check_pass(reads)
         chosen: dict[str, tuple[datetime, EntryFacts]] = {}

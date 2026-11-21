@@ -185,18 +185,24 @@ def care_log_history_start(baby: Baby, now: datetime) -> int:
 def care_log_history_pieces(start: int, end: int) -> tuple[Bounds, ...]:
     """Split ``[start, end]`` (inclusive Unix seconds) into history pieces, oldest first.
 
-    Each piece spans at most ``HISTORY_PIECE``; the boundaries between pieces
-    lie on multiples of it since the Unix epoch, so the same bounds recur on
-    every pass. Consecutive pieces touch (``next.start == previous.end + 1``)
-    and the last ends at ``end``. Empty when ``end < start``.
+    Each piece spans at most ``HISTORY_PIECE`` (and its last second); the
+    boundaries between pieces lie on multiples of it since the Unix epoch,
+    so the same bounds recur on every pass. Consecutive pieces share their
+    boundary second (``next.start == previous.end``): Nanit dates entries to
+    a fraction of a second, so pieces that only touched would leave out an
+    entry dated within the second before a boundary. The last ends at
+    ``end``. Empty when ``end < start``.
     """
     pieces: list[Bounds] = []
+    if end < start:
+        return ()
     low = start
-    while low <= end:
-        high = min((low // _PIECE_SECONDS + 1) * _PIECE_SECONDS - 1, end)
+    while True:
+        high = min((low // _PIECE_SECONDS + 1) * _PIECE_SECONDS, end)
         pieces.append((low, high))
-        low = high + 1
-    return tuple(pieces)
+        if high >= end:
+            return tuple(pieces)
+        low = high
 
 
 # ---------------------------------------------------------------------------
@@ -580,7 +586,8 @@ class CareLogStatisticsImporter:
         self._keeping = True
         reader_read = self._read_from_reader(newest)
         history_start = care_log_history_start(self._baby, dt_util.utcnow())
-        pieces = care_log_history_pieces(history_start, reader_read.start - 1)
+        # The last piece shares the reader read's first second.
+        pieces = care_log_history_pieces(history_start, reader_read.start)
         reads: list[CareLogRead] = []
         for index, (start, end) in enumerate(pieces):
             await self._async_pause(index)
@@ -781,7 +788,7 @@ class CareLogStatisticsImporter:
         reader_start = self._reader_start
         assert reader_start is not None
         history_start = care_log_history_start(self._baby, dt_util.utcnow())
-        pieces = care_log_history_pieces(history_start, reader_start - 1)
+        pieces = care_log_history_pieces(history_start, reader_start)
         # Confirm requests for yesterday's last piece still count as history.
         self._piece_bounds = {*self._piece_bounds, *pieces}
         for index, (start, end) in enumerate(pieces):

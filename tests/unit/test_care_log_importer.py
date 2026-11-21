@@ -98,9 +98,10 @@ def _check_pieces(pieces: tuple[tuple[int, int], ...], start: int, end: int) -> 
     assert pieces[-1][1] == end
     for low, high in pieces:
         assert low <= high
-        assert high - low + 1 <= PIECE
+        assert high - low <= PIECE
     for previous, current in pairwise(pieces):
-        assert current[0] == previous[1] + 1
+        # Adjacent pieces share their boundary second.
+        assert current[0] == previous[1]
         assert current[0] % PIECE == 0
 
 
@@ -122,32 +123,34 @@ def test_pieces_break_on_the_grid() -> None:
     pieces = care_log_history_pieces(start, end)
 
     assert pieces == (
-        (start, 4 * PIECE - 1),
-        (4 * PIECE, 5 * PIECE - 1),
-        (5 * PIECE, 6 * PIECE - 1),
+        (start, 4 * PIECE),
+        (4 * PIECE, 5 * PIECE),
+        (5 * PIECE, 6 * PIECE),
         (6 * PIECE, end),
     )
     _check_pieces(pieces, start, end)
 
 
 def test_pieces_starting_and_ending_on_the_grid_are_whole() -> None:
-    pieces = care_log_history_pieces(2 * PIECE, 4 * PIECE - 1)
+    pieces = care_log_history_pieces(2 * PIECE, 4 * PIECE)
 
-    assert pieces == ((2 * PIECE, 3 * PIECE - 1), (3 * PIECE, 4 * PIECE - 1))
+    assert pieces == ((2 * PIECE, 3 * PIECE), (3 * PIECE, 4 * PIECE))
 
 
-def test_an_end_just_past_the_grid_gets_a_one_second_piece() -> None:
-    pieces = care_log_history_pieces(2 * PIECE + 5, 3 * PIECE)
-
-    assert pieces == ((2 * PIECE + 5, 3 * PIECE - 1), (3 * PIECE, 3 * PIECE))
+def test_an_end_on_the_grid_ends_the_piece_and_one_past_it_adds_a_one_second_piece() -> None:
+    assert care_log_history_pieces(2 * PIECE + 5, 3 * PIECE) == ((2 * PIECE + 5, 3 * PIECE),)
+    assert care_log_history_pieces(2 * PIECE + 5, 3 * PIECE + 1) == (
+        (2 * PIECE + 5, 3 * PIECE),
+        (3 * PIECE, 3 * PIECE + 1),
+    )
 
 
 def test_pieces_of_a_real_history_keep_their_bounds_from_day_to_day() -> None:
     start = care_log_history_start(_baby(birth=date(2025, 8, 1)), NOW)
-    today = care_log_history_pieces(start, int(NOW.timestamp()) - DAY - 1)
-    tomorrow = care_log_history_pieces(start, int(NOW.timestamp()) - 1)
+    today = care_log_history_pieces(start, int(NOW.timestamp()) - DAY)
+    tomorrow = care_log_history_pieces(start, int(NOW.timestamp()))
 
-    _check_pieces(today, start, int(NOW.timestamp()) - DAY - 1)
+    _check_pieces(today, start, int(NOW.timestamp()) - DAY)
     assert len(today) >= 3
     assert tomorrow[: len(today) - 1] == today[:-1]
 

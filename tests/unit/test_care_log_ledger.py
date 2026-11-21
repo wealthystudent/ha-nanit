@@ -152,13 +152,38 @@ def test_a_read_keeps_counted_kinds_once_per_uid_as_returned() -> None:
         _bottle("b1", AT_10, 50.0),  # the later-dated copy wins
         _log("s1", "sleep", AT_9, duration_s=600.0),
         _log("x1", "temperature", AT_9),
-        # Outside the bounds: kept anyway, Nanit decides what is in range.
-        _diaper("d1", DAY - timedelta(days=3)),
+        _diaper("d1", AT_10),
     ]
-    read = _read(logs, at=T0)
+    read = _read(logs, at=T0, dropped=2)
     assert set(read.entries) == {"b1", "d1"}
     assert read.entries["b1"].hour == _hour(AT_10)
     assert read.entries["b1"].amount(S.BOTTLE_VOLUME) == 50.0
+    assert read.dropped == 2
+
+
+def test_a_read_leaves_out_and_counts_entries_dated_outside_its_bounds() -> None:
+    at_start = datetime.fromtimestamp(START, UTC)
+    logs = [
+        _diaper("d_old", DAY - timedelta(days=3)),  # a wrong, old date
+        _bottle("b_early", at_start - timedelta(seconds=0.5)),
+        _bottle("b_edge", at_start),  # the bounds are inclusive
+        _bottle("b_last", datetime.fromtimestamp(END, UTC)),
+        _bottle("b_late", datetime.fromtimestamp(END + 0.5, UTC)),
+        _log("s_old", "sleep", DAY - timedelta(days=3), duration_s=600.0),  # not counted
+    ]
+    read = _read(logs, at=T0, dropped=1)
+    assert set(read.entries) == {"b_edge", "b_last"}
+    assert read.dropped == 1 + 3
+
+
+def test_an_answer_with_an_entry_outside_its_bounds_never_confirms_a_removal() -> None:
+    book = _book([_bottle("b1", AT_9), _diaper("d1", AT_10)])
+    outside = _diaper("d_old", DAY - timedelta(days=3))
+    book.process(_read([_diaper("d1", AT_10)], at=T0))
+    outcome = book.process(_read([_diaper("d1", AT_10), outside], at=T0 + GAP))
+    assert not outcome.confirmed
+    assert "b1" in book.ledger
+    assert "d_old" not in book.ledger
 
 
 def test_a_read_checks_its_bounds_time_and_dropped_count() -> None:
@@ -675,7 +700,7 @@ def _reads_at(*bounds: tuple[int, int], reader: str = READER) -> list[CareLogRea
         pytest.param(_reads_at((START, END), reader="reader-b"), id="other-reader"),
         pytest.param(_reads_at((NOON, END), (START, NOON - 1)), id="unsorted"),
         pytest.param(_reads_at((START, NOON - 1), (NOON + 1, END)), id="gap"),
-        pytest.param(_reads_at((START, NOON), (NOON, END)), id="overlap"),
+        pytest.param(_reads_at((START, NOON + 1), (NOON, END)), id="overlap"),
     ],
 )
 def test_a_candidate_needs_contiguous_reads_by_this_reader(reads: list[CareLogRead]) -> None:
@@ -685,20 +710,39 @@ def test_a_candidate_needs_contiguous_reads_by_this_reader(reads: list[CareLogRe
 
 
 def test_an_entry_in_two_reads_of_a_pass_keeps_the_later_read() -> None:
-    # The entry was moved from the morning to the afternoon between requests.
+    # The entry was moved from the afternoon to the morning between requests:
+    # the afternoon's read was taken first.
     book = CareLogBook(reader=READER, min_gap=GAP)
     afternoon = datetime(2026, 3, 10, 13, 5, tzinfo=UTC)
     reads = [
         _read(
-            [_bottle("b1", afternoon, 50.0)],
+            [_bottle("b1", AT_9, 90.0)],
             at=T0 + timedelta(seconds=5),
             start=START,
             end=NOON - 1,
         ),
-        _read([_bottle("b1", AT_9, 90.0)], at=T0, start=NOON, end=END),
+        _read([_bottle("b1", afternoon, 50.0)], at=T0, start=NOON, end=END),
     ]
     ledger = book.candidate(reads)
-    assert ledger.get("b1") == _facts(_bottle("b1", afternoon, 50.0))
+    assert ledger.get("b1") == _facts(_bottle("b1", AT_9, 90.0))
+
+
+def test_a_pass_may_share_boundary_seconds_and_keeps_an_entry_in_both_once() -> None:
+    book = CareLogBook(reader=READER, min_gap=GAP)
+    boundary = _log("b5", "bottle_feed", datetime.fromtimestamp(NOON, UTC), feed_amount_ml=40.0)
+    reads = [
+        _read([boundary], at=T0, start=START, end=NOON),
+        _read([boundary], at=T0 + timedelta(seconds=1), start=NOON, end=END),
+    ]
+    ledger = book.candidate(reads)
+    assert len(ledger) == 1
+    assert ledger.series_hours(S.BOTTLE_VOLUME, NOON, NOON + 3600) == {NOON: 40.0}
+    later = T0 + GAP + timedelta(seconds=1)
+    second = [
+        _read([boundary], at=later, start=START, end=NOON),
+        _read([boundary], at=later, start=NOON, end=END),
+    ]
+    assert book.passes_agree(reads, second)
 
 
 def test_two_passes_agree() -> None:

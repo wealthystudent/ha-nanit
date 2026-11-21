@@ -331,7 +331,7 @@ def _first_poll_start(at: datetime = NOW) -> int:
 
 
 def _expected_pieces(reader_start: int, baby: Baby = BABY) -> tuple[Bounds, ...]:
-    return care_log_history_pieces(care_log_history_start(baby, NOW), reader_start - 1)
+    return care_log_history_pieces(care_log_history_start(baby, NOW), reader_start)
 
 
 async def _imported(make: Callable[..., Harness], truth: Truth) -> Harness:
@@ -374,9 +374,9 @@ async def test_a_first_import_reads_the_history_in_grid_pieces_and_writes_rows(
     assert pieces == list(_expected_pieces(_first_poll_start()))
     assert len(pieces) >= 3
     assert pieces[0][0] == care_log_history_start(BABY, NOW)
-    assert pieces[-1][1] == _first_poll_start() - 1
+    assert pieces[-1][1] == _first_poll_start()
     for previous, current in pairwise(pieces):
-        assert current[0] == previous[1] + 1
+        assert current[0] == previous[1]
         assert current[0] % PIECE == 0
 
     volume = await _stored(hass, S.BOTTLE_VOLUME)
@@ -414,6 +414,23 @@ async def test_a_second_start_with_the_same_truth_adopts_at_once_and_writes_noth
     assert second.diag()["entries"] == 4
     assert _rows_sent(sent) == written
     assert second.diag()["rows_written"] == 0
+
+
+async def test_entries_dated_within_the_second_before_a_boundary_are_read(
+    make: Callable[..., Harness], hass: HomeAssistant
+) -> None:
+    pieces = _expected_pieces(_first_poll_start())
+    boundary = pieces[1][0]  # between two pieces, on the grid
+    assert boundary % PIECE == 0
+    inner = _bottle("b_inner", datetime.fromtimestamp(boundary - 0.5, UTC), 40.0)
+    edge = _bottle("b_edge", datetime.fromtimestamp(_first_poll_start() - 0.5, UTC), 20.0)
+    truth = Truth([*BASE, inner, edge])
+
+    await _imported(make, truth)
+
+    volume = await _stored(hass, S.BOTTLE_VOLUME)
+    assert volume[_hour(inner)] == 40.0
+    assert volume[_hour(edge)] == 20.0
 
 
 async def test_the_reader_answer_from_before_the_start_is_used(
@@ -998,7 +1015,7 @@ async def test_the_daily_pass_rereads_the_same_grid_and_writes_nothing_when_unch
     daily = truth.own
     assert daily == list(_expected_pieces(truth.reader[-1][0]))
     assert daily[: len(first_pieces) - 1] == first_pieces[:-1]
-    assert daily[-1][1] == truth.reader[-1][0] - 1
+    assert daily[-1][1] == truth.reader[-1][0]
     assert _rows_sent(sent) == written
     assert harness.diag()["rows_written_last_sync"] == 0
     assert harness.diag()["passes_completed"] == 2

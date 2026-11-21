@@ -14,7 +14,7 @@ from aionanit.exceptions import (
     NanitConnectionError,
     NanitMfaRequiredError,
 )
-from aionanit.models import Baby, CareLog, CloudEvent, SpeakerCandidate
+from aionanit.models import Baby, CareLog, CareLogFetch, CloudEvent, SpeakerCandidate
 from aionanit.rest import DEFAULT_BASE_URL, NanitRestClient
 
 from .fake_http import FakeSession, mock_api
@@ -1067,6 +1067,74 @@ class TestGetCalendar:
 
         assert "MARKER" not in repr(log)
         assert all("MARKER" not in str(value) for value in vars(log).values())
+
+    async def test_get_calendar_result_counts_dropped_rows(self, client: NanitRestClient) -> None:
+        with mock_api() as m:
+            m.get(
+                CALENDAR_URL,
+                payload={
+                    "calendar": [
+                        "not a row",
+                        None,
+                        {"type": "diaper_change", "time": 1700000100},
+                        {"uid": "x", "type": "Diaper", "time": 1700000100},
+                        {"uid": "x", "type": "diaper_change", "time": 1700000100000},
+                        {"uid": "ok", "type": "diaper_change", "time": 1700000100},
+                        # Kept: an unusable amount is not a malformed row.
+                        {"uid": "b1", "type": "bottle_feed", "time": 1700000200, "feed_amount": -1},
+                    ]
+                },
+            )
+            result = await client.async_get_calendar_result(
+                "token123", "baby123", 1700000000, 1700086400
+            )
+
+        assert result == CareLogFetch(
+            logs=(
+                CareLog(
+                    uid="ok", log_type="diaper_change", timestamp=1700000100.0, baby_uid="baby123"
+                ),
+                CareLog(
+                    uid="b1",
+                    log_type="bottle_feed",
+                    timestamp=1700000200.0,
+                    baby_uid="baby123",
+                    invalid_fields=frozenset({"feed_amount_ml"}),
+                ),
+            ),
+            start=1700000000,
+            end=1700086400,
+            dropped=5,
+        )
+
+    async def test_get_calendar_result_empty(self, client: NanitRestClient) -> None:
+        with mock_api() as m:
+            m.get(CALENDAR_URL, payload={"calendar": []})
+            result = await client.async_get_calendar_result(
+                "token123", "baby123", 1700000000, 1700086400
+            )
+
+        assert result == CareLogFetch(logs=(), start=1700000000, end=1700086400, dropped=0)
+
+    async def test_get_calendar_result_without_list_is_connection_error(
+        self, client: NanitRestClient
+    ) -> None:
+        with mock_api() as m:
+            m.get(CALENDAR_URL, payload={"calendar": None})
+
+            with pytest.raises(NanitConnectionError, match="no calendar list"):
+                await client.async_get_calendar_result(
+                    "token123", "baby123", 1700000000, 1700086400
+                )
+
+    async def test_get_calendar_result_unauthorized(self, client: NanitRestClient) -> None:
+        with mock_api() as m:
+            m.get(CALENDAR_URL, status=401)
+
+            with pytest.raises(NanitAuthError):
+                await client.async_get_calendar_result(
+                    "token123", "baby123", 1700000000, 1700086400
+                )
 
     async def test_get_calendar_empty(self, client: NanitRestClient) -> None:
         with mock_api() as m:

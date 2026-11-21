@@ -15,7 +15,7 @@ from .exceptions import (
     NanitConnectionError,
     NanitMfaRequiredError,
 )
-from .models import Baby, CareLog, CloudEvent, NetworkInfo, SpeakerCandidate
+from .models import Baby, CareLog, CareLogFetch, CloudEvent, NetworkInfo, SpeakerCandidate
 
 DEFAULT_BASE_URL = "https://api.nanit.com"
 _DEFAULT_TIMEOUT = aiohttp.ClientTimeout(total=15)
@@ -492,6 +492,28 @@ class NanitRestClient:
         amount or duration reads as not logged, and is named in the entry's
         ``invalid_fields``.
         """
+        return list((await self.async_get_calendar_result(access_token, baby_uid, start, end)).logs)
+
+    async def async_get_calendar_result(
+        self,
+        access_token: str,
+        baby_uid: str,
+        start: int,
+        end: int,
+    ) -> CareLogFetch:
+        """Fetch what ``async_get_calendar`` does, with the range and how many rows were skipped."""
+        rows = await self._async_get_calendar_rows(access_token, baby_uid, start, end)
+        logs = tuple(log for row in rows if (log := _parse_care_log(row, baby_uid)) is not None)
+        return CareLogFetch(logs=logs, start=start, end=end, dropped=len(rows) - len(logs))
+
+    async def _async_get_calendar_rows(
+        self,
+        access_token: str,
+        baby_uid: str,
+        start: int,
+        end: int,
+    ) -> list[Any]:
+        """Return the raw rows of a /calendar answer, unparsed."""
         try:
             resp = await self._session.get(
                 f"{self._base_url}/babies/{baby_uid}/calendar",
@@ -518,7 +540,7 @@ class NanitRestClient:
         rows = body.get("calendar") if isinstance(body, dict) else None
         if not isinstance(rows, list):
             raise NanitConnectionError("Invalid calendar response: no calendar list")
-        return [log for row in rows if (log := _parse_care_log(row, baby_uid)) is not None]
+        return rows
 
     async def async_get_speaker_candidates(
         self,

@@ -739,7 +739,7 @@ PRE_PUSH_HOOK = """#!/bin/sh
 # after, with the same input.
 input=$(mktemp) || exit 1
 trap 'rm -f "$input"' EXIT
-cat > "$input"
+cat > "$input" || exit 1
 if [ -f tools/verify.py ]; then  # not on branches from before the hook existed
   uv run --frozen --only-group lint python tools/verify.py pre-push "$@" < "$input" || exit 1
 fi

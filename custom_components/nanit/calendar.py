@@ -17,7 +17,7 @@ import math
 import re
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from homeassistant.components.calendar import CalendarEntity, CalendarEvent
 from homeassistant.components.sensor import SensorDeviceClass
@@ -66,6 +66,15 @@ _MICROSECOND = timedelta(microseconds=1)
 # this far back to catch an entry that started before the range and runs
 # into it. A margin, not a proven maximum.
 CARE_LOG_REACH_BACK = timedelta(hours=24)
+
+# Where care logs can exist, so an absurd range costs a few dozen requests
+# rather than one per 90 days without end: nothing before 2014 (the floor
+# the statistics importer uses for history; Nanit's care logs are younger)
+# and nothing more than a year ahead. The ceiling counts from the start of
+# today in UTC, so it, and with it a range's cache key, stays put all day.
+# A range wholly outside is answered empty without asking Nanit.
+CARE_LOG_EARLIEST = datetime(2014, 1, 1, tzinfo=UTC)
+CARE_LOG_AHEAD = timedelta(days=366)
 
 # The longest single request, and how many requests may run at once. A
 # range is fetched by this many workers taking its pieces in turn, so a
@@ -455,6 +464,12 @@ def _event(
     return None
 
 
+def _fetch_bounds() -> tuple[int, int]:
+    """Return the first and the last Unix second a fetch may ask Nanit for."""
+    today = dt_util.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    return int(CARE_LOG_EARLIEST.timestamp()), int((today + CARE_LOG_AHEAD).timestamp())
+
+
 def _pieces(start: int, end: int) -> Iterator[tuple[int, int]]:
     """Split an inclusive range into requests of at most CARE_LOG_MAX_PIECE, in order."""
     step = int(CARE_LOG_MAX_PIECE.total_seconds())
@@ -563,6 +578,11 @@ class NanitCareLogCalendar(CoordinatorEntity[NanitCareLogCoordinator], CalendarE
         # the local clock would be 23 or 25 real ones.
         fetch_start = math.floor((dt_util.as_utc(start_date) - CARE_LOG_REACH_BACK).timestamp())
         fetch_end = math.ceil(end_date.timestamp())
+        earliest, latest = _fetch_bounds()
+        if fetch_end < earliest or fetch_start > latest:
+            return []
+        fetch_start = max(fetch_start, earliest)
+        fetch_end = min(fetch_end, latest)
         rows = await self._async_rows((fetch_start, max(fetch_start, fetch_end), show_notes))
         texts = await _async_texts(hass)
         # The option may have changed, or the calendar gone, while the answer

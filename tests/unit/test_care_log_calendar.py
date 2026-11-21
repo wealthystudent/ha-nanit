@@ -643,11 +643,76 @@ async def test_a_30_year_range_adds_no_more_tasks_than_its_workers(
     fake.gate.set()
     assert await pending == []
     calls = fake.calendar_calls()
-    assert len(calls) > 120
+    # From 2014, where care logs begin, to the end of the range.
+    assert len(calls) > 50
     assert fake.most_in_flight == 2
     bounds = sorted((s, e) for _m, s, e in calls)
     for (_low, high), (next_low, _next_high) in pairwise(bounds):
         assert high == next_low
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+# Where care logs can exist, from NOW: 2014 on, and a year ahead counted from
+# the start of NOW's UTC day.
+EARLIEST = datetime.fromisoformat("2014-01-01T00:00:00+00:00")
+LATEST = datetime.fromisoformat("2026-11-20T00:00:00+00:00") + timedelta(days=366)
+
+
+async def test_a_thousand_year_range_asks_only_where_care_logs_can_exist(
+    hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory
+) -> None:
+    freezer.move_to(NOW)
+    fake = FakeNanit()
+    fake.add(_log("early", "diaper_change", EARLIEST))
+    fake.add(_log("now", "diaper_change", NOW))
+    fake.add(_log("latest", "diaper_change", LATEST))
+    entry, calendar = await _one_calendar(hass, client, fake)
+    start = datetime.fromisoformat("1500-01-01T00:00:00+00:00")
+    end = datetime.fromisoformat("2500-01-01T00:00:00+00:00")
+
+    events = await _events(hass, calendar, start, end)
+
+    calls = fake.calendar_calls()
+    bounds = sorted((s, e) for _m, s, e in calls)
+    step = int(CARE_LOG_MAX_PIECE.total_seconds())
+    span = int(_ts(LATEST)) - int(_ts(EARLIEST))
+    assert len(calls) == -(-span // step)
+    assert len(calls) < 60
+    assert bounds[0][0] == int(_ts(EARLIEST))
+    assert bounds[-1][1] == int(_ts(LATEST))
+    assert len(events) == 3
+    # The same range a minute later is answered from memory: its key is the
+    # clamped one, and the ceiling only moves once a day.
+    fake.forget_calls()
+    freezer.tick(timedelta(minutes=1))
+    assert len(await _events(hass, calendar, start, end)) == 3
+    assert fake.calls == []
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+@pytest.mark.parametrize(
+    ("start", "end"),
+    [
+        ("2000-01-01T00:00:00+00:00", "2000-02-01T00:00:00+00:00"),
+        ("1000-01-01T00:00:00+00:00", "2013-12-31T00:00:00+00:00"),
+        ("2028-01-01T00:00:00+00:00", "2028-02-01T00:00:00+00:00"),
+        ("2030-01-01T00:00:00+00:00", "3000-01-01T00:00:00+00:00"),
+    ],
+    ids=["before", "long_before", "after", "long_after"],
+)
+async def test_a_range_wholly_outside_asks_nothing(
+    hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory, start: str, end: str
+) -> None:
+    freezer.move_to(NOW)
+    fake = FakeNanit()
+    entry, calendar = await _one_calendar(hass, client, fake)
+
+    events = await _events(
+        hass, calendar, datetime.fromisoformat(start), datetime.fromisoformat(end)
+    )
+
+    assert events == []
+    assert fake.calendar_calls() == []
     assert await hass.config_entries.async_unload(entry.entry_id)
 
 

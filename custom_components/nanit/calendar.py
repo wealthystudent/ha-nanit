@@ -55,10 +55,12 @@ PARALLEL_UPDATES = 0
 CARE_LOG_SLEEP_KINDS = frozenset({"sleep", "auto_sleep", "semi_auto_sleep"})
 
 # How long an entry without a usable length (a moment) is shown for, cut
-# short at the next local midnight so it never reaches into the next day.
+# short at the next local midnight so it never reaches into the next day,
+# and just before the clocks go back (see _moment_end).
 # Home Assistant's calendar view draws an event of zero length an hour long,
 # so a moment late in the evening would reach into the next day.
 CARE_LOG_MOMENT_LENGTH = timedelta(minutes=1)
+_MICROSECOND = timedelta(microseconds=1)
 
 # Nanit matches a range by an entry's start only, so every request reaches
 # this far back to catch an entry that started before the range and runs
@@ -346,16 +348,47 @@ def _moment(timestamp: float | None) -> datetime | None:
         return None
 
 
-def _moment_end(start: datetime) -> datetime:
-    """Return where a moment's nominal length ends: a minute on, or the next local midnight.
+def _wall_clock(moment: datetime) -> datetime:
+    """Return what Home Assistant's local clock reads at a moment, as a naive time."""
+    return dt_util.as_local(moment).replace(tzinfo=None)
 
-    Midnight is in Home Assistant's time zone, so the moment never reaches
-    into the next day; its length is more than zero and at most a minute.
+
+def _clock_change(start: datetime, end: datetime) -> datetime:
+    """Return the first instant after start, up to end, with another UTC offset.
+
+    The local offset at end must differ from the one at start. Found by
+    halving, to the microsecond, on UTC instants.
     """
-    end = start + CARE_LOG_MOMENT_LENGTH
-    midnight = dt_util.start_of_local_day(dt_util.as_local(start).date() + timedelta(days=1))
+    offset = dt_util.as_local(start).utcoffset()
+    low, high = start, end
+    while high - low > _MICROSECOND:
+        middle = low + (high - low) / 2
+        if dt_util.as_local(middle).utcoffset() == offset:
+            low = middle
+        else:
+            high = middle
+    return high
+
+
+def _moment_end(start: datetime) -> datetime:
+    """Return where a moment's nominal length ends: a minute on, or sooner.
+
+    Worked out on UTC instants. The minute is cut short at the next local
+    midnight, so the moment never reaches into the next day, and just
+    before the clocks go back, since Home Assistant checks an event's span
+    on the local wall clock, where the end would read before the start. Its
+    length is more than zero and at most a minute.
+    """
+    try:
+        end = start + CARE_LOG_MOMENT_LENGTH
+        next_day = dt_util.as_local(start).date() + timedelta(days=1)
+    except OverflowError:
+        return start
+    midnight = dt_util.as_utc(dt_util.start_of_local_day(next_day))
     if start < midnight < end:
-        return midnight
+        end = midnight
+    if _wall_clock(end) <= _wall_clock(start):
+        end = max(start, _clock_change(start, end) - _MICROSECOND)
     return end
 
 
@@ -393,17 +426,19 @@ def _overlaps(
 def _event(
     start: datetime, end: datetime, summary: str, description: str | None
 ) -> CalendarEvent | None:
-    """Build the event in local time, as a moment if the span is rejected.
+    """Build the event in local time from UTC instants, as a moment if the span is rejected.
 
     Home Assistant checks the span on local wall-clock times, so an entry
     across a repeated hour when the clocks go back can look reversed. It is
     then shown as a moment at its start rather than dropped.
     """
-    local_start = dt_util.as_local(start)
-    for local_end in (dt_util.as_local(end), local_start):
+    for event_end in (end, _moment_end(start), start):
         try:
             return CalendarEvent(
-                start=local_start, end=local_end, summary=summary, description=description
+                start=dt_util.as_local(start),
+                end=dt_util.as_local(event_end),
+                summary=summary,
+                description=description,
             )
         except HomeAssistantError:
             continue
@@ -512,7 +547,9 @@ class NanitCareLogCalendar(CoordinatorEntity[NanitCareLogCoordinator], CalendarE
         """Return the care entries that fall in [start_date, end_date)."""
         entry = self.coordinator.config_entry
         show_notes = is_show_care_log_notes(entry)
-        fetch_start = math.floor((start_date - CARE_LOG_REACH_BACK).timestamp())
+        # Elapsed time, on UTC: on a day the clocks change, 24 hours back on
+        # the local clock would be 23 or 25 real ones.
+        fetch_start = math.floor((dt_util.as_utc(start_date) - CARE_LOG_REACH_BACK).timestamp())
         fetch_end = math.ceil(end_date.timestamp())
         rows = await self._async_rows((fetch_start, max(fetch_start, fetch_end), show_notes))
         texts = await _async_texts(hass)

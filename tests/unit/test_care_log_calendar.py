@@ -885,7 +885,9 @@ async def test_clocks_going_back_fall_back_to_a_moment_and_keep_the_rest(
 
     assert _summaries(events) == ["Nursing, 20 min", "Diaper", "Nursing, 10 min"]
     first, diaper, second = events
-    assert first.start == first.end == dt_util.as_local(across)
+    # Shown as a moment at its start: one minute, like any other moment.
+    assert first.start == dt_util.as_local(across)
+    assert first.end - first.start == timedelta(minutes=1)
     assert diaper.end - diaper.start == timedelta(minutes=1)
     assert second.end - second.start == timedelta(minutes=10)
     assert await hass.config_entries.async_unload(entry.entry_id)
@@ -996,6 +998,106 @@ async def test_moments_in_a_time_zone_offset_by_30_minutes(
         (late, end),
     }
     assert all(e.start.utcoffset() == timedelta(hours=5, minutes=30) for e in events)
+
+
+def _utc(text: str) -> datetime:
+    return datetime.fromisoformat(text)
+
+
+# Each zone's clock changes in 2026 (UTC instants), and an ordinary day.
+LOS_ANGELES = "America/Los_Angeles"
+LORD_HOWE = "Australia/Lord_Howe"  # +10:30, and +11:00 in summer: a 30-minute change
+CLOCK_DAYS = {
+    # zone, local day: the instant the clocks change that day, or None
+    "la_forward": (LOS_ANGELES, "2026-03-08", _utc("2026-03-08T10:00:00+00:00")),
+    "la_back": (LOS_ANGELES, "2026-11-01", _utc("2026-11-01T09:00:00+00:00")),
+    "la_ordinary": (LOS_ANGELES, "2026-11-20", None),
+    "lord_howe_back": (LORD_HOWE, "2026-04-05", _utc("2026-04-04T15:00:00+00:00")),
+    "lord_howe_forward": (LORD_HOWE, "2026-10-04", _utc("2026-10-03T15:30:00+00:00")),
+    "lord_howe_ordinary": (LORD_HOWE, "2026-11-20", None),
+}
+
+
+@pytest.mark.parametrize(
+    ("zone", "range_start"),
+    [
+        # The brief's example: 04:00 PDT, after the clocks went forward.
+        (LOS_ANGELES, _utc("2026-03-08T11:00:00+00:00")),
+        # 04:00 PST, after they went back.
+        (LOS_ANGELES, _utc("2026-11-01T12:00:00+00:00")),
+        # Midnight on the day after each change, and an ordinary midnight.
+        (LOS_ANGELES, _utc("2026-03-09T07:00:00+00:00")),
+        (LOS_ANGELES, _utc("2026-11-02T08:00:00+00:00")),
+        (LOS_ANGELES, _utc("2026-11-20T08:00:00+00:00")),
+        # 04:00 on each Lord Howe change day, and an ordinary midnight.
+        (LORD_HOWE, _utc("2026-04-04T17:30:00+00:00")),
+        (LORD_HOWE, _utc("2026-10-03T17:00:00+00:00")),
+        (LORD_HOWE, _utc("2026-11-19T13:00:00+00:00")),
+    ],
+)
+async def test_the_reach_back_is_24_elapsed_hours_whatever_the_clocks_do(
+    hass: HomeAssistant,
+    client: Any,
+    freezer: FrozenDateTimeFactory,
+    zone: str,
+    range_start: datetime,
+) -> None:
+    await hass.config.async_set_time_zone(zone)
+    freezer.move_to(NOW)
+    fake = FakeNanit()
+    entry, calendar = await _one_calendar(hass, client, fake)
+    start = dt_util.as_local(range_start)
+    end = dt_util.as_local(range_start + timedelta(days=1))
+
+    await _events(hass, calendar, start, end)
+
+    ((_method, fetch_start, fetch_end),) = fake.calendar_calls()
+    assert int(_ts(range_start)) - fetch_start == 24 * 3600
+    assert fetch_end == int(_ts(range_start + timedelta(days=1)))
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+@pytest.mark.parametrize("day", list(CLOCK_DAYS), ids=list(CLOCK_DAYS))
+async def test_every_moment_lasts_up_to_a_minute_and_stays_on_its_day(
+    hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory, day: str
+) -> None:
+    """Moments around midnight and the clock changes, checked on UTC instants."""
+    zone, local_day, change = CLOCK_DAYS[day]
+    await hass.config.async_set_time_zone(zone)
+    freezer.move_to(NOW)
+    day_start = dt_util.start_of_local_day(datetime.fromisoformat(local_day).date())
+    next_midnight = dt_util.as_utc(dt_util.start_of_local_day(day_start.date() + timedelta(days=1)))
+    noon = dt_util.as_utc(day_start) + timedelta(hours=12)
+    around = change or noon
+    seconds = (-60, -59, -30, -1, 0, 1, 30)
+    times = sorted(
+        {dt_util.as_utc(day_start) + timedelta(seconds=s) for s in (0, 1, 30)}
+        | {around + timedelta(seconds=s) for s in seconds}
+        | {next_midnight + timedelta(seconds=s) for s in (-60, -59, -30, -1)}
+    )
+
+    events = await _moments(
+        hass, client, times, day_start, dt_util.as_local(next_midnight), kinds=("diaper_change",)
+    )
+
+    assert sorted(dt_util.as_utc(e.start) for e in events) == times
+    for event in events:
+        start, end = dt_util.as_utc(event.start), dt_util.as_utc(event.end)
+        assert timedelta(0) < end - start <= timedelta(minutes=1), (start, end)
+        assert end <= next_midnight, (start, end)
+        # Shown in local time, with the offset in force at each instant.
+        assert event.start.utcoffset() == dt_util.as_local(start).utcoffset()
+        assert event.end.utcoffset() == dt_util.as_local(end).utcoffset()
+    if change is not None:
+        # The last minute before the clocks go back ends just before they do.
+        last = next(e for e in events if dt_util.as_utc(e.start) == change - timedelta(seconds=30))
+        offset_before = dt_util.as_local(change - timedelta(seconds=1)).utcoffset()
+        offset_after = dt_util.as_local(change).utcoffset()
+        assert offset_before is not None and offset_after is not None
+        if offset_after < offset_before:
+            assert dt_util.as_utc(last.end) == change - timedelta(microseconds=1)
+        else:
+            assert dt_util.as_utc(last.end) == change + timedelta(seconds=30)
 
 
 async def test_a_range_takes_a_moment_by_its_start_as_before(

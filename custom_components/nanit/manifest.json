@@ -3,6 +3,7 @@
   "name": "Nanit",
   "after_dependencies": [
     "go2rtc",
+    "recorder",
     "zeroconf"
   ],
   "codeowners": [

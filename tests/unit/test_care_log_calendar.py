@@ -829,7 +829,9 @@ def test_the_english_fallback_matches_strings_json() -> None:
         (Path(calendar_module.__file__).parent / "strings.json").read_text(encoding="utf-8")
     )
     attributes = strings["entity"]["calendar"]["care_log"]["state_attributes"]
-    assert {group: value["state"] for group, value in attributes.items()} == FALLBACK_TEXT
+    # The statistics' names share the block; care_log_statistics checks those.
+    calendar_groups = {g: v["state"] for g, v in attributes.items() if g != "statistic_name"}
+    assert calendar_groups == FALLBACK_TEXT
 
 
 async def test_text_falls_back_to_english_when_translations_fail(

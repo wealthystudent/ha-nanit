@@ -434,7 +434,10 @@ class NanitRestClient:
                 timeout=_DEFAULT_TIMEOUT,
             )
         except (TimeoutError, aiohttp.ClientError) as err:
-            raise NanitConnectionError(str(err) or type(err).__name__) from err
+            # Only the error's type: its text can carry the request URL, and
+            # with it the baby's uid, which diagnostics would show unredacted.
+            # The messages below are fixed text and an HTTP status.
+            raise NanitConnectionError(f"Calendar fetch failed: {type(err).__name__}") from err
 
         if resp.status == 401:
             raise NanitAuthError("Access token invalid")
@@ -443,8 +446,7 @@ class NanitRestClient:
         try:
             body = await resp.json()
         except (TimeoutError, aiohttp.ClientError, ValueError) as err:
-            # The error's own text can carry the request URL, and with it the
-            # baby's uid, which diagnostics would then show unredacted.
+            # Only the type, for the same reason as above.
             raise NanitConnectionError(f"Invalid calendar response: {type(err).__name__}") from err
 
         rows = body.get("calendar") if isinstance(body, dict) else None

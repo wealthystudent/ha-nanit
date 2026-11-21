@@ -590,8 +590,11 @@ async def test_care_log_coordinator_auth_failure_propagates(
     await hub.async_close()
 
 
-async def test_diagnostics_report_care_log_counts_only() -> None:
-    care = MagicMock(last_update_success=True, last_exception=None, data=DAY)
+@pytest.mark.parametrize(("data", "has_data"), [(DAY, True), (_summary([]), False), (None, False)])
+async def test_diagnostics_report_only_whether_there_are_care_logs(
+    data: CareLogData | None, has_data: bool
+) -> None:
+    care = MagicMock(last_update_success=True, last_exception=None, data=data)
     cam_data = MagicMock(
         baby=Baby(uid="baby_1", name="Nursery", camera_uid="cam_1"),
         push_coordinator=MagicMock(
@@ -607,6 +610,5 @@ async def test_diagnostics_report_care_log_counts_only() -> None:
     assert result["cameras"]["camera_0"]["care_log_coordinator"] == {
         "last_update_success": True,
         "last_exception": None,
-        "latest_types": ["bottle_feed", "diaper_change", "nursing", "pumping"],
-        "today_count": 9,
+        "has_data": has_data,
     }

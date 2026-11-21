@@ -5,7 +5,9 @@ from __future__ import annotations
 import contextlib
 
 import pytest
-from aiohttp import ClientConnectionError, ClientResponseError
+from aiohttp import ClientConnectionError, ClientResponseError, RequestInfo, TooManyRedirects
+from multidict import CIMultiDict, CIMultiDictProxy
+from yarl import URL
 
 from aionanit.exceptions import (
     NanitAuthError,
@@ -790,25 +792,49 @@ class TestGetCalendar:
         with mock_api() as m:
             m.get(CALENDAR_URL, status=403)
 
-            with pytest.raises(NanitConnectionError, match="HTTP 403"):
+            with pytest.raises(NanitConnectionError) as err:
                 await self._fetch(client)
+
+        # aiohttp's own error quotes the URL, and with it the baby's uid; ours doesn't.
+        assert "baby123" in str(err.value.__cause__)
+        assert str(err.value) == "Calendar fetch failed with HTTP 403"
 
     async def test_get_calendar_timeout_is_connection_error(self, client: NanitRestClient) -> None:
         with mock_api() as m:
             m.get(CALENDAR_URL, exception=TimeoutError())
 
-            with pytest.raises(NanitConnectionError):
+            with pytest.raises(NanitConnectionError) as err:
                 await self._fetch(client)
+
+        assert str(err.value) == "Calendar fetch failed: TimeoutError"
+
+    async def test_get_calendar_client_error_never_repeats_the_url(
+        self, client: NanitRestClient
+    ) -> None:
+        """aiohttp's redirect-loop error quotes the request URL, which carries the baby's uid."""
+        url = URL(CALENDAR_URL)
+        redirect_loop = TooManyRedirects(
+            RequestInfo(url, "GET", CIMultiDictProxy(CIMultiDict()), url), ()
+        )
+        assert "baby123" in str(redirect_loop)
+        with mock_api() as m:
+            m.get(CALENDAR_URL, exception=redirect_loop)
+
+            with pytest.raises(NanitConnectionError) as err:
+                await self._fetch(client)
+
+        assert str(err.value) == "Calendar fetch failed: TooManyRedirects"
 
     async def test_get_calendar_non_json_is_connection_error(self, client: NanitRestClient) -> None:
         with mock_api() as m:
             m.get(CALENDAR_URL, status=200, body="<html>oops</html>", content_type="text/html")
 
-            with pytest.raises(NanitConnectionError, match="Invalid calendar response") as err:
+            with pytest.raises(NanitConnectionError) as err:
                 await self._fetch(client)
 
-        # The message never repeats the URL, which carries the baby's uid.
-        assert "baby123" not in str(err.value)
+        # aiohttp's own error quotes the URL, and with it the baby's uid; ours doesn't.
+        assert "baby123" in str(err.value.__cause__)
+        assert str(err.value) == "Invalid calendar response: ContentTypeError"
 
 
 class TestGetDeviceToken:

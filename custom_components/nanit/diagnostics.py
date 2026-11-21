@@ -74,13 +74,13 @@ async def async_get_config_entry_diagnostics(
 
         care = cam_data.care_log_coordinator
         if care is not None:
-            # Counts only: the entries themselves are a record of the baby's day.
+            # Only whether any entry was found: even which kinds of entry, or
+            # how many, would be a record of the baby's day.
             care_data = care.data
             cam_diag["care_log_coordinator"] = {
                 "last_update_success": care.last_update_success,
                 "last_exception": (str(care.last_exception) if care.last_exception else None),
-                "latest_types": sorted(care_data.latest) if care_data is not None else None,
-                "today_count": len(care_data.today) if care_data is not None else None,
+                "has_data": care_data is not None and bool(care_data.latest),
             }
 
         cameras_diag[f"camera_{index}"] = cam_diag

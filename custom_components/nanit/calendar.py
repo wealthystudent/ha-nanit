@@ -203,10 +203,12 @@ def _fill(template: str, values: Mapping[str, str]) -> str | None:
     return None if missing else text
 
 
-def _number(value: float) -> str:
-    """Return value with at most one decimal, without a trailing .0."""
-    rounded = round(value, 1)
-    return str(int(rounded)) if rounded == int(rounded) else f"{rounded:.1f}"
+def _number(value: float, decimals: int = 1) -> str:
+    """Return value with at most ``decimals`` decimals, without trailing zeros."""
+    rounded = round(value, decimals)
+    if rounded == int(rounded):
+        return str(int(rounded))
+    return f"{rounded:.{decimals}f}".rstrip("0")
 
 
 def _valid(log: CareLog, name: str) -> float | None:
@@ -252,7 +254,8 @@ class _Formatter:
             ounces = VolumeConverter.convert(
                 milliliters, UnitOfVolume.MILLILITERS, UnitOfVolume.FLUID_OUNCES
             )
-            return self._texts.get("measurement", "fluid_ounces", value=_number(ounces))
+            # Two decimals: parents log quarter ounces, which one decimal mangles.
+            return self._texts.get("measurement", "fluid_ounces", value=_number(ounces, 2))
         return self._texts.get("measurement", "milliliters", value=_number(milliliters))
 
     def duration(self, seconds: float) -> str:

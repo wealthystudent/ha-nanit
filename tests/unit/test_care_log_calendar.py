@@ -626,11 +626,11 @@ async def _day(
             US_CUSTOMARY_SYSTEM,
             [
                 ("Diaper, mixed", None, 0),
-                ("Bottle, 1 fl oz", "Logged at 2026-11-20 08:20", 0),
+                ("Bottle, 1.01 fl oz", "Logged at 2026-11-20 08:20", 0),
                 ("Nursing, 15 min", "Left side: 10 min\nRight side: 5 min", 900),
                 (
-                    "Pumping, 1 fl oz",
-                    "Left side: 0.7 fl oz\nRight side: 0.3 fl oz\nDuration: 20 min",
+                    "Pumping, 1.01 fl oz",
+                    "Left side: 0.68 fl oz\nRight side: 0.34 fl oz\nDuration: 20 min",
                     1200,
                 ),
             ],
@@ -660,6 +660,77 @@ async def test_each_kind_title_description_and_length(
         assert event.end.tzinfo is not None
         assert event.uid is None
         assert event.location is None
+
+
+@pytest.mark.parametrize(
+    ("units", "expected"),
+    [
+        (
+            US_CUSTOMARY_SYSTEM,
+            [
+                ("Pumping, 1.75 fl oz", "Left side: 0.75 fl oz\nRight side: 1 fl oz"),
+                ("Pumping, 0.5 fl oz", "Left side: 0.25 fl oz\nRight side: 0.25 fl oz"),
+                ("Bottle, 1.75 fl oz", None),
+                ("Bottle, 0.25 fl oz", None),
+            ],
+        ),
+        (
+            METRIC_SYSTEM,
+            [
+                ("Pumping, 51.8 mL", "Left side: 22.2 mL\nRight side: 29.6 mL"),
+                ("Pumping, 14.8 mL", "Left side: 7.4 mL\nRight side: 7.4 mL"),
+                ("Bottle, 51.8 mL", None),
+                ("Bottle, 7.4 mL", None),
+            ],
+        ),
+    ],
+    ids=["us_customary", "metric"],
+)
+async def test_quarter_ounces_keep_two_decimals_and_millilitres_one(
+    hass: HomeAssistant,
+    client: Any,
+    freezer: FrozenDateTimeFactory,
+    units: Any,
+    expected: list[tuple[str, str | None]],
+) -> None:
+    """Stored mL a hair under a quarter ounce still show as that quarter."""
+    freezer.move_to(NOW)
+    hass.config.units = units
+    fake = FakeNanit()
+    at = _local("2026-11-20T12:00:00")
+    # 22.18 mL is 0.74999 fl oz, 7.39 mL 0.24989, 29.57 mL 0.99986, 51.75 mL 1.74987.
+    fake.add(_log("p1", "pumping", at, left_amount_ml=22.18, right_amount_ml=29.57))
+    fake.add(
+        _log("p2", "pumping", at + timedelta(minutes=1), left_amount_ml=7.39, right_amount_ml=7.39)
+    )
+    fake.add(_log("b1", "bottle_feed", at + timedelta(minutes=2), feed_amount_ml=51.75))
+    fake.add(_log("b2", "bottle_feed", at + timedelta(minutes=3), feed_amount_ml=7.39))
+
+    events = await _day(hass, client, fake)
+
+    assert [(e.summary, e.description) for e in events] == expected
+
+
+def test_numbers_drop_trailing_zeros() -> None:
+    assert [calendar_module._number(value) for value in (0.0, 1.0, 15.5, 22.18, 29.96, 7.04)] == [
+        "0",
+        "1",
+        "15.5",
+        "22.2",
+        "30",
+        "7",
+    ]
+    assert [
+        calendar_module._number(value, 2) for value in (0.74999, 1.74987, 0.24989, 0.49977, 0.99986)
+    ] == [
+        "0.75",
+        "1.75",
+        "0.25",
+        "0.5",
+        "1",
+    ]
+    assert calendar_module._number(1.014, 2) == "1.01"
+    assert calendar_module._number(0.104, 2) == "0.1"
 
 
 async def test_notes_and_who_logged_with_the_option_on(
@@ -966,7 +1037,7 @@ async def test_text_is_formatted_after_the_cache(
     customary = await _events(hass, calendar, RANGE_START, RANGE_END)
 
     assert _summaries(metric)[1] == "Bottle, 30 mL"
-    assert _summaries(customary)[1] == "Bottle, 1 fl oz"
+    assert _summaries(customary)[1] == "Bottle, 1.01 fl oz"
     assert len(fake.calendar_calls()) == 1
     assert await hass.config_entries.async_unload(entry.entry_id)
 

@@ -317,7 +317,10 @@ class CareLogData:
     first. ``entries`` is every entry the last fetch returned, and
     ``before_window`` the newest entry of each type older than that fetch's
     start: the next summary needs both to know what came before its own,
-    shorter, fetch.
+    shorter, fetch. ``needs_seed`` is set when an entry from before the
+    window turned up again inside it (its date was edited), so what came
+    before it is no longer known and the next fetch has to look back as far
+    as the first one did.
     """
 
     latest: Mapping[str, CareLog]
@@ -325,13 +328,29 @@ class CareLogData:
     day_start: datetime
     entries: tuple[CareLog, ...] = ()
     before_window: Mapping[str, CareLog] = field(default_factory=dict)
+    needs_seed: bool = False
+
+
+def _order(log: CareLog) -> tuple[float, str]:
+    """Sort key for entries: by time, and by uid between entries at the same time."""
+    return (log.timestamp, log.uid)
 
 
 def _keep_newest(newest: dict[str, CareLog], log: CareLog) -> None:
     """Store ``log`` under its type unless a newer entry of that type is there."""
     current = newest.get(log.log_type)
-    if current is None or log.timestamp > current.timestamp:
+    if current is None or _order(log) > _order(current):
         newest[log.log_type] = log
+
+
+def _by_uid(logs: Iterable[CareLog]) -> dict[str, CareLog]:
+    """Index entries by uid, so a row the API repeats counts only once."""
+    unique: dict[str, CareLog] = {}
+    for log in logs:
+        current = unique.get(log.uid)
+        if current is None or log.timestamp > current.timestamp:
+            unique[log.uid] = log
+    return unique
 
 
 def build_care_log_data(
@@ -348,13 +367,22 @@ def build_care_log_data(
     earlier fetch returned. An entry inside the window that the API no
     longer returns was deleted in the app, so it no longer counts.
     """
-    entries = tuple(log for log in logs if log.log_type in CARE_LOG_TYPES)
+    fetched = _by_uid(logs)
+    entries = tuple(log for log in fetched.values() if log.log_type in CARE_LOG_TYPES)
 
     before_window: dict[str, CareLog] = {}
+    needs_seed = False
     if previous is not None:
         for log in (*previous.before_window.values(), *previous.entries):
-            if log.timestamp < window_start:
+            if log.timestamp >= window_start:
+                continue
+            current = fetched.get(log.uid)
+            if current is None:
                 _keep_newest(before_window, log)
+            elif current != log:
+                # The same entry, edited since: the older copy is stale, and
+                # must not come back if the entry is deleted later.
+                needs_seed = True
 
     latest = dict(before_window)
     for log in entries:
@@ -369,7 +397,7 @@ def build_care_log_data(
     today = tuple(
         sorted(
             (log for log in entries if day_start_ts <= log.timestamp < day_end_ts),
-            key=lambda log: log.timestamp,
+            key=_order,
         )
     )
     return CareLogData(
@@ -378,6 +406,7 @@ def build_care_log_data(
         day_start=day_start,
         entries=entries,
         before_window=before_window,
+        needs_seed=needs_seed,
     )
 
 
@@ -388,7 +417,10 @@ class NanitCareLogCoordinator(DataUpdateCoordinator[CareLogData]):
     The first poll looks back CARE_LOG_SEED_DAYS days to find the newest
     entry of each type; later polls fetch the last 24 hours (and at least
     since midnight) and carry older entries forward, which keeps each poll
-    small.
+    small. A poll looks back the full CARE_LOG_SEED_DAYS again when the last
+    successful one is more than 24 hours old, so entries logged during an
+    outage are not skipped, and when the last summary asks for it
+    (``CareLogData.needs_seed``).
     """
 
     config_entry: NanitConfigEntry
@@ -410,14 +442,20 @@ class NanitCareLogCoordinator(DataUpdateCoordinator[CareLogData]):
         )
         self._hub = hub
         self.baby = baby
+        # When the last successful fetch started.
+        self._last_fetch: datetime | None = None
 
     async def _async_update_data(self) -> CareLogData:
         """Fetch Care Logs from the Nanit API and summarise them."""
         now = dt_util.utcnow()
         day_start = dt_util.start_of_local_day()
-        lookback = (
-            _CARE_LOG_LOOKBACK if self.data is not None else timedelta(days=CARE_LOG_SEED_DAYS)
+        seed = (
+            self.data is None
+            or self.data.needs_seed
+            or self._last_fetch is None
+            or now - self._last_fetch > _CARE_LOG_LOOKBACK
         )
+        lookback = timedelta(days=CARE_LOG_SEED_DAYS) if seed else _CARE_LOG_LOOKBACK
         window_start = min(day_start, now - lookback)
         start = int(window_start.timestamp())
         end = int((now + _CARE_LOG_END_SLACK).timestamp())
@@ -439,6 +477,7 @@ class NanitCareLogCoordinator(DataUpdateCoordinator[CareLogData]):
                 translation_placeholders={"error": str(err)},
             ) from err
 
+        self._last_fetch = now
         return build_care_log_data(
             logs, window_start=start, day_start=day_start, previous=self.data
         )

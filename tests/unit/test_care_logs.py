@@ -165,6 +165,59 @@ def test_new_day_moves_yesterdays_entries_before_the_window() -> None:
     assert data.today == ()
 
 
+def test_summary_counts_a_repeated_row_once() -> None:
+    bottle = _log("b1", "bottle_feed", 600, feed_amount_ml=120.0)
+
+    data = _summary([bottle, bottle])
+
+    assert data.today == (bottle,)
+    assert data.entries == (bottle,)
+    assert _sensor("feedings_today", data).native_value == 1
+    assert _sensor("bottle_volume_today", data).native_value == 120.0
+
+
+def test_summary_breaks_a_tie_in_time_the_same_way_in_any_order() -> None:
+    pee = _log("d1", "diaper_change", 600, change_type="pee")
+    poo = _log("d2", "diaper_change", 600, change_type="poo")
+
+    forward = _summary([pee, poo])
+    backward = _summary([poo, pee])
+
+    assert forward.latest["diaper_change"] == backward.latest["diaper_change"] == poo
+    assert forward.today == backward.today == (pee, poo)
+
+
+def test_redated_entry_does_not_come_back_once_deleted() -> None:
+    """An entry moved from Monday to today, then deleted, leaves no stale Monday copy."""
+    sunday = _log("p0", "pumping", -4 * 86400)
+    monday = _log("p1", "pumping", -3 * 86400)
+    seed = _summary([sunday, monday])
+    assert seed.needs_seed is False
+
+    # Same uid, date edited to today.
+    moved = _log("p1", "pumping", 600)
+    second = _summary([moved], window_start=MIDNIGHT, previous=seed)
+    assert second.latest["pumping"] == moved
+    assert second.before_window["pumping"] == sunday
+    assert second.needs_seed is True
+
+    third = _summary([], window_start=MIDNIGHT, previous=second)
+
+    assert third.latest["pumping"] == sunday
+    assert third.needs_seed is False
+
+
+def test_entry_returned_again_unchanged_before_the_window_needs_no_seed() -> None:
+    """A fetch may return a row dated just before its start; that is not an edit."""
+    evening = _log("b1", "bottle_feed", -600)
+    seed = _summary([evening])
+
+    data = _summary([evening], window_start=MIDNIGHT, previous=seed)
+
+    assert data.latest["bottle_feed"] == evening
+    assert data.needs_seed is False
+
+
 # ---------------------------------------------------------------------------
 # NanitCareLogCoordinator
 # ---------------------------------------------------------------------------
@@ -217,6 +270,62 @@ async def test_later_polls_look_back_24_hours(
 
     assert fetch.await_args is not None
     assert fetch.await_args.args[1] == int((dt_util.utcnow() - timedelta(hours=24)).timestamp())
+
+
+def _requested_start(fetch: AsyncMock) -> int:
+    assert fetch.await_args is not None
+    start: int = fetch.await_args.args[1]
+    return start
+
+
+async def test_poll_after_an_outage_looks_back_seed_days_again(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """After more than 24 hours without a successful fetch, nothing in between is skipped."""
+    freezer.move_to("2026-11-20T18:00:00+00:00")
+    fetch = AsyncMock(return_value=[])
+    coordinator = _coordinator(hass, fetch)
+    await coordinator.async_refresh()
+
+    freezer.tick(timedelta(hours=12))
+    fetch.side_effect = NanitConnectionError("Calendar fetch failed with HTTP 503")
+    await coordinator.async_refresh()
+    assert coordinator.last_update_success is False
+
+    freezer.tick(timedelta(hours=24))
+    fetch.side_effect = None
+    await coordinator.async_refresh()
+
+    seed_start = dt_util.utcnow() - timedelta(days=CARE_LOG_SEED_DAYS)
+    assert _requested_start(fetch) == int(seed_start.timestamp())
+
+    # Back to normal once it has caught up.
+    await coordinator.async_refresh()
+    assert _requested_start(fetch) == int((dt_util.utcnow() - timedelta(hours=24)).timestamp())
+
+
+async def test_redated_entry_makes_the_next_poll_look_back_seed_days(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    freezer.move_to("2026-11-20T18:00:00+00:00")
+    now = dt_util.utcnow().timestamp()
+    monday = CareLog(uid="p1", log_type="pumping", timestamp=now - 3 * 86400, baby_uid="baby_1")
+    fetch = AsyncMock(return_value=[monday])
+    coordinator = _coordinator(hass, fetch)
+    await coordinator.async_refresh()
+
+    # Its date is edited to today, which the 24 hour poll sees.
+    fetch.return_value = [CareLog(uid="p1", log_type="pumping", timestamp=now, baby_uid="baby_1")]
+    await coordinator.async_refresh()
+    day_ago = int((dt_util.utcnow() - timedelta(hours=24)).timestamp())
+    assert _requested_start(fetch) == day_ago
+
+    await coordinator.async_refresh()
+    seed_start = dt_util.utcnow() - timedelta(days=CARE_LOG_SEED_DAYS)
+    assert _requested_start(fetch) == int(seed_start.timestamp())
+
+    await coordinator.async_refresh()
+    assert _requested_start(fetch) == day_ago
 
 
 async def test_entry_logged_after_midnight_for_the_evening_before_is_picked_up(

@@ -520,9 +520,13 @@ class NanitCareLogSensor(NanitCareLogEntity, SensorEntity):
         self._attr_unique_id = f"{coordinator.baby.camera_uid}_{description.key}"
         # Not every family uses Care Logs. An account with no entries
         # in the first fetch's lookback gets these registered disabled, so
-        # it isn't handed a set of sensors that never change.
+        # it isn't handed a set of sensors that never change. No data at all
+        # means the first fetch failed, which says nothing about the account,
+        # so they are registered enabled and stay unavailable until a fetch
+        # succeeds. This is only the default for a new registry entry: one
+        # already registered keeps whatever it was set to.
         data = coordinator.data
-        self._attr_entity_registry_enabled_default = data is not None and bool(data.latest)
+        self._attr_entity_registry_enabled_default = data is None or bool(data.latest)
 
     @property
     def native_value(self) -> datetime | float | int | None:

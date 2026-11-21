@@ -157,6 +157,7 @@ class NanitHub:
         self._live_unpaired_uids: set[str] = set()
         self._unpaired_from_map: set[str] = set()
         self._sound_lights: dict[str, NanitSoundLight] = {}
+        self._care_log_coordinators: dict[str, NanitCareLogCoordinator] = {}
         self._unsubscribe_tokens: Callable[[], None] | None = None
         self._unsubscribe_failed_check: Callable[[], None] | None = None
 
@@ -174,6 +175,19 @@ class NanitHub:
     def speaker_data(self) -> dict[str, SpeakerData]:
         """Return per-speaker runtime data, keyed by speaker_uid."""
         return self._speaker_data
+
+    @property
+    def care_log_coordinators(self) -> dict[str, NanitCareLogCoordinator]:
+        """Return the Care Log reader of each baby, keyed by baby uid.
+
+        One per baby record with a uid, whether or not its camera connected.
+        A reader whose first fetch failed is here too (``data`` is None
+        until a fetch succeeds), so a missing key means the baby is not on
+        the account, or setup has not reached the Care Logs yet. Like any
+        coordinator, a reader polls on its schedule only while something
+        listens to it: the camera's sensors, or a later feature's listener.
+        """
+        return self._care_log_coordinators
 
     @property
     def babies(self) -> list[Baby]:
@@ -386,11 +400,10 @@ class NanitHub:
                 f"No devices could be set up: {', '.join(failed_cameras + failed_speakers)}"
             )
 
-        # Care Logs start once the cameras are up, together, so their fetches
-        # never count against a camera's setup timeout.
-        await asyncio.gather(
-            *(self._async_setup_care_logs(cam_data) for cam_data in self._camera_data.values())
-        )
+        # Care Logs start once the devices are up, together, so their fetches
+        # never count against a camera's setup timeout. They come after the
+        # check above, so they never decide whether the entry is set up.
+        await self._async_setup_care_logs()
 
         # via_device must point at a camera device that actually registered
         # this run. The speaker tasks ran concurrently with the camera
@@ -773,22 +786,55 @@ class NanitHub:
             network_coordinator=network_coordinator,
         )
 
-    async def _async_setup_care_logs(self, cam_data: CameraData) -> None:
-        """Start the optional Care Logs coordinator for a camera's baby."""
-        coordinator = NanitCareLogCoordinator(self._hass, self._entry, self, cam_data.baby)
+    async def _async_setup_care_logs(self) -> None:
+        """Start one Care Log reader per baby, and hand each camera its baby's.
+
+        Every baby record with a uid gets one, including a baby whose camera
+        failed to connect or who has no camera: Care Logs belong to the
+        baby, not the camera. Only a camera that is set up gets the sensors.
+        """
+        for baby in self._babies:
+            # A record without a uid has no Care Logs to read (the unpaired
+            # speaker's placeholder baby is one), and a repeated uid is the
+            # same baby.
+            if not baby.uid or baby.uid in self._care_log_coordinators:
+                continue
+            self._care_log_coordinators[baby.uid] = NanitCareLogCoordinator(
+                self._hass, self._entry, self, baby
+            )
+
+        results = await asyncio.gather(
+            *(
+                self._async_first_care_log_fetch(coordinator)
+                for coordinator in self._care_log_coordinators.values()
+            ),
+            return_exceptions=True,
+        )
+        # Every first fetch has finished before an authentication failure is
+        # raised, so none is left running against a hub that is closing.
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+
+        for cam_data in self._camera_data.values():
+            cam_data.care_log_coordinator = self._care_log_coordinators.get(cam_data.baby.uid)
+
+    async def _async_first_care_log_fetch(self, coordinator: NanitCareLogCoordinator) -> None:
+        """Run a Care Log reader's first fetch, keeping the reader if it fails."""
         try:
             await coordinator.async_config_entry_first_refresh()
         except ConfigEntryNotReady as err:
-            # Optional, like the cloud and network coordinators: degrade to
-            # no Care Log sensors instead of retry-looping the whole entry.
-            # ConfigEntryAuthFailed still propagates, so HA starts reauth.
+            # Optional, like the cloud and network coordinators, so one failed
+            # fetch must not retry-loop the whole entry. Unlike them, the
+            # reader is kept: it polls again on its normal schedule while its
+            # sensors listen, and they show unavailable until a fetch
+            # succeeds. ConfigEntryAuthFailed still propagates, so HA starts
+            # reauth.
             _LOGGER.warning(
-                "Care log coordinator for %s failed to start; care log sensors disabled (%s)",
-                cam_data.baby.name,
+                "Care log fetch for %s failed at setup; retrying on the normal schedule (%s)",
+                coordinator.baby.name,
                 err,
             )
-            return
-        cam_data.care_log_coordinator = coordinator
 
     async def _setup_speaker(
         self,
@@ -855,6 +901,14 @@ class NanitHub:
     async def async_close(self) -> None:
         """Stop all devices and clean up."""
         self._cancel_failed_check()
+        # The readers also shut down with the entry's unload callbacks; doing
+        # it here as well covers a setup that fails after they were created.
+        for coordinator in list(self._care_log_coordinators.values()):
+            try:
+                await coordinator.async_shutdown()
+            except Exception:
+                _LOGGER.debug("Error stopping a care log reader during close")
+        self._care_log_coordinators.clear()
         await self._client.async_close()
         self._camera_data.clear()
         self._speaker_data.clear()

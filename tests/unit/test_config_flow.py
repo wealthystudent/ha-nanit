@@ -793,8 +793,8 @@ async def test_options_flow_manual_speaker_form_starts_empty(hass: HomeAssistant
     entry = MockConfigEntry(
         domain=DOMAIN,
         options={
-            CONF_MANUAL_SPEAKERS: {"spk_m": "Den"},
-            CONF_SPEAKER_IPS: {"spk_m": "192.168.1.5"},
+            CONF_MANUAL_SPEAKERS: {"SPK_M": "Den"},
+            CONF_SPEAKER_IPS: {"SPK_M": "192.168.1.5"},
         },
     )
     entry.add_to_hass(hass)
@@ -807,14 +807,33 @@ async def test_options_flow_manual_speaker_form_starts_empty(hass: HomeAssistant
     )
 
     result_data = _as_dict(result)
-    assert result_data["data"][CONF_MANUAL_SPEAKERS] == {"spk_m": "Den", "spk_n": ""}
-    assert result_data["data"][CONF_SPEAKER_IPS] == {"spk_m": "192.168.1.5"}
+    assert result_data["data"][CONF_MANUAL_SPEAKERS] == {"SPK_M": "Den", "SPK_N": ""}
+    assert result_data["data"][CONF_SPEAKER_IPS] == {"SPK_M": "192.168.1.5"}
 
 
-async def test_options_flow_manual_speaker_edit_keeps_stored_id_and_name(
-    hass: HomeAssistant,
-) -> None:
-    """Re-entering an added machine in another case updates it instead of adding a copy."""
+async def test_options_flow_manual_speaker_rename_keeps_saved_ip(hass: HomeAssistant) -> None:
+    """Re-entering an added machine (any case) renames it; an empty IP field keeps its IP."""
+    hass = await _resolve_hass(hass)
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        options={
+            CONF_MANUAL_SPEAKERS: {"SPK_M": "Den"},
+            CONF_SPEAKER_IPS: {"SPK_M": "192.168.1.5"},
+        },
+    )
+    entry.add_to_hass(hass)
+
+    result = await _open_manual_options(hass, entry)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {CONF_SPEAKER_UID: "spk_m", CONF_MANUAL_SPEAKER_NAME: "Study"}
+    )
+
+    result_data = _as_dict(result)
+    assert result_data["data"][CONF_MANUAL_SPEAKERS] == {"SPK_M": "Study"}
+    assert result_data["data"][CONF_SPEAKER_IPS] == {"SPK_M": "192.168.1.5"}
+
+
+async def test_options_flow_manual_speaker_reentry_updates_ip(hass: HomeAssistant) -> None:
     hass = await _resolve_hass(hass)
     entry = MockConfigEntry(domain=DOMAIN, options={CONF_MANUAL_SPEAKERS: {"SPK_M": "Den"}})
     entry.add_to_hass(hass)

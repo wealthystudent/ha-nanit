@@ -511,13 +511,20 @@ async def async_remove_config_entry_device(
                 data={**entry.data, CONF_UNPAIRED_SPEAKERS: pruned_unpaired},
             )
     manual = entry.options.get(CONF_MANUAL_SPEAKERS, {})
+    speaker_ips = entry.options.get(CONF_SPEAKER_IPS, {})
+    new_options: dict[str, Any] = {}
     if isinstance(manual, dict):
         pruned_manual = {k: v for k, v in manual.items() if k not in device_uids}
         if pruned_manual != manual:
-            hass.config_entries.async_update_entry(
-                entry,
-                options={**entry.options, CONF_MANUAL_SPEAKERS: pruned_manual},
-            )
+            new_options[CONF_MANUAL_SPEAKERS] = pruned_manual
+    # A deleted machine's IP goes too, so re-adding it starts clean and a
+    # leftover address can't override discovery if the cloud reports it later.
+    if isinstance(speaker_ips, dict):
+        pruned_ips = {k: v for k, v in speaker_ips.items() if k not in device_uids}
+        if pruned_ips != speaker_ips:
+            new_options[CONF_SPEAKER_IPS] = pruned_ips
+    if new_options:
+        hass.config_entries.async_update_entry(entry, options={**entry.options, **new_options})
     return True
 
 

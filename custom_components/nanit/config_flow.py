@@ -59,9 +59,11 @@ def _normalize_speaker_uid(value: str) -> str | None:
     """Return a typed machine uid ready to use, or None when it isn't one.
 
     Router client lists show the machine as "Nanit-<uid>", so that prefix
-    is dropped. The uid goes into Nanit's URLs as stored.
+    is dropped. Stored upper-cased, as Nanit reports machine uids, so a
+    later lookup of the same machine finds the same uid.
     """
-    return _clean_uid(_NANIT_HOST_PREFIX.sub("", value.strip()))
+    cleaned = _clean_uid(_NANIT_HOST_PREFIX.sub("", value.strip()))
+    return cleaned.upper() if cleaned else None
 
 
 class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -445,9 +447,9 @@ class NanitOptionsFlow(OptionsFlow):
             unpaired = {u.upper() for u in getattr(hub, "unpaired_speakers", {})}
             if uid is None:
                 errors[CONF_SPEAKER_UID] = "invalid_speaker_uid"
-            elif uid.upper() in paired:
+            elif uid in paired:
                 errors[CONF_SPEAKER_UID] = "speaker_already_paired"
-            elif uid.upper() in unpaired:
+            elif uid in unpaired:
                 errors[CONF_SPEAKER_UID] = "speaker_already_found"
             if speaker_ip:
                 try:
@@ -455,17 +457,12 @@ class NanitOptionsFlow(OptionsFlow):
                 except ValueError:
                     errors[CONF_SPEAKER_IP] = "invalid_ip"
             if uid is not None and not errors:
-                # Editing one added earlier keeps its stored spelling and name.
-                existing = next((key for key in manual if key.upper() == uid.upper()), None)
-                if existing is not None:
-                    uid = existing
                 # Left empty when no name is given: the device name then falls
                 # back to speaker_display_name, which isn't HTML-escaped.
                 manual[uid] = name or manual.get(uid) or ""
+                # An empty IP field keeps the saved IP; deleting the device clears it.
                 if speaker_ip:
                     speaker_ips[uid] = speaker_ip
-                else:
-                    speaker_ips.pop(uid, None)
                 return self.async_create_entry(
                     title="",
                     data={

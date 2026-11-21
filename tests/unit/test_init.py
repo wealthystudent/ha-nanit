@@ -980,17 +980,22 @@ async def test_stale_sweep_keeps_manual_speakers(hass: HomeAssistant) -> None:
 
 
 async def test_remove_config_entry_device_prunes_manual(hass: HomeAssistant) -> None:
-    """Deleting a hand-added speaker's device drops it from the options too."""
+    """Deleting a hand-added speaker's device drops it and its saved IP from the options."""
     from custom_components.nanit import async_remove_config_entry_device
 
     entry = _migration_entry(
-        hass, options={"manual_speakers": {"spk_m": "Den", "spk_n": "Nursery"}}
+        hass,
+        options={
+            "manual_speakers": {"spk_m": "Den", "spk_n": "Nursery"},
+            "speaker_ips": {"spk_m": "192.168.1.5", "spk_n": "192.168.1.6"},
+        },
     )
     entry.runtime_data = SimpleNamespace(hub=SimpleNamespace(live_device_uids=set()))
     device = SimpleNamespace(identifiers={(DOMAIN, "spk_m")})
 
     assert await async_remove_config_entry_device(hass, entry, device) is True
     assert entry.options["manual_speakers"] == {"spk_n": "Nursery"}
+    assert entry.options["speaker_ips"] == {"spk_n": "192.168.1.6"}
 
 
 async def test_emptied_speaker_map_is_persisted_when_moved_to_unpaired(

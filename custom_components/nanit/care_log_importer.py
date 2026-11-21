@@ -456,12 +456,19 @@ class CareLogStatisticsImporter:
     # -- timers ---------------------------------------------------------------
 
     def _next_due(self) -> datetime | None:
-        """Return when the worker next has something to do without a reader update."""
+        """Return when the worker next has something to do without a reader update.
+
+        Nothing while the recorder is not ready: every step needs it, and a
+        deadline already passed would otherwise wake the worker every
+        second. The next reader update looks again.
+        """
+        if not self._recorder_ready():
+            return None
         dues: list[datetime] = []
         if self._book.established:
             if self._sync_wanted and self._sync_retry_at is not None:
                 dues.append(self._sync_retry_at)
-            if not self._polling_disabled() and self._recorder_ready():
+            if not self._polling_disabled():
                 confirm = self._confirm_due()
                 if confirm is not None:
                     dues.append(confirm[1])

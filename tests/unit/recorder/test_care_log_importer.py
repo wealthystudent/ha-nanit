@@ -17,6 +17,7 @@ import asyncio
 import logging
 import threading
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from itertools import pairwise
@@ -334,6 +335,20 @@ def _expected_pieces(reader_start: int, baby: Baby = BABY) -> tuple[Bounds, ...]
     return care_log_history_pieces(care_log_history_start(baby, NOW), reader_start)
 
 
+@contextmanager
+def _counting_steps(harness: Harness) -> Iterator[list[int]]:
+    """Record every step the worker takes while inside."""
+    steps: list[int] = []
+    real_step = harness.importer._async_step
+
+    async def step() -> None:
+        steps.append(1)
+        await real_step()
+
+    with patch.object(harness.importer, "_async_step", step):
+        yield steps
+
+
 async def _imported(make: Callable[..., Harness], truth: Truth) -> Harness:
     harness = make(truth)
     harness.start()
@@ -628,6 +643,67 @@ async def test_a_connection_error_abandons_the_pass_and_retries_with_a_growing_b
     await harness.advance(timedelta(minutes=1))
     assert harness.diag()["state"] == "running"
     assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(OLD)] == 90.0
+
+
+async def test_a_start_up_retry_due_without_a_recorder_waits_for_the_next_reader_update(
+    make: Callable[..., Harness], hass: HomeAssistant
+) -> None:
+    truth = Truth(BASE)
+    truth.errors = [NanitConnectionError("HTTP 503")]
+    harness = make(truth)
+    harness.start()
+    await harness.poll()
+    assert harness.diag()["state"] == "waiting_to_retry"
+
+    with (
+        _counting_steps(harness) as steps,
+        patch.object(care_log_importer, "care_log_recorder_ready", return_value=False),
+    ):
+        await harness.advance(timedelta(minutes=5))  # the retry is due
+        assert steps == [1]
+        assert harness.importer._unsub_timer is None
+        polls = len(truth.reader)
+        for _ in range(3):
+            await harness.advance(timedelta(seconds=1))
+        # One step per reader update (its own poll falls in here), no more.
+        assert len(steps) == 1 + len(truth.reader) - polls
+        assert len(truth.own) == 1
+
+    await harness.tick_and_poll(timedelta(seconds=1))
+    assert harness.diag()["state"] == "running"
+
+
+async def test_a_sync_retry_due_without_a_recorder_waits_for_the_next_reader_update(
+    make: Callable[..., Harness], hass: HomeAssistant
+) -> None:
+    truth = Truth(BASE)
+    harness = await _imported(make, truth)
+    calls: list[int] = []
+
+    async def failing(*_args: Any, **_kwargs: Any) -> Any:
+        calls.append(1)
+        raise CareLogSyncError("A batch of care log statistics could not be verified")
+
+    late = _bottle("b_late", NOW - timedelta(hours=1, minutes=30), 30.0)
+    truth.put(late)
+    with patch.object(care_log_importer, "async_sync_care_log_statistics", failing):
+        await harness.tick_and_poll(timedelta(minutes=1))
+    assert calls == [1]
+
+    with (
+        _counting_steps(harness) as steps,
+        patch.object(care_log_importer, "care_log_recorder_ready", return_value=False),
+    ):
+        await harness.advance(timedelta(minutes=15))  # the full sync is due
+        assert steps == [1]
+        assert harness.importer._unsub_timer is None
+        polls = len(truth.reader)
+        for _ in range(3):
+            await harness.advance(timedelta(seconds=1))
+        assert len(steps) == 1 + len(truth.reader) - polls
+
+    await harness.tick_and_poll(timedelta(seconds=1))
+    assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(late)] == 30.0
 
 
 async def test_an_auth_error_starts_reauth_and_stops_the_importer(

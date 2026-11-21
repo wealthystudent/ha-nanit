@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import re
 import unicodedata
+from datetime import datetime
 from typing import Any
 
 import aiohttp
@@ -113,15 +114,29 @@ def _finite_number(value: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
-def _measurement(value: Any) -> float | None:
-    """Return an amount or duration, or None when it is missing or negative."""
+def _measurement(row: dict[str, Any], key: str, name: str, invalid: set[str]) -> float | None:
+    """Return the amount or duration under ``key``, or None when it is missing or unusable.
+
+    A value that is there but unusable (negative, not a finite number)
+    adds ``name`` to ``invalid``, so a caller can tell it from a missing
+    one. JSON null counts as missing.
+    """
+    value = row.get(key)
+    if value is None:
+        return None
     number = _finite_number(value)
-    return number if number is not None and number >= 0 else None
+    if number is None or number < 0:
+        invalid.add(name)
+        return None
+    return number
 
 
 # Calendar times are Unix seconds. Anything at or past this (the year 2286)
 # is not one: a millisecond time, for one, is about a thousand times larger.
 _MAX_UNIX_SECONDS = 10_000_000_000
+
+# Longer than any ISO 8601 time with microseconds and an offset.
+_MAX_ISO_LENGTH = 40
 
 
 def _unix_seconds(value: Any) -> float | None:
@@ -130,28 +145,77 @@ def _unix_seconds(value: Any) -> float | None:
     return number if number is not None and 0 < number < _MAX_UNIX_SECONDS else None
 
 
+def _timestamp(value: Any) -> float | None:
+    """Return a Unix time from Unix seconds or an ISO 8601 string, else None.
+
+    A string without a UTC offset is rejected rather than guessed at.
+    """
+    if not isinstance(value, str):
+        return _unix_seconds(value)
+    if len(value) > _MAX_ISO_LENGTH:
+        return None
+    try:
+        moment = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        return None
+    return _unix_seconds(moment.timestamp())
+
+
+# Kinds, statuses and sources come from outside. Only a short lowercase
+# token is kept, so nothing else can ride along in them.
+_TOKEN_RE = re.compile(r"[a-z][a-z0-9_]{0,31}")
+
+
+def _token(value: Any) -> str | None:
+    """Return value when it is a short lowercase token, else None."""
+    return value if isinstance(value, str) and _TOKEN_RE.fullmatch(value) else None
+
+
+def _end_timestamp(row: dict[str, Any], start: float) -> float | None:
+    """Return the end the row states, from ``end_ts`` before ``end_time``.
+
+    The first of the two the row carries decides: when it is not a Unix
+    time in seconds, or is before the start, there is no end. An end is
+    never worked out from a duration.
+    """
+    raw = row.get("end_ts")
+    if raw is None:
+        raw = row.get("end_time")
+    end = _unix_seconds(raw)
+    return end if end is not None and end >= start else None
+
+
 def _parse_care_log(row: Any, baby_uid: str) -> CareLog | None:
     """Parse one /calendar row, or return None when it lacks a uid, type or valid time."""
     if not isinstance(row, dict):
         return None
     uid = row.get("uid")
-    log_type = row.get("type")
+    log_type = _token(row.get("type"))
     timestamp = _unix_seconds(row.get("time"))
-    if not isinstance(uid, str) or not uid or not isinstance(log_type, str) or timestamp is None:
+    if not isinstance(uid, str) or not uid or log_type is None or timestamp is None:
         return None
-    change_type = row.get("change_type")
+    invalid: set[str] = set()
     return CareLog(
         uid=uid,
         log_type=log_type,
         timestamp=timestamp,
         baby_uid=baby_uid,
-        change_type=change_type if isinstance(change_type, str) else None,
-        feed_amount_ml=_measurement(row.get("feed_amount")),
-        left_duration_s=_measurement(row.get("left_duration")),
-        right_duration_s=_measurement(row.get("right_duration")),
-        left_amount_ml=_measurement(row.get("left_amount")),
-        right_amount_ml=_measurement(row.get("right_amount")),
-        duration_s=_measurement(row.get("duration")),
+        change_type=_token(row.get("change_type")),
+        feed_amount_ml=_measurement(row, "feed_amount", "feed_amount_ml", invalid),
+        left_duration_s=_measurement(row, "left_duration", "left_duration_s", invalid),
+        right_duration_s=_measurement(row, "right_duration", "right_duration_s", invalid),
+        left_amount_ml=_measurement(row, "left_amount", "left_amount_ml", invalid),
+        right_amount_ml=_measurement(row, "right_amount", "right_amount_ml", invalid),
+        duration_s=_measurement(row, "duration", "duration_s", invalid),
+        end_timestamp=_end_timestamp(row, timestamp),
+        net_duration_s=_measurement(row, "net_duration", "net_duration_s", invalid),
+        status=_token(row.get("status")),
+        logged_at=_timestamp(row.get("created_at")),
+        start_source=_token(row.get("start_source")),
+        end_source=_token(row.get("end_source")),
+        invalid_fields=frozenset(invalid),
     )
 
 
@@ -422,9 +486,11 @@ class NanitRestClient:
         """Fetch a baby's Care Logs and camera sleep sessions between two Unix times.
 
         Both bounds are required whole seconds: the API answers 422 to a
-        missing or fractional one. Rows that lack a uid, type or time, or
-        whose time is not Unix seconds, are skipped rather than failing the
-        whole fetch. A negative amount or duration reads as not logged.
+        missing or fractional one. Rows that lack a uid, type or time, whose
+        type is not a short lowercase token, or whose time is not Unix
+        seconds, are skipped rather than failing the whole fetch. A negative
+        amount or duration reads as not logged, and is named in the entry's
+        ``invalid_fields``.
         """
         try:
             resp = await self._session.get(

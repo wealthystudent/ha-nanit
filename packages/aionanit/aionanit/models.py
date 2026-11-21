@@ -190,6 +190,21 @@ class CareLog:
 
 
 @dataclass(frozen=True)
+class CareLogFetch:
+    """One calendar fetch: its entries, the range asked for, and what was skipped.
+
+    ``start`` and ``end`` are the Unix times sent; Nanit includes both.
+    ``dropped`` counts the rows skipped as malformed (no uid, an unsafe or
+    missing type, no time in Unix seconds, or not an object at all).
+    """
+
+    logs: tuple[CareLog, ...]
+    start: int
+    end: int
+    dropped: int
+
+
+@dataclass(frozen=True)
 class SpeakerCandidate:
     """A Sound & Light Machine as the app's pairing view lists it.
 

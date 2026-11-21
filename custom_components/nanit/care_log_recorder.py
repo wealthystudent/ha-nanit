@@ -194,6 +194,28 @@ def _require_ready(hass: HomeAssistant) -> None:
         raise CareLogRecorderUnavailableError
 
 
+def _read_any_row(hass: HomeAssistant, sids: list[str]) -> bool:
+    return any(get_last_statistics(hass, 1, sid, False, {"sum"}).get(sid) for sid in sids)
+
+
+async def async_has_care_log_statistics(hass: HomeAssistant, code: str) -> bool | None:
+    """Whether any of a baby's statistics has a stored row; None when that cannot be told.
+
+    None when the recorder is not ready, or the read failed or took longer
+    than ``WRITE_TIMEOUT``. One newest-row query per series, in the
+    recorder's executor.
+    """
+    if not care_log_recorder_ready(hass):
+        return None
+    sids = [statistic_id(code, series) for series in CareLogSeries]
+    try:
+        async with asyncio.timeout(WRITE_TIMEOUT):
+            found: bool = await get_instance(hass).async_add_executor_job(_read_any_row, hass, sids)
+    except (TimeoutError, SQLAlchemyError):
+        return None
+    return found
+
+
 def _utc(hour: int) -> datetime:
     return datetime.fromtimestamp(hour, UTC)
 

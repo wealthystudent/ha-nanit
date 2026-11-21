@@ -9,17 +9,23 @@ for one and asks Nanit for nothing; the recorder-backed run is in
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import sys
 from collections.abc import Iterator
+from datetime import timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.config_entries import ConfigEntryState
-from homeassistant.const import EVENT_HOMEASSISTANT_STOP
+from homeassistant.const import EVENT_HOMEASSISTANT_STARTED, EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import CoreState, HomeAssistant
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from homeassistant.util import dt as dt_util
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    async_fire_time_changed,
+)
 
 # Camera imports pull in turbojpeg; stub it like test_read_only.py does.
 _ = sys.modules.setdefault("turbojpeg", MagicMock(TurboJPEG=MagicMock()))
@@ -350,17 +356,47 @@ async def test_home_assistant_stopping_stops_the_importer_without_a_handover(
 
 
 # ---------------------------------------------------------------------------
-# Two sign-ins that see the same baby
+# Two sign-ins that see the same baby: the owner writes, nobody else
 # ---------------------------------------------------------------------------
+
+# Written out here rather than imported, so the construction is checked too.
+STORE_KEY = "nanit.care_log_statistics"
+THIRD_ID = "03cccccccccccccccccccccccc"
+FOURTH_ID = "04dddddddddddddddddddddddd"
+
+
+def _owner_code(account: str) -> str:
+    digest = hashlib.sha256(b"ha-nanit/statistics-owner/v1\x00" + account.encode())
+    return digest.hexdigest()[:32]
+
+
+def _marker(hass_storage: dict[str, Any]) -> dict[str, Any]:
+    stored = hass_storage[STORE_KEY]
+    assert stored["key"] == STORE_KEY
+    data: dict[str, Any] = stored["data"]
+    return data
+
+
+async def _check_owners(hass: HomeAssistant) -> None:
+    """Let the registry's periodic look at babies without an importer run, and finish."""
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(hours=1))
+    await hass.async_block_till_done()
+    registry = care_log_writer_registry(hass)
+    task = getattr(registry, "_check_task", None)
+    if task is not None:
+        await task
+    await hass.async_block_till_done()
 
 
 @pytest.mark.parametrize("first_loaded", ["first", "second"])
-async def test_two_entries_have_one_writer_whichever_loads_first(
+async def test_two_entries_loading_at_start_up_in_either_order_give_the_same_owner(
     hass: HomeAssistant,
     client: MagicMock,
     started: list[CareLogStatisticsImporter],
+    hass_storage: dict[str, Any],
     first_loaded: str,
 ) -> None:
+    hass.set_state(CoreState.starting)
     if first_loaded == "first":
         first = _entry(hass)
         await _set_up(hass, first)
@@ -371,29 +407,125 @@ async def test_two_entries_have_one_writer_whichever_loads_first(
         await _set_up(hass, second)
         first = _entry(hass)
         await _set_up(hass, first)
+    # Nobody takes ownership before every entry loading at start-up has offered.
+    assert started == []
+    assert STORE_KEY not in hass_storage
 
-    entry_id, importer = _writer(hass)
-    assert entry_id == first.entry_id
+    hass.set_state(CoreState.running)
+    hass.bus.async_fire(EVENT_HOMEASSISTANT_STARTED)
+    await _check_owners(hass)
+
+    (importer,) = started
+    assert _writer(hass) == (first.entry_id, importer)
     assert importer._entry is first
     assert _registry(hass).entries(CODE_1) == (first.entry_id, second.entry_id)
-    # Every importer but the writer's was stopped.
-    assert started[-1] is importer
-    assert all(old.diagnostics()["state"] == "stopped" for old in started[:-1])
-    assert len(started) == (1 if first_loaded == "first" else 2)
+    assert _marker(hass_storage) == {"owners": {CODE_1: _owner_code("first@example.com")}}
     standby_reader = second.runtime_data.hub.care_log_coordinators[MOCK_BABY_1.uid]
-    # The listener the standby's stopped importer added (second loaded
-    # first) was removed when it stopped; the reader is a mock, so check
-    # the importer let go of it.
-    assert all(old._unsub_listener is None for old in started[:-1])
-    if first_loaded == "first":
-        assert _importer_listeners(standby_reader) == []
+    assert _importer_listeners(standby_reader) == []
 
     for entry in (first, second):
         assert await hass.config_entries.async_unload(entry.entry_id)
     assert _no_registry_left(hass)
 
 
-async def test_unloading_the_writer_starts_the_standby_from_scratch(
+async def test_the_owner_resumes_after_a_reload_and_after_its_account_is_added_again(
+    hass: HomeAssistant,
+    client: MagicMock,
+    started: list[CareLogStatisticsImporter],
+    hass_storage: dict[str, Any],
+) -> None:
+    """The other sign-in sorts first by entry id, and still never writes."""
+    owner = _entry(hass, entry_id=THIRD_ID)
+    await _set_up(hass, owner)
+    other = _second(hass)
+    await _set_up(hass, other)
+    (writing,) = started
+    assert _writer(hass) == (owner.entry_id, writing)
+
+    assert await hass.config_entries.async_reload(owner.entry_id)
+    await hass.async_block_till_done()
+    assert _writer(hass)[0] == owner.entry_id
+    assert writing.diagnostics()["state"] == "stopped"
+
+    assert await hass.config_entries.async_remove(owner.entry_id)
+    await _check_owners(hass)
+    assert _registry(hass).writer(CODE_1) is None
+
+    again = _entry(hass, entry_id=FOURTH_ID)  # the same account, a new entry
+    await _set_up(hass, again)
+    entry_id, importer = _writer(hass)
+    assert entry_id == again.entry_id
+    assert importer._entry is again
+    assert {one._entry.entry_id for one in started} == {THIRD_ID, FOURTH_ID}
+    assert _marker(hass_storage) == {"owners": {CODE_1: _owner_code("first@example.com")}}
+
+    for entry in (again, other):
+        assert await hass.config_entries.async_unload(entry.entry_id)
+    assert _no_registry_left(hass)
+
+
+@pytest.mark.parametrize("how", ["stopped_itself", "polling_disabled", "unloaded"])
+async def test_an_owner_out_of_action_is_never_replaced(
+    hass: HomeAssistant,
+    client: MagicMock,
+    started: list[CareLogStatisticsImporter],
+    how: str,
+) -> None:
+    owner = _entry(hass, entry_id=THIRD_ID)
+    if how == "polling_disabled":
+        hass.config_entries.async_update_entry(owner, pref_disable_polling=True)
+    await _set_up(hass, owner)
+    other = _second(hass)
+    await _set_up(hass, other)
+    (writing,) = started
+
+    if how == "stopped_itself":
+        # As after a refused sign-in: the worker ends, the entry stays loaded.
+        writing._stopping = True
+        writing._wake()
+        assert writing._task is not None
+        await writing._task
+    elif how == "unloaded":
+        assert await hass.config_entries.async_unload(owner.entry_id)
+    await _check_owners(hass)
+    await _check_owners(hass)
+
+    assert started == [writing]
+    writer = _registry(hass).writer(CODE_1)
+    assert writer is None or writer[0] == owner.entry_id
+    other_diag = (await async_get_config_entry_diagnostics(hass, other))["care_log_statistics"]
+    assert other_diag["babies"] == {"baby_0": {"writer": False, "state": "not_owner"}}
+
+    for entry in (owner, other):
+        if entry.state is ConfigEntryState.LOADED:
+            assert await hass.config_entries.async_unload(entry.entry_id)
+    assert _no_registry_left(hass)
+
+
+async def test_the_owner_marker_holds_only_one_way_codes(
+    hass: HomeAssistant,
+    client: MagicMock,
+    started: list[CareLogStatisticsImporter],
+    hass_storage: dict[str, Any],
+) -> None:
+    uid = "zqmarkerbabyuid7731"
+    name = "zqmarkerbabyname2290"
+    email = "zqmarkeremail5518@example.com"
+    entry_id = "zqmarkerentryid4407"
+    client.async_get_babies.return_value = [Baby(uid=uid, name=name, camera_uid="cam_1")]
+    entry = _entry(hass, entry_id=entry_id, email=email)
+    await _set_up(hass, entry)
+    assert len(started) == 1
+
+    text = json.dumps(hass_storage[STORE_KEY])
+    for marker in (uid, name, email, entry_id, "zqmarker"):
+        assert marker not in text
+    assert _marker(hass_storage) == {"owners": {baby_code(uid): _owner_code(email)}}
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    assert _no_registry_left(hass)
+
+
+async def test_one_entry_unloading_while_the_other_sets_up(
     hass: HomeAssistant,
     client: MagicMock,
     started: list[CareLogStatisticsImporter],
@@ -401,30 +533,21 @@ async def test_unloading_the_writer_starts_the_standby_from_scratch(
     first = _entry(hass)
     await _set_up(hass, first)
     second = _second(hass)
-    await _set_up(hass, second)
-    (writing,) = started
 
-    assert await hass.config_entries.async_unload(first.entry_id)
+    unloaded, set_up = await asyncio.gather(
+        hass.config_entries.async_unload(first.entry_id),
+        hass.config_entries.async_setup(second.entry_id),
+    )
     await hass.async_block_till_done()
 
-    assert writing.diagnostics()["state"] == "stopped"
-    _old, taking_over = started
-    assert _writer(hass) == (second.entry_id, taking_over)
-    assert taking_over._entry is second
-    assert (
-        taking_over._coordinator is second.runtime_data.hub.care_log_coordinators[MOCK_BABY_1.uid]
-    )
-    assert taking_over.diagnostics()["state"] == "waiting_for_recorder"
+    assert unloaded
+    assert set_up
+    # The first is the owner: the second stands by although it is alone.
+    assert _registry(hass).writer(CODE_1) is None
     assert _registry(hass).entries(CODE_1) == (second.entry_id,)
-
-    # Loading the first again takes the writing back.
-    await _set_up(hass, first)
-    assert taking_over.diagnostics()["state"] == "stopped"
-    assert _writer(hass)[0] == first.entry_id
-    assert len(started) == 3
-
-    for entry in (first, second):
-        assert await hass.config_entries.async_unload(entry.entry_id)
+    (importer,) = started
+    assert importer.diagnostics()["state"] == "stopped"
+    assert await hass.config_entries.async_unload(second.entry_id)
     assert _no_registry_left(hass)
 
 
@@ -469,31 +592,6 @@ async def test_an_entry_with_the_option_off_never_writes(
     assert _no_registry_left(hass)
 
 
-async def test_one_entry_unloading_while_the_other_sets_up(
-    hass: HomeAssistant,
-    client: MagicMock,
-    started: list[CareLogStatisticsImporter],
-) -> None:
-    first = _entry(hass)
-    await _set_up(hass, first)
-    second = _second(hass)
-
-    unloaded, set_up = await asyncio.gather(
-        hass.config_entries.async_unload(first.entry_id),
-        hass.config_entries.async_setup(second.entry_id),
-    )
-    await hass.async_block_till_done()
-
-    assert unloaded
-    assert set_up
-    entry_id, importer = _writer(hass)
-    assert entry_id == second.entry_id
-    assert importer.diagnostics()["state"] == "waiting_for_recorder"
-    assert [old.diagnostics()["state"] for old in started if old is not importer] == ["stopped"]
-    assert await hass.config_entries.async_unload(second.entry_id)
-    assert _no_registry_left(hass)
-
-
 # ---------------------------------------------------------------------------
 # Diagnostics
 # ---------------------------------------------------------------------------
@@ -527,8 +625,8 @@ async def test_diagnostics_show_the_writer_and_the_standby_by_position_only(
     assert standby == {
         "enabled": True,
         "babies": {
-            "baby_0": {"writer": False, "state": "standby"},
-            "baby_1": {"writer": False, "state": "standby"},
+            "baby_0": {"writer": False, "state": "not_owner"},
+            "baby_1": {"writer": False, "state": "not_owner"},
         },
     }
     # The same order on both entries: by baby code.

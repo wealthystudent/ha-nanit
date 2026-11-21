@@ -384,16 +384,32 @@ def test_guard_blocks_an_implicit_push_from_main(tmp_path: Path) -> None:
     assert guard.problem(guard.segments("git push")[0], str(tmp_path)) is None
 
 
-def test_pre_push_checks_every_pushed_ref(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
+def _temp_repo(monkeypatch: pytest.MonkeyPatch, path: Path):
+    """A repo with one commit on main, tracked as origin/main, and verify pointed at it."""
+    import subprocess
+
     for role in ("AUTHOR", "COMMITTER"):  # CI runners have no git identity
         monkeypatch.setenv(f"GIT_{role}_NAME", "Test")
         monkeypatch.setenv(f"GIT_{role}_EMAIL", "test@example.com")
-    head = verify.git("rev-parse", "HEAD")
-    tree = verify.git("rev-parse", "HEAD^{tree}")
-    # Objects only, no refs or checkout change: commit-tree never signs without -S.
-    unsigned = verify.git("commit-tree", tree, "-p", head, "-m", "fix: unsigned")
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(path), *args], check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+    git("init", "-q", "-b", "main")
+    git("commit", "-q", "--allow-empty", "--no-gpg-sign", "-m", "chore: base")
+    git("update-ref", "refs/remotes/origin/main", "HEAD")
+    monkeypatch.setattr(verify, "ROOT", path)
+    return git
+
+
+def test_pre_push_checks_every_pushed_ref(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    git = _temp_repo(monkeypatch, tmp_path)
+    head = git("rev-parse", "HEAD")
+    unsigned = git("commit-tree", "HEAD^{tree}", "-p", head, "-m", "fix: unsigned")
     zero = "0" * 40
     good = f"refs/heads/a {head} refs/heads/a {head}"
     bad = f"refs/heads/b {unsigned} refs/heads/b {head}"
@@ -408,24 +424,10 @@ def test_pre_push_checks_every_pushed_ref(
 def test_pre_push_checks_a_recreated_branch_with_a_stale_tracking_ref(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    import subprocess
-
-    for role in ("AUTHOR", "COMMITTER"):
-        monkeypatch.setenv(f"GIT_{role}_NAME", "Test")
-        monkeypatch.setenv(f"GIT_{role}_EMAIL", "test@example.com")
-
-    def git(*args: str) -> str:
-        return subprocess.run(
-            ["git", "-C", str(tmp_path), *args], check=True, capture_output=True, text=True
-        ).stdout.strip()
-
-    git("init", "-q", "-b", "main")
-    git("commit", "-q", "--allow-empty", "--no-gpg-sign", "-m", "chore: base")
-    git("update-ref", "refs/remotes/origin/main", "HEAD")
+    git = _temp_repo(monkeypatch, tmp_path)
     unsigned = git("commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "fix: unsigned")
     # The branch was deleted on GitHub but this clone still tracks its old tip.
     git("update-ref", "refs/remotes/origin/fix-x", unsigned)
-    monkeypatch.setattr(verify, "ROOT", tmp_path)
     push = f"refs/heads/fix-x {unsigned} refs/heads/fix-x {'0' * 40}"
     assert verify.cmd_pre_push("origin", [push]) == 1
     assert "fix: unsigned is not signed" in capsys.readouterr().err
@@ -440,3 +442,6 @@ def test_pre_push_needs_upstream_main(
     monkeypatch.setattr(verify, "ROOT", tmp_path)
     assert verify.cmd_pre_push("origin", [f"refs/heads/x {'a' * 40} refs/heads/x {'0' * 40}"]) == 1
     assert "git fetch origin main" in capsys.readouterr().err
+    # Deleting a branch, or a push with nothing to send, needs no main.
+    assert verify.cmd_pre_push("origin", [f"(delete) {'0' * 40} refs/heads/x {'a' * 40}"]) == 0
+    assert verify.cmd_pre_push("origin", []) == 0

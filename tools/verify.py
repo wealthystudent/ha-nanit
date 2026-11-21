@@ -737,13 +737,15 @@ PRE_PUSH_HOOK = """#!/bin/sh
 # Installed by `just setup`: every commit you push is signed (tools/verify.py).
 # Your own pre-push hook can live next to this one as pre-push.local; it runs
 # after, with the same input.
-input=$(cat)
+input=$(mktemp) || exit 1
+trap 'rm -f "$input"' EXIT
+cat > "$input"
 if [ -f tools/verify.py ]; then  # not on branches from before the hook existed
-  printf '%s\\n' "$input" | uv run --frozen --only-group lint python tools/verify.py pre-push "$@" || exit 1
+  uv run --frozen --only-group lint python tools/verify.py pre-push "$@" < "$input" || exit 1
 fi
 own="$(dirname "$0")/pre-push.local"
 if [ -x "$own" ]; then
-  printf '%s\\n' "$input" | "$own" "$@" || exit 1
+  "$own" "$@" < "$input" || exit 1
 fi
 exit 0
 """
@@ -776,6 +778,9 @@ def cmd_pre_push(remote: str, updates: Iterable[str]) -> int:
 
     updates are git's stdin lines: <local ref> <local sha> <remote ref> <remote sha>.
     """
+    pushed = [p for p in (line.split() for line in updates) if len(p) == 4 and set(p[1]) != {"0"}]
+    if not pushed:  # only deletions, or nothing to send
+        return 0
     upstream = upstream_remote()
     base_ref = f"{upstream}/main"
     if not _exists(base_ref):
@@ -787,10 +792,7 @@ def cmd_pre_push(remote: str, updates: Iterable[str]) -> int:
         return 1
     not_main = ["^" + base_ref]
     commits: list[str] = []
-    for line in updates:
-        parts = line.split()
-        if len(parts) != 4 or set(parts[1]) == {"0"}:  # malformed, or a deletion
-            continue
+    for parts in pushed:
         local, theirs = parts[1], parts[3]
         # A new branch, or their tip isn't here: everything not on main.
         known = set(theirs) != {"0"} and _exists(theirs)

@@ -22,10 +22,11 @@ from datetime import datetime, timedelta
 from homeassistant.components.calendar import CalendarEntity, CalendarEvent
 from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.const import UnitOfVolume
-from homeassistant.core import HomeAssistant
+from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.event import async_track_point_in_utc_time
 from homeassistant.helpers.translation import async_get_translations
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
@@ -69,6 +70,7 @@ CARE_LOG_MAX_PIECE = timedelta(days=90)
 CARE_LOG_MAX_IN_FLIGHT = 2
 
 # How long a fetched range is answered from memory, and how many are kept.
+# An answer is removed when its time is up, even if nothing asks again.
 CARE_LOG_CACHE_TTL = timedelta(minutes=5)
 CARE_LOG_CACHE_SIZE = 16
 
@@ -466,6 +468,7 @@ class NanitCareLogCalendar(CoordinatorEntity[NanitCareLogCoordinator], CalendarE
         self._in_flight: dict[_CacheKey, asyncio.Task[tuple[_Row, ...]]] = {}
         self._requests = asyncio.Semaphore(CARE_LOG_MAX_IN_FLIGHT)
         self._removed = False
+        self._cancel_expiry: CALLBACK_TYPE | None = None
 
     @property
     def device_info(self) -> DeviceInfo | None:
@@ -497,6 +500,7 @@ class NanitCareLogCalendar(CoordinatorEntity[NanitCareLogCoordinator], CalendarE
         """Drop everything kept in memory and stop fetches still running."""
         self._removed = True
         self._cache.clear()
+        self._stop_expiry()
         for task in self._in_flight.values():
             task.cancel()
         self._in_flight.clear()
@@ -579,7 +583,34 @@ class NanitCareLogCalendar(CoordinatorEntity[NanitCareLogCoordinator], CalendarE
             while len(self._cache) > CARE_LOG_CACHE_SIZE:
                 oldest = min(self._cache, key=lambda k: self._cache[k].fetched_at)
                 del self._cache[oldest]
+            self._schedule_expiry()
         return rows
+
+    def _schedule_expiry(self) -> None:
+        """Set the timer for when the oldest answer kept runs out, or stop it if none is."""
+        self._stop_expiry()
+        if not self._cache:
+            return
+        oldest = min(cached.fetched_at for cached in self._cache.values())
+        self._cancel_expiry = async_track_point_in_utc_time(
+            self.hass, self._async_expire, oldest + CARE_LOG_CACHE_TTL
+        )
+
+    def _stop_expiry(self) -> None:
+        if self._cancel_expiry is not None:
+            self._cancel_expiry()
+            self._cancel_expiry = None
+
+    @callback
+    def _async_expire(self, _now: datetime) -> None:
+        """Drop every answer whose time is up, then wait for the next one."""
+        self._cancel_expiry = None
+        now = dt_util.utcnow()
+        for key in [
+            k for k, cached in self._cache.items() if now - cached.fetched_at >= CARE_LOG_CACHE_TTL
+        ]:
+            del self._cache[key]
+        self._schedule_expiry()
 
     async def _async_fetch(self, start: int, end: int, show_notes: bool) -> tuple[_Row, ...]:
         """Fetch an inclusive range from Nanit, in pieces."""

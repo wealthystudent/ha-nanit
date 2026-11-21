@@ -1171,6 +1171,56 @@ async def test_cached_answers_expire_after_five_minutes(
     assert await hass.config_entries.async_unload(entry.entry_id)
 
 
+@pytest.mark.parametrize("notes", [False, True], ids=["notes_off", "notes_on"])
+async def test_an_idle_calendar_drops_its_answers_when_they_expire(
+    hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory, notes: bool
+) -> None:
+    """With no further request, nothing fetched stays in memory past five minutes."""
+    freezer.move_to(NOW)
+    fake = FakeNanit()
+    _day_of_entries(fake)
+    entry, calendar = await _one_calendar(hass, client, fake, notes=notes)
+
+    await _events(hass, calendar, RANGE_START - timedelta(days=1), RANGE_START)
+    freezer.tick(timedelta(minutes=2))
+    await _events(hass, calendar, RANGE_START, RANGE_END)
+    assert len(calendar._cache) == 2
+
+    # The first answer goes at its five minutes, the second stays until its own.
+    freezer.tick(CARE_LOG_CACHE_TTL - timedelta(minutes=2))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert len(calendar._cache) == 1
+    (rows,) = (cached.rows for cached in calendar._cache.values())
+    assert rows
+
+    freezer.tick(timedelta(minutes=2))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert calendar._cache == {}
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_the_expiry_timer_is_cancelled_on_unload(
+    hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory
+) -> None:
+    """Unloaded with an answer still fresh: no timer is left behind (the harness checks)."""
+    freezer.move_to(NOW)
+    fake = FakeNanit()
+    _day_of_entries(fake)
+    entry, calendar = await _one_calendar(hass, client, fake)
+    await _events(hass, calendar, RANGE_START, RANGE_END)
+    assert calendar._cache
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+    assert calendar._cache == {}
+    freezer.tick(CARE_LOG_CACHE_TTL)
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert calendar._cache == {}
+
+
 async def test_text_is_formatted_after_the_cache(
     hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory
 ) -> None:

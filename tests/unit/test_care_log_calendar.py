@@ -41,6 +41,7 @@ from aionanit.models import (
 )
 from custom_components.nanit import calendar as calendar_module
 from custom_components.nanit import config_flow  # noqa: F401  (imported unpatched, see below)
+from custom_components.nanit.baby_code import baby_code
 from custom_components.nanit.calendar import (
     CARE_LOG_CACHE_SIZE,
     CARE_LOG_CACHE_TTL,
@@ -1103,7 +1104,10 @@ async def test_calendar_entity_basics(
 
     registry_entry = er.async_get(hass).async_get(calendar.entity_id)
     assert registry_entry is not None
-    assert registry_entry.unique_id == f"{entry.entry_id}_{BABY_MARKER}_care_log_calendar"
+    assert (
+        registry_entry.unique_id == f"{entry.entry_id}_{baby_code(BABY_MARKER)}_care_log_calendar"
+    )
+    assert BABY_MARKER not in registry_entry.unique_id
     assert registry_entry.disabled_by is None
     assert calendar.entity_id == "calendar.nursery_care_log"
     state = hass.states.get(calendar.entity_id)

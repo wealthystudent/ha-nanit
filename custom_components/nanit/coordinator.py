@@ -41,6 +41,7 @@ from aionanit.models import Baby, CameraEvent, CameraState, CareLog, CloudEvent,
 
 from .aionanit_sl.models import SoundLightEvent, SoundLightEventKind, SoundLightFullState
 from .aionanit_sl.sound_light import NanitSoundLight
+from .baby_code import baby_code
 from .const import (
     CARE_LOG_POLL_INTERVAL,
     CARE_LOG_SEED_DAYS,
@@ -467,7 +468,9 @@ class NanitCareLogCoordinator(DataUpdateCoordinator[CareLogData]):
             hass,
             _LOGGER,
             config_entry=entry,
-            name=f"{DOMAIN}_{baby.uid}_care_logs",
+            # Home Assistant prints the name in its debug lines: the baby's
+            # code, never its raw uid.
+            name=f"{DOMAIN}_{baby_code(baby.uid)}_care_logs",
             update_interval=timedelta(seconds=CARE_LOG_POLL_INTERVAL),
         )
         self._hub = hub

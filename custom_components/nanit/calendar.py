@@ -35,6 +35,7 @@ from aionanit.exceptions import NanitError
 from aionanit.models import CareLog, CareLogDetail
 
 from . import NanitConfigEntry
+from .baby_code import baby_code
 from .const import DOMAIN, is_show_care_log_notes
 from .coordinator import (
     CARE_LOG_BOTTLE,
@@ -428,7 +429,9 @@ class NanitCareLogCalendar(CoordinatorEntity[NanitCareLogCoordinator], CalendarE
         baby = coordinator.baby
         # Per config entry and baby: two sign-ins that see the same baby get
         # two calendars, each with its own credentials, option and cache.
-        self._attr_unique_id = f"{entry_id}_{baby.uid}_care_log_calendar"
+        # The baby is named by its code, so the raw uid never reaches the
+        # entity registry.
+        self._attr_unique_id = f"{entry_id}_{baby_code(baby.uid)}_care_log_calendar"
         self._camera_uid = camera_uid
         if camera_uid:
             self._attr_translation_key = "care_log"

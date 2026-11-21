@@ -50,6 +50,9 @@ from custom_components.nanit import (
     binary_sensor as binary_sensor_platform,
 )
 from custom_components.nanit import (
+    calendar as calendar_platform,
+)
+from custom_components.nanit import (
     camera as camera_platform,
 )
 from custom_components.nanit import (
@@ -207,7 +210,7 @@ def _care_log_coordinator() -> MagicMock:
 # ---------------------------------------------------------------------------
 
 
-def _baseline_scenario() -> tuple[dict[str, Any], dict[str, Any]]:
+def _baseline_scenario() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     """Camera with push coordinator only (no S&L, no cloud, no network)."""
     push = _push_coordinator()
     cam_data = MagicMock()
@@ -216,10 +219,10 @@ def _baseline_scenario() -> tuple[dict[str, Any], dict[str, Any]]:
     cam_data.cloud_coordinator = None
     cam_data.network_coordinator = None
     cam_data.care_log_coordinator = None
-    return {"cam_1": cam_data}, {}
+    return {"cam_1": cam_data}, {}, {}
 
 
-def _full_scenario() -> tuple[dict[str, Any], dict[str, Any]]:
+def _full_scenario() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     """Camera with all optional coordinators plus a paired S&L speaker."""
     push = _push_coordinator()
     cam_data = MagicMock()
@@ -231,20 +234,29 @@ def _full_scenario() -> tuple[dict[str, Any], dict[str, Any]]:
     speaker_data = MagicMock()
     speaker_data.coordinator = _sl_coordinator()
     speaker_data.speaker_uid = "speaker_1"
-    return {"cam_1": cam_data}, {"speaker_1": speaker_data}
+    readers = {"baby_1": cam_data.care_log_coordinator}
+    return {"cam_1": cam_data}, {"speaker_1": speaker_data}, readers
 
 
-def _speaker_only_scenario() -> tuple[dict[str, Any], dict[str, Any]]:
+def _speaker_only_scenario() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     """Standalone S&L speaker on an account with no camera."""
     baby = Baby(uid="baby_1", name="Nursery", camera_uid="", speaker_uid="speaker_1")
     speaker_data = MagicMock()
     speaker_data.coordinator = _sl_coordinator(baby=baby, via_camera_uid=None)
     speaker_data.speaker_uid = "speaker_1"
-    return {}, {"speaker_1": speaker_data}
+    # The baby has no camera, but still has a care log reader (and calendar).
+    reader = _care_log_coordinator()
+    reader.baby = baby
+    return {}, {"speaker_1": speaker_data}, {"baby_1": reader}
 
 
-def _mock_entry(cameras: dict[str, Any], speakers: dict[str, Any]) -> MagicMock:
-    return MagicMock(runtime_data=MagicMock(cameras=cameras, speakers=speakers))
+def _mock_entry(
+    cameras: dict[str, Any], speakers: dict[str, Any], readers: dict[str, Any]
+) -> MagicMock:
+    hub = MagicMock(care_log_coordinators=readers)
+    return MagicMock(
+        entry_id="entry_1", runtime_data=MagicMock(cameras=cameras, speakers=speakers, hub=hub)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -254,7 +266,7 @@ def _mock_entry(cameras: dict[str, Any], speakers: dict[str, Any]) -> MagicMock:
 
 async def _setup_and_capture(
     platform_module: Any,
-    scenario: tuple[dict[str, Any], dict[str, Any]],
+    scenario: tuple[dict[str, Any], dict[str, Any], dict[str, Any]],
 ) -> list[Any]:
     """Call a platform's async_setup_entry and return the captured entities."""
     entry = _mock_entry(*scenario)
@@ -265,7 +277,7 @@ async def _setup_and_capture(
 
 
 # ---------------------------------------------------------------------------
-# Snapshot tests -- 7 platforms x 2 scenarios = 14 test cases
+# Snapshot tests -- 9 platforms x 3 scenarios
 # ---------------------------------------------------------------------------
 
 
@@ -287,6 +299,18 @@ class TestEntityRegistration:
     ) -> None:
         entities = await _setup_and_capture(camera_platform, scenario_factory())
         assert _serialize_entities(entities) == snapshot
+
+    async def test_calendar(
+        self,
+        scenario_name: str,
+        scenario_factory: Any,
+        snapshot: SnapshotAssertion,
+    ) -> None:
+        scenario = scenario_factory()
+        entities = await _setup_and_capture(calendar_platform, scenario)
+        assert _serialize_entities(entities) == snapshot
+        # One per baby with a care log reader, camera or not
+        assert len(entities) == len(scenario[2])
 
     async def test_sensor(
         self,

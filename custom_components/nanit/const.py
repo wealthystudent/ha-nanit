@@ -23,14 +23,17 @@ PLATFORMS = [
     Platform.SELECT,
     Platform.MEDIA_PLAYER,
     Platform.CAMERA,
+    Platform.CALENDAR,
 ]
 
 # Read-only mode: only the platforms that observe. No platform here controls
 # device settings (camera power/sleep, night light, volume, Sound & Light).
+# The care log calendar only reads, so it stays.
 READ_ONLY_PLATFORMS = [
     Platform.SENSOR,
     Platform.BINARY_SENSOR,
     Platform.CAMERA,
+    Platform.CALENDAR,
 ]
 
 # Cloud event detection window (seconds)

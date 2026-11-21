@@ -86,6 +86,14 @@
       "camera": {
         "default": "mdi:baby-face-outline"
       }
+    },
+    "calendar": {
+      "care_log": {
+        "default": "mdi:calendar-heart"
+      },
+      "care_log_baby": {
+        "default": "mdi:calendar-heart"
+      }
     }
   }
 }

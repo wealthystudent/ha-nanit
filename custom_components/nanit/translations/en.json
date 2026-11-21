@@ -12,7 +12,7 @@
           "show_care_log_notes": "Show notes and who logged each entry"
         },
         "data_description": {
-          "read_only": "Only sensors, motion and sound, and the camera picture. Home Assistant gets no control over device settings: no camera power or sleep, night light, volume or Sound & Light controls. You can change this later in the integration's options.",
+          "read_only": "Only sensors, motion and sound, the camera picture and the care log calendar. Home Assistant gets no control over device settings: no camera power or sleep, night light, volume or Sound & Light controls. You can change this later in the integration's options.",
           "import_care_log_statistics": "Saves hourly totals of the care logged in the Nanit app to Home Assistant's long-term statistics, for charts. They stay until you delete them. Anyone signed in to this Home Assistant can read them, and Home Assistant's recorder settings for including or excluding data don't apply to them. You can change this later in the integration's options.",
           "show_care_log_notes": "Each entry in the care log calendar shows its note and the name of the person who logged it, with their relation to the baby. Anyone who can read the calendar can see them, automations that use the calendar can copy them, and a voice assistant you expose the calendar to can receive them. Even when this is off, the calendar shows care routines, times and amounts. You can change this later in the integration's options."
         }
@@ -82,7 +82,7 @@
       },
       "read_only": {
         "title": "Read-only mode",
-        "description": "Read-only mode applies to every device on this account. Home Assistant keeps the camera stream, sensors and motion and sound detection, but gets no control over device settings: camera power or sleep, night light, volume and Sound & Light controls are removed, and automations that use them stop working. Turning it off brings them back with the same names and entity IDs.",
+        "description": "Read-only mode applies to every device on this account. Home Assistant keeps the camera stream, sensors, motion and sound detection and the care log calendar, but gets no control over device settings: camera power or sleep, night light, volume and Sound & Light controls are removed, and automations that use them stop working. Turning it off brings them back with the same names and entity IDs.",
         "data": {
           "read_only": "Read-only mode"
         }
@@ -175,6 +175,9 @@
     },
     "care_log_fetch_failed": {
       "message": "Failed to fetch Care Logs: {error}"
+    },
+    "care_log_calendar_unavailable": {
+      "message": "Could not read the care log from Nanit. Try again in a few minutes."
     }
   },
   "issues": {
@@ -416,6 +419,61 @@
     "camera": {
       "camera": {
         "name": "Camera"
+      }
+    },
+    "calendar": {
+      "care_log": {
+        "name": "Care log",
+        "state_attributes": {
+          "event_title": {
+            "name": "Event title",
+            "state": {
+              "diaper_change": "Diaper",
+              "diaper_change_type": "Diaper, {change_type}",
+              "bottle_feed": "Bottle",
+              "bottle_feed_amount": "Bottle, {amount}",
+              "nursing": "Nursing",
+              "nursing_duration": "Nursing, {duration}",
+              "pumping": "Pumping",
+              "pumping_amount": "Pumping, {amount}",
+              "other": "{kind}"
+            }
+          },
+          "event_detail": {
+            "name": "Event description",
+            "state": {
+              "left_duration": "Left side: {duration}",
+              "right_duration": "Right side: {duration}",
+              "left_amount": "Left side: {amount}",
+              "right_amount": "Right side: {amount}",
+              "duration": "Duration: {duration}",
+              "logged_at": "Logged at {time}",
+              "note": "Note: {note}",
+              "logged_by": "Logged by {name}",
+              "logged_by_relation": "Logged by {name} ({relation})"
+            }
+          },
+          "diaper_type": {
+            "name": "Diaper type",
+            "state": {
+              "pee": "pee",
+              "poo": "poo",
+              "mixed": "mixed",
+              "dry": "dry"
+            }
+          },
+          "measurement": {
+            "name": "Measurement",
+            "state": {
+              "milliliters": "{value} mL",
+              "fluid_ounces": "{value} fl oz",
+              "minutes": "{value} min"
+            }
+          }
+        }
+      },
+      "care_log_baby": {
+        "name": "{baby_name} care log"
       }
     }
   }

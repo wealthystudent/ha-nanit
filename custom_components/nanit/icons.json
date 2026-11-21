@@ -12,6 +12,30 @@
       },
       "sl_firmware": {
         "default": "mdi:chip"
+      },
+      "last_diaper_change": {
+        "default": "mdi:human-baby-changing-table"
+      },
+      "last_feeding": {
+        "default": "mdi:baby-bottle-outline"
+      },
+      "last_pumping": {
+        "default": "mdi:cup-water"
+      },
+      "diaper_changes_today": {
+        "default": "mdi:human-baby-changing-table"
+      },
+      "feedings_today": {
+        "default": "mdi:baby-bottle"
+      },
+      "bottle_volume_today": {
+        "default": "mdi:baby-bottle"
+      },
+      "nursing_time_today": {
+        "default": "mdi:mother-nurse"
+      },
+      "pumped_volume_today": {
+        "default": "mdi:cup-water"
       }
     },
     "binary_sensor": {
@@ -61,6 +85,14 @@
     "camera": {
       "camera": {
         "default": "mdi:baby-face-outline"
+      }
+    },
+    "calendar": {
+      "care_log": {
+        "default": "mdi:calendar-heart"
+      },
+      "care_log_baby": {
+        "default": "mdi:calendar-heart"
       }
     }
   }

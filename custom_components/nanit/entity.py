@@ -12,6 +12,7 @@ from aionanit.models import CameraState
 
 from .const import DOMAIN
 from .coordinator import (
+    NanitCareLogCoordinator,
     NanitCloudCoordinator,
     NanitNetworkCoordinator,
     NanitPushCoordinator,
@@ -140,6 +141,21 @@ class NanitSoundLightEntity(CoordinatorEntity[NanitSoundLightCoordinator]):
 
 class NanitNetworkEntity(CoordinatorEntity[NanitNetworkCoordinator]):
     """Base entity for network diagnostic sensors — backed by the network coordinator."""
+
+    _attr_has_entity_name = True
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Return device info."""
+        return DeviceInfo(
+            identifiers={(DOMAIN, self.coordinator.baby.camera_uid)},
+            name=display_name(self.coordinator.baby.name, self.coordinator.baby.uid),
+            manufacturer="Nanit",
+        )
+
+
+class NanitCareLogEntity(CoordinatorEntity[NanitCareLogCoordinator]):
+    """Base entity for Care Log sensors — backed by the care log coordinator."""
 
     _attr_has_entity_name = True
 

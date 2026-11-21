@@ -7,10 +7,14 @@
         "data": {
           "email": "Email",
           "password": "Password",
-          "read_only": "Read-only mode"
+          "read_only": "Read-only mode",
+          "import_care_log_statistics": "Import care log statistics",
+          "show_care_log_notes": "Show notes and who logged each entry"
         },
         "data_description": {
-          "read_only": "Only sensors, motion and sound, and the camera picture. Home Assistant gets no control over device settings: no camera power or sleep, night light, volume or Sound & Light controls. You can change this later in the integration's options."
+          "read_only": "Only sensors, motion and sound, the camera picture and the care log calendar. Home Assistant gets no control over device settings: no camera power or sleep, night light, volume or Sound & Light controls. You can change this later in the integration's options.",
+          "import_care_log_statistics": "Saves hourly totals of the care logged in the Nanit app to Home Assistant's long-term statistics, for charts. They stay until you delete them. Anyone signed in to this Home Assistant can read them, and Home Assistant's recorder settings for including or excluding data don't apply to them. You can change this later in the integration's options.",
+          "show_care_log_notes": "Each entry in the care log calendar shows its note and the name of the person who logged it, with their relation to the baby. Anyone who can read the calendar can see them, automations that use the calendar can copy them, and a voice assistant you expose the calendar to can receive them. Even when this is off, the calendar shows care routines, times and amounts. You can change this later in the integration's options."
         }
       },
       "mfa": {
@@ -58,7 +62,8 @@
           "device": "Sound & Light IP address",
           "read_only": "Read-only mode",
           "local_stream": "Local streaming",
-          "stream_stills": "Stills from the live stream"
+          "stream_stills": "Stills from the live stream",
+          "care_logs": "Care log statistics and notes"
         }
       },
       "device": {
@@ -77,7 +82,7 @@
       },
       "read_only": {
         "title": "Read-only mode",
-        "description": "Read-only mode applies to every device on this account. Home Assistant keeps the camera stream, sensors and motion and sound detection, but gets no control over device settings: camera power or sleep, night light, volume and Sound & Light controls are removed, and automations that use them stop working. Turning it off brings them back with the same names and entity IDs.",
+        "description": "Read-only mode applies to every device on this account. Home Assistant keeps the camera stream, sensors, motion and sound detection and the care log calendar, but gets no control over device settings: camera power or sleep, night light, volume and Sound & Light controls are removed, and automations that use them stop working. Turning it off brings them back with the same names and entity IDs.",
         "data": {
           "read_only": "Read-only mode"
         }
@@ -100,6 +105,18 @@
         "description": "Fills the camera's picture (HomeKit tiles, picture cards) from the live stream when Nanit's cloud has no still, as it currently has none. When a picture is asked for and the last one is more than about 10 minutes old, Home Assistant starts the camera's stream briefly and keeps one frame. The camera then keeps streaming for about 20 minutes and holds one of its stream slots (it allows about two), so an always-visible tile keeps it streaming and leaves one fewer phone able to watch live. Nothing is taken while the camera is asleep. Needs FFmpeg, which Home Assistant OS and Container include. Applies to every camera on this account, and changing it reloads the integration.",
         "data": {
           "stream_stills": "Stills from the live stream"
+        }
+      },
+      "care_logs": {
+        "title": "Care log statistics and notes",
+        "description": "These choices apply to every baby on this account. Changing them reloads the integration.",
+        "data": {
+          "import_care_log_statistics": "Import care log statistics",
+          "show_care_log_notes": "Show notes and who logged each entry"
+        },
+        "data_description": {
+          "import_care_log_statistics": "Saves hourly totals of the care logged in the Nanit app to Home Assistant's long-term statistics, for charts. They stay until you delete them. Anyone signed in to this Home Assistant can read them, and Home Assistant's recorder settings for including or excluding data don't apply to them.",
+          "show_care_log_notes": "Each entry in the care log calendar shows its note and the name of the person who logged it, with their relation to the baby. Anyone who can read the calendar can see them, automations that use the calendar can copy them, and a voice assistant you expose the calendar to can receive them. Even when this is off, the calendar shows care routines, times and amounts."
         }
       }
     },
@@ -155,6 +172,12 @@
     },
     "read_only": {
       "message": "This Nanit account is in read-only mode, so Home Assistant can't change the camera. Use the Nanit app, or turn read-only mode off in the integration's options."
+    },
+    "care_log_fetch_failed": {
+      "message": "Failed to fetch Care Logs: {error}"
+    },
+    "care_log_calendar_unavailable": {
+      "message": "Could not read the care log from Nanit. Try again in a few minutes."
     }
   },
   "issues": {
@@ -251,6 +274,89 @@
       },
       "sl_firmware": {
         "name": "Firmware"
+      },
+      "last_diaper_change": {
+        "name": "Last diaper change",
+        "state_attributes": {
+          "change_type": {
+            "name": "Type",
+            "state": {
+              "pee": "Pee",
+              "poo": "Poo",
+              "mixed": "Mixed",
+              "dry": "Dry"
+            }
+          }
+        }
+      },
+      "last_feeding": {
+        "name": "Last feeding",
+        "state_attributes": {
+          "feeding_type": {
+            "name": "Type",
+            "state": {
+              "bottle": "Bottle",
+              "nursing": "Nursing"
+            }
+          },
+          "amount_ml": {
+            "name": "Amount (mL)"
+          },
+          "left_minutes": {
+            "name": "Left side (minutes)"
+          },
+          "right_minutes": {
+            "name": "Right side (minutes)"
+          }
+        }
+      },
+      "last_pumping": {
+        "name": "Last pumping",
+        "state_attributes": {
+          "amount_ml": {
+            "name": "Amount (mL)"
+          },
+          "duration_minutes": {
+            "name": "Duration (minutes)"
+          }
+        }
+      },
+      "diaper_changes_today": {
+        "name": "Diaper changes today",
+        "state_attributes": {
+          "pee": {
+            "name": "Pee"
+          },
+          "poo": {
+            "name": "Poo"
+          },
+          "mixed": {
+            "name": "Mixed"
+          },
+          "dry": {
+            "name": "Dry"
+          }
+        }
+      },
+      "feedings_today": {
+        "name": "Feedings today",
+        "state_attributes": {
+          "bottle": {
+            "name": "Bottle"
+          },
+          "nursing": {
+            "name": "Nursing"
+          }
+        }
+      },
+      "bottle_volume_today": {
+        "name": "Bottle volume today"
+      },
+      "nursing_time_today": {
+        "name": "Nursing time today"
+      },
+      "pumped_volume_today": {
+        "name": "Pumped volume today"
       }
     },
     "binary_sensor": {
@@ -313,6 +419,82 @@
     "camera": {
       "camera": {
         "name": "Camera"
+      }
+    },
+    "calendar": {
+      "care_log": {
+        "name": "Care log",
+        "state_attributes": {
+          "event_title": {
+            "name": "Event title",
+            "state": {
+              "diaper_change": "Diaper",
+              "diaper_change_type": "Diaper, {change_type}",
+              "bottle_feed": "Bottle",
+              "bottle_feed_amount": "Bottle, {amount}",
+              "nursing": "Nursing",
+              "nursing_duration": "Nursing, {duration}",
+              "pumping": "Pumping",
+              "pumping_amount": "Pumping, {amount}",
+              "other": "{kind}"
+            }
+          },
+          "event_detail": {
+            "name": "Event description",
+            "state": {
+              "left_duration": "Left side: {duration}",
+              "right_duration": "Right side: {duration}",
+              "left_amount": "Left side: {amount}",
+              "right_amount": "Right side: {amount}",
+              "duration": "Duration: {duration}",
+              "logged_at": "Logged at {time}",
+              "note": "Note: {note}",
+              "logged_by": "Logged by {name}",
+              "logged_by_relation": "Logged by {name} ({relation})"
+            }
+          },
+          "diaper_type": {
+            "name": "Diaper type",
+            "state": {
+              "pee": "pee",
+              "poo": "poo",
+              "mixed": "mixed",
+              "dry": "dry"
+            }
+          },
+          "measurement": {
+            "name": "Measurement",
+            "state": {
+              "milliliters": "{value} mL",
+              "fluid_ounces": "{value} fl oz",
+              "minutes": "{value} min"
+            }
+          },
+          "statistic_name": {
+            "name": "Statistic name",
+            "state": {
+              "diaper_changes": "{baby_name} diaper changes",
+              "diaper_pee": "{baby_name} pee diapers",
+              "diaper_poo": "{baby_name} poo diapers",
+              "diaper_mixed": "{baby_name} mixed diapers",
+              "diaper_dry": "{baby_name} dry diapers",
+              "bottle_feeds": "{baby_name} bottle feeds",
+              "bottle_volume": "{baby_name} bottle volume",
+              "nursing_sessions": "{baby_name} nursing sessions",
+              "nursing_time": "{baby_name} nursing time",
+              "nursing_time_left": "{baby_name} nursing time, left",
+              "nursing_time_right": "{baby_name} nursing time, right",
+              "pumping_sessions": "{baby_name} pumping sessions",
+              "pumped_volume": "{baby_name} pumped volume",
+              "pumped_volume_left": "{baby_name} pumped volume, left",
+              "pumped_volume_right": "{baby_name} pumped volume, right",
+              "pumping_time": "{baby_name} pumping time"
+            }
+          }
+        }
+      },
+      "care_log_baby": {
+        "name": "{baby_name} care log"
       }
     }
   }

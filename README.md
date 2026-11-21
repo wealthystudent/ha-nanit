@@ -57,6 +57,7 @@ A Sound & Light Machine that isn't paired to any baby in the Nanit app is picked
 - 👁️ Motion & sound detection
 - 💡 Night light switch
 - 🔌 Camera power switch
+- 🍼 Care Logs: last diaper change, feeding and pumping, plus today's diaper and feeding counts, bottle and pumped volume, and nursing time, and a calendar of every entry (see [Care Logs](#care-logs))
 
 **Sound & Light Machine** (works standalone or paired with a camera):
 - Power, sound, and light switches
@@ -71,11 +72,54 @@ Some entities are disabled by default. Enable them in **Settings → Devices & S
 
 > Coming from [nanit-sound-light](https://github.com/com6056/nanit-sound-light)? That integration has merged into this one. Its [migration guide](https://github.com/com6056/nanit-sound-light/blob/main/MIGRATION.md) maps every entity id.
 
+## Care Logs
+
+The diaper changes, bottles, nursing and pumping sessions you log in the Nanit app's Care Logs show up as sensors on the camera's device. Care Logs don't need an Insights plan; Nanit offers them to Owner and Admin accounts. Naps, solids and medications aren't exposed yet.
+
+| Sensor | Shows |
+|---|---|
+| Last diaper change | When, with the type (pee, poo, mixed or dry) as an attribute |
+| Last feeding | The newer of the last bottle and the last nursing session, with the bottle's amount in mL or each side's minutes as attributes |
+| Last pumping | When, with the amount in mL and the minutes as attributes |
+| Diaper changes today | How many since midnight, with a count for each type as attributes |
+| Feedings today | Bottles and nursing sessions since midnight, with a count of each as attributes |
+| Bottle volume today | Total logged in bottles since midnight |
+| Nursing time today | Minutes of nursing since midnight, both sides together |
+| Pumped volume today | Total pumped since midnight |
+
+The volume sensors report millilitres, which Home Assistant shows in fluid ounces when your unit system is US customary. The "today" sensors start again from zero at midnight in Home Assistant's time zone.
+
+The sensors are read-only: entries are added, changed and deleted in the Nanit app. A change to an entry from the last 24 hours, including one logged after the fact, shows up within 5 minutes. A change to an entry from the last 7 days shows up after the integration next reloads. If the account has no Care Logs from the last 7 days when the sensors are first added, they are added disabled. Enable them under **Settings → Devices & Services → Nanit → Entities** once you start logging. If Nanit can't be reached for them when the integration starts, the sensors are added enabled, show unavailable, and fill in at the first poll that succeeds.
+
+A few limits to know about:
+
+- After a restart or reload, the sensors look back only 7 days. A "last" sensor whose entry is older than that shows unknown until you log a newer one.
+- A nursing session counts toward the day it started, even when it runs past midnight.
+- The "today" sensors start again at the first poll after midnight, so up to 5 minutes late.
+- An entry dated up to an hour in the future already counts.
+- Home Assistant's long-term statistics for the "today" sensors add up the changes it sees during the day. An entry logged after midnight for the day before is missed there, so those charts can run slightly low. The Nanit app is the record.
+
+Like any sensor, these are kept in Home Assistant's history, visible to everyone who can use your Home Assistant, and available to voice assistants you expose them to.
+
+Setup and **Settings → Devices & Services → Nanit → Configure → Care log statistics and notes** offer two choices. **Import care log statistics** is on by default for a new setup, and **Show notes and who logged each entry** is off. If you set up the integration before these choices existed, both are off until you turn them on. The notes choice controls the [care log calendar](#care-log-calendar). The statistics import comes in a later update; for now, changing it does nothing else.
+
+### Care log calendar
+
+Each baby gets a read-only **Care log** calendar, on the camera's device (a baby without a camera gets one of its own, named after the baby). It shows the diaper changes, bottles, nursing and pumping sessions logged in the app, and any other kind of entry by its name. Sleep entries are not shown yet.
+
+- Each event's title is the kind and its main number, such as "Bottle, 30 mL" or "Nursing, 15 min". Volumes follow your unit system. The description has the rest: each side's minutes or amounts, and when the entry was logged.
+- Nursing runs for both sides' minutes together and pumping for its duration. A diaper change, a bottle, or an entry without a length is shown at the moment it happened.
+- Entries are fetched from Nanit when the calendar is opened or asked for a range, and kept in memory for up to 5 minutes. Nothing is stored. An open calendar view refreshes with the 5-minute Care Logs poll. If Nanit can't be reached, the calendar shows an error for that range.
+- Nanit finds entries by when they started, so the calendar also asks for the 24 hours before the range, to catch a session that began earlier. A session that began more than 24 hours earlier can be missed.
+- The calendar never has a current event: its state is always off, so nothing from an entry reaches Home Assistant's history that way.
+
+With **Show notes and who logged each entry** on, each event's description also shows its note and "Logged by" the person's name and relation to the baby. Anyone who can read the calendar can see them, automations that use the calendar can copy them, and a voice assistant you expose the calendar to can receive them. On current Home Assistant versions a user needs read permission for the calendar; on 2025.12 any signed-in user can read calendar events. Home Assistant's debug logs and backups can hold copies of what an automation did with them. Even when this is off, the calendar shows care routines, times and amounts. Changing the choice reloads the integration and drops everything the calendar kept in memory.
+
 ## Read-only mode (optional)
 
 Turn on **Read-only mode** during setup, or later under **Settings → Devices & Services → Nanit → Configure → Read-only mode**, if Home Assistant should only *watch*. It gives Home Assistant no control over device settings:
 
-- You get the camera stream, temperature and humidity, and motion and sound detection. (Viewing the stream still asks the camera to stream, as it always does.)
+- You get the camera stream, temperature and humidity, motion and sound detection, the Care Logs sensors and the care log calendar. (Viewing the stream still asks the camera to stream, as it always does.)
 - There are no switches, lights, numbers, selects or media players. Nothing in Home Assistant (dashboards, automations, scripts or a voice assistant) can put the camera to sleep, change the night light or volume, or control a Sound & Light Machine.
 - The camera has no on/off. A direct `camera.turn_off` or `camera.turn_on` call is refused.
 - A read-only **Camera Power** binary sensor (on = awake, off = asleep) takes the place of the power switch, so you can still see, and automate on, whether the camera is asleep. It exists only in this mode.
@@ -153,6 +197,7 @@ How each piece of data reaches Home Assistant:
 - **Camera sensors** (temperature, humidity, night light, connectivity) arrive as push updates over the camera's WebSocket, so they update in real time.
 - **Motion and sound events** come from the Nanit cloud API, polled every 30 seconds.
 - **Network diagnostics** (WiFi details) are polled every 5 minutes.
+- **Care Logs** are polled every 5 minutes. The first poll after setup looks back 7 days for the last entry of each type; later polls fetch the last 24 hours. A poll looks back 7 days again after more than 24 hours without a successful one. The care log calendar fetches the range it is asked for, in pieces of up to 90 days, and keeps the answer for up to 5 minutes.
 - **Sound & Light state** (power, sound, light, volume) arrives as push updates over the speaker's WebSocket, local or relay. A light 30 second poll reconciles state and refreshes battery and WiFi diagnostics. The firmware version is requested with the poll until known, then left alone.
 - **Video** streams on demand when a viewer opens the camera: straight from the camera over your network with [local streaming](#local-streaming), or through the Nanit cloud over RTMPS.
 

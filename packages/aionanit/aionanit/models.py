@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum, IntEnum
 
 
@@ -143,6 +143,9 @@ class Baby:
     network: NetworkInfo | None = None
     camera_connected: bool | None = None  # True = camera online per Nanit cloud
     camera_last_seen: int | None = None  # Unix timestamp of last cloud contact
+    # Where care log history can start. Personal, so kept out of repr.
+    birth_date: date | None = field(default=None, repr=False)
+    created_at: float | None = field(default=None, repr=False)  # Unix timestamp of the record
 
 
 @dataclass(frozen=True)
@@ -152,6 +155,90 @@ class CloudEvent:
     event_type: str  # "MOTION", "SOUND", etc.
     timestamp: float  # Unix timestamp
     baby_uid: str
+
+
+@dataclass(frozen=True)
+class CareLog:
+    """An entry from the Nanit app's Care Logs.
+
+    Parents log these by hand in the app: diaper changes, bottles, nursing,
+    pumping and naps. The calendar also carries the camera's own sleep
+    sessions (``auto_sleep``). Only the fields that apply to ``log_type``
+    are set; the rest stay None.
+
+    Numbers and short tokens only: the notes and names an entry can carry
+    are never kept here (see ``CareLogDetail``). A measurement the row
+    carried but that could not be used (negative, not a finite number) is
+    None like a missing one, and its field name is in ``invalid_fields``.
+    """
+
+    uid: str
+    log_type: str  # "diaper_change", "bottle_feed", "nursing", "pumping", "sleep", ...
+    timestamp: float  # Unix timestamp of the start of the entry
+    baby_uid: str
+    change_type: str | None = None  # diaper_change: "pee", "poo", "mixed" or "dry"
+    feed_amount_ml: float | None = None  # bottle_feed
+    left_duration_s: float | None = None  # nursing
+    right_duration_s: float | None = None  # nursing
+    left_amount_ml: float | None = None  # pumping
+    right_amount_ml: float | None = None  # pumping
+    duration_s: float | None = None  # pumping, sleep, auto_sleep
+    end_timestamp: float | None = None  # Unix timestamp of the end, when the row gives one
+    net_duration_s: float | None = None  # sleep, semi_auto_sleep
+    status: str | None = None  # auto_sleep: "eligible" or "not_eligible"
+    logged_at: float | None = None  # Unix timestamp of when the entry was logged
+    start_source: str | None = None  # semi_auto_sleep: "camera", "user", ...
+    end_source: str | None = None  # semi_auto_sleep
+    invalid_fields: frozenset[str] = frozenset()  # measurement fields present but rejected
+
+
+@dataclass(frozen=True)
+class CareLogFetch:
+    """One calendar fetch: its entries, the range asked for, and what was skipped.
+
+    ``start`` and ``end`` are the Unix times sent; Nanit includes both.
+    ``dropped`` counts the rows skipped as malformed (no uid, an unsafe or
+    missing type, no time in Unix seconds, or not an object at all).
+    """
+
+    logs: tuple[CareLog, ...]
+    start: int
+    end: int
+    dropped: int
+
+
+@dataclass(frozen=True)
+class CareLogDetail:
+    """The personal text of a Care Log entry: its note, and who logged it.
+
+    Only ``async_get_calendar_details`` builds this; the numbers-only
+    fetches never do. Each field is cleaned text (control and format
+    characters removed, whitespace collapsed, length capped) or None. The
+    text is kept out of ``repr``, so printing or logging one shows nothing
+    of it.
+    """
+
+    comment: str | None = field(default=None, repr=False)
+    user_name: str | None = field(default=None, repr=False)
+    user_relation: str | None = field(default=None, repr=False)
+
+
+@dataclass(frozen=True)
+class CareLogEntry:
+    """A Care Log entry together with its personal text."""
+
+    log: CareLog
+    detail: CareLogDetail
+
+
+@dataclass(frozen=True)
+class CareLogDetailFetch:
+    """One calendar fetch with personal text, otherwise like ``CareLogFetch``."""
+
+    entries: tuple[CareLogEntry, ...]
+    start: int
+    end: int
+    dropped: int
 
 
 @dataclass(frozen=True)

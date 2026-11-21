@@ -106,18 +106,38 @@ def _finite_number(value: Any) -> float | None:
     """Return value as a float when it is a finite number (not a bool), else None."""
     if isinstance(value, bool) or not isinstance(value, int | float):
         return None
-    number = float(value)
+    try:
+        number = float(value)
+    except OverflowError:  # an integer too large for a float
+        return None
     return number if math.isfinite(number) else None
 
 
+def _measurement(value: Any) -> float | None:
+    """Return an amount or duration, or None when it is missing or negative."""
+    number = _finite_number(value)
+    return number if number is not None and number >= 0 else None
+
+
+# Calendar times are Unix seconds. Anything at or past this (the year 2286)
+# is not one: a millisecond time, for one, is about a thousand times larger.
+_MAX_UNIX_SECONDS = 10_000_000_000
+
+
+def _unix_seconds(value: Any) -> float | None:
+    """Return value when it is a plausible Unix time in seconds, else None."""
+    number = _finite_number(value)
+    return number if number is not None and 0 < number < _MAX_UNIX_SECONDS else None
+
+
 def _parse_care_log(row: Any, baby_uid: str) -> CareLog | None:
-    """Parse one /calendar row, or return None when it lacks a uid, type or time."""
+    """Parse one /calendar row, or return None when it lacks a uid, type or valid time."""
     if not isinstance(row, dict):
         return None
     uid = row.get("uid")
     log_type = row.get("type")
-    timestamp = _finite_number(row.get("time"))
-    if not isinstance(uid, str) or not isinstance(log_type, str) or timestamp is None:
+    timestamp = _unix_seconds(row.get("time"))
+    if not isinstance(uid, str) or not uid or not isinstance(log_type, str) or timestamp is None:
         return None
     change_type = row.get("change_type")
     return CareLog(
@@ -126,12 +146,12 @@ def _parse_care_log(row: Any, baby_uid: str) -> CareLog | None:
         timestamp=timestamp,
         baby_uid=baby_uid,
         change_type=change_type if isinstance(change_type, str) else None,
-        feed_amount_ml=_finite_number(row.get("feed_amount")),
-        left_duration_s=_finite_number(row.get("left_duration")),
-        right_duration_s=_finite_number(row.get("right_duration")),
-        left_amount_ml=_finite_number(row.get("left_amount")),
-        right_amount_ml=_finite_number(row.get("right_amount")),
-        duration_s=_finite_number(row.get("duration")),
+        feed_amount_ml=_measurement(row.get("feed_amount")),
+        left_duration_s=_measurement(row.get("left_duration")),
+        right_duration_s=_measurement(row.get("right_duration")),
+        left_amount_ml=_measurement(row.get("left_amount")),
+        right_amount_ml=_measurement(row.get("right_amount")),
+        duration_s=_measurement(row.get("duration")),
     )
 
 
@@ -402,8 +422,9 @@ class NanitRestClient:
         """Fetch a baby's Care Logs and camera sleep sessions between two Unix times.
 
         Both bounds are required whole seconds: the API answers 422 to a
-        missing or fractional one. Rows that lack a uid, type or time are
-        skipped rather than failing the whole fetch.
+        missing or fractional one. Rows that lack a uid, type or time, or
+        whose time is not Unix seconds, are skipped rather than failing the
+        whole fetch. A negative amount or duration reads as not logged.
         """
         try:
             resp = await self._session.get(

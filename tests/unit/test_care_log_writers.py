@@ -9,6 +9,7 @@ for one and asks Nanit for nothing; the recorder-backed run is in
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from collections.abc import Iterator
 from typing import Any
@@ -37,6 +38,7 @@ from custom_components.nanit.const import (
     CONF_SHOW_CARE_LOG_NOTES,
     DOMAIN,
 )
+from custom_components.nanit.diagnostics import async_get_config_entry_diagnostics
 
 from .conftest import MOCK_BABY_1, mock_entry_data_v2
 from .test_via_device_e2e import camera_fails, nanit_env  # noqa: F401  (shared fixtures)
@@ -490,3 +492,68 @@ async def test_one_entry_unloading_while_the_other_sets_up(
     assert [old.diagnostics()["state"] for old in started if old is not importer] == ["stopped"]
     assert await hass.config_entries.async_unload(second.entry_id)
     assert _no_registry_left(hass)
+
+
+# ---------------------------------------------------------------------------
+# Diagnostics
+# ---------------------------------------------------------------------------
+
+UID_MARKER = "zquidmarker4410"
+NAME_MARKER = "zqbabynamemarker8812"
+
+
+async def test_diagnostics_show_the_writer_and_the_standby_by_position_only(
+    hass: HomeAssistant,
+    client: MagicMock,
+    started: list[CareLogStatisticsImporter],
+) -> None:
+    marked = Baby(uid=UID_MARKER, name=NAME_MARKER, camera_uid="cam_1")
+    client.async_get_babies.return_value = [marked, NO_CAMERA]
+    first = _entry(hass)
+    await _set_up(hass, first)
+    second = _second(hass)
+    await _set_up(hass, second)
+
+    writing = (await async_get_config_entry_diagnostics(hass, first))["care_log_statistics"]
+    standby = (await async_get_config_entry_diagnostics(hass, second))["care_log_statistics"]
+
+    assert set(writing) == {"enabled", "babies"}
+    assert writing["enabled"] is True
+    assert set(writing["babies"]) == {"baby_0", "baby_1"}
+    for item in writing["babies"].values():
+        assert item["writer"] is True
+        assert item["state"] == "waiting_for_recorder"
+        assert {"entries", "rows_written", "passes_completed"} <= set(item)
+    assert standby == {
+        "enabled": True,
+        "babies": {
+            "baby_0": {"writer": False, "state": "standby"},
+            "baby_1": {"writer": False, "state": "standby"},
+        },
+    }
+    # The same order on both entries: by baby code.
+    codes = sorted(baby_code(uid) for uid in (UID_MARKER, NO_CAMERA.uid))
+    assert first.runtime_data.care_log_writers is not None
+    assert first.runtime_data.care_log_writers.codes == tuple(codes)
+    for entry in (first, second):
+        text = json.dumps(await async_get_config_entry_diagnostics(hass, entry), default=str)
+        section = json.dumps(
+            (await async_get_config_entry_diagnostics(hass, entry))["care_log_statistics"]
+        )
+        for marker in (UID_MARKER, NAME_MARKER, NO_CAMERA.uid, *codes):
+            assert marker not in text, marker
+            assert marker not in section, marker
+        assert first.entry_id not in section
+        assert second.entry_id not in section
+    for entry in (first, second):
+        assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_diagnostics_with_the_option_off(hass: HomeAssistant, client: MagicMock) -> None:
+    entry = _entry(hass, on=False)
+    await _set_up(hass, entry)
+
+    result = await async_get_config_entry_diagnostics(hass, entry)
+
+    assert result["care_log_statistics"] == {"enabled": False, "babies": {}}
+    assert await hass.config_entries.async_unload(entry.entry_id)

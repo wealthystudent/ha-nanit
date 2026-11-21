@@ -40,6 +40,7 @@ from custom_components.nanit.const import (
     DOMAIN,
 )
 from custom_components.nanit.coordinator import NanitCareLogCoordinator
+from custom_components.nanit.diagnostics import async_get_config_entry_diagnostics
 
 from ..conftest import MOCK_BABY_1, MOCK_EMAIL, mock_entry_data_v2
 from ..test_via_device_e2e import camera_fails, nanit_env  # noqa: F401  (shared fixtures)
@@ -119,7 +120,7 @@ async def _stored(hass: HomeAssistant, series: CareLogSeries) -> dict[int, tuple
     return {int(row["start"]): (row["state"], row["sum"]) for row in found.get(sid, [])}
 
 
-async def test_an_entry_with_the_import_on_writes_statistics(
+async def test_an_entry_with_the_import_on_writes_statistics_and_reports_them(
     recorder_mock: Recorder,
     hass: HomeAssistant,
     freezer: FrozenDateTimeFactory,
@@ -166,6 +167,19 @@ async def test_an_entry_with_the_import_on_writes_statistics(
     assert volume[end_hour - 3600][1] == 210.0
     # A series nothing was logged for has no statistic.
     assert await _stored(hass, CareLogSeries.PUMPED_VOLUME) == {}
+
+    diagnostics = await async_get_config_entry_diagnostics(hass, entry)
+    section = diagnostics["care_log_statistics"]
+    assert section["enabled"] is True
+    (item,) = section["babies"].values()
+    assert item["writer"] is True
+    assert item["state"] == "running"
+    assert item["established"] is True
+    assert item["entries"] == len(HISTORY)
+    assert item["passes_completed"] == 1
+    assert item["rows_written"] > 0
+    assert item["rows_written"] == item["rows_written_last_sync"]
+    assert item["minutes_since_last_sync"] == 0
 
     assert await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()

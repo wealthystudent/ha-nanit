@@ -10,7 +10,7 @@ from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.core import HomeAssistant
 
 from . import NanitConfigEntry
-from .const import is_stream_stills
+from .const import is_import_care_log_statistics, is_stream_stills
 
 TO_REDACT = {
     "email",
@@ -108,9 +108,24 @@ async def async_get_config_entry_diagnostics(
         "cameras": async_redact_data(cameras_diag, TO_REDACT),
         "speaker_count": len(speakers_diag),
         "speakers": async_redact_data(speakers_diag, TO_REDACT),
+        "care_log_statistics": _care_log_statistics(entry),
         "local_streaming": (
             async_redact_data(local.diagnostics(), TO_REDACT)
             if (local := entry.runtime_data.local_stream) is not None
             else {"enabled": False}
         ),
     }
+
+
+def _care_log_statistics(entry: NanitConfigEntry) -> dict[str, object]:
+    """Return whether the import is on and, per baby, whether this entry writes.
+
+    Babies are keyed by position only; the importer's own diagnostics are
+    numbers and fixed state names.
+    """
+    if not is_import_care_log_statistics(entry):
+        return {"enabled": False, "babies": {}}
+    writers = entry.runtime_data.care_log_writers
+    if writers is None:
+        return {"enabled": True, "babies": {}}
+    return writers.diagnostics()

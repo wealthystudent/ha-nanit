@@ -49,7 +49,12 @@ from custom_components.nanit.calendar import (
     FALLBACK_TEXT,
     NanitCareLogCalendar,
 )
-from custom_components.nanit.const import CONF_READ_ONLY, CONF_SHOW_CARE_LOG_NOTES, DOMAIN
+from custom_components.nanit.const import (
+    CONF_IMPORT_CARE_LOG_STATISTICS,
+    CONF_READ_ONLY,
+    CONF_SHOW_CARE_LOG_NOTES,
+    DOMAIN,
+)
 from custom_components.nanit.coordinator import NanitCareLogCoordinator
 from custom_components.nanit.diagnostics import async_get_config_entry_diagnostics
 
@@ -339,10 +344,22 @@ async def test_privacy_markers(
     caplog.set_level(logging.DEBUG)
     fake = FakeNanit()
     _day_of_entries(fake)
-    entry = await _set_up(hass, client, fake, notes=notes)
+    # With the statistics import on, so diagnostics has its section too.
+    entry = _entry(hass, notes=notes)
+    hass.config_entries.async_update_entry(
+        entry, options={**entry.options, CONF_IMPORT_CARE_LOG_STATISTICS: True}
+    )
+    entry = await _set_up(hass, client, fake, notes=notes, entry=entry)
     calendar = _calendar(hass, entry)
 
     surfaces = await _surfaces(hass, hass_client, entry, calendar)
+    statistics = (await async_get_config_entry_diagnostics(hass, entry))["care_log_statistics"]
+    assert statistics["enabled"] is True
+    assert statistics["babies"]["baby_0"]["writer"] is True
+    section = json.dumps(statistics)
+    for marker in (BABY_MARKER, baby_code(BABY_MARKER), BABY.name, entry.entry_id):
+        assert marker not in section, marker
+    assert baby_code(BABY_MARKER) not in surfaces["diagnostics"]
 
     # Only the calendar answer and the action response may carry notes and
     # names, and only with the option on.

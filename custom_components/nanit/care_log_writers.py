@@ -55,6 +55,9 @@ _LOGGER = logging.getLogger(__name__)
 # The registry's key in hass.data[DOMAIN].
 WRITERS_KEY: Final = "care_log_writers"
 
+# The state a standby reports in diagnostics.
+STATE_STANDBY: Final = "standby"
+
 type ImporterFactory = Callable[[], CareLogStatisticsImporter]
 
 
@@ -264,3 +267,19 @@ class EntryCareLogWriters:
         while self._codes:
             code = self._codes.pop()
             await async_unregister_writer(self._hass, code, self._entry.entry_id)
+
+    def diagnostics(self) -> dict[str, object]:
+        """Return whether the option is on and, per baby, whether this entry writes.
+
+        Babies are keyed by position (``baby_0``, ...), in the order of their
+        codes, never by a uid, code or name.
+        """
+        babies: dict[str, object] = {}
+        registry = care_log_writer_registry(self._hass)
+        for index, code in enumerate(self.codes):
+            writer = registry.writer(code) if registry is not None else None
+            if writer is not None and writer[0] == self._entry.entry_id:
+                babies[f"baby_{index}"] = {"writer": True, **writer[1].diagnostics()}
+            else:
+                babies[f"baby_{index}"] = {"writer": False, "state": STATE_STANDBY}
+        return {"enabled": is_import_care_log_statistics(self._entry), "babies": babies}

@@ -609,6 +609,41 @@ async def test_rows_before_the_coverage_hour_are_never_compared_or_written_and_t
     assert by_hour[END - H] == (0.0, 380.0)
 
 
+async def test_stale_rows_of_an_interrupted_backfill_are_found_across_a_gap_and_corrected(
+    recorder_mock: Recorder, hass: HomeAssistant, sent: Sent
+) -> None:
+    book = await _imported(hass)
+    sent.clear()
+    # An entry backdated about 5,900 hours before the rows (more than two
+    # chunks); its backfill stops after the first batch.
+    back = _bottle("b_back", datetime(2026, 3, 1, 8, 15, tzinfo=UTC), 70.0)
+    hour = hour_start(back.timestamp)
+    changed = book.update([*BASE, back])
+    with patch.object(care_log_recorder, "BATCH_ROWS", 100):
+        report = await _sync(
+            hass, book.ledger, changed_from=changed, should_stop=lambda: bool(sent)
+        )
+    assert report.stopped
+    feeds = await _stored(hass, S.BOTTLE_FEEDS)
+    assert feeds[0] == (hour, 1.0, 1.0)
+    assert [row[0] for row in feeds[:101]] == [*range(hour, hour + 100 * H, H), _h(MON, 6)]
+    assert _h(MON, 6) - (hour + 100 * H) > 2 * care_log_recorder.CHUNK_HOURS * H
+
+    # The entry is withdrawn; after a restart the ledger is rebuilt without it.
+    rebuilt = _Book(BASE)
+    comparison = await _compare(hass, rebuilt.ledger)
+    assert comparison.lowering_cells == 1  # the stale feed
+    sent.clear()
+    await _sync(hass, rebuilt.ledger)
+
+    # Dense and correct from the earliest remaining row.
+    assert await _stored(hass, S.BOTTLE_FEEDS) == _expected(rebuilt.ledger, S.BOTTLE_FEEDS, hour)
+    await _assert_matches(hass, rebuilt.ledger, {**STARTS, S.BOTTLE_FEEDS: hour})
+    sent.clear()
+    assert (await _sync(hass, rebuilt.ledger)).rows_written == 0
+    assert (await _compare(hass, rebuilt.ledger)).rows_to_write == 0
+
+
 async def test_a_series_stored_only_before_the_coverage_hour_is_left_alone(
     recorder_mock: Recorder, hass: HomeAssistant, sent: Sent
 ) -> None:

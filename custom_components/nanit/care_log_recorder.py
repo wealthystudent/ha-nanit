@@ -41,13 +41,17 @@ equal what was sent. A batch that cannot be verified stops the sync with
 repeat: the next sync finds what still differs and continues from there.
 
 Finding a series' first stored row: Home Assistant has no public query for
-it. The rows are dense, and a series' stored rows are written oldest first
-(every batch starts where the one before ended), so the first stored row is
-found by reading back from the ledger's first hour (or from the last stored
-row, whichever is earlier) one chunk at a time until a chunk holds no row,
-never below the coverage hour. In the usual case, nothing stored before the
-ledger's first hour, that is a single read of an empty chunk. All of it
-runs in one executor job.
+it, and the rows need not be dense: a backfill interrupted after its first
+batch, of an entry later withdrawn, leaves rows separated from the rest by
+a gap of any length. So the first stored row is found by reading forward
+from the coverage hour to the series' first known hour (the ledger's, or
+the hour after the last stored row, whichever is earlier), one chunk at a
+time, not stopping at an empty chunk, until a chunk holds a row. Every row
+from there on is then compared, and corrected, whatever gap lies before the
+rest. In the usual case, nothing stored before the ledger's first hour,
+that is one read of an empty chunk per ``CHUNK_HOURS`` between the coverage
+hour and the first entry (a year before birth: four). All of it runs in one
+executor job, holding at most one chunk of rows.
 
 Finding the total to continue from: the ``sum`` of the latest stored row
 before a series' first hour comes from Home Assistant's public
@@ -250,26 +254,18 @@ def _read_last(hass: HomeAssistant, sid: str) -> tuple[int, float | None] | None
     return int(rows[0]["start"]), rows[0].get("sum")
 
 
-def _read_first_before(
-    hass: HomeAssistant, sid: str, before: int, floor: int
-) -> tuple[int | None, int]:
-    """Walk back from ``before`` a chunk at a time; return the earliest row's hour and rows read.
+def _read_first_from(hass: HomeAssistant, sid: str, low: int, high: int) -> tuple[int | None, int]:
+    """Read forward through ``[low, high)`` a chunk at a time; return the first row's hour and rows read.
 
-    Stops at the first chunk that holds no row, and never reads before
-    ``floor``. The hour is None when no row is stored in ``[floor, before)``.
+    Empty chunks do not stop it: it ends at the first chunk that holds a
+    row, or at ``high``. The hour is None when no row is stored there.
     """
-    earliest: int | None = None
-    read = 0
-    high = before
     step = CHUNK_HOURS * HOUR_SECONDS
-    while high > floor:
-        rows = _read_rows(hass, sid, max(high - step, floor), high)
-        if not rows:
-            break
-        read += len(rows)
-        earliest = min(rows)
-        high -= step
-    return earliest, read
+    for chunk in range(low, high, step):
+        rows = _read_rows(hass, sid, chunk, min(chunk + step, high))
+        if rows:
+            return min(rows), len(rows)
+    return None, 0
 
 
 def _read_sum_before(hass: HomeAssistant, sid: str, hour: int) -> float | None:
@@ -363,8 +359,8 @@ class _Reader:
             self.rows_read += 1
         return last
 
-    async def first_before(self, sid: str, before: int, floor: int) -> int | None:
-        earliest, read = await self.job(_read_first_before, self.hass, sid, before, floor)
+    async def first_from(self, sid: str, low: int, high: int) -> int | None:
+        earliest, read = await self.job(_read_first_from, self.hass, sid, low, high)
         self.rows_read += read
         return earliest
 
@@ -389,7 +385,7 @@ class _Reader:
         stored_first: int | None = None
         if last is not None and last >= cov:
             before = last + HOUR_SECONDS if first is None else min(first, last + HOUR_SECONDS)
-            stored_first = await self.first_before(sid, min(before, end), cov)
+            stored_first = await self.first_from(sid, cov, min(before, end))
         candidates = [hour for hour in (first, stored_first) if hour is not None]
         if not candidates:
             return None

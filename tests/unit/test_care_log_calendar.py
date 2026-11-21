@@ -1724,6 +1724,37 @@ async def test_unavailable_until_the_reader_succeeds_and_written_on_each_poll(
     assert await hass.config_entries.async_unload(entry.entry_id)
 
 
+async def test_a_failed_first_fetch_logs_neither_the_baby_name_nor_its_uid(
+    hass: HomeAssistant,
+    client: Any,
+    freezer: FrozenDateTimeFactory,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    freezer.move_to(NOW)
+    baby = Baby(uid=BABY_MARKER, name=NAME_MARKER, camera_uid="cam_1")
+    fake = FakeNanit()
+    fake.error = NanitConnectionError("Calendar fetch failed: TimeoutError")
+
+    entry = await _set_up(hass, client, fake, babies=[baby])
+
+    warnings = [
+        record
+        for record in caplog.records
+        if record.name == "custom_components.nanit.hub" and "failed at setup" in record.getMessage()
+    ]
+    assert len(warnings) == 1
+    for record in caplog.records:
+        if record.levelno < logging.WARNING and record.name != "custom_components.nanit.hub":
+            continue
+        shown = record.getMessage() + (record.exc_text or "")
+        assert NAME_MARKER not in shown, record.name
+        assert BABY_MARKER not in shown, record.name
+    # Named by its code instead, so two babies' warnings can be told apart.
+    assert baby_code(BABY_MARKER) in warnings[0].getMessage()
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
 async def test_unload_removes_the_calendar_and_stops_its_reader(
     hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory
 ) -> None:

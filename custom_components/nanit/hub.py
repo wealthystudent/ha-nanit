@@ -34,6 +34,7 @@ from aionanit.exceptions import (
 from aionanit.models import Baby
 
 from .aionanit_sl.sound_light import NanitSoundLight
+from .baby_code import baby_code
 from .const import (
     CONF_REFRESH_TOKEN,
     CONF_SPEAKER_IPS,
@@ -819,9 +820,10 @@ class NanitHub:
             # sensors listen, and they show unavailable until a fetch
             # succeeds. ConfigEntryAuthFailed still propagates, so HA starts
             # reauth.
+            # The baby by its code: its name and uid stay out of the log.
             _LOGGER.warning(
-                "Care log fetch for %s failed at setup; retrying on the normal schedule (%s)",
-                coordinator.baby.name,
+                "Care log fetch for baby %s failed at setup; retrying on the normal schedule (%s)",
+                baby_code(coordinator.baby.uid),
                 err,
             )
 

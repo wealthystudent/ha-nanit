@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import traceback
 from datetime import date
 
 import pytest
@@ -10,6 +11,7 @@ from aiohttp import ClientConnectionError, ClientResponseError, RequestInfo, Too
 from multidict import CIMultiDict, CIMultiDictProxy
 from yarl import URL
 
+from aionanit.client import NanitClient
 from aionanit.exceptions import (
     NanitAuthError,
     NanitConnectionError,
@@ -1376,8 +1378,10 @@ class TestGetCalendar:
             with pytest.raises(NanitConnectionError) as err:
                 await self._fetch(client)
 
-        # aiohttp's own error quotes the URL, and with it the baby's uid; ours doesn't.
-        assert "baby123" in str(err.value.__cause__)
+        # aiohttp's own error would quote the URL, and with it the baby's uid:
+        # it is not chained.
+        assert err.value.__cause__ is None
+        assert err.value.__context__ is None
         assert str(err.value) == "Calendar fetch failed with HTTP 403"
 
     async def test_get_calendar_timeout_is_connection_error(self, client: NanitRestClient) -> None:
@@ -1413,9 +1417,73 @@ class TestGetCalendar:
             with pytest.raises(NanitConnectionError) as err:
                 await self._fetch(client)
 
-        # aiohttp's own error quotes the URL, and with it the baby's uid; ours doesn't.
-        assert "baby123" in str(err.value.__cause__)
+        # aiohttp's own error would quote the URL, and with it the baby's uid:
+        # it is not chained.
+        assert err.value.__cause__ is None
+        assert err.value.__context__ is None
         assert str(err.value) == "Invalid calendar response: ContentTypeError"
+
+    @pytest.mark.parametrize(
+        "method", ["async_get_calendar", "async_get_calendar_result", "async_get_calendar_details"]
+    )
+    @pytest.mark.parametrize("failure", ["redirect_loop", "forbidden", "server_error", "not_json"])
+    async def test_no_calendar_error_traceback_holds_the_baby_uid(
+        self, client: NanitRestClient, method: str, failure: str
+    ) -> None:
+        """The whole traceback a coordinator would log, not just the outer text."""
+        url = URL(CALENDAR_URL)
+        with mock_api() as m:
+            if failure == "redirect_loop":
+                redirect_loop = TooManyRedirects(
+                    RequestInfo(url, "GET", CIMultiDictProxy(CIMultiDict()), url), ()
+                )
+                assert "baby123" in str(redirect_loop)
+                m.get(CALENDAR_URL, exception=redirect_loop)
+            elif failure == "forbidden":
+                m.get(CALENDAR_URL, status=403)
+            elif failure == "server_error":
+                m.get(CALENDAR_URL, status=500)
+            else:
+                m.get(CALENDAR_URL, status=200, body="<html>oops</html>", content_type="text/html")
+
+            # A name, not the literal, so the traceback's own source lines don't hold it.
+            baby_uid = "baby123"
+            with pytest.raises(NanitConnectionError) as err:
+                await getattr(client, method)("token123", baby_uid, 1700000000, 1700086400)
+
+        shown = "".join(traceback.format_exception(err.value))
+        assert "Calendar fetch failed" in shown or "Invalid calendar response" in shown
+        assert "baby123" not in shown
+
+
+class TestClientCalendarErrors:
+    """The client's own calendar methods, through a token refresh and the 401 retry."""
+
+    @pytest.mark.parametrize(
+        "method", ["async_get_calendar", "async_get_calendar_result", "async_get_calendar_details"]
+    )
+    async def test_no_traceback_holds_the_baby_uid(self, session: FakeSession, method: str) -> None:
+        url = URL(CALENDAR_URL)
+        redirect_loop = TooManyRedirects(
+            RequestInfo(url, "GET", CIMultiDictProxy(CIMultiDict()), url), ()
+        )
+        client = NanitClient(session)
+        client.restore_tokens("old_acc", "old_ref")
+        tokens = {"access_token": "new_acc", "refresh_token": "new_ref"}
+        with mock_api() as m:
+            m.post(REFRESH_URL, payload=tokens)
+            m.get(CALENDAR_URL, status=401)
+            m.post(REFRESH_URL, payload=tokens)
+            m.get(CALENDAR_URL, exception=redirect_loop)
+
+            # A name, not the literal, so the traceback's own source lines don't hold it.
+            baby_uid = "baby123"
+            with pytest.raises(NanitConnectionError) as err:
+                await getattr(client, method)(baby_uid, 1700000000, 1700086400)
+
+        shown = "".join(traceback.format_exception(err.value))
+        assert "Calendar fetch failed: TooManyRedirects" in shown
+        assert "baby123" not in shown
 
 
 class TestGetCalendarDetails:

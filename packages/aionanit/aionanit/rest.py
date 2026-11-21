@@ -629,7 +629,15 @@ class NanitRestClient:
         start: int,
         end: int,
     ) -> list[Any]:
-        """Return the raw rows of a /calendar answer, unparsed."""
+        """Return the raw rows of a /calendar answer, unparsed.
+
+        aiohttp's errors can quote the request URL, and with it the baby's
+        uid, which diagnostics and a logged traceback would show
+        unredacted. So every error here is fixed text with only an error's
+        type or an HTTP status, and is raised outside the handler that
+        caught the original: nothing of it is chained as a cause or context.
+        """
+        failure: str | None = None
         try:
             resp = await self._session.get(
                 f"{self._base_url}/babies/{baby_uid}/calendar",
@@ -638,20 +646,23 @@ class NanitRestClient:
                 timeout=_DEFAULT_TIMEOUT,
             )
         except (TimeoutError, aiohttp.ClientError) as err:
-            # Only the error's type: its text can carry the request URL, and
-            # with it the baby's uid, which diagnostics would show unredacted.
-            # The messages below are fixed text and an HTTP status.
-            raise NanitConnectionError(f"Calendar fetch failed: {type(err).__name__}") from err
+            failure = type(err).__name__
+        if failure is not None:
+            raise NanitConnectionError(f"Calendar fetch failed: {failure}")
 
         if resp.status == 401:
             raise NanitAuthError("Access token invalid")
 
-        _classify_http_error(resp, "Calendar fetch")
+        # Like _classify_http_error, without chaining aiohttp's error.
+        if not resp.ok:
+            raise NanitConnectionError(f"Calendar fetch failed with HTTP {resp.status}")
+        body: Any = None
         try:
             body = await resp.json()
         except (TimeoutError, aiohttp.ClientError, ValueError) as err:
-            # Only the type, for the same reason as above.
-            raise NanitConnectionError(f"Invalid calendar response: {type(err).__name__}") from err
+            failure = type(err).__name__
+        if failure is not None:
+            raise NanitConnectionError(f"Invalid calendar response: {failure}")
 
         rows = body.get("calendar") if isinstance(body, dict) else None
         if not isinstance(rows, list):

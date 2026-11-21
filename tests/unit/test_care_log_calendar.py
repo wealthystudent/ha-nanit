@@ -349,7 +349,13 @@ async def test_privacy_markers(
     hass.config_entries.async_update_entry(
         entry, options={**entry.options, CONF_IMPORT_CARE_LOG_STATISTICS: True}
     )
-    entry = await _set_up(hass, client, fake, notes=notes, entry=entry)
+    # No recorder runs here: say the database holds none of the baby's rows,
+    # so the entry takes the baby and the importer's own section shows.
+    with patch(
+        "custom_components.nanit.care_log_writers.async_has_care_log_statistics",
+        AsyncMock(return_value=False),
+    ):
+        entry = await _set_up(hass, client, fake, notes=notes, entry=entry)
     calendar = _calendar(hass, entry)
 
     surfaces = await _surfaces(hass, hass_client, entry, calendar)

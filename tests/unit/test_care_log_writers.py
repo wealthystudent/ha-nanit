@@ -2,8 +2,10 @@
 
 The entries are set up through Home Assistant with the faked Nanit client
 of ``mock_nanit_client``. No recorder runs here, so every importer waits
-for one and asks Nanit for nothing; the recorder-backed run is in
-``recorder/test_care_log_entry.py``.
+for one and asks Nanit for nothing; the recorder-backed runs are in
+``recorder/test_care_log_entry.py`` and ``recorder/test_care_log_owner.py``.
+Whether the baby has stored rows is the ``rows`` fixture's answer: by
+default none (an empty database), so a free baby can be taken.
 """
 
 from __future__ import annotations
@@ -31,12 +33,14 @@ from pytest_homeassistant_custom_component.common import (
 _ = sys.modules.setdefault("turbojpeg", MagicMock(TurboJPEG=MagicMock()))
 
 from aionanit.models import Baby
+from custom_components.nanit import care_log_writers
 from custom_components.nanit.baby_code import baby_code
 from custom_components.nanit.care_log_importer import CareLogStatisticsImporter
 from custom_components.nanit.care_log_writers import (
     WRITERS_KEY,
     CareLogWriterRegistry,
     care_log_writer_registry,
+    owner_code,
 )
 from custom_components.nanit.const import (
     CONF_IMPORT_CARE_LOG_STATISTICS,
@@ -65,6 +69,14 @@ def client(nanit_env: Any) -> Any:  # noqa: F811
     """The faked Nanit client, with one baby whose camera works."""
     nanit_env.async_get_babies.return_value = [MOCK_BABY_1]
     return nanit_env
+
+
+@pytest.fixture(autouse=True)
+def rows() -> Iterator[AsyncMock]:
+    """Whether the baby has stored statistics rows: False (none) unless a test says otherwise."""
+    answer = AsyncMock(return_value=False)
+    with patch.object(care_log_writers, "async_has_care_log_statistics", answer):
+        yield answer
 
 
 @pytest.fixture
@@ -433,6 +445,7 @@ async def test_the_owner_resumes_after_a_reload_and_after_its_account_is_added_a
     client: MagicMock,
     started: list[CareLogStatisticsImporter],
     hass_storage: dict[str, Any],
+    rows: AsyncMock,
 ) -> None:
     """The other sign-in sorts first by entry id, and still never writes."""
     owner = _entry(hass, entry_id=THIRD_ID)
@@ -440,6 +453,7 @@ async def test_the_owner_resumes_after_a_reload_and_after_its_account_is_added_a
     other = _second(hass)
     await _set_up(hass, other)
     (writing,) = started
+    rows.return_value = True  # the owner's rows are stored
     assert _writer(hass) == (owner.entry_id, writing)
 
     assert await hass.config_entries.async_reload(owner.entry_id)
@@ -469,17 +483,26 @@ async def test_an_owner_out_of_action_is_never_replaced(
     hass: HomeAssistant,
     client: MagicMock,
     started: list[CareLogStatisticsImporter],
+    rows: AsyncMock,
     how: str,
 ) -> None:
     owner = _entry(hass, entry_id=THIRD_ID)
-    if how == "polling_disabled":
-        hass.config_entries.async_update_entry(owner, pref_disable_polling=True)
     await _set_up(hass, owner)
     other = _second(hass)
     await _set_up(hass, other)
     (writing,) = started
+    rows.return_value = True  # the owner's rows are stored
 
-    if how == "stopped_itself":
+    if how == "polling_disabled":
+        # An established owner keeps the statistics with polling disabled.
+        hass.config_entries.async_update_entry(owner, pref_disable_polling=True)
+        assert await hass.config_entries.async_reload(owner.entry_id)
+        await hass.async_block_till_done()
+        assert writing.diagnostics()["state"] == "stopped"
+        assert [one._entry.entry_id for one in started] == [owner.entry_id] * 2
+        writing = started[-1]
+        assert _writer(hass) == (owner.entry_id, writing)
+    elif how == "stopped_itself":
         # As after a refused sign-in: the worker ends, the entry stays loaded.
         writing._stopping = True
         writing._wake()
@@ -490,7 +513,8 @@ async def test_an_owner_out_of_action_is_never_replaced(
     await _check_owners(hass)
     await _check_owners(hass)
 
-    assert started == [writing]
+    assert started[-1] is writing
+    assert {one._entry.entry_id for one in started} == {owner.entry_id}
     writer = _registry(hass).writer(CODE_1)
     assert writer is None or writer[0] == owner.entry_id
     other_diag = (await async_get_config_entry_diagnostics(hass, other))["care_log_statistics"]
@@ -529,10 +553,13 @@ async def test_one_entry_unloading_while_the_other_sets_up(
     hass: HomeAssistant,
     client: MagicMock,
     started: list[CareLogStatisticsImporter],
+    rows: AsyncMock,
 ) -> None:
     first = _entry(hass)
     await _set_up(hass, first)
     second = _second(hass)
+    # The first one's rows are stored.
+    rows.return_value = True
 
     unloaded, set_up = await asyncio.gather(
         hass.config_entries.async_unload(first.entry_id),
@@ -656,3 +683,207 @@ async def test_diagnostics_with_the_option_off(hass: HomeAssistant, client: Magi
 
     assert result["care_log_statistics"] == {"enabled": False, "babies": {}}
     assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+# ---------------------------------------------------------------------------
+# Ownership is proved, never assumed
+# ---------------------------------------------------------------------------
+
+
+def _bare_entry(*, email: str | None, unique_id: str | None, entry_id: str) -> MockConfigEntry:
+    data = mock_entry_data_v2()
+    data.pop("email")
+    if email is not None:
+        data["email"] = email
+    return MockConfigEntry(
+        domain=DOMAIN, data=data, version=2, unique_id=unique_id, entry_id=entry_id
+    )
+
+
+def test_one_account_gets_one_owner_code_whatever_its_case_or_its_unique_id() -> None:
+    """The config flow matches an account by its email, stripped and lower-cased."""
+    expected = _owner_code("first@example.com")
+    legacy = _bare_entry(
+        email=" First@Example.com ", unique_id="First@Example.com", entry_id=FIRST_ID
+    )
+    again = _bare_entry(email="first@example.com", unique_id="first@example.com", entry_id=THIRD_ID)
+    v1_style = _bare_entry(email="first@example.com", unique_id="cam_uid_1", entry_id=FOURTH_ID)
+    no_email = _bare_entry(email=None, unique_id="First@Example.com", entry_id=SECOND_ID)
+    neither = _bare_entry(email=None, unique_id=None, entry_id=SECOND_ID)
+
+    assert owner_code(legacy) == expected
+    assert owner_code(again) == expected
+    assert owner_code(v1_style) == expected
+    assert owner_code(no_email) == expected
+    assert owner_code(neither) == _owner_code(SECOND_ID)
+
+
+async def test_a_legacy_mixed_case_owner_resumes_when_added_again_in_lower_case(
+    hass: HomeAssistant,
+    client: MagicMock,
+    started: list[CareLogStatisticsImporter],
+    hass_storage: dict[str, Any],
+    rows: AsyncMock,
+) -> None:
+    legacy = _entry(hass, entry_id=THIRD_ID, email="First@Example.com")
+    await _set_up(hass, legacy)
+    other = _second(hass)
+    await _set_up(hass, other)
+    rows.return_value = True  # the owner's rows are stored
+    assert _writer(hass)[0] == legacy.entry_id
+    assert await hass.config_entries.async_remove(legacy.entry_id)
+    await _check_owners(hass)
+    assert _registry(hass).writer(CODE_1) is None
+
+    again = _entry(hass, entry_id=FOURTH_ID, email="first@example.com")
+    await _set_up(hass, again)
+
+    assert _writer(hass)[0] == again.entry_id
+    assert _marker(hass_storage) == {"owners": {CODE_1: _owner_code("first@example.com")}}
+    for entry in (again, other):
+        assert await hass.config_entries.async_unload(entry.entry_id)
+    assert _no_registry_left(hass)
+
+
+async def test_an_entry_with_polling_disabled_takes_no_first_ownership(
+    hass: HomeAssistant,
+    client: MagicMock,
+    started: list[CareLogStatisticsImporter],
+    hass_storage: dict[str, Any],
+) -> None:
+    """It could never import; it sorts first, and the other one takes the baby."""
+    idle = _entry(hass)
+    hass.config_entries.async_update_entry(idle, pref_disable_polling=True)
+    await _set_up(hass, idle)
+    await _check_owners(hass)
+    assert started == []
+    assert STORE_KEY not in hass_storage
+    idle_diag = (await async_get_config_entry_diagnostics(hass, idle))["care_log_statistics"]
+    assert idle_diag["babies"] == {"baby_0": {"writer": False, "state": "not_owner"}}
+
+    second = _second(hass)
+    await _set_up(hass, second)
+
+    (importer,) = started
+    assert _writer(hass) == (second.entry_id, importer)
+    assert _marker(hass_storage) == {"owners": {CODE_1: _owner_code("second@example.com")}}
+    for entry in (idle, second):
+        assert await hass.config_entries.async_unload(entry.entry_id)
+    assert _no_registry_left(hass)
+
+
+@pytest.mark.parametrize("broken", ["newer_version", "unreadable"])
+async def test_a_marker_that_cannot_be_loaded_leaves_the_rest_of_setup_alone(
+    hass: HomeAssistant,
+    client: MagicMock,
+    started: list[CareLogStatisticsImporter],
+    hass_storage: dict[str, Any],
+    caplog: pytest.LogCaptureFixture,
+    broken: str,
+) -> None:
+    from homeassistant.exceptions import HomeAssistantError
+    from homeassistant.helpers.storage import Store
+
+    real_load_data = Store._async_load_data
+
+    async def load_data(store: Store[Any]) -> Any:
+        if store.key == STORE_KEY and broken == "unreadable":
+            raise HomeAssistantError("zqmarkerpath9913 is unreadable")
+        return await real_load_data(store)
+
+    # A marker a newer version wrote: Home Assistant's store refuses it.
+    hass_storage[STORE_KEY] = {"version": 2, "key": STORE_KEY, "data": {"owners": {}}}
+    entry = _entry(hass)
+    with patch.object(Store, "_async_load_data", load_data):
+        await _set_up(hass, entry)
+        for domain in ("camera", "sensor", "calendar"):
+            assert hass.states.async_entity_ids(domain), domain
+        await _check_owners(hass)
+        await _check_owners(hass)
+
+        assert started == []
+        diag = (await async_get_config_entry_diagnostics(hass, entry))["care_log_statistics"]
+        assert diag["babies"] == {"baby_0": {"writer": False, "state": "owner_unknown"}}
+        errors = [r for r in caplog.records if r.name == care_log_writers.__name__]
+        assert len(errors) == 1
+        assert errors[0].levelname == "ERROR"
+        assert "zqmarkerpath" not in caplog.text
+        assert hass_storage[STORE_KEY]["version"] == 2  # never written over
+
+        # Readable again: the next look decides.
+        broken = "fixed"
+        hass_storage[STORE_KEY] = {"version": 1, "key": STORE_KEY, "data": {"owners": {}}}
+        await _check_owners(hass)
+
+    (importer,) = started
+    assert _writer(hass) == (entry.entry_id, importer)
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    assert _no_registry_left(hass)
+
+
+class _StubImporter:
+    """Stands in for an importer whose stop can be held."""
+
+    def __init__(self, gate: asyncio.Event | None) -> None:
+        self.gate = gate
+        self.started = False
+        self.stopped = False
+
+    def async_start(self) -> None:
+        self.started = True
+
+    async def async_stop(self) -> None:
+        if self.gate is not None:
+            await self.gate.wait()
+        self.stopped = True
+
+
+async def test_a_stalled_stop_of_one_importer_does_not_hold_up_other_registrations(
+    hass: HomeAssistant,
+) -> None:
+    registry = CareLogWriterRegistry(hass)
+    code_a, code_b = "a" * 32, "b" * 32
+    gate = asyncio.Event()
+    made: list[_StubImporter] = []
+
+    def factory(held: asyncio.Event | None = None) -> Any:
+        def make() -> Any:
+            importer = _StubImporter(held)
+            made.append(importer)
+            return importer
+
+        return make
+
+    await registry.async_register(code_a, FIRST_ID, "owner-1", factory(gate))
+    (stalled,) = made
+    assert stalled.started
+    stop = hass.async_create_task(registry.async_unregister(code_a, FIRST_ID))
+    try:
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert not stop.done()
+
+        # Another baby, and another sign-in for the stopping baby, meanwhile.
+        await asyncio.wait_for(
+            registry.async_register(code_b, SECOND_ID, "owner-2", factory()), timeout=5
+        )
+        assert registry.writer(code_b) is not None
+        await asyncio.wait_for(
+            registry.async_register(code_a, SECOND_ID, "owner-2", factory()), timeout=5
+        )
+        # No importer for the stopping baby until its stop has finished.
+        assert registry.writer(code_a) is None
+        await registry.async_check()
+        assert registry.writer(code_a) is None
+    finally:
+        gate.set()
+    await stop
+    assert stalled.stopped
+
+    await registry.async_check()
+    writer = registry.writer(code_a)
+    assert writer is not None
+    assert writer[0] == SECOND_ID
+    for code in (code_a, code_b):
+        await registry.async_unregister(code, SECOND_ID)
+    assert registry.unused

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import sys
 from collections.abc import AsyncIterator, Callable, Iterator
 from datetime import UTC, datetime, timedelta
@@ -304,3 +305,148 @@ async def test_the_owner_continues_after_its_account_is_removed_and_added_again(
     assert writer[1].diagnostics()["state"] == "running"
     after = await _rows(hass, CareLogSeries.BOTTLE_VOLUME)
     assert {hour: after[hour] for hour in rows} == rows
+
+
+# ---------------------------------------------------------------------------
+# Rows nobody is on record for, and a marker that is not saved
+# ---------------------------------------------------------------------------
+
+
+async def _all_rows(hass: HomeAssistant) -> dict[CareLogSeries, dict[int, tuple[float, float]]]:
+    return {series: await _rows(hass, series) for series in CareLogSeries}
+
+
+async def _rows_with_no_owner_on_record(
+    hass: HomeAssistant,
+    make: Callable[[str, str], MockConfigEntry],
+    started: list[CareLogStatisticsImporter],
+    hass_storage: dict[str, Any],
+    marker: dict[str, Any] | None,
+) -> dict[CareLogSeries, dict[int, tuple[float, float]]]:
+    """Rows an owner wrote; then it is gone and the marker says nothing of the baby."""
+    owner = make(OWNER_ID, OWNER_EMAIL)
+    await _set_up(hass, owner)
+    (importer,) = started
+    await _settled(hass, importer)
+    assert await hass.config_entries.async_remove(owner.entry_id)
+    await hass.async_block_till_done()
+    assert care_log_writer_registry(hass) is None
+    # As after restoring a database without its .storage, or rows written
+    # before the marker existed.
+    if marker is None:
+        del hass_storage[STORE_KEY]
+    else:
+        hass_storage[STORE_KEY] = marker
+    stored = await _all_rows(hass)
+    assert stored[CareLogSeries.BOTTLE_VOLUME]
+    return stored
+
+
+MARKERS = {
+    "absent": None,
+    "malformed": {"version": 1, "key": STORE_KEY, "data": {"owners": ["not", "a", "map"]}},
+    "lacks_the_baby": {
+        "version": 1,
+        "key": STORE_KEY,
+        "data": {"owners": {"f" * 32: _owner_code(OWNER_EMAIL)}},
+    },
+}
+
+
+@pytest.mark.parametrize("marker", list(MARKERS))
+async def test_rows_with_no_owner_on_record_are_written_by_nobody_until_deleted(
+    env: Callable[[str, str], MockConfigEntry],
+    hass: HomeAssistant,
+    freezer: FrozenDateTimeFactory,
+    started: list[CareLogStatisticsImporter],
+    hass_storage: dict[str, Any],
+    caplog: pytest.LogCaptureFixture,
+    marker: str,
+) -> None:
+    from custom_components.nanit import care_log_writers
+    from custom_components.nanit.diagnostics import async_get_config_entry_diagnostics
+
+    stored = await _rows_with_no_owner_on_record(hass, env, started, hass_storage, MARKERS[marker])
+    claimant = env(OTHER_ID, OTHER_EMAIL)
+    with caplog.at_level(logging.WARNING, logger=care_log_writers.__name__):
+        await _set_up(hass, claimant)
+        for _ in range(3):
+            await _check_owners(hass, freezer)
+
+        assert len(started) == 1
+        assert _writer(hass) is None
+        diag = (await async_get_config_entry_diagnostics(hass, claimant))["care_log_statistics"]
+        assert diag["babies"] == {"baby_0": {"writer": False, "state": "unowned"}}
+        assert await _all_rows(hass) == stored
+        warnings = [r for r in caplog.records if r.name == care_log_writers.__name__]
+        assert len(warnings) == 1
+        assert warnings[0].levelname == "WARNING"
+        message = warnings[0].getMessage()
+        for secret in (CODE, UID, _owner_code(OTHER_EMAIL), OTHER_ID, OTHER_EMAIL):
+            assert secret not in message
+
+        # The recovery: the baby's statistics deleted, then the next look.
+        ids = [statistic_id(CODE, series) for series in CareLogSeries]
+        get_instance(hass).async_clear_statistics(ids)
+        await async_wait_recording_done(hass)
+        await _check_owners(hass, freezer)
+
+    assert len(started) == 2
+    writer = _writer(hass)
+    assert writer is not None
+    assert writer[0] == claimant.entry_id
+    assert _owner_code(OTHER_EMAIL) == hass_storage[STORE_KEY]["data"]["owners"][CODE]
+    await _settled(hass, writer[1])
+    volume = await _rows(hass, CareLogSeries.BOTTLE_VOLUME)
+    assert volume[hour_start(BOTTLE.timestamp)] == (120.0, 210.0)
+    warnings = [r for r in caplog.records if r.name == care_log_writers.__name__]
+    assert len(warnings) == 1
+
+
+async def test_a_marker_that_is_not_saved_starts_no_importer_and_is_tried_again(
+    env: Callable[[str, str], MockConfigEntry],
+    hass: HomeAssistant,
+    freezer: FrozenDateTimeFactory,
+    started: list[CareLogStatisticsImporter],
+    hass_storage: dict[str, Any],
+) -> None:
+    """The write fails inside Home Assistant's store, which logs it and returns normally."""
+    from homeassistant.helpers.storage import Store
+    from homeassistant.util.file import WriteError
+
+    write = Store._async_write_data  # the test storage's own
+
+    async def failing(store: Store[Any], data: dict[str, Any]) -> None:
+        if store.key == STORE_KEY:
+            raise WriteError("No space left on device")
+        await write(store, data)
+
+    first = env(OWNER_ID, OWNER_EMAIL)
+    with patch.object(Store, "_async_write_data", failing):
+        await _set_up(hass, first)
+        await _check_owners(hass, freezer)
+
+        assert started == []
+        assert _writer(hass) is None
+        assert STORE_KEY not in hass_storage
+        assert await _rows(hass, CareLogSeries.BOTTLE_VOLUME) == {}
+
+    # The disk works again: the next look takes the baby, and only now imports.
+    await _check_owners(hass, freezer)
+    (importer,) = started
+    assert hass_storage[STORE_KEY]["data"] == {"owners": {CODE: _owner_code(OWNER_EMAIL)}}
+    await _settled(hass, importer)
+    stored = await _all_rows(hass)
+    assert stored[CareLogSeries.BOTTLE_VOLUME]
+
+    # A restart under another account: it does not write while the rows exist.
+    assert await hass.config_entries.async_unload(first.entry_id)
+    await hass.async_block_till_done()
+    assert care_log_writer_registry(hass) is None
+    other = env(OTHER_ID, OTHER_EMAIL)
+    await _set_up(hass, other)
+    for _ in range(2):
+        await _check_owners(hass, freezer)
+    assert len(started) == 1
+    assert _writer(hass) is None
+    assert await _all_rows(hass) == stored

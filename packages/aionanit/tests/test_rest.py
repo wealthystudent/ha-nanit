@@ -661,6 +661,108 @@ class TestGetCalendar:
             CareLog(uid="ok", log_type="bottle_feed", timestamp=1700000100.0, baby_uid="baby123")
         ]
 
+    async def test_get_calendar_skips_rows_without_a_time_in_seconds(
+        self, client: NanitRestClient
+    ) -> None:
+        with mock_api() as m:
+            m.get(
+                CALENDAR_URL,
+                payload={
+                    "calendar": [
+                        {"uid": "ms", "type": "diaper_change", "time": 1700000100000},
+                        {"uid": "neg", "type": "diaper_change", "time": -1700000100},
+                        {"uid": "zero", "type": "diaper_change", "time": 0},
+                        {"uid": "", "type": "diaper_change", "time": 1700000100},
+                        {"uid": "ok", "type": "diaper_change", "time": 1700000100},
+                    ]
+                },
+            )
+            logs = await self._fetch(client)
+
+        assert logs == [
+            CareLog(uid="ok", log_type="diaper_change", timestamp=1700000100.0, baby_uid="baby123")
+        ]
+
+    async def test_get_calendar_huge_number_keeps_the_rows_around_it(
+        self, client: NanitRestClient
+    ) -> None:
+        """An integer too large for a float is not a number, and never fails the fetch."""
+        huge = 10**400
+        with mock_api() as m:
+            m.get(
+                CALENDAR_URL,
+                payload={
+                    "calendar": [
+                        {"uid": "d1", "type": "diaper_change", "time": 1700000100},
+                        {"uid": "bad", "type": "diaper_change", "time": huge},
+                        {
+                            "uid": "b1",
+                            "type": "bottle_feed",
+                            "time": 1700000200,
+                            "feed_amount": huge,
+                        },
+                    ]
+                },
+            )
+            logs = await self._fetch(client)
+
+        assert logs == [
+            CareLog(uid="d1", log_type="diaper_change", timestamp=1700000100.0, baby_uid="baby123"),
+            CareLog(uid="b1", log_type="bottle_feed", timestamp=1700000200.0, baby_uid="baby123"),
+        ]
+
+    async def test_get_calendar_negative_amounts_read_as_not_logged(
+        self, client: NanitRestClient
+    ) -> None:
+        with mock_api() as m:
+            m.get(
+                CALENDAR_URL,
+                payload={
+                    "calendar": [
+                        {
+                            "uid": "b1",
+                            "type": "bottle_feed",
+                            "time": 1700000200,
+                            "feed_amount": -120,
+                        },
+                        {
+                            "uid": "n1",
+                            "type": "nursing",
+                            "time": 1700000300,
+                            "left_duration": -610,
+                            "right_duration": 0,
+                        },
+                        {
+                            "uid": "p1",
+                            "type": "pumping",
+                            "time": 1700000400,
+                            "duration": -900,
+                            "left_amount": -7.39,
+                            "right_amount": 7.39,
+                        },
+                    ]
+                },
+            )
+            logs = await self._fetch(client)
+
+        assert logs == [
+            CareLog(uid="b1", log_type="bottle_feed", timestamp=1700000200.0, baby_uid="baby123"),
+            CareLog(
+                uid="n1",
+                log_type="nursing",
+                timestamp=1700000300.0,
+                baby_uid="baby123",
+                right_duration_s=0.0,
+            ),
+            CareLog(
+                uid="p1",
+                log_type="pumping",
+                timestamp=1700000400.0,
+                baby_uid="baby123",
+                right_amount_ml=7.39,
+            ),
+        ]
+
     async def test_get_calendar_empty(self, client: NanitRestClient) -> None:
         with mock_api() as m:
             m.get(CALENDAR_URL, payload={"calendar": []})

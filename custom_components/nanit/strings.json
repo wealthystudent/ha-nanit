@@ -7,10 +7,14 @@
         "data": {
           "email": "Email",
           "password": "Password",
-          "read_only": "Read-only mode"
+          "read_only": "Read-only mode",
+          "import_care_log_statistics": "Import care log statistics",
+          "show_care_log_notes": "Show notes and who logged each entry"
         },
         "data_description": {
-          "read_only": "Only sensors, motion and sound, and the camera picture. Home Assistant gets no control over device settings: no camera power or sleep, night light, volume or Sound & Light controls. You can change this later in the integration's options."
+          "read_only": "Only sensors, motion and sound, and the camera picture. Home Assistant gets no control over device settings: no camera power or sleep, night light, volume or Sound & Light controls. You can change this later in the integration's options.",
+          "import_care_log_statistics": "Saves hourly totals of the care logged in the Nanit app to Home Assistant's long-term statistics, for charts. They stay until you delete them. Anyone signed in to this Home Assistant can read them, and Home Assistant's recorder settings for including or excluding data don't apply to them. You can change this later in the integration's options.",
+          "show_care_log_notes": "Each entry in the care log calendar shows its note and the name of the person who logged it, with their relation to the baby. Anyone who can read the calendar can see them, automations that use the calendar can copy them, and a voice assistant you expose the calendar to can receive them. Even when this is off, the calendar shows care routines, times and amounts. You can change this later in the integration's options."
         }
       },
       "mfa": {
@@ -58,7 +62,8 @@
           "device": "Sound & Light IP address",
           "read_only": "Read-only mode",
           "local_stream": "Local streaming",
-          "stream_stills": "Stills from the live stream"
+          "stream_stills": "Stills from the live stream",
+          "care_logs": "Care log statistics and notes"
         }
       },
       "device": {
@@ -100,6 +105,18 @@
         "description": "Fills the camera's picture (HomeKit tiles, picture cards) from the live stream when Nanit's cloud has no still, as it currently has none. When a picture is asked for and the last one is more than about 10 minutes old, Home Assistant starts the camera's stream briefly and keeps one frame. The camera then keeps streaming for about 20 minutes and holds one of its stream slots (it allows about two), so an always-visible tile keeps it streaming and leaves one fewer phone able to watch live. Nothing is taken while the camera is asleep. Needs FFmpeg, which Home Assistant OS and Container include. Applies to every camera on this account, and changing it reloads the integration.",
         "data": {
           "stream_stills": "Stills from the live stream"
+        }
+      },
+      "care_logs": {
+        "title": "Care log statistics and notes",
+        "description": "These choices apply to every baby on this account. Changing them reloads the integration.",
+        "data": {
+          "import_care_log_statistics": "Import care log statistics",
+          "show_care_log_notes": "Show notes and who logged each entry"
+        },
+        "data_description": {
+          "import_care_log_statistics": "Saves hourly totals of the care logged in the Nanit app to Home Assistant's long-term statistics, for charts. They stay until you delete them. Anyone signed in to this Home Assistant can read them, and Home Assistant's recorder settings for including or excluding data don't apply to them.",
+          "show_care_log_notes": "Each entry in the care log calendar shows its note and the name of the person who logged it, with their relation to the baby. Anyone who can read the calendar can see them, automations that use the calendar can copy them, and a voice assistant you expose the calendar to can receive them. Even when this is off, the calendar shows care routines, times and amounts."
         }
       }
     },

@@ -328,13 +328,22 @@ async def test_redated_entry_makes_the_next_poll_look_back_seed_days(
     assert _requested_start(fetch) == day_ago
 
 
+def _calendar(logs: list[CareLog]) -> AsyncMock:
+    """Fake the calendar fetch: only the entries ``logs`` holds inside the requested interval."""
+
+    async def fetch(_baby_uid: str, start: int, end: int) -> list[CareLog]:
+        return [log for log in logs if start <= log.timestamp <= end]
+
+    return AsyncMock(side_effect=fetch)
+
+
 async def test_entry_logged_after_midnight_for_the_evening_before_is_picked_up(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory
 ) -> None:
     """A night feed entered the next morning still becomes the last feeding."""
     freezer.move_to("2026-11-20T08:30:00+00:00")  # 00:30 local (US/Pacific)
-    fetch = AsyncMock(return_value=[])
-    coordinator = _coordinator(hass, fetch)
+    logs: list[CareLog] = []
+    coordinator = _coordinator(hass, _calendar(logs))
     await coordinator.async_refresh()
     late_bottle = CareLog(
         uid="b1",
@@ -343,7 +352,7 @@ async def test_entry_logged_after_midnight_for_the_evening_before_is_picked_up(
         baby_uid="baby_1",
         feed_amount_ml=90.0,
     )
-    fetch.return_value = [late_bottle]
+    logs.append(late_bottle)
 
     await coordinator.async_refresh()
 
@@ -492,21 +501,52 @@ def test_pumped_volume_today() -> None:
     assert _sensor("pumped_volume_today", DAY).native_value == 14.8
 
 
-@pytest.mark.parametrize(
-    "key",
-    [
-        "diaper_changes_today",
-        "feedings_today",
-        "bottle_volume_today",
-        "nursing_time_today",
-        "pumped_volume_today",
-    ],
-)
-def test_daily_totals_reset_at_local_midnight(key: str) -> None:
-    sensor = _sensor(key, DAY)
+async def test_daily_totals_reset_at_local_midnight(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """Two polls either side of midnight, with a bottle logged between them."""
+    local = dt_util.get_default_time_zone()
+    assert local == ZoneInfo("US/Pacific")
+    freezer.move_to(datetime(2026, 11, 19, 23, 58, tzinfo=local))
+    evening = CareLog(
+        uid="b1",
+        log_type="bottle_feed",
+        timestamp=datetime(2026, 11, 19, 23, 40, tzinfo=local).timestamp(),
+        baby_uid="baby_1",
+        feed_amount_ml=90.0,
+    )
+    logs = [evening]
+    coordinator = _coordinator(hass, _calendar(logs))
+    await coordinator.async_refresh()
+    daily = {d.key: NanitCareLogSensor(coordinator, d) for d in CARE_LOG_SENSORS if d.daily}
+    last_feeding = NanitCareLogSensor(
+        coordinator, next(d for d in CARE_LOG_SENSORS if d.key == "last_feeding")
+    )
 
-    assert sensor.entity_description.state_class == SensorStateClass.TOTAL
-    assert sensor.last_reset == DAY_START
+    assert len(daily) == 5
+    assert daily["feedings_today"].native_value == 1
+    assert daily["bottle_volume_today"].native_value == 90.0
+    for sensor in daily.values():
+        assert sensor.entity_description.state_class == SensorStateClass.TOTAL
+        assert sensor.last_reset == datetime(2026, 11, 19, tzinfo=local)
+
+    after_midnight = CareLog(
+        uid="b2",
+        log_type="bottle_feed",
+        timestamp=datetime(2026, 11, 20, 0, 1, tzinfo=local).timestamp(),
+        baby_uid="baby_1",
+        feed_amount_ml=60.0,
+    )
+    logs.append(after_midnight)
+    freezer.move_to(datetime(2026, 11, 20, 0, 3, tzinfo=local))
+    await coordinator.async_refresh()
+
+    assert daily["feedings_today"].native_value == 1
+    assert daily["bottle_volume_today"].native_value == 60.0
+    assert daily["diaper_changes_today"].native_value == 0
+    for sensor in daily.values():
+        assert sensor.last_reset == datetime(2026, 11, 20, tzinfo=local)
+    assert last_feeding.native_value == dt_util.utc_from_timestamp(after_midnight.timestamp)
 
 
 def test_an_empty_day_reads_zero_and_unknown() -> None:

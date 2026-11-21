@@ -130,7 +130,7 @@
       ]),
       'entity_category': None,
       'translation_key': 'care_log',
-      'unique_id': 'entry_1_baby_1_care_log_calendar',
+      'unique_id': 'entry_1_065aa64db3013a5d186dcef038a36890_care_log_calendar',
     }),
   ])
 # ---
@@ -141,7 +141,7 @@
       'device_class': None,
       'entity_category': None,
       'translation_key': 'care_log_baby',
-      'unique_id': 'entry_1_baby_1_care_log_calendar',
+      'unique_id': 'entry_1_065aa64db3013a5d186dcef038a36890_care_log_calendar',
     }),
   ])
 # ---

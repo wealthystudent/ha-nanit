@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+from datetime import date
 
 import pytest
 from aiohttp import ClientConnectionError, ClientResponseError, RequestInfo, TooManyRedirects
@@ -487,6 +488,91 @@ class TestGetBabies:
 
         assert babies[0].camera_uid == ""
         assert babies[0].name == ""
+
+
+class TestGetBabyDates:
+    """The birth date and record creation date, used only to pick where history starts."""
+
+    async def _baby(self, client: NanitRestClient, **fields: object) -> Baby:
+        with mock_api() as m:
+            m.get(
+                BABIES_URL,
+                payload={
+                    "babies": [{"uid": "baby123", "name": "Test", "camera_uid": "c1", **fields}]
+                },
+            )
+            (baby,) = await client.async_get_babies("token123")
+        return baby
+
+    async def test_parses_both_dates(self, client: NanitRestClient) -> None:
+        baby = await self._baby(
+            client, birthdate="2023-10-01", created_at="2023-11-14T22:13:20.000Z"
+        )
+
+        assert baby.birth_date == date(2023, 10, 1)
+        assert baby.created_at == 1700000000.0
+
+    async def test_absent_dates(self, client: NanitRestClient) -> None:
+        baby = await self._baby(client)
+
+        assert baby == Baby(uid="baby123", name="Test", camera_uid="c1")
+        assert baby.birth_date is None
+        assert baby.created_at is None
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("2023-10-01", date(2023, 10, 1)),
+            ("2023-10-01T00:00:00Z", date(2023, 10, 1)),
+            ("2023-10-01T23:30:00-05:00", date(2023, 10, 1)),
+            ("2023-10-01T08:00:00", date(2023, 10, 1)),
+            ("2023-02-30", None),
+            ("1969-12-31", None),
+            ("2286-01-01", None),
+            ("10/01/2023", None),
+            ("soon", None),
+            ("", None),
+            ("2023-10-01" + " " * 40, None),
+            (1696118400, None),
+            (True, None),
+            (None, None),
+        ],
+    )
+    async def test_birth_date(
+        self, client: NanitRestClient, raw: object, expected: date | None
+    ) -> None:
+        baby = await self._baby(client, birthdate=raw)
+
+        assert baby.birth_date == expected
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("2023-11-14T22:13:20Z", 1700000000.0),
+            ("2023-11-14T23:13:20+01:00", 1700000000.0),
+            (1700000000, 1700000000.0),
+            ("2023-11-14T22:13:20", None),  # no offset: not guessed at
+            ("2023-11-14", None),
+            ("never", None),
+            (1700000000000, None),
+            (-1, None),
+            (False, None),
+            (None, None),
+        ],
+    )
+    async def test_created_at(
+        self, client: NanitRestClient, raw: object, expected: float | None
+    ) -> None:
+        baby = await self._baby(client, created_at=raw)
+
+        assert baby.created_at == expected
+
+    async def test_repr_never_shows_the_dates(self, client: NanitRestClient) -> None:
+        baby = await self._baby(client, birthdate="2023-10-01", created_at=1700000000)
+
+        assert baby.birth_date is not None
+        assert "2023" not in repr(baby)
+        assert "1700000000" not in repr(baby)
 
 
 class TestGetEvents:

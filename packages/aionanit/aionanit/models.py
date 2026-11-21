@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum, IntEnum
 
 
@@ -143,6 +143,9 @@ class Baby:
     network: NetworkInfo | None = None
     camera_connected: bool | None = None  # True = camera online per Nanit cloud
     camera_last_seen: int | None = None  # Unix timestamp of last cloud contact
+    # Where care log history can start. Personal, so kept out of repr.
+    birth_date: date | None = field(default=None, repr=False)
+    created_at: float | None = field(default=None, repr=False)  # Unix timestamp of the record
 
 
 @dataclass(frozen=True)

@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import re
 import unicodedata
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 import aiohttp
@@ -171,6 +171,28 @@ def _timestamp(value: Any) -> float | None:
     if moment.tzinfo is None:
         return None
     return _unix_seconds(moment.timestamp())
+
+
+# The same span as _MAX_UNIX_SECONDS, for calendar dates.
+_EARLIEST_DATE = date(1970, 1, 1)
+_LATEST_DATE = date(2285, 12, 31)
+
+
+def _calendar_date(value: Any) -> date | None:
+    """Return the date an ISO 8601 date or date-time string gives, else None.
+
+    A date-time gives the date as written, whatever its offset.
+    """
+    if not isinstance(value, str) or len(value) > _MAX_ISO_LENGTH:
+        return None
+    try:
+        day = date.fromisoformat(value)
+    except ValueError:
+        try:
+            day = datetime.fromisoformat(value).date()
+        except ValueError:
+            return None
+    return day if _EARLIEST_DATE <= day <= _LATEST_DATE else None
 
 
 # Kinds, statuses and sources come from outside. Only a short lowercase
@@ -442,6 +464,8 @@ class NanitRestClient:
                 network=_parse_network(baby),
                 camera_connected=_parse_camera_connected(baby),
                 camera_last_seen=_parse_camera_last_seen(baby),
+                birth_date=_calendar_date(baby.get("birthdate")),
+                created_at=_timestamp(baby.get("created_at")),
             )
             for baby in body.get("babies", [])
         ]

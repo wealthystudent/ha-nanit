@@ -503,7 +503,15 @@ class _Sync:
     async def _write(
         self, metadata: StatisticMetaData, batch: list[tuple[int, float, float]]
     ) -> None:
-        """Send one batch, wait for the recorder, and read it back until it matches."""
+        """Send one batch, wait for the recorder, and read it back until it matches.
+
+        Nothing is sent once a stop was asked for. Once a batch is sent, a
+        cancellation does not abandon it: its verification runs to the end
+        (bounded by ``WRITE_TIMEOUT`` and ``VERIFY_ATTEMPTS``), and then the
+        cancellation goes on. So a batch never lands after the caller has
+        stopped, where the next importer could compare against old rows.
+        """
+        self._check_stop()
         _require_ready(self.hass)
         rows = [
             StatisticData(start=_utc(hour), state=state, sum=total) for hour, state, total in batch
@@ -514,21 +522,24 @@ class _Sync:
             _LOGGER.warning("A batch of care log statistics was refused; stopping this sync")
             raise CareLogSyncError("A batch of care log statistics was refused") from err
         self.batches += 1
-        await self._verify(metadata["statistic_id"], batch)
+        verify = asyncio.ensure_future(self._verify(metadata["statistic_id"], batch))
+        try:
+            await asyncio.shield(verify)
+        except asyncio.CancelledError:
+            # Let the batch settle first; its outcome no longer matters here.
+            await asyncio.wait([verify])
+            if not verify.cancelled():
+                verify.exception()
+            raise
         self.rows_written += len(batch)
         self._check_stop()
 
     async def _verify(self, sid: str, batch: list[tuple[int, float, float]]) -> None:
-        instance = get_instance(self.hass)
         low, high = batch[0][0], batch[-1][0] + HOUR_SECONDS
         for attempt in range(VERIFY_ATTEMPTS):
             if attempt:
                 await asyncio.sleep(VERIFY_RETRY_DELAY * 2 ** (attempt - 1))
-            try:
-                async with asyncio.timeout(WRITE_TIMEOUT):
-                    await instance.async_block_till_done()
-            except TimeoutError:
-                pass
+            await _async_wait_for_recorder(self.hass)
             stored = await self.reader.job(_read_rows, self.hass, sid, low, high)
             if all(
                 (row := stored.get(hour)) is not None
@@ -539,6 +550,15 @@ class _Sync:
                 return
         _LOGGER.warning("A batch of care log statistics could not be verified; stopping this sync")
         raise CareLogSyncError("A batch of care log statistics could not be verified")
+
+
+async def _async_wait_for_recorder(hass: HomeAssistant) -> None:
+    """Wait, at most ``WRITE_TIMEOUT``, for the recorder to work through its queue."""
+    try:
+        async with asyncio.timeout(WRITE_TIMEOUT):
+            await get_instance(hass).async_block_till_done()
+    except TimeoutError:
+        pass
 
 
 def _check_end(end_hour: int) -> None:
@@ -627,11 +647,15 @@ async def async_compare_care_log_statistics(
     """Compare every covered stored row of one baby with its ledger, without writing.
 
     ``coverage_start`` is as for ``async_sync_care_log_statistics``: rows
-    before it, rounded up to an hour, are not compared.
+    before it, rounded up to an hour, are not compared. The recorder is
+    first given up to ``WRITE_TIMEOUT`` to work through what it has queued,
+    so a batch a previous importer sent is compared as stored.
 
     Raises ``CareLogRecorderUnavailableError`` when the recorder is not ready.
     """
     _check_end(end_hour)
+    _require_ready(hass)
+    await _async_wait_for_recorder(hass)
     _require_ready(hass)
     cov = coverage_hour(coverage_start)
     reader = _Reader(hass)

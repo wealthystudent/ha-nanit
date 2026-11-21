@@ -322,8 +322,10 @@ class CareLogStatisticsImporter:
         self._release()
         task = self._task
         if task is not None and not task.done():
-            # A sync in flight sees ``should_stop`` first; the cancellation
-            # then ends whatever wait it is in (every write is safe to repeat).
+            # A sync in flight sees ``should_stop`` first and sends nothing
+            # more; the cancellation then ends whatever wait it is in, except
+            # that a batch already sent is verified first (every write is
+            # safe to repeat).
             task.cancel()
             await asyncio.wait([task])
         self._state = STATE_STOPPED

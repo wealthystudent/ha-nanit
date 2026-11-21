@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from collections.abc import Callable, Iterable, Iterator
 from datetime import UTC, datetime, timedelta
@@ -51,6 +52,7 @@ from custom_components.nanit.care_log_recorder import (
 )
 from custom_components.nanit.care_log_statistics import (
     statistic_id,
+    statistic_metadata,
     statistic_names,
     statistic_rows,
 )
@@ -833,6 +835,62 @@ async def test_a_write_that_shows_up_late_is_accepted(
     await _assert_matches(
         hass, book.ledger, {S.BOTTLE_FEEDS: _h(MON, 6), S.BOTTLE_VOLUME: _h(MON, 6)}
     )
+
+
+async def test_a_cancelled_sync_still_verifies_the_batch_it_sent_and_sends_no_other(
+    recorder_mock: Recorder, hass: HomeAssistant, sent: Sent
+) -> None:
+    """The recorder holds the first batch while the sync is cancelled."""
+    from homeassistant.components.recorder import statistics
+
+    book = _Book(BASE)
+    entered = threading.Event()
+    gate = threading.Event()
+    real_import = statistics.import_statistics
+
+    def held(*args: Any) -> bool:
+        entered.set()
+        gate.wait(30)
+        result: bool = real_import(*args)
+        return result
+
+    with patch.object(statistics, "import_statistics", held):
+        task = hass.async_create_task(_sync(hass, book.ledger))
+        assert await hass.async_add_executor_job(entered.wait, 30)
+        task.cancel()
+        for _ in range(20):
+            await asyncio.sleep(0)
+        assert not task.done()  # still waiting for the batch it sent
+        gate.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    ((sid, rows),) = sent
+    assert sid == statistic_id(CODE, S.DIAPER_CHANGES)
+    assert await _stored(hass, S.DIAPER_CHANGES) == rows
+
+
+async def test_the_comparison_first_waits_for_what_the_recorder_has_queued(
+    recorder_mock: Recorder, hass: HomeAssistant
+) -> None:
+    from homeassistant.components.recorder import statistics
+
+    book = _Book([B0])
+    real_import = statistics.import_statistics
+
+    def slow(*args: Any) -> bool:
+        time.sleep(0.3)
+        result: bool = real_import(*args)
+        return result
+
+    with patch.object(statistics, "import_statistics", slow):
+        for series in (S.BOTTLE_FEEDS, S.BOTTLE_VOLUME):
+            amounts = book.ledger.series_hours(series, _h(MON, 6), END)
+            rows = statistic_rows(amounts, start=_h(MON, 6), end=END)
+            real_add(hass, statistic_metadata(CODE, series, NAMES[series]), rows)
+        comparison = await _compare(hass, book.ledger)
+
+    assert (comparison.missing_rows, comparison.rows_to_write) == (0, 0)
 
 
 # ---------------------------------------------------------------------------

@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from itertools import pairwise
 from typing import Any
@@ -28,6 +30,7 @@ from homeassistant.components.recorder.statistics import (
     async_add_external_statistics as real_add,
 )
 from homeassistant.components.recorder.statistics import statistics_during_period
+from homeassistant.components.recorder.tasks import RecorderTask
 from homeassistant.components.recorder.util import get_instance
 from homeassistant.config_entries import SOURCE_REAUTH
 from homeassistant.core import HomeAssistant
@@ -340,6 +343,18 @@ async def _imported(make: Callable[..., Harness], truth: Truth) -> Harness:
     return harness
 
 
+@dataclass
+class _HoldRecorder(RecorderTask):
+    """Holds the recorder's thread until ``gate`` is set."""
+
+    entered: threading.Event
+    gate: threading.Event
+
+    def run(self, instance: Recorder) -> None:
+        self.entered.set()
+        self.gate.wait(30)
+
+
 # ---------------------------------------------------------------------------
 # Starting up
 # ---------------------------------------------------------------------------
@@ -579,34 +594,63 @@ async def test_an_auth_error_starts_reauth_and_stops_the_importer(
     await harness.stop()
 
 
-async def test_stopping_during_a_long_first_import_returns_promptly_and_a_new_importer_finishes(
-    make: Callable[..., Harness], hass: HomeAssistant
+async def test_stopping_during_a_long_first_import_settles_the_batch_sent_and_sends_no_other(
+    make: Callable[..., Harness], hass: HomeAssistant, sent: Sent
 ) -> None:
+    """The recorder is busy when the first batch is sent; the importer is stopped meanwhile."""
     truth = Truth(BASE)
-    entered = asyncio.Event()
-    stop_checks: list[Callable[[], bool]] = []
+    entered = threading.Event()
+    gate = threading.Event()
+    events: list[str] = []
+    spy = care_log_recorder.async_add_external_statistics
+    real_verify = care_log_recorder._Sync._verify
 
-    async def endless_sync(*_args: Any, should_stop: Callable[[], bool], **_kwargs: Any) -> Any:
-        stop_checks.append(should_stop)
-        entered.set()
-        await asyncio.Event().wait()
+    def busy_first(hass: HomeAssistant, metadata: Any, rows: Any) -> None:
+        if not entered.is_set():
+            # The batch queues behind a task that holds the recorder.
+            get_instance(hass).queue_task(_HoldRecorder(entered, gate))
+        spy(hass, metadata, rows)
+
+    async def verify(self: Any, sid: str, batch: Any) -> None:
+        await real_verify(self, sid, batch)
+        events.append("verified")
 
     harness = make(truth)
-    with patch.object(care_log_importer, "async_sync_care_log_statistics", endless_sync):
+    with (
+        patch.object(care_log_recorder, "BATCH_ROWS", 50),
+        patch.object(care_log_recorder, "async_add_external_statistics", busy_first),
+        patch.object(care_log_recorder._Sync, "_verify", verify),
+    ):
         harness.start()
         await harness.coordinator.async_refresh()
-        await entered.wait()
-        assert stop_checks[0]() is False
+        assert await hass.async_add_executor_job(entered.wait, 30)
+        stop = hass.async_create_task(harness.importer.async_stop())
+        for _ in range(20):
+            await asyncio.sleep(0)
+        assert not stop.done()
 
-        await harness.stop()
+        events.append("released")
+        gate.set()
+        await stop
+        events.append("stopped")
 
-    assert stop_checks[0]() is True
+    assert events == ["released", "verified", "stopped"]
+    assert len(sent) == 1
     assert harness.diag()["state"] == "stopped"
+    first_sid, first_rows = sent[0]
+    assert first_sid == statistic_id(CODE, S.DIAPER_CHANGES)
+    assert len(first_rows) == (_end_hour() - _hour(D1)) // H
+    stored = await _rows(hass, S.DIAPER_CHANGES)
+    assert [(hour, *stored[hour]) for hour, _s, _t in first_rows] == first_rows
 
+    # The next importer compares against the stored batch: it sends the rest only.
     again = make(truth)
     again.start()
     await again.poll()
     assert again.diag()["state"] == "running"
+    assert first_rows[0][0] not in [
+        hour for sid, rows in sent[1:] if sid == first_sid for hour, _s, _t in rows
+    ]
     assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(OLD)] == 90.0
 
 

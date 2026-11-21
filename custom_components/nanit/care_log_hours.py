@@ -24,7 +24,10 @@ The rules:
 Hours are keyed by the Unix time of their start, which is always a whole
 multiple of 3600: Unix time has no leap seconds, so those are exactly the
 UTC hours. Arithmetic is in Nanit's units (mL and seconds); durations are
-turned into minutes only at the end, without rounding.
+turned into minutes only at the end, without rounding. Sums are exactly
+rounded (``math.fsum``), so a total does not depend on the order entries
+come in. ``entry_contribution`` and ``sum_contributions`` are the one
+definition of what an entry adds; the care log ledger uses them too.
 """
 
 from __future__ import annotations
@@ -141,12 +144,27 @@ class HourlyAmounts:
     invalid: Mapping[int, frozenset[CareLogSeries]]
 
 
+@dataclass(frozen=True, slots=True)
+class EntryContribution:
+    """What one entry adds, all of it in the hour it is dated.
+
+    ``raw`` holds, sorted by series, the amount the entry adds to each series
+    it adds to, in Nanit's units (1 for a count, mL, seconds). ``invalid``
+    holds the series for which one of its measurements was rejected; such a
+    measurement adds nothing to ``raw``.
+    """
+
+    hour: int
+    raw: tuple[tuple[CareLogSeries, float], ...]
+    invalid: frozenset[CareLogSeries]
+
+
 def hour_start(timestamp: float) -> int:
     """Return the start of the UTC hour a Unix time falls in."""
     return math.floor(timestamp / HOUR_SECONDS) * HOUR_SECONDS
 
 
-def _by_uid(logs: Iterable[CareLog]) -> list[CareLog]:
+def latest_by_uid(logs: Iterable[CareLog]) -> list[CareLog]:
     """Keep one entry per uid: the later-dated copy, as the sensors do."""
     unique: dict[str, CareLog] = {}
     for log in logs:
@@ -173,6 +191,74 @@ def _measurement(log: CareLog, name: str) -> tuple[float | None, bool]:
     return float(value), False
 
 
+def entry_contribution(log: CareLog) -> EntryContribution | None:
+    """Return what one entry adds, or None when it adds nothing.
+
+    Sleep and unknown kinds, and an entry without a finite time, add nothing.
+    """
+    count_series = _COUNTS.get(log.log_type)
+    if count_series is None or not math.isfinite(log.timestamp):
+        return None
+    parts: defaultdict[CareLogSeries, list[float]] = defaultdict(list)
+    invalid: set[CareLogSeries] = set()
+    parts[count_series].append(1.0)
+    if log.log_type == DIAPER and (type_series := _DIAPER_TYPES.get(log.change_type or "")):
+        parts[type_series].append(1.0)
+    for name, targets in _MEASUREMENTS.get(log.log_type, ()):
+        value, rejected = _measurement(log, name)
+        if rejected:
+            invalid.update(targets)
+        elif value is not None:
+            for series in targets:
+                parts[series].append(value)
+    raw = tuple(
+        sorted(
+            ((series, math.fsum(values)) for series, values in parts.items()),
+            key=lambda item: item[0].value,
+        )
+    )
+    return EntryContribution(hour=hour_start(log.timestamp), raw=raw, invalid=frozenset(invalid))
+
+
+def to_series_units(series: CareLogSeries, raw_total: float) -> float:
+    """Turn a raw total (count, mL or seconds) into the series' unit.
+
+    Seconds become minutes, without rounding; anything else is unchanged.
+    """
+    return raw_total / 60 if SERIES_UNITS[series] is SeriesUnit.MINUTES else raw_total
+
+
+def series_total(series: CareLogSeries, raw_amounts: Iterable[float]) -> float:
+    """Return the total of some raw amounts of one series, in the series' unit.
+
+    The sum is exactly rounded (``math.fsum``), so it does not depend on the
+    order the amounts come in.
+    """
+    return to_series_units(series, math.fsum(raw_amounts))
+
+
+def sum_contributions(contributions: Iterable[EntryContribution]) -> HourlyAmounts:
+    """Add up entries' contributions per hour and series, oldest hour first."""
+    raw: defaultdict[int, defaultdict[CareLogSeries, list[float]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    invalid: defaultdict[int, set[CareLogSeries]] = defaultdict(set)
+    for contribution in contributions:
+        hour_raw = raw[contribution.hour]
+        for series, amount in contribution.raw:
+            hour_raw[series].append(amount)
+        if contribution.invalid:
+            invalid[contribution.hour].update(contribution.invalid)
+    amounts = {
+        hour: {series: series_total(series, values) for series, values in hour_raw.items()}
+        for hour, hour_raw in sorted(raw.items())
+    }
+    return HourlyAmounts(
+        amounts=amounts,
+        invalid={hour: frozenset(series) for hour, series in sorted(invalid.items())},
+    )
+
+
 def hourly_amounts(logs: Iterable[CareLog], *, now: datetime) -> HourlyAmounts:
     """Return what each finished UTC hour gained, from numbers-only entries.
 
@@ -182,40 +268,9 @@ def hourly_amounts(logs: Iterable[CareLog], *, now: datetime) -> HourlyAmounts:
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("now must be timezone-aware")
     first_unfinished = hour_start(now.timestamp())
-
-    # Seconds and mL, summed exactly as given; minutes only at the end.
-    sums: defaultdict[int, defaultdict[CareLogSeries, float]] = defaultdict(
-        lambda: defaultdict(float)
-    )
-    invalid: defaultdict[int, set[CareLogSeries]] = defaultdict(set)
-
-    for log in _by_uid(logs):
-        count_series = _COUNTS.get(log.log_type)
-        if count_series is None or not math.isfinite(log.timestamp):
-            continue
-        hour = hour_start(log.timestamp)
-        if hour >= first_unfinished:
-            continue
-        hour_sums = sums[hour]
-        hour_sums[count_series] += 1
-        if log.log_type == DIAPER and (type_series := _DIAPER_TYPES.get(log.change_type or "")):
-            hour_sums[type_series] += 1
-        for name, targets in _MEASUREMENTS.get(log.log_type, ()):
-            value, rejected = _measurement(log, name)
-            if rejected:
-                invalid[hour].update(targets)
-            elif value is not None:
-                for series in targets:
-                    hour_sums[series] += value
-
-    amounts = {
-        hour: {
-            series: value / 60 if SERIES_UNITS[series] is SeriesUnit.MINUTES else value
-            for series, value in hour_sums.items()
-        }
-        for hour, hour_sums in sorted(sums.items())
-    }
-    return HourlyAmounts(
-        amounts=amounts,
-        invalid={hour: frozenset(series) for hour, series in sorted(invalid.items())},
+    contributions = (entry_contribution(log) for log in latest_by_uid(logs))
+    return sum_contributions(
+        contribution
+        for contribution in contributions
+        if contribution is not None and contribution.hour < first_unfinished
     )

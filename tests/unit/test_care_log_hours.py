@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -13,9 +14,13 @@ from custom_components.nanit import care_log_hours, coordinator
 from custom_components.nanit.care_log_hours import (
     SERIES_UNITS,
     CareLogSeries,
+    EntryContribution,
     SeriesUnit,
+    entry_contribution,
     hour_start,
     hourly_amounts,
+    series_total,
+    to_series_units,
 )
 
 S = CareLogSeries
@@ -463,6 +468,109 @@ def test_the_missing_hour_when_clocks_go_forward_changes_nothing() -> None:
         int(datetime(2026, 3, 29, 0, tzinfo=UTC).timestamp()): {S.DIAPER_CHANGES: 1},
         int(datetime(2026, 3, 29, 1, tzinfo=UTC).timestamp()): {S.DIAPER_CHANGES: 1},
     }
+
+
+# ---------------------------------------------------------------------------
+# One entry's contribution, and the shared summing
+# ---------------------------------------------------------------------------
+
+
+def test_an_entry_contribution_holds_its_hour_and_raw_amounts() -> None:
+    nursing = _log("n1", "nursing", AT_10, left_duration_s=600.0, right_duration_s=300.0)
+    assert entry_contribution(nursing) == EntryContribution(
+        hour=_hour(AT_10),
+        raw=(
+            (S.NURSING_SESSIONS, 1.0),
+            (S.NURSING_TIME, 900.0),
+            (S.NURSING_TIME_LEFT, 600.0),
+            (S.NURSING_TIME_RIGHT, 300.0),
+        ),
+        invalid=frozenset(),
+    )
+    diaper = _log("d1", "diaper_change", AT_9, change_type="poo")
+    assert entry_contribution(diaper) == EntryContribution(
+        hour=_hour(AT_9),
+        raw=((S.DIAPER_CHANGES, 1.0), (S.DIAPER_POO, 1.0)),
+        invalid=frozenset(),
+    )
+
+
+def test_an_entry_contribution_is_sorted_by_series() -> None:
+    pumping = _log(
+        "p1", "pumping", AT_9, left_amount_ml=40.0, right_amount_ml=35.5, duration_s=900.0
+    )
+    contribution = entry_contribution(pumping)
+    assert contribution is not None
+    names = [series.value for series, _ in contribution.raw]
+    assert names == sorted(names)
+
+
+def test_an_entry_contribution_flags_a_rejected_amount_and_adds_nothing_for_it() -> None:
+    log = _log(
+        "n1",
+        "nursing",
+        AT_9,
+        right_duration_s=300.0,
+        invalid_fields=frozenset({"left_duration_s"}),
+    )
+    assert entry_contribution(log) == EntryContribution(
+        hour=_hour(AT_9),
+        raw=(
+            (S.NURSING_SESSIONS, 1.0),
+            (S.NURSING_TIME, 300.0),
+            (S.NURSING_TIME_RIGHT, 300.0),
+        ),
+        invalid=frozenset({S.NURSING_TIME, S.NURSING_TIME_LEFT}),
+    )
+
+
+def test_an_uncounted_kind_or_an_unusable_time_contributes_nothing() -> None:
+    assert entry_contribution(_log("s1", "sleep", AT_9, duration_s=60.0)) is None
+    assert entry_contribution(_log("x1", "medicine", AT_9)) is None
+    no_time = CareLog(uid="d1", log_type="diaper_change", timestamp=float("nan"), baby_uid="b")
+    assert entry_contribution(no_time) is None
+
+
+def test_raw_totals_become_series_units_without_rounding() -> None:
+    assert to_series_units(S.NURSING_TIME, 61.5) == 61.5 / 60
+    assert to_series_units(S.PUMPING_TIME, 90.0) == 1.5
+    assert to_series_units(S.BOTTLE_VOLUME, 29.5735) == 29.5735
+    assert to_series_units(S.DIAPER_CHANGES, 3.0) == 3.0
+    assert series_total(S.NURSING_TIME_LEFT, [20.0, 20.0, 20.0]) == 1.0
+
+
+def test_totals_do_not_depend_on_the_order_entries_come_in() -> None:
+    # One-decimal amounts: adding them up one by one gives a total that
+    # changes in the last bit with the order.
+    rng = random.Random(20261121)
+    logs = [
+        _log(
+            f"b{i}",
+            "bottle_feed",
+            AT_9 + timedelta(seconds=i),
+            feed_amount_ml=round(rng.uniform(0, 250), 1),
+        )
+        for i in range(60)
+    ] + [
+        _log(
+            f"n{i}",
+            "nursing",
+            AT_9 + timedelta(seconds=i),
+            left_duration_s=round(rng.uniform(0, 1800), 1),
+            right_duration_s=round(rng.uniform(0, 1800), 1),
+        )
+        for i in range(60)
+    ]
+    expected = hourly_amounts(logs, now=NOW)
+    for _ in range(20):
+        shuffled = logs[:]
+        rng.shuffle(shuffled)
+        result = hourly_amounts(shuffled, now=NOW)
+        assert result == expected
+        # Bit for bit, not just equal within a tolerance.
+        for hour, amounts in expected.amounts.items():
+            for series, value in amounts.items():
+                assert result.amounts[hour][series].hex() == value.hex()
 
 
 def test_nothing_in_the_module_needs_home_assistant() -> None:

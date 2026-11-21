@@ -1617,6 +1617,42 @@ class TestGetCalendarDetails:
         for shown in (repr(result), str(result), f"{result.entries[0].detail}"):
             assert "MARKER" not in shown
 
+    async def test_fetch_reprs_show_only_counts(self, client: NanitRestClient) -> None:
+        """No entry id, baby uid, time or measurement in either fetch's printed form."""
+        rows = [
+            {
+                "uid": "zqentry4417",
+                "type": "bottle_feed",
+                "time": 1700000123,
+                "feed_amount": 87.5,
+                "created_at": 1700000456,
+            },
+            {"uid": "zqentry4418", "type": "nursing", "time": 1700000789, "left_duration": 613},
+            {"type": "diaper_change", "time": 1700000100},
+        ]
+        detail_fetch = await self._fetch(client, rows)
+        with mock_api() as m:
+            m.get(CALENDAR_URL, payload={"calendar": rows})
+            numbers_fetch = await client.async_get_calendar_result(
+                "token123", "baby123", 1700000000, 1700086400
+            )
+
+        assert len(detail_fetch.entries) == len(numbers_fetch.logs) == 2
+        shown = [
+            repr(numbers_fetch),
+            str(numbers_fetch),
+            repr(detail_fetch),
+            str(detail_fetch),
+            repr(detail_fetch.entries),
+            f"{detail_fetch.entries[0]}",
+        ]
+        for text in shown:
+            for planted in ("zqentry", "baby123", "1700000", "87.5", "613"):
+                assert planted not in text, (planted, text)
+        assert repr(numbers_fetch) == "CareLogFetch(<2 entries>, dropped=1)"
+        assert repr(detail_fetch) == "CareLogDetailFetch(<2 entries>, dropped=1)"
+        assert repr(detail_fetch.entries[0]) == "CareLogEntry(<bottle_feed>)"
+
     async def test_skips_malformed_rows_like_the_numbers_only_fetch(
         self, client: NanitRestClient
     ) -> None:

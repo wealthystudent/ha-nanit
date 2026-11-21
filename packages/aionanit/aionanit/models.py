@@ -194,19 +194,24 @@ class CareLog:
     invalid_fields: frozenset[str] = frozenset()  # measurement fields present but rejected
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class CareLogFetch:
     """One calendar fetch: its entries, the range asked for, and what was skipped.
 
     ``start`` and ``end`` are the Unix times sent; Nanit includes both.
     ``dropped`` counts the rows skipped as malformed (no uid, an unsafe or
-    missing type, no time in Unix seconds, or not an object at all).
+    missing type, no time in Unix seconds, or not an object at all). Its
+    printed form shows only the counts, none of the entries' ids, times or
+    measurements.
     """
 
     logs: tuple[CareLog, ...]
     start: int
     end: int
     dropped: int
+
+    def __repr__(self) -> str:
+        return f"CareLogFetch(<{len(self.logs)} entries>, dropped={self.dropped})"
 
 
 @dataclass(frozen=True)
@@ -225,22 +230,35 @@ class CareLogDetail:
     user_relation: str | None = field(default=None, repr=False)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class CareLogEntry:
-    """A Care Log entry together with its personal text."""
+    """A Care Log entry together with its personal text.
+
+    Its printed form shows only the entry's kind, none of its ids, times or
+    measurements.
+    """
 
     log: CareLog
     detail: CareLogDetail
 
+    def __repr__(self) -> str:
+        return f"CareLogEntry(<{self.log.log_type}>)"
 
-@dataclass(frozen=True)
+
+@dataclass(frozen=True, repr=False)
 class CareLogDetailFetch:
-    """One calendar fetch with personal text, otherwise like ``CareLogFetch``."""
+    """One calendar fetch with personal text, otherwise like ``CareLogFetch``.
+
+    Its printed form shows only the counts.
+    """
 
     entries: tuple[CareLogEntry, ...]
     start: int
     end: int
     dropped: int
+
+    def __repr__(self) -> str:
+        return f"CareLogDetailFetch(<{len(self.entries)} entries>, dropped={self.dropped})"
 
 
 @dataclass(frozen=True)

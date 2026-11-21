@@ -1,0 +1,183 @@
+# What a change must show before it can merge, by the part of the repo it
+# touches. `just verify` prints the areas a branch touches and what each one
+# needs; docs/VERIFYING.md has the same table (a test keeps them in sync).
+#
+# paths:    globs from the repo root; `*` also matches `/`.
+# fallback: the area applies to a file only when no other area matched it.
+# live:     what the PR's "Live test" must show. `just verify` and CI do the
+#           rest; there is no need to repeat their checks by hand.
+# hardware: what the live test needs: none, account (a Nanit login), camera,
+#           or speaker (a Sound & Light machine).
+
+[[area]]
+name = "card"
+title = "Lovelace card"
+paths = ["frontend/*", "custom_components/nanit/frontend/*"]
+hardware = "account"
+live = "Screenshots of the card before and after in a dev Home Assistant, in a light and a dark theme, and no new errors in the browser console."
+
+[[area]]
+name = "config-flow"
+title = "Setup and options forms"
+paths = [
+    "custom_components/nanit/config_flow.py",
+    "custom_components/nanit/strings.json",
+    "custom_components/nanit/translations/*",
+    "custom_components/nanit/repairs.py",
+]
+hardware = "account"
+live = "Go through each changed step (add, MFA, reauth, options, repair) in a dev Home Assistant, with a screenshot of each changed form."
+
+[[area]]
+name = "setup"
+title = "Setup, upgrade and migration"
+paths = [
+    "custom_components/nanit/__init__.py",
+    "custom_components/nanit/hub.py",
+    "custom_components/nanit/const.py",
+    "custom_components/nanit/manifest.json",
+]
+hardware = "account"
+live = "Upgrade from the latest release with an existing entry: it loads, entities keep their ids, and the log shows no new errors. Then a fresh install."
+
+[[area]]
+name = "entities"
+title = "Entities and their states"
+paths = [
+    "custom_components/nanit/binary_sensor.py",
+    "custom_components/nanit/sensor.py",
+    "custom_components/nanit/switch.py",
+    "custom_components/nanit/number.py",
+    "custom_components/nanit/light.py",
+    "custom_components/nanit/select.py",
+    "custom_components/nanit/media_player.py",
+    "custom_components/nanit/entity.py",
+    "custom_components/nanit/coordinator.py",
+    "custom_components/nanit/device_links.py",
+    "custom_components/nanit/icons.json",
+    "custom_components/nanit/services.yaml",
+]
+hardware = "camera"
+live = "The affected entities in a dev Home Assistant with their states, and each changed control used once. A changed unique id needs its migration shown too."
+
+[[area]]
+name = "streaming"
+title = "Live video"
+paths = [
+    "custom_components/nanit/camera.py",
+    "custom_components/nanit/local_stream.py",
+    "packages/aionanit/aionanit/local_stream/*",
+    "packages/aionanit/aionanit/camera.py",
+]
+hardware = "camera"
+live = "Watch the live view in a browser for at least five minutes on each route the change affects (local, cloud), with the log lines of any route change. Name the camera model and firmware."
+
+[[area]]
+name = "connection"
+title = "Camera connection and login"
+paths = [
+    "packages/aionanit/aionanit/ws/*",
+    "packages/aionanit/aionanit/auth.py",
+    "packages/aionanit/aionanit/rest.py",
+    "packages/aionanit/aionanit/client.py",
+    "packages/aionanit/aionanit/camera.py",
+]
+hardware = "camera"
+live = "The scenarios from docs/CONNECTION_RELIABILITY.md that the change affects (network drop, Home Assistant restart, token refresh), each with the log showing the recovery. Name the camera model and firmware."
+
+[[area]]
+name = "sound-light"
+title = "Sound & Light machine"
+paths = [
+    "custom_components/nanit/aionanit_sl/*",
+    "custom_components/nanit/sl_discovery.py",
+]
+hardware = "speaker"
+live = "Run it against a real Sound & Light machine (name its firmware) and confirm each AGENTS.md invariant the change touches still holds."
+
+[[area]]
+name = "privacy"
+title = "Logs, diagnostics and names"
+paths = [
+    "custom_components/nanit/diagnostics.py",
+    "custom_components/nanit/log_redaction.py",
+    "custom_components/nanit/sanitize.py",
+]
+hardware = "account"
+live = "Download diagnostics and a debug log from a dev Home Assistant and confirm no token, password, email or stream URL appears in them."
+
+[[area]]
+name = "protobuf"
+title = "Protobuf messages"
+paths = ["*.proto", "*_pb2.py", "*_pb2.pyi"]
+hardware = "none"
+live = "None beyond the areas of the code that uses them. Regenerate with protoc 29.5, never by hand."
+
+[[area]]
+name = "dependencies"
+title = "Dependencies"
+paths = [
+    "pyproject.toml",
+    "packages/aionanit/pyproject.toml",
+    "uv.lock",
+    "frontend/package.json",
+    "frontend/package-lock.json",
+]
+hardware = "none"
+live = "A supply chain review of each added or bumped package, written in the PR (docs/SECURITY_AUDIT_CHECKLIST.md section 10)."
+
+[[area]]
+name = "tooling"
+title = "CI, releases and dev tools"
+paths = [
+    ".github/*",
+    "tools/*",
+    "justfile",
+    ".pre-commit-config.yaml",
+    ".editorconfig",
+    ".gitignore",
+    ".python-version",
+    "hacs.json",
+    "dev/*",
+]
+hardware = "none"
+live = "How the changed workflow or tool was run: a link to the run, or the command and its output."
+
+[[area]]
+name = "agent-rules"
+title = "Agent rules"
+paths = ["AGENTS.md", "CLAUDE.md", ".claude/*"]
+hardware = "none"
+live = "None. The owner reviews and approves the diff itself."
+
+[[area]]
+name = "docs"
+title = "Documentation"
+paths = ["*.md", "docs/*"]
+fallback = true
+hardware = "none"
+live = "Read the rendered page on GitHub and check its links."
+
+[[area]]
+name = "tests"
+title = "Tests only"
+paths = ["tests/*", "packages/aionanit/tests/*"]
+fallback = true
+hardware = "none"
+live = "None. Say which tests would fail without the change."
+
+[[area]]
+name = "library"
+title = "Other aionanit code"
+paths = ["packages/aionanit/*"]
+fallback = true
+hardware = "camera"
+live = "What was run against a real camera, or why the library tests cover it."
+
+[[area]]
+name = "integration"
+title = "Other integration code"
+paths = ["custom_components/nanit/*"]
+fallback = true
+hardware = "account"
+live = "What was run in a dev Home Assistant to see the change work."

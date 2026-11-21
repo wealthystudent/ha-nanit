@@ -1,6 +1,13 @@
 # Hooks run the project's own locked tools through uv, so the versions always
 # match `just check` and CI. Type checking stays in `just check`: it needs the
 # full Home Assistant environment and is too slow for every commit.
+#
+# `just setup` installs all three hook types. commit-msg and pre-push run
+# tools/verify.py, the same checks `just verify` and CI's PR Metadata make,
+# so an unsigned commit or an AI co-author trailer is caught before it leaves
+# your machine.
+default_install_hook_types: [pre-commit, commit-msg, pre-push]
+default_stages: [pre-commit]
 repos:
   - repo: local
     hooks:
@@ -16,3 +23,15 @@ repos:
         language: system
         types_or: [python, pyi]
         require_serial: true
+      - id: commit-message
+        name: conventional commit, no AI co-author
+        entry: uv run --frozen --only-group lint python tools/verify.py commit-msg
+        language: system
+        stages: [commit-msg]
+      - id: signed-commits
+        name: every pushed commit is signed
+        entry: uv run --frozen --only-group lint python tools/verify.py pre-push
+        language: system
+        stages: [pre-push]
+        pass_filenames: false
+        always_run: true

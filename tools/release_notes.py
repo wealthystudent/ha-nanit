@@ -60,8 +60,8 @@ def git(*args: str) -> str:
     return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout.strip()
 
 
-def _raw_changelog(body: str | None) -> str | None:
-    """Return the text under the first '## Changelog' heading, or None if absent.
+def section_text(body: str | None, name: str) -> str | None:
+    """Return the text under the first '## <name>' heading, or None if absent.
 
     Headings inside fenced code blocks don't count, HTML comments (the
     template's guidance) are dropped, and the section ends at the next
@@ -78,9 +78,14 @@ def _raw_changelog(body: str | None) -> str | None:
             if heading and len(heading.group(1)) <= 2:
                 break
             lines.append(line)
-        elif heading and len(heading.group(1)) == 2 and heading.group(2).lower() == "changelog":
+        elif heading and len(heading.group(1)) == 2 and heading.group(2).lower() == name.lower():
             collecting = True
     return "\n".join(lines).strip() if collecting else None
+
+
+def _raw_changelog(body: str | None) -> str | None:
+    """Return the text under the first '## Changelog' heading, or None if absent."""
+    return section_text(body, "changelog")
 
 
 def changelog_state(body: str | None) -> str:
@@ -191,32 +196,36 @@ def render(entries: list[Entry], repo: str, since: str | None, ref: str) -> str:
     return "\n\n".join(parts) + "\n"
 
 
-def check_pr() -> int:
-    """Validate the PR in the environment; print problems, return exit code."""
-    title = os.environ.get("PR_TITLE", "")
-    body = os.environ.get("PR_BODY", "")
-    labels = json.loads(os.environ.get("PR_LABELS", "[]"))
+def pr_errors(title: str, body: str, labels: list[str]) -> list[str]:
+    """Return what is wrong with a PR's title and Changelog section."""
     release_label = next((lbl for lbl in labels if lbl.startswith("release:")), None)
-    errors: list[str] = []
-
     match = TITLE_RE.match(title)
     state = changelog_state(body)
     if not match:
-        errors.append(
+        return [
             f"PR title {title!r} is not a conventional commit, e.g. 'fix: handle token "
             "refresh during reconnect'. It becomes the squash commit on main."
-        )
-    elif release_label and state != "text":
-        errors.append(
+        ]
+    if release_label and state != "text":
+        return [
             f"The {release_label} label publishes a release, so '## Changelog' needs a "
             "user-facing entry. 'none' or an empty section is only for unlabelled PRs."
-        )
-    elif match.group("type") in USER_FACING_TYPES and state in ("missing", "empty"):
-        errors.append(
+        ]
+    if match.group("type") in USER_FACING_TYPES and state in ("missing", "empty"):
+        return [
             "feat/fix/perf PRs need the '## Changelog' section filled in: one or more "
             "user-facing sentences, or 'none' if users won't notice the change."
-        )
+        ]
+    return []
 
+
+def check_pr() -> int:
+    """Validate the PR in the environment; print problems, return exit code."""
+    errors = pr_errors(
+        os.environ.get("PR_TITLE", ""),
+        os.environ.get("PR_BODY", ""),
+        json.loads(os.environ.get("PR_LABELS", "[]")),
+    )
     for error in errors:
         print(f"::error::{error}")
     if not errors:

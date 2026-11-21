@@ -12,9 +12,13 @@ default:
 setup:
     uv sync
     uv run pre-commit install
-    echo "Ready. Run 'just check' to verify."
+    echo "Ready. Run 'just verify' before you open or update a PR."
 
-# Run all checks (lint + format-check + typecheck + all tests) — local CI
+# Before a PR: CI's checks, your commits and your PR, then the receipt to paste: just verify [branch|areas]
+verify *args:
+    uv run tools/verify.py {{ args }}
+
+# Lint, format, types and both test suites (the quick loop; `just verify` is the full one)
 check:
     uv run ruff check .
     uv run ruff format --check .

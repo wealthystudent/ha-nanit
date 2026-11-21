@@ -121,7 +121,8 @@ def _care_log_statistics(entry: NanitConfigEntry) -> dict[str, object]:
     """Return whether the import is on and, per baby, whether this entry writes.
 
     Babies are keyed by position only; the importer's own diagnostics are
-    numbers and fixed state names.
+    fixed state names, flags, operational counters and ages, and say nothing
+    about the baby's day (no count of entries or rows).
     """
     if not is_import_care_log_statistics(entry):
         return {"enabled": False, "babies": {}}

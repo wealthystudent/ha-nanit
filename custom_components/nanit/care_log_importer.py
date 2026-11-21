@@ -304,8 +304,6 @@ class CareLogStatisticsImporter:
         self._give_ups = 0
         self._sync_failures = 0
         self._queue_overflows = 0
-        self._rows_written = 0
-        self._rows_last_sync = 0
         self._last_sync_at: datetime | None = None
         self._last_history_at: datetime | None = None
 
@@ -852,8 +850,6 @@ class CareLogStatisticsImporter:
             return False
         if report.stopped:
             return False
-        self._rows_written += report.rows_written
-        self._rows_last_sync = report.rows_written
         self._last_sync_at = dt_util.utcnow()
         self._dirty.clear()
         self._need_full = False
@@ -878,22 +874,22 @@ class CareLogStatisticsImporter:
     # -- diagnostics ---------------------------------------------------------------
 
     def diagnostics(self) -> dict[str, object]:
-        """Return the state, the book's counts, counters and ages: numbers only."""
+        """Return the state, flags, operational counters and ages.
+
+        Nothing about the baby's day: no count of entries, rows or waiting
+        changes, only whether a change waits for a confirming read.
+        """
         stats = self._book.stats()
         now = dt_util.utcnow()
         return {
             "state": self._state,
-            "entries": stats.entries,
-            "pending_records": stats.pending_records,
-            "waiting_entries": stats.waiting_entries,
             "established": stats.established,
+            "waiting_for_confirmation": stats.pending_records > 0,
             "passes_completed": self._passes_completed,
             "confirm_fetches": self._confirm_fetches,
             "give_ups": self._give_ups,
             "sync_failures": self._sync_failures,
             "queue_overflows": self._queue_overflows,
-            "rows_written": self._rows_written,
-            "rows_written_last_sync": self._rows_last_sync,
             "minutes_since_last_sync": _whole_minutes(self._last_sync_at, now),
             "minutes_since_last_history_pass": _whole_minutes(self._last_history_at, now),
         }

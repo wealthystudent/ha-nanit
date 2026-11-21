@@ -175,10 +175,11 @@ async def test_an_entry_with_the_import_on_writes_statistics_and_reports_them(
     assert item["writer"] is True
     assert item["state"] == "running"
     assert item["established"] is True
-    assert item["entries"] == len(HISTORY)
+    assert len(importer._book.ledger) == len(HISTORY)
     assert item["passes_completed"] == 1
-    assert item["rows_written"] > 0
-    assert item["rows_written"] == item["rows_written_last_sync"]
+    assert item["waiting_for_confirmation"] is False
+    # Nothing about how many entries or rows there are.
+    assert not {"entries", "rows_written", "rows_written_last_sync"} & set(item)
     assert item["minutes_since_last_sync"] == 0
 
     assert await hass.config_entries.async_unload(entry.entry_id)

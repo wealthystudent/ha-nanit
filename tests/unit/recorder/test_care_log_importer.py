@@ -404,10 +404,11 @@ async def test_a_first_import_reads_the_history_in_grid_pieces_and_writes_rows(
     assert min(pee) == _hour(D1)
     assert pee[_hour(D2)] == 1.0
     diag = harness.diag()
-    assert diag["entries"] == 4
+    assert len(harness.importer._book.ledger) == 4
     assert diag["established"] is True
     assert diag["passes_completed"] == 1
-    assert diag["rows_written"] == _rows_sent(sent) > 0
+    assert _rows_sent(sent) > 0
+    assert diag["waiting_for_confirmation"] is False
     assert diag["minutes_since_last_sync"] == 0
     assert diag["minutes_since_last_history_pass"] == 0
 
@@ -426,9 +427,8 @@ async def test_a_second_start_with_the_same_truth_adopts_at_once_and_writes_noth
 
     assert truth.own == list(_expected_pieces(_first_poll_start()))
     assert second.diag()["state"] == "running"
-    assert second.diag()["entries"] == 4
+    assert len(second.importer._book.ledger) == 4
     assert _rows_sent(sent) == written
-    assert second.diag()["rows_written"] == 0
 
 
 async def test_entries_dated_within_the_second_before_a_boundary_are_read(
@@ -867,7 +867,7 @@ async def test_a_new_entry_raises_its_hour_once_finished_and_an_empty_hour_gets_
     await harness.tick_and_poll(timedelta(minutes=10))  # 18:20
 
     assert _hour(late) not in await _stored(hass, S.BOTTLE_VOLUME)
-    assert harness.diag()["entries"] == 5
+    assert len(harness.importer._book.ledger) == 5
 
     await harness.tick_and_poll(timedelta(minutes=45))  # 19:05
 
@@ -893,7 +893,7 @@ async def test_a_deletion_is_lowered_only_after_one_confirm_fetch_a_gap_later(
     read = truth.reader[-1]
 
     assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(B1)] == 120.0
-    assert harness.diag()["pending_records"] == 1
+    assert len(harness.importer._book.pending_requests()) == 1
     assert truth.own == []
 
     await harness.advance(MIN_GAP - timedelta(seconds=1))
@@ -905,8 +905,8 @@ async def test_a_deletion_is_lowered_only_after_one_confirm_fetch_a_gap_later(
     assert truth.own[0] == read
     assert harness.diag()["confirm_fetches"] == 1
     assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(B1)] == 0.0
-    assert harness.diag()["pending_records"] == 0
-    assert harness.diag()["entries"] == 3
+    assert len(harness.importer._book.pending_requests()) == 0
+    assert len(harness.importer._book.ledger) == 3
 
 
 async def test_a_one_off_omission_is_cancelled_by_the_confirm_fetch(
@@ -918,12 +918,12 @@ async def test_a_one_off_omission_is_cancelled_by_the_confirm_fetch(
 
     await harness.tick_and_poll(timedelta(minutes=1))
     read = truth.reader[-1]
-    assert harness.diag()["pending_records"] == 1
+    assert len(harness.importer._book.pending_requests()) == 1
 
     await harness.advance(MIN_GAP)
 
     assert truth.own == [read]
-    assert harness.diag()["pending_records"] == 0
+    assert len(harness.importer._book.pending_requests()) == 0
     assert harness.diag()["confirm_fetches"] == 1
     for _ in range(3):
         await harness.tick_and_poll(MIN_GAP)
@@ -997,12 +997,12 @@ async def test_after_the_book_gives_up_no_confirm_fetch_for_30_minutes(
         await harness.advance(MIN_GAP)  # 18:16, 18:21, 18:26
     assert harness.diag()["confirm_fetches"] == 3
     assert harness.diag()["give_ups"] == 1
-    assert harness.diag()["pending_records"] == 0
+    assert len(harness.importer._book.pending_requests()) == 0
 
     # The next reader poll finds the removal again; its re-read waits.
     truth.dropped_own = 0
     await harness.advance(timedelta(minutes=1))  # 18:27, the reader's own poll
-    assert harness.diag()["pending_records"] == 1
+    assert len(harness.importer._book.pending_requests()) == 1
     await harness.advance(timedelta(minutes=29) - timedelta(seconds=1))
     assert harness.diag()["confirm_fetches"] == 3
     assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(B1)] == 120.0
@@ -1093,7 +1093,6 @@ async def test_the_daily_pass_rereads_the_same_grid_and_writes_nothing_when_unch
     assert daily[: len(first_pieces) - 1] == first_pieces[:-1]
     assert daily[-1][1] == truth.reader[-1][0]
     assert _rows_sent(sent) == written
-    assert harness.diag()["rows_written_last_sync"] == 0
     assert harness.diag()["passes_completed"] == 2
     assert harness.diag()["minutes_since_last_history_pass"] == 0
 
@@ -1182,7 +1181,7 @@ async def test_an_unexpected_error_is_logged_and_the_worker_carries_on(
     truth.put(late)
     with patch.object(CareLogBook, "process", process):
         await harness.tick_and_poll(timedelta(minutes=5))
-        assert harness.diag()["entries"] == 4
+        assert len(harness.importer._book.ledger) == 4
         errors = [r for r in caplog.records if r.levelno == logging.ERROR]
         assert len(errors) == 1
         assert "RuntimeError" in errors[0].getMessage()
@@ -1190,7 +1189,7 @@ async def test_an_unexpected_error_is_logged_and_the_worker_carries_on(
 
         await harness.tick_and_poll(timedelta(minutes=5))
 
-    assert harness.diag()["entries"] == 5
+    assert len(harness.importer._book.ledger) == 5
     assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(late)] == 30.0
 
 
@@ -1400,17 +1399,13 @@ async def test_no_entry_id_baby_id_name_or_code_in_logs_or_diagnostics(
         assert marker not in repr(harness.importer._book)
     assert set(diagnostics) == {
         "state",
-        "entries",
-        "pending_records",
-        "waiting_entries",
         "established",
+        "waiting_for_confirmation",
         "passes_completed",
         "confirm_fetches",
         "give_ups",
         "sync_failures",
         "queue_overflows",
-        "rows_written",
-        "rows_written_last_sync",
         "minutes_since_last_sync",
         "minutes_since_last_history_pass",
     }

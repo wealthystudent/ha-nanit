@@ -621,7 +621,8 @@ async def test_diagnostics_show_the_writer_and_the_standby_by_position_only(
     for item in writing["babies"].values():
         assert item["writer"] is True
         assert item["state"] == "waiting_for_recorder"
-        assert {"entries", "rows_written", "passes_completed"} <= set(item)
+        assert {"established", "passes_completed"} <= set(item)
+        assert not {"entries", "rows_written"} & set(item)
     assert standby == {
         "enabled": True,
         "babies": {

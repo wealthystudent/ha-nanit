@@ -5,18 +5,33 @@ The tests that write statistics are in ``recorder/test_care_log_importer.py``.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, date, datetime, timedelta
 from itertools import pairwise
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from freezegun.api import FrozenDateTimeFactory
+from homeassistant.core import HomeAssistant
+from homeassistant.util import dt as dt_util
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    async_fire_time_changed_exact,
+)
 
-from aionanit.models import Baby
+from aionanit.models import Baby, CareLogFetch
+from custom_components.nanit import care_log_importer
 from custom_components.nanit.care_log_importer import (
     HISTORY_FLOOR,
     HISTORY_PIECE,
+    CareLogStatisticsImporter,
     care_log_history_pieces,
     care_log_history_start,
 )
+from custom_components.nanit.const import CARE_LOG_POLL_INTERVAL, DOMAIN
+from custom_components.nanit.coordinator import NanitCareLogCoordinator
+
+from .conftest import MOCK_EMAIL, mock_entry_data_v2
 
 DAY = 86400
 PIECE = int(HISTORY_PIECE.total_seconds())
@@ -135,3 +150,134 @@ def test_pieces_of_a_real_history_keep_their_bounds_from_day_to_day() -> None:
     _check_pieces(today, start, int(NOW.timestamp()) - DAY - 1)
     assert len(today) >= 3
     assert tomorrow[: len(today) - 1] == today[:-1]
+
+
+# ---------------------------------------------------------------------------
+# Without a recorder
+# ---------------------------------------------------------------------------
+
+
+class _Calls:
+    """The importer's own fetches, and the reader's."""
+
+    def __init__(self) -> None:
+        self.own: list[tuple[int, int]] = []
+        self.reader: list[tuple[int, int]] = []
+
+    async def fetch(self, start: int, end: int) -> CareLogFetch:
+        self.own.append((start, end))
+        return CareLogFetch(logs=(), start=start, end=end, dropped=0)
+
+    async def reader_fetch(self, _uid: str, start: int, end: int) -> CareLogFetch:
+        self.reader.append((start, end))
+        return CareLogFetch(logs=(), start=start, end=end, dropped=0)
+
+
+def _importer(
+    hass: HomeAssistant, calls: _Calls, **entry_options: bool
+) -> tuple[CareLogStatisticsImporter, NanitCareLogCoordinator, MockConfigEntry]:
+    entry = MockConfigEntry(
+        domain=DOMAIN, data=mock_entry_data_v2(), version=2, unique_id=MOCK_EMAIL, **entry_options
+    )
+    entry.add_to_hass(hass)
+    hub = MagicMock()
+    hub.client.async_get_calendar_result = AsyncMock(side_effect=calls.reader_fetch)
+    baby = _baby(birth=date(2026, 3, 1))
+    coordinator = NanitCareLogCoordinator(hass, entry, hub, baby)
+    importer = CareLogStatisticsImporter(
+        hass, entry, baby=baby, coordinator=coordinator, fetch=calls.fetch
+    )
+    return importer, coordinator, entry
+
+
+async def _settle(
+    hass: HomeAssistant, entry: MockConfigEntry, importer: CareLogStatisticsImporter
+) -> None:
+    """Wait for the reader's polls in flight, then for the importer's worker to idle."""
+    await hass.async_block_till_done()
+    busy = [task for task in entry._background_tasks if task is not importer._task]
+    if busy:
+        await asyncio.wait(busy)
+    if importer._task is not None:
+        await importer._idle.wait()
+
+
+async def _next_poll(
+    hass: HomeAssistant,
+    freezer: FrozenDateTimeFactory,
+    entry: MockConfigEntry,
+    importer: CareLogStatisticsImporter,
+) -> None:
+    freezer.tick(timedelta(seconds=CARE_LOG_POLL_INTERVAL + 1))
+    async_fire_time_changed_exact(hass, dt_util.utcnow())
+    await _settle(hass, entry, importer)
+
+
+async def test_the_listener_keeps_the_reader_polling(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """No sensor listens: the importer's listener alone makes the reader poll."""
+    freezer.move_to(NOW)
+    calls = _Calls()
+    importer, _coordinator, entry = _importer(hass, calls)
+
+    await _next_poll(hass, freezer, entry, importer)
+    assert calls.reader == []
+
+    importer.async_start()
+    await _next_poll(hass, freezer, entry, importer)
+    await _next_poll(hass, freezer, entry, importer)
+    assert len(calls.reader) == 2
+    # Without a recorder, nothing of its own.
+    assert calls.own == []
+    assert importer.diagnostics()["state"] == "waiting_for_recorder"
+
+    await importer.async_stop()
+    await _next_poll(hass, freezer, entry, importer)
+    assert len(calls.reader) == 2
+    assert importer.diagnostics()["state"] == "stopped"
+
+
+async def test_polling_disabled_makes_no_request_of_its_own(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    freezer.move_to(NOW)
+    calls = _Calls()
+    importer, coordinator, entry = _importer(hass, calls, pref_disable_polling=True)
+
+    with patch.object(care_log_importer, "care_log_recorder_ready", return_value=True):
+        importer.async_start()
+        # The reader does not poll by itself either; an update asked for does.
+        await coordinator.async_refresh()
+        await _settle(hass, entry, importer)
+        freezer.tick(timedelta(days=1))
+        async_fire_time_changed_exact(hass, dt_util.utcnow())
+        await coordinator.async_refresh()
+        await _settle(hass, entry, importer)
+
+    assert len(calls.reader) == 2
+    assert calls.own == []
+    assert importer.diagnostics()["state"] == "polling_disabled"
+    await importer.async_stop()
+
+
+async def test_diagnostics_before_anything_happened(hass: HomeAssistant) -> None:
+    importer, _, _ = _importer(hass, _Calls())
+
+    assert importer.diagnostics() == {
+        "state": "idle",
+        "entries": 0,
+        "pending_records": 0,
+        "waiting_entries": 0,
+        "established": False,
+        "passes_completed": 0,
+        "confirm_fetches": 0,
+        "give_ups": 0,
+        "sync_failures": 0,
+        "rows_written": 0,
+        "rows_written_last_sync": 0,
+        "minutes_since_last_sync": None,
+        "minutes_since_last_history_pass": None,
+    }
+    # Stopping one that never started is fine.
+    await importer.async_stop()

@@ -89,7 +89,7 @@ The diaper changes, bottles, nursing and pumping sessions you log in the Nanit a
 
 The volume sensors report millilitres, which Home Assistant shows in fluid ounces when your unit system is US customary. The "today" sensors start again from zero at midnight in Home Assistant's time zone.
 
-The sensors are read-only: entries are added, changed and deleted in the Nanit app. A change to an entry from the last 24 hours, including one logged after the fact, shows up within 5 minutes. A change to an entry from the last 7 days shows up after the integration next reloads. If the account has no Care Logs from the last 7 days when the sensors are first added, they are added disabled. Enable them under **Settings → Devices & Services → Nanit → Entities** once you start logging.
+The sensors are read-only: entries are added, changed and deleted in the Nanit app. A change to an entry from the last 24 hours, including one logged after the fact, shows up within 5 minutes. A change to an entry from the last 7 days shows up after the integration next reloads. If the account has no Care Logs from the last 7 days when the sensors are first added, they are added disabled. Enable them under **Settings → Devices & Services → Nanit → Entities** once you start logging. If Nanit can't be reached for them when the integration starts, the sensors are added enabled, show unavailable, and fill in at the first poll that succeeds.
 
 A few limits to know about:
 

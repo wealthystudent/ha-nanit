@@ -11,16 +11,18 @@ from zoneinfo import ZoneInfo
 import pytest
 from freezegun.api import FrozenDateTimeFactory
 from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
-from homeassistant.const import UnitOfTime, UnitOfVolume
+from homeassistant.config_entries import SOURCE_REAUTH, ConfigEntryState
+from homeassistant.const import STATE_UNAVAILABLE, Platform, UnitOfTime, UnitOfVolume
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.update_coordinator import UpdateFailed
 from homeassistant.util import dt as dt_util
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.common import MockConfigEntry, async_fire_time_changed
 
 from aionanit.exceptions import NanitAuthError, NanitConnectionError
 from aionanit.models import Baby, CareLog, CareLogFetch
-from custom_components.nanit.const import CARE_LOG_SEED_DAYS, DOMAIN
+from custom_components.nanit.const import CARE_LOG_POLL_INTERVAL, CARE_LOG_SEED_DAYS, DOMAIN
 from custom_components.nanit.coordinator import (
     CareLogData,
     CareLogRequestCoverage,
@@ -35,7 +37,7 @@ from custom_components.nanit.sensor import (
     NanitCareLogSensorDescription,
 )
 
-from .conftest import MOCK_BABY_1, MOCK_EMAIL, mock_entry_data_v2
+from .conftest import MOCK_BABY_1, MOCK_BABY_2, MOCK_EMAIL, mock_entry_data_v2
 
 # Local midnight, as an aware datetime. Offsets below are seconds from it.
 DAY_START = datetime(2026, 11, 20, 8, 0, tzinfo=UTC)
@@ -734,52 +736,397 @@ def test_sensors_are_disabled_for_an_account_without_care_logs() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_care_log_coordinator_failure_degrades_not_blocks(
-    hass: HomeAssistant, mock_nanit_client
-) -> None:
-    """A failing Care Logs fetch at setup disables its sensors, not the entry."""
+def test_sensors_are_enabled_when_the_first_fetch_failed() -> None:
+    """No data means nothing was read yet, not that the account has no Care Logs."""
+    for description in CARE_LOG_SENSORS:
+        assert _sensor(description.key, None).entity_registry_enabled_default is True
+
+
+def _hub_entry(hass: HomeAssistant) -> MockConfigEntry:
     entry = MockConfigEntry(
         domain=DOMAIN, data=mock_entry_data_v2(), version=2, unique_id=MOCK_EMAIL
     )
     entry.add_to_hass(hass)
-    hub = NanitHub(hass, MagicMock(), entry)
+    return entry
+
+
+def _mock_reader(first_refresh: AsyncMock | None = None) -> Any:
+    """A factory for mock readers, each keeping the baby it was created for."""
+
+    def create(_hass: HomeAssistant, _entry: Any, _hub: Any, baby: Baby) -> MagicMock:
+        return MagicMock(
+            async_config_entry_first_refresh=first_refresh or AsyncMock(),
+            async_shutdown=AsyncMock(),
+            baby=baby,
+            data=None,
+        )
+
+    return create
+
+
+def _mock_camera(uid: str, baby_uid: str) -> MagicMock:
+    camera = MagicMock(uid=uid, baby_uid=baby_uid, connected=True)
+    camera.subscribe = MagicMock(return_value=lambda: None)
+    camera.async_start = AsyncMock()
+    camera.async_stop = AsyncMock()
+    return camera
+
+
+def _push_factory(failing_camera_uids: set[str]) -> Any:
+    def create(_hass: HomeAssistant, _entry: Any, camera: Any, _baby: Baby) -> MagicMock:
+        if camera.uid in failing_camera_uids:
+            return MagicMock(async_setup=AsyncMock(side_effect=NanitConnectionError("offline")))
+        return MagicMock(async_setup=AsyncMock())
+
+    return create
+
+
+async def test_care_log_first_fetch_failure_keeps_the_reader(
+    hass: HomeAssistant, mock_nanit_client
+) -> None:
+    """A failing Care Logs fetch at setup keeps its reader, and the entry sets up."""
+    hub = NanitHub(hass, MagicMock(), _hub_entry(hass))
+    first_refresh = AsyncMock(side_effect=ConfigEntryNotReady())
 
     with (
         patch("custom_components.nanit.hub.NanitPushCoordinator") as push_cls,
-        patch("custom_components.nanit.hub.NanitCareLogCoordinator") as care_cls,
+        patch(
+            "custom_components.nanit.hub.NanitCareLogCoordinator",
+            side_effect=_mock_reader(first_refresh),
+        ),
     ):
         push_cls.return_value = MagicMock(async_setup=AsyncMock())
-        care_cls.return_value = MagicMock(
-            async_config_entry_first_refresh=AsyncMock(side_effect=ConfigEntryNotReady())
-        )
         await hub.async_setup()
 
     data = hub.camera_data[MOCK_BABY_1.camera_uid]
-    assert data.care_log_coordinator is None
+    reader = hub.care_log_coordinators[MOCK_BABY_1.uid]
+    assert data.care_log_coordinator is reader
+    assert reader.baby is MOCK_BABY_1
     assert data.cloud_coordinator is not None
+    first_refresh.assert_awaited_once()
     await hub.async_close()
 
 
 async def test_care_log_coordinator_auth_failure_propagates(
     hass: HomeAssistant, mock_nanit_client
 ) -> None:
-    entry = MockConfigEntry(
-        domain=DOMAIN, data=mock_entry_data_v2(), version=2, unique_id=MOCK_EMAIL
-    )
-    entry.add_to_hass(hass)
-    hub = NanitHub(hass, MagicMock(), entry)
+    hub = NanitHub(hass, MagicMock(), _hub_entry(hass))
 
     with (
         patch("custom_components.nanit.hub.NanitPushCoordinator") as push_cls,
-        patch("custom_components.nanit.hub.NanitCareLogCoordinator") as care_cls,
+        patch(
+            "custom_components.nanit.hub.NanitCareLogCoordinator",
+            side_effect=_mock_reader(AsyncMock(side_effect=ConfigEntryAuthFailed())),
+        ),
     ):
         push_cls.return_value = MagicMock(async_setup=AsyncMock())
-        care_cls.return_value = MagicMock(
-            async_config_entry_first_refresh=AsyncMock(side_effect=ConfigEntryAuthFailed())
-        )
         with pytest.raises(ConfigEntryAuthFailed):
             await hub.async_setup()
+    reader = hub.care_log_coordinators[MOCK_BABY_1.uid]
     await hub.async_close()
+    reader.async_shutdown.assert_awaited_once()
+
+
+async def test_every_baby_gets_a_reader_even_without_a_working_camera(
+    hass: HomeAssistant, mock_nanit_client
+) -> None:
+    """Care Logs belong to the baby: a failed camera or no camera still gets a reader."""
+    no_camera = Baby(uid="baby_4", name="Spare room", camera_uid="")
+    mock_nanit_client.async_get_babies.return_value = [MOCK_BABY_1, MOCK_BABY_2, no_camera]
+    mock_nanit_client.camera.side_effect = lambda **kw: _mock_camera(kw["uid"], kw["baby_uid"])
+    hub = NanitHub(hass, MagicMock(), _hub_entry(hass))
+
+    with (
+        patch(
+            "custom_components.nanit.hub.NanitPushCoordinator",
+            side_effect=_push_factory({MOCK_BABY_1.camera_uid}),
+        ),
+        patch(
+            "custom_components.nanit.hub.NanitCareLogCoordinator", side_effect=_mock_reader()
+        ) as care_cls,
+    ):
+        await hub.async_setup()
+
+    readers = hub.care_log_coordinators
+    assert set(readers) == {"baby_1", "baby_2", "baby_4"}
+    assert {uid: reader.baby for uid, reader in readers.items()} == {
+        "baby_1": MOCK_BABY_1,
+        "baby_2": MOCK_BABY_2,
+        "baby_4": no_camera,
+    }
+    for reader in readers.values():
+        reader.async_config_entry_first_refresh.assert_awaited_once()
+    assert care_cls.call_count == 3
+    # Sensors stay on the camera's device, so only the working camera has them.
+    assert set(hub.camera_data) == {MOCK_BABY_2.camera_uid}
+    assert hub.camera_data[MOCK_BABY_2.camera_uid].care_log_coordinator is readers["baby_2"]
+    await hub.async_close()
+
+
+async def test_baby_record_without_a_uid_gets_no_reader(
+    hass: HomeAssistant, mock_nanit_client
+) -> None:
+    placeholder = Baby(uid="", name="Unpaired speaker", camera_uid="")
+    mock_nanit_client.async_get_babies.return_value = [MOCK_BABY_1, placeholder, MOCK_BABY_1]
+    hub = NanitHub(hass, MagicMock(), _hub_entry(hass))
+
+    with (
+        patch("custom_components.nanit.hub.NanitPushCoordinator") as push_cls,
+        patch(
+            "custom_components.nanit.hub.NanitCareLogCoordinator", side_effect=_mock_reader()
+        ) as care_cls,
+    ):
+        push_cls.return_value = MagicMock(async_setup=AsyncMock())
+        await hub.async_setup()
+
+    assert set(hub.care_log_coordinators) == {"baby_1"}
+    assert care_cls.call_count == 1
+    await hub.async_close()
+
+
+async def test_no_reader_is_started_when_no_device_could_be_set_up(
+    hass: HomeAssistant, mock_nanit_client
+) -> None:
+    """The readers never change when setup counts as successful."""
+    mock_nanit_client.async_get_babies.return_value = [MOCK_BABY_1, MOCK_BABY_2]
+    mock_nanit_client.camera.side_effect = lambda **kw: _mock_camera(kw["uid"], kw["baby_uid"])
+    hub = NanitHub(hass, MagicMock(), _hub_entry(hass))
+
+    with (
+        patch(
+            "custom_components.nanit.hub.NanitPushCoordinator",
+            side_effect=_push_factory({MOCK_BABY_1.camera_uid, MOCK_BABY_2.camera_uid}),
+        ),
+        patch(
+            "custom_components.nanit.hub.NanitCareLogCoordinator", side_effect=_mock_reader()
+        ) as care_cls,
+        pytest.raises(NanitConnectionError, match="No devices could be set up"),
+    ):
+        await hub.async_setup()
+
+    care_cls.assert_not_called()
+    assert hub.care_log_coordinators == {}
+    await hub.async_close()
+
+
+async def test_close_shuts_down_every_reader(hass: HomeAssistant, mock_nanit_client) -> None:
+    no_camera = Baby(uid="baby_4", name="Spare room", camera_uid="")
+    mock_nanit_client.async_get_babies.return_value = [MOCK_BABY_1, no_camera]
+    hub = NanitHub(hass, MagicMock(), _hub_entry(hass))
+    with (
+        patch("custom_components.nanit.hub.NanitPushCoordinator") as push_cls,
+        patch("custom_components.nanit.hub.NanitCareLogCoordinator", side_effect=_mock_reader()),
+    ):
+        push_cls.return_value = MagicMock(async_setup=AsyncMock())
+        await hub.async_setup()
+    readers = list(hub.care_log_coordinators.values())
+    assert len(readers) == 2
+
+    await hub.async_close()
+
+    for reader in readers:
+        reader.async_shutdown.assert_awaited_once()
+    assert hub.care_log_coordinators == {}
+
+
+# ---------------------------------------------------------------------------
+# End to end: real readers, real sensors, a faked Nanit answer
+# ---------------------------------------------------------------------------
+
+
+def _answers(answers: dict[str, list[Any]]) -> AsyncMock:
+    """Fake the whole calendar fetch, per baby.
+
+    Each call takes that baby's next answer, and the last one repeats. An
+    answer is a list of entries, or an exception to raise.
+    """
+
+    async def fetch(baby_uid: str, start: int, end: int) -> CareLogFetch:
+        queue = answers[baby_uid]
+        answer = queue.pop(0) if len(queue) > 1 else queue[0]
+        if isinstance(answer, BaseException):
+            raise answer
+        return CareLogFetch(logs=tuple(answer), start=start, end=end, dropped=0)
+
+    return AsyncMock(side_effect=fetch)
+
+
+async def _set_up(
+    hass: HomeAssistant, entry: MockConfigEntry, client: Any, calendar: AsyncMock
+) -> bool:
+    client.async_get_calendar_result = calendar
+    # Only the sensor platform: the Care Log sensors are all this checks.
+    with (
+        patch("custom_components.nanit.hub.NanitCareLogCoordinator", NanitCareLogCoordinator),
+        patch("custom_components.nanit.PLATFORMS", [Platform.SENSOR]),
+    ):
+        result = await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    return result
+
+
+def _care_entity_id(hass: HomeAssistant, camera_uid: str, key: str) -> str:
+    entity_id = er.async_get(hass).async_get_entity_id("sensor", DOMAIN, f"{camera_uid}_{key}")
+    assert entity_id is not None, key
+    return entity_id
+
+
+async def _next_poll(hass: HomeAssistant, freezer: FrozenDateTimeFactory) -> None:
+    freezer.tick(timedelta(seconds=CARE_LOG_POLL_INTERVAL))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+
+
+def _diaper(baby_uid: str, uid: str = "d1") -> CareLog:
+    return CareLog(
+        uid=uid,
+        log_type="diaper_change",
+        timestamp=dt_util.utcnow().timestamp() - 60,
+        baby_uid=baby_uid,
+        change_type="pee",
+    )
+
+
+async def test_failed_first_fetch_shows_unavailable_sensors_until_a_poll_succeeds(
+    hass: HomeAssistant, mock_nanit_client, freezer: FrozenDateTimeFactory
+) -> None:
+    freezer.move_to("2026-11-20T18:00:00+00:00")
+    diaper = _diaper("baby_1")
+    calendar = _answers({"baby_1": [NanitConnectionError("Calendar fetch failed"), [diaper]]})
+    entry = _hub_entry(hass)
+
+    assert await _set_up(hass, entry, mock_nanit_client, calendar)
+
+    assert entry.state is ConfigEntryState.LOADED
+    registry = er.async_get(hass)
+    for description in CARE_LOG_SENSORS:
+        entity_id = _care_entity_id(hass, "cam_1", description.key)
+        registry_entry = registry.async_get(entity_id)
+        assert registry_entry is not None
+        assert registry_entry.disabled_by is None, description.key
+        assert hass.states.get(entity_id).state == STATE_UNAVAILABLE, description.key
+
+    await _next_poll(hass, freezer)
+
+    last_diaper = hass.states.get(_care_entity_id(hass, "cam_1", "last_diaper_change"))
+    assert last_diaper.state == dt_util.utc_from_timestamp(diaper.timestamp).isoformat()
+    assert last_diaper.attributes["change_type"] == "pee"
+    diapers_today = hass.states.get(_care_entity_id(hass, "cam_1", "diaper_changes_today"))
+    assert diapers_today.state == "1"
+    assert diapers_today.attributes["pee"] == 1
+    feedings = hass.states.get(_care_entity_id(hass, "cam_1", "feedings_today"))
+    assert feedings.state == "0"
+    assert calendar.await_count == 2
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_sensors_without_care_logs_still_register_disabled(
+    hass: HomeAssistant, mock_nanit_client, freezer: FrozenDateTimeFactory
+) -> None:
+    freezer.move_to("2026-11-20T18:00:00+00:00")
+    entry = _hub_entry(hass)
+
+    assert await _set_up(hass, entry, mock_nanit_client, _answers({"baby_1": [[]]}))
+
+    registry = er.async_get(hass)
+    for description in CARE_LOG_SENSORS:
+        registry_entry = registry.async_get(_care_entity_id(hass, "cam_1", description.key))
+        assert registry_entry is not None
+        assert registry_entry.disabled_by is er.RegistryEntryDisabler.INTEGRATION
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_a_sensor_the_user_disabled_stays_disabled_after_a_failed_fetch(
+    hass: HomeAssistant, mock_nanit_client, freezer: FrozenDateTimeFactory
+) -> None:
+    freezer.move_to("2026-11-20T18:00:00+00:00")
+    entry = _hub_entry(hass)
+    registry = er.async_get(hass)
+    registry.async_get_or_create(
+        "sensor",
+        DOMAIN,
+        "cam_1_last_feeding",
+        config_entry=entry,
+        disabled_by=er.RegistryEntryDisabler.USER,
+    )
+    calendar = _answers({"baby_1": [NanitConnectionError("Calendar fetch failed")]})
+
+    assert await _set_up(hass, entry, mock_nanit_client, calendar)
+
+    disabled = registry.async_get(_care_entity_id(hass, "cam_1", "last_feeding"))
+    assert disabled is not None
+    assert disabled.disabled_by is er.RegistryEntryDisabler.USER
+    other = registry.async_get(_care_entity_id(hass, "cam_1", "last_pumping"))
+    assert other is not None
+    assert other.disabled_by is None
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_first_fetch_auth_failure_starts_reauth(
+    hass: HomeAssistant, mock_nanit_client
+) -> None:
+    entry = _hub_entry(hass)
+    calendar = _answers({"baby_1": [NanitAuthError("Access token invalid")]})
+
+    assert not await _set_up(hass, entry, mock_nanit_client, calendar)
+
+    assert entry.state is ConfigEntryState.SETUP_ERROR
+    flows = hass.config_entries.flow.async_progress_by_handler(DOMAIN)
+    assert [flow["context"]["source"] for flow in flows] == [SOURCE_REAUTH]
+    mock_nanit_client.async_close.assert_awaited()
+
+
+async def test_two_babies_one_failing_one_healthy(
+    hass: HomeAssistant, mock_nanit_client, freezer: FrozenDateTimeFactory
+) -> None:
+    freezer.move_to("2026-11-20T18:00:00+00:00")
+    mock_nanit_client.async_get_babies.return_value = [MOCK_BABY_1, MOCK_BABY_2]
+    mock_nanit_client.camera.side_effect = lambda **kw: _mock_camera(kw["uid"], kw["baby_uid"])
+    diaper = _diaper("baby_2", uid="d2")
+    calendar = _answers(
+        {"baby_1": [NanitConnectionError("Calendar fetch failed")], "baby_2": [[diaper]]}
+    )
+    entry = _hub_entry(hass)
+
+    assert await _set_up(hass, entry, mock_nanit_client, calendar)
+
+    assert entry.state is ConfigEntryState.LOADED
+    assert set(entry.runtime_data.hub.care_log_coordinators) == {"baby_1", "baby_2"}
+    failing = hass.states.get(_care_entity_id(hass, "cam_1", "last_diaper_change"))
+    healthy = hass.states.get(_care_entity_id(hass, "cam_2", "last_diaper_change"))
+    assert failing.state == STATE_UNAVAILABLE
+    assert healthy.state == dt_util.utc_from_timestamp(diaper.timestamp).isoformat()
+
+    # The failing one keeps trying; the healthy one is unaffected meanwhile.
+    await _next_poll(hass, freezer)
+    assert hass.states.get(failing.entity_id).state == STATE_UNAVAILABLE
+    assert hass.states.get(healthy.entity_id).state == healthy.state
+    assert {call.args[0] for call in calendar.await_args_list} == {"baby_1", "baby_2"}
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_unload_stops_every_reader(
+    hass: HomeAssistant, mock_nanit_client, freezer: FrozenDateTimeFactory
+) -> None:
+    """Including the reader of a baby with no camera, which no sensor listens to."""
+    freezer.move_to("2026-11-20T18:00:00+00:00")
+    no_camera = Baby(uid="baby_4", name="Spare room", camera_uid="")
+    mock_nanit_client.async_get_babies.return_value = [MOCK_BABY_1, no_camera]
+    calendar = _answers({"baby_1": [[_diaper("baby_1")]], "baby_4": [[]]})
+    entry = _hub_entry(hass)
+    assert await _set_up(hass, entry, mock_nanit_client, calendar)
+    hub = entry.runtime_data.hub
+    readers = list(hub.care_log_coordinators.values())
+    assert {reader.baby.uid for reader in readers} == {"baby_1", "baby_4"}
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    fetches = calendar.await_count
+    for reader in readers:
+        await reader.async_refresh()
+    await _next_poll(hass, freezer)
+
+    assert calendar.await_count == fetches
+    assert hub.care_log_coordinators == {}
 
 
 _WITH_DROPPED_ROWS = build_care_log_data(

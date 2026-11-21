@@ -1,7 +1,8 @@
 """Care log calendar for Nanit: every care entry of a baby, read on demand.
 
 One read-only calendar per config entry and baby. Nothing is stored: each
-range is fetched from Nanit when the calendar is asked for it. The calendar never reports a
+range is fetched from Nanit when the calendar is asked for it, and the
+answer is kept in memory for a few minutes. The calendar never reports a
 current event, so nothing from an entry reaches its state or Home
 Assistant's history. Notes and who logged an entry are fetched, and shown,
 only when the entry's "Show notes and who logged each entry" option is on.
@@ -63,6 +64,10 @@ CARE_LOG_REACH_BACK = timedelta(hours=24)
 # The longest single request, and how many requests may run at once.
 CARE_LOG_MAX_PIECE = timedelta(days=90)
 CARE_LOG_MAX_IN_FLIGHT = 2
+
+# How long a fetched range is answered from memory, and how many are kept.
+CARE_LOG_CACHE_TTL = timedelta(minutes=5)
+CARE_LOG_CACHE_SIZE = 16
 
 # A stated length longer than the reach-back can't be trusted to be shown
 # whole, and could overflow a date: such an entry is shown as a moment.
@@ -146,6 +151,22 @@ class _Row:
 
     log: CareLog
     detail: CareLogDetail | None
+
+
+class _Cached:
+    """A fetched range kept in memory. Its printed form shows only a count."""
+
+    __slots__ = ("fetched_at", "rows")
+
+    def __init__(self, rows: tuple[_Row, ...], fetched_at: datetime) -> None:
+        self.rows = rows
+        self.fetched_at = fetched_at
+
+    def __repr__(self) -> str:
+        return f"<care log range: {len(self.rows)} entries>"
+
+
+type _CacheKey = tuple[int, int, bool]
 
 
 class _Texts:
@@ -406,7 +427,7 @@ class NanitCareLogCalendar(CoordinatorEntity[NanitCareLogCoordinator], CalendarE
         super().__init__(coordinator)
         baby = coordinator.baby
         # Per config entry and baby: two sign-ins that see the same baby get
-        # two calendars, each with its own credentials and option.
+        # two calendars, each with its own credentials, option and cache.
         self._attr_unique_id = f"{entry_id}_{baby.uid}_care_log_calendar"
         self._camera_uid = camera_uid
         if camera_uid:
@@ -415,7 +436,10 @@ class NanitCareLogCalendar(CoordinatorEntity[NanitCareLogCoordinator], CalendarE
             # No device to carry the baby's name, so the entity name does.
             self._attr_translation_key = "care_log_baby"
             self._attr_translation_placeholders = {"baby_name": display_name(baby.name, baby.uid)}
+        self._cache: dict[_CacheKey, _Cached] = {}
+        self._in_flight: dict[_CacheKey, asyncio.Task[tuple[_Row, ...]]] = {}
         self._requests = asyncio.Semaphore(CARE_LOG_MAX_IN_FLIGHT)
+        self._removed = False
 
     @property
     def device_info(self) -> DeviceInfo | None:
@@ -443,6 +467,15 @@ class NanitCareLogCalendar(CoordinatorEntity[NanitCareLogCoordinator], CalendarE
         """
         return None
 
+    async def async_will_remove_from_hass(self) -> None:
+        """Drop everything kept in memory and stop fetches still running."""
+        self._removed = True
+        self._cache.clear()
+        for task in self._in_flight.values():
+            task.cancel()
+        self._in_flight.clear()
+        await super().async_will_remove_from_hass()
+
     async def async_get_events(
         self, hass: HomeAssistant, start_date: datetime, end_date: datetime
     ) -> list[CalendarEvent]:
@@ -451,9 +484,9 @@ class NanitCareLogCalendar(CoordinatorEntity[NanitCareLogCoordinator], CalendarE
         show_notes = is_show_care_log_notes(entry)
         fetch_start = math.floor((start_date - CARE_LOG_REACH_BACK).timestamp())
         fetch_end = math.ceil(end_date.timestamp())
-        rows = await self._async_fetch(fetch_start, max(fetch_start, fetch_end), show_notes)
+        rows = await self._async_rows((fetch_start, max(fetch_start, fetch_end), show_notes))
         # The option may have changed while the answer was on its way.
-        if is_show_care_log_notes(entry) != show_notes:
+        if self._removed or is_show_care_log_notes(entry) != show_notes:
             raise _unavailable()
 
         formatter = _Formatter(hass, await _async_texts(hass))
@@ -471,6 +504,53 @@ class NanitCareLogCalendar(CoordinatorEntity[NanitCareLogCoordinator], CalendarE
                 found.append((start, row.log.uid, event))
         found.sort(key=lambda item: (item[0], item[1]))
         return [event for _start, _uid, event in found]
+
+    async def _async_rows(self, key: _CacheKey) -> tuple[_Row, ...]:
+        """Return a fetched range from memory, a fetch already running, or a new fetch."""
+        cached = self._cache.get(key)
+        if cached is not None and dt_util.utcnow() - cached.fetched_at < CARE_LOG_CACHE_TTL:
+            return cached.rows
+        task = self._in_flight.get(key)
+        if task is None:
+            task = self.coordinator.config_entry.async_create_background_task(
+                self.hass, self._async_fetch_and_keep(key), f"{DOMAIN} care log calendar fetch"
+            )
+            self._in_flight[key] = task
+            task.add_done_callback(lambda done: self._fetch_done(key, done))
+        failed = False
+        rows: tuple[_Row, ...] = ()
+        try:
+            # Shielded: a caller giving up doesn't cancel the fetch others share.
+            rows = await asyncio.shield(task)
+        except HomeAssistantError:
+            failed = True
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if not task.cancelled() or (current is not None and current.cancelling()):
+                raise
+            # The fetch was stopped because the calendar was removed.
+            failed = True
+        if failed:
+            # Raised here, outside the handler, so nothing of the failure is chained.
+            raise _unavailable()
+        return rows
+
+    def _fetch_done(self, key: _CacheKey, task: asyncio.Task[tuple[_Row, ...]]) -> None:
+        if self._in_flight.get(key) is task:
+            del self._in_flight[key]
+        if not task.cancelled():
+            # Marks a failure as seen when every caller has already gone.
+            task.exception()
+
+    async def _async_fetch_and_keep(self, key: _CacheKey) -> tuple[_Row, ...]:
+        """Fetch a range and keep it in memory, unless the calendar is gone."""
+        rows = await self._async_fetch(*key)
+        if not self._removed:
+            self._cache[key] = _Cached(rows, dt_util.utcnow())
+            while len(self._cache) > CARE_LOG_CACHE_SIZE:
+                oldest = min(self._cache, key=lambda k: self._cache[k].fetched_at)
+                del self._cache[oldest]
+        return rows
 
     async def _async_fetch(self, start: int, end: int, show_notes: bool) -> tuple[_Row, ...]:
         """Fetch an inclusive range from Nanit, in pieces."""

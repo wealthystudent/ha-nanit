@@ -42,6 +42,8 @@ from aionanit.models import (
 from custom_components.nanit import calendar as calendar_module
 from custom_components.nanit import config_flow  # noqa: F401  (imported unpatched, see below)
 from custom_components.nanit.calendar import (
+    CARE_LOG_CACHE_SIZE,
+    CARE_LOG_CACHE_TTL,
     CARE_LOG_MAX_PIECE,
     FALLBACK_TEXT,
     NanitCareLogCalendar,
@@ -307,7 +309,14 @@ async def _surfaces(
         default=str,
     )
     diagnostics = json.dumps(await async_get_config_entry_diagnostics(hass, entry), default=str)
-    reprs = repr(calendar)
+    reprs = " ".join(
+        [
+            repr(calendar),
+            repr(calendar._cache),
+            *(repr(cached.rows) for cached in calendar._cache.values()),
+            repr(calendar._in_flight),
+        ]
+    )
     return {
         "events": " ".join(_event_fields(event) for event in events),
         "rest": rest,
@@ -375,6 +384,8 @@ async def test_the_baby_uid_never_reaches_an_event_field(
         for uid in ("d1", "b1", "n1", "p1", "x1", "cam_1"):
             assert f'"{uid}"' not in surfaces[surface], (surface, uid)
         assert "cam_1" not in surfaces[surface], surface
+    # The cache does not hold the baby's uid either.
+    assert BABY_MARKER not in surfaces["reprs"]
     assert await hass.config_entries.async_unload(entry.entry_id)
 
 
@@ -445,10 +456,12 @@ async def test_privacy_markers_on_a_failed_fetch(
     for marker in (*PRIVATE_MARKERS, BABY_MARKER):
         assert marker not in body
         assert marker not in calendar_lines
+        assert marker not in repr(calendar._cache)
     for marker in PRIVATE_MARKERS:
         assert marker not in caplog.text
     for marker in PRIVATE_MARKERS:
         assert marker not in diagnostics
+    assert calendar._cache == {}
     if not notes:
         client.async_get_calendar_details.assert_not_awaited()
     assert await hass.config_entries.async_unload(entry.entry_id)
@@ -870,6 +883,212 @@ async def test_text_comes_from_the_translation_files(
 
 
 # ---------------------------------------------------------------------------
+# Cache
+# ---------------------------------------------------------------------------
+
+
+async def test_simultaneous_requests_share_one_fetch(
+    hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory
+) -> None:
+    freezer.move_to(NOW)
+    fake = FakeNanit()
+    _day_of_entries(fake)
+    entry, calendar = await _one_calendar(hass, client, fake)
+    fake.gate = asyncio.Event()
+
+    first = hass.async_create_task(_events(hass, calendar, RANGE_START, RANGE_END))
+    second = hass.async_create_task(_events(hass, calendar, RANGE_START, RANGE_END))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    fake.gate.set()
+
+    assert _summaries(await first) == _summaries(await second)
+    assert len(fake.calendar_calls()) == 1
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_a_caller_giving_up_does_not_stop_the_shared_fetch(
+    hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory
+) -> None:
+    freezer.move_to(NOW)
+    fake = FakeNanit()
+    _day_of_entries(fake)
+    entry, calendar = await _one_calendar(hass, client, fake)
+    fake.gate = asyncio.Event()
+
+    first = hass.async_create_task(_events(hass, calendar, RANGE_START, RANGE_END))
+    second = hass.async_create_task(_events(hass, calendar, RANGE_START, RANGE_END))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    first.cancel()
+    fake.gate.set()
+
+    assert len(await second) == 4
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    assert len(fake.calendar_calls()) == 1
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_cached_answers_expire_after_five_minutes(
+    hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory
+) -> None:
+    freezer.move_to(NOW)
+    fake = FakeNanit()
+    _day_of_entries(fake)
+    entry, calendar = await _one_calendar(hass, client, fake)
+
+    await _events(hass, calendar, RANGE_START, RANGE_END)
+    freezer.tick(CARE_LOG_CACHE_TTL - timedelta(seconds=1))
+    await _events(hass, calendar, RANGE_START, RANGE_END)
+    assert len(fake.calendar_calls()) == 1
+
+    freezer.tick(timedelta(seconds=1))
+    await _events(hass, calendar, RANGE_START, RANGE_END)
+    assert len(fake.calendar_calls()) == 2
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_text_is_formatted_after_the_cache(
+    hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory
+) -> None:
+    """A change of units needs no new fetch."""
+    freezer.move_to(NOW)
+    fake = FakeNanit()
+    _day_of_entries(fake)
+    entry, calendar = await _one_calendar(hass, client, fake)
+
+    metric = await _events(hass, calendar, RANGE_START, RANGE_END)
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    customary = await _events(hass, calendar, RANGE_START, RANGE_END)
+
+    assert _summaries(metric)[1] == "Bottle, 30 mL"
+    assert _summaries(customary)[1] == "Bottle, 1 fl oz"
+    assert len(fake.calendar_calls()) == 1
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_a_failure_is_not_cached(
+    hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory
+) -> None:
+    freezer.move_to(NOW)
+    fake = FakeNanit()
+    _day_of_entries(fake)
+    entry, calendar = await _one_calendar(hass, client, fake)
+    fake.error = NanitConnectionError("Calendar fetch failed: TimeoutError")
+
+    with pytest.raises(HomeAssistantError):
+        await _events(hass, calendar, RANGE_START, RANGE_END)
+    assert calendar._cache == {}
+    fake.error = None
+
+    assert len(await _events(hass, calendar, RANGE_START, RANGE_END)) == 4
+    assert len(fake.calendar_calls()) == 2
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_notes_on_and_off_are_cached_apart(
+    hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory
+) -> None:
+    freezer.move_to(NOW)
+    fake = FakeNanit()
+    _day_of_entries(fake)
+    entry, calendar = await _one_calendar(hass, client, fake)
+
+    with patch.object(calendar_module, "is_show_care_log_notes", return_value=True):
+        with_notes = await _events(hass, calendar, RANGE_START, RANGE_END)
+    without = await _events(hass, calendar, RANGE_START, RANGE_END)
+
+    assert NOTE_MARKER in (with_notes[0].description or "")
+    assert all(NOTE_MARKER not in (e.description or "") for e in without)
+    assert [m for m, _s, _e in fake.calendar_calls()] == ["details", "result"]
+    assert sorted(key[2] for key in calendar._cache) == [False, True]
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_an_answer_is_not_delivered_when_the_notes_option_changed_meanwhile(
+    hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory
+) -> None:
+    freezer.move_to(NOW)
+    fake = FakeNanit()
+    _day_of_entries(fake)
+    entry, calendar = await _one_calendar(hass, client, fake)
+    answers = iter([True, False])
+
+    with (
+        patch.object(
+            calendar_module, "is_show_care_log_notes", side_effect=lambda _e: next(answers)
+        ),
+        pytest.raises(HomeAssistantError),
+    ):
+        await _events(hass, calendar, RANGE_START, RANGE_END)
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_the_cache_is_bounded(
+    hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory
+) -> None:
+    freezer.move_to(NOW)
+    fake = FakeNanit()
+    entry, calendar = await _one_calendar(hass, client, fake)
+
+    for day in range(CARE_LOG_CACHE_SIZE + 3):
+        freezer.tick(timedelta(seconds=1))
+        start = RANGE_START - timedelta(days=day)
+        await _events(hass, calendar, start, start + timedelta(days=1))
+
+    assert len(calendar._cache) == CARE_LOG_CACHE_SIZE
+    fetch_starts = {key[0] for key in calendar._cache}
+    newest = RANGE_START - timedelta(days=CARE_LOG_CACHE_SIZE + 2)
+    oldest = RANGE_START
+    assert int(_ts(newest - timedelta(hours=24))) in fetch_starts
+    assert int(_ts(oldest - timedelta(hours=24))) not in fetch_starts
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_an_answer_arriving_after_removal_is_discarded(
+    hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory
+) -> None:
+    freezer.move_to(NOW)
+    fake = FakeNanit()
+    _day_of_entries(fake)
+    entry, calendar = await _one_calendar(hass, client, fake)
+    fake.gate = asyncio.Event()
+    pending = hass.async_create_task(_events(hass, calendar, RANGE_START, RANGE_END))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    (task,) = calendar._in_flight.values()
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    fake.gate.set()
+
+    with pytest.raises(HomeAssistantError):
+        await pending
+    assert task.cancelled()
+    assert calendar._cache == {}
+    assert calendar._in_flight == {}
+
+
+async def test_a_result_landing_after_removal_is_not_kept(
+    hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory
+) -> None:
+    """Even a fetch that finishes as the calendar goes is not kept."""
+    freezer.move_to(NOW)
+    fake = FakeNanit()
+    _day_of_entries(fake)
+    entry, calendar = await _one_calendar(hass, client, fake)
+    key = (0, 10, False)
+    calendar._removed = True
+
+    rows = await calendar._async_fetch_and_keep(key)
+
+    assert rows == ()
+    assert calendar._cache == {}
+    calendar._removed = False
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+# ---------------------------------------------------------------------------
 # The entity
 # ---------------------------------------------------------------------------
 
@@ -932,6 +1151,7 @@ async def test_two_sign_ins_seeing_the_same_baby_get_two_calendars(
     assert one.entity_id != two.entity_id
     assert len(await _events(hass, one, RANGE_START, RANGE_END)) == 4
     assert len(await _events(hass, two, RANGE_START, RANGE_END)) == 4
+    # Each has its own cache, so each fetched.
     assert len(fake.calendar_calls()) == 2
     assert await hass.config_entries.async_unload(first.entry_id)
     assert await hass.config_entries.async_unload(second.entry_id)
@@ -965,11 +1185,13 @@ async def test_unload_removes_the_calendar_and_stops_its_reader(
     _day_of_entries(fake)
     entry, calendar = await _one_calendar(hass, client, fake)
     await _events(hass, calendar, RANGE_START, RANGE_END)
+    assert calendar._cache
 
     assert await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
 
     assert entry.state is ConfigEntryState.NOT_LOADED
+    assert calendar._cache == {}
     assert hass.states.get(calendar.entity_id).state == STATE_UNAVAILABLE
     assert _calendars(hass, entry) == []
 

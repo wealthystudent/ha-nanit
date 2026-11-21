@@ -32,7 +32,6 @@ import gc
 import logging
 import os
 import random
-import resource
 import time
 import tracemalloc
 from collections.abc import Iterator
@@ -143,6 +142,10 @@ class _LoopProbe:
 
 
 def _rss_mb() -> float:
+    # Unix only: imported here, when measuring, so that collecting this
+    # module works everywhere and the skip applies.
+    import resource
+
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
 

@@ -633,9 +633,11 @@ def cmd_commit_msg(path: str) -> int:
 
 
 def cmd_pre_push() -> int:
-    to_ref = os.environ.get("PRE_COMMIT_TO_REF", "")
+    # pre-commit leaves the refs unset when the remote has none of the
+    # history (a new remote), so check everything HEAD adds to main then.
+    to_ref = os.environ.get("PRE_COMMIT_TO_REF") or "HEAD"
     from_ref = os.environ.get("PRE_COMMIT_FROM_REF", "")
-    if not to_ref or set(to_ref) == {"0"}:
+    if set(to_ref) == {"0"}:  # deleting a branch
         return 0
     base_ref = f"{upstream_remote()}/main"
     span = [to_ref] if not from_ref or set(from_ref) == {"0"} else [f"{from_ref}..{to_ref}"]
@@ -723,7 +725,10 @@ def cmd_pr() -> int:
     if unverified:
         errors.append(
             f"main only accepts signed commits, and {len(unverified)} of {len(commits)} here "
-            "aren't verified by GitHub: " + "; ".join(unverified) + f". See {SIGNING_DOCS} "
+            "aren't verified by GitHub: "
+            + "; ".join(unverified[:5])
+            + (f"; and {len(unverified) - 5} more" if len(unverified) > 5 else "")
+            + f". See {SIGNING_DOCS} "
             "for setup and how to sign a branch you already pushed (`just verify branch` checks it "
             "locally)."
         )

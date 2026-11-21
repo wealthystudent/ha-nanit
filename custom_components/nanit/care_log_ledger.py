@@ -9,11 +9,16 @@ was deleted: a deleted entry simply stops appearing, and an answer has been
 seen to miss an entry that the next one returned. So the answers ("reads")
 update the ledger under one rule:
 
-- A change that only adds (a new entry, or an edit that lowers nothing) is
-  accepted at once.
+- A change that only adds (a new entry, or an edit that lowers nothing and
+  makes no rejected amount valid) is accepted at once.
 - A change that would lower any series in any hour (a deleted entry, a
-  lowered amount, an entry moved to another hour, a diaper type change) is
-  held, per entry and as one unit, until a second, fresh read of the same
+  lowered amount, an entry moved to another hour, a diaper type change),
+  and a change that makes valid an amount the accepted entry holds as
+  rejected, whatever the amounts, needs confirmation
+  (``Change.needs_confirmation``). The ledger cannot know what is stored
+  for a rejected amount (the writer keeps the stored value there), so a
+  valid amount in its place may lower a chart. Such a change is held, per
+  entry and as one unit, until a second, fresh read of the same
   bounds, taken at least a minimum gap later by the same reader, agrees
   with the first on every hour that was finished when the first was taken.
   Both reads must imply the change: the first one, against the ledger as
@@ -22,8 +27,8 @@ update the ledger under one rule:
   the first is neither: the change keeps waiting on the first read.
 - Only a change a re-read could confirm is held at all: one in hours that
   had finished when its read was taken, and with no rejected amount in it.
-  Any other lowering change is left for a later read to find again, once
-  its hour has finished or its amount is valid, so nothing waits forever.
+  Any other such change is left for a later read to find again, once its
+  hour has finished or its amount is valid, so nothing waits forever.
 - A later read of other bounds that returns a waiting entry in a state
   other than the one the first read implied (present where it implied a
   removal, or with other values) contradicts that read: the entry stops
@@ -211,6 +216,22 @@ class Change:
             if new is None or new < value:
                 return True
         return False
+
+    @property
+    def needs_confirmation(self) -> bool:
+        """Whether the change waits for a confirming read before it is applied.
+
+        It does when it lowers, and when a series the accepted entry holds
+        as rejected becomes valid (or is no longer there), whatever the
+        amounts: what is stored for a rejected amount is not known here, so
+        the new amount may lower it.
+        """
+        if self.lowers:
+            return True
+        before, after = self.before, self.after
+        if before is None or after is None:
+            return False
+        return bool(before.invalid - after.invalid)
 
     @property
     def kind(self) -> str:
@@ -504,7 +525,11 @@ def _note_first(first: dict[CareLogSeries, int], record: _Record) -> None:
 
 @dataclass(frozen=True, slots=True, repr=False)
 class Assessment:
-    """What a read would change: what is safe at once, and what lowers."""
+    """What a read would change: what is safe at once, and what needs confirmation.
+
+    ``lowering`` holds every change that needs confirmation: the lowering
+    ones, and those that make a rejected amount valid.
+    """
 
     safe: tuple[Change, ...]
     lowering: tuple[Change, ...]
@@ -538,9 +563,10 @@ def _carry_forward(before: EntryFacts | None, after: EntryFacts) -> EntryFacts:
 def assess(ledger: Ledger, read: CareLogRead) -> Assessment:
     """Compare a read with the ledger, without changing it.
 
-    A returned uid is new, unchanged, a safe edit or a lowering edit (a
-    move included, wherever its old time was). An accepted uid within the
-    read's bounds that the read does not return is a suspected removal.
+    A returned uid is new, unchanged, a safe edit or an edit that needs
+    confirmation (a lowering one, a move wherever its old time was, or one
+    that makes a rejected amount valid). An accepted uid within the read's
+    bounds that the read does not return is a suspected removal.
     """
     safe: list[Change] = []
     lowering: list[Change] = []
@@ -550,7 +576,7 @@ def assess(ledger: Ledger, read: CareLogRead) -> Assessment:
         if after == before:
             continue
         change = Change(uid=uid, before=before, after=after)
-        (lowering if change.lowers else safe).append(change)
+        (lowering if change.needs_confirmation else safe).append(change)
     for uid in sorted(ledger.uids_between(read.start, read.end) - read.entries.keys()):
         lowering.append(Change(uid=uid, before=ledger.get(uid), after=None))
     return Assessment(safe=tuple(safe), lowering=tuple(lowering))

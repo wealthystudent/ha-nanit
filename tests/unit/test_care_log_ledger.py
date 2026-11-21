@@ -1021,9 +1021,65 @@ def test_a_rejected_amount_on_a_known_entry_is_carried_forward_at_once() -> None
     assert _amount(book, S.BOTTLE_VOLUME, AT_9) == 90.0
     nine = _hour(AT_9)
     assert book.ledger.keep_hours(S.BOTTLE_VOLUME, nine, nine + 3600) == {nine}
-    # The valid value back, the same as before: safe, and the flag is gone.
-    book.process(_read([_bottle("b1", AT_9, 90.0)], at=T0 + GAP))
+    # The valid value back, the same as before: it still waits for a re-read
+    # (what is stored for the rejected amount is not known here), then the
+    # flag is gone.
+    outcome = book.process(_read([_bottle("b1", AT_9, 90.0)], at=T0 + GAP))
+    assert outcome.waiting == 1
+    assert book.ledger.keep_hours(S.BOTTLE_VOLUME, nine, nine + 3600) == {nine}
+    book.process(_read([_bottle("b1", AT_9, 90.0)], at=T0 + 2 * GAP))
     assert book.ledger.keep_hours(S.BOTTLE_VOLUME, nine, nine + 3600) == set()
+
+
+_REJECTED = _bottle(ml=None, invalid_fields=frozenset({"feed_amount_ml"}))
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "lowers", "needs_confirmation"),
+    [
+        pytest.param(_REJECTED, _bottle(ml=30.0), False, True, id="rejected-then-lower"),
+        pytest.param(_REJECTED, _bottle(ml=500.0), False, True, id="rejected-then-higher"),
+        pytest.param(_REJECTED, _bottle(ml=None), False, True, id="rejected-then-absent"),
+        pytest.param(_REJECTED, _REJECTED, False, False, id="still-rejected"),
+        pytest.param(None, _bottle(ml=30.0), False, False, id="new"),
+        pytest.param(_bottle(ml=30.0), _bottle(ml=60.0), False, False, id="raised"),
+        pytest.param(_bottle(ml=60.0), _bottle(ml=30.0), True, True, id="lowered"),
+        pytest.param(_bottle(ml=60.0), None, True, True, id="removed"),
+    ],
+)
+def test_a_rejected_amount_becoming_valid_needs_confirmation_without_lowering(
+    before: CareLog | None, after: CareLog | None, lowers: bool, needs_confirmation: bool
+) -> None:
+    change = Change(
+        uid="u",
+        before=None if before is None else _facts(before),
+        after=None if after is None else _facts(after),
+    )
+    assert change.lowers is lowers
+    assert change.needs_confirmation is needs_confirmation
+
+
+@pytest.mark.parametrize("ml", [30.0, 150.0], ids=["lower", "higher"])
+def test_an_amount_that_was_rejected_becomes_valid_only_after_a_confirming_read(ml: float) -> None:
+    rejected = _bottle("b1", AT_9, None, invalid_fields=frozenset({"feed_amount_ml"}))
+    book = _book([rejected])
+    nine = _hour(AT_9)
+    valid = [_bottle("b1", AT_9, ml)]
+
+    outcome = book.process(_read(valid, at=T0))
+
+    assert outcome.accepted == 0
+    assert outcome.waiting == 1
+    assert outcome.confirm == ConfirmRequest(start=START, end=END, not_before=T0 + GAP)
+    assert book.ledger.keep_hours(S.BOTTLE_VOLUME, nine, nine + 3600) == {nine}
+    assert _amount(book, S.BOTTLE_VOLUME, AT_9) == 0.0
+
+    outcome = book.process(_read(valid, at=T0 + GAP))
+
+    assert outcome.confirmed
+    assert outcome.lowered == 1
+    assert book.ledger.keep_hours(S.BOTTLE_VOLUME, nine, nine + 3600) == set()
+    assert _amount(book, S.BOTTLE_VOLUME, AT_9) == ml
 
 
 def test_a_lowering_edit_with_a_rejected_amount_is_not_held_until_it_is_valid() -> None:
@@ -1496,7 +1552,8 @@ def _confirmable(ledger: dict[str, EntryFacts], read: CareLogRead) -> set[str]:
             and not seen.invalid
             and old.hour < cutoff
             and seen.hour < cutoff
-            and _lowers(old, seen)
+            # Lowering, or a rejected amount made valid: either waits.
+            and (_lowers(old, seen) or bool(old.invalid - seen.invalid))
         ):
             result.add(uid)
     return result

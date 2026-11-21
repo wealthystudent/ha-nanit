@@ -751,6 +751,39 @@ async def test_a_one_off_omission_is_cancelled_by_the_confirm_fetch(
     assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(B1)] == 120.0
 
 
+@pytest.mark.parametrize("ml", [30.0, 200.0], ids=["lower", "higher"])
+async def test_an_amount_rejected_after_a_restart_becomes_valid_only_after_a_re_read(
+    make: Callable[..., Harness], hass: HomeAssistant, ml: float
+) -> None:
+    truth = Truth(BASE)
+    first = await _imported(make, truth)
+    await first.stop()
+    # After a restart, Nanit's amount for b1 cannot be used: the stored 120
+    # is kept, and the ledger knows the entry but not its amount.
+    truth.put(
+        CareLog(
+            uid=B1.uid,
+            log_type="bottle_feed",
+            timestamp=B1.timestamp,
+            baby_uid=UID,
+            invalid_fields=frozenset({"feed_amount_ml"}),
+        )
+    )
+    second = await _imported(make, truth)
+    assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(B1)] == 120.0
+
+    truth.put(_bottle(B1.uid, NOW - timedelta(hours=3, minutes=40), ml))
+    await second.tick_and_poll(timedelta(minutes=1))
+
+    assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(B1)] == 120.0
+    assert len(second.importer._book.pending_requests()) == 1
+
+    await second.advance(MIN_GAP)
+
+    assert second.diag()["confirm_fetches"] == 1
+    assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(B1)] == ml
+
+
 async def test_a_read_with_a_dropped_row_lowers_nothing(
     make: Callable[..., Harness], hass: HomeAssistant
 ) -> None:

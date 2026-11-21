@@ -57,7 +57,7 @@ A Sound & Light Machine that isn't paired to any baby in the Nanit app is picked
 - 👁️ Motion & sound detection
 - 💡 Night light switch
 - 🔌 Camera power switch
-- 🍼 Care Logs: last diaper change, feeding and pumping, plus today's diaper and feeding counts, bottle and pumped volume, and nursing time, and a calendar of every entry (see [Care Logs](#care-logs))
+- 🍼 Care Logs: last diaper change, feeding and pumping, plus today's diaper and feeding counts, bottle and pumped volume, and nursing time, a calendar of every entry, and hourly long-term statistics (see [Care Logs](#care-logs))
 
 **Sound & Light Machine** (works standalone or paired with a camera):
 - Power, sound, and light switches
@@ -97,11 +97,11 @@ A few limits to know about:
 - A nursing session counts toward the day it started, even when it runs past midnight.
 - The "today" sensors start again at the first poll after midnight, so up to 5 minutes late.
 - An entry dated up to an hour in the future already counts.
-- Home Assistant's long-term statistics for the "today" sensors add up the changes it sees during the day. An entry logged after midnight for the day before is missed there, so those charts can run slightly low. The Nanit app is the record.
+- The "today" sensors don't record long-term statistics of their own. For charts, use the [care log statistics](#care-log-statistics). The Nanit app is the record.
 
 Like any sensor, these are kept in Home Assistant's history, visible to everyone who can use your Home Assistant, and available to voice assistants you expose them to.
 
-Setup and **Settings → Devices & Services → Nanit → Configure → Care log statistics and notes** offer two choices. **Import care log statistics** is on by default for a new setup, and **Show notes and who logged each entry** is off. If you set up the integration before these choices existed, both are off until you turn them on. The notes choice controls the [care log calendar](#care-log-calendar). The statistics import comes in a later update; for now, changing it does nothing else.
+Setup and **Settings → Devices & Services → Nanit → Configure → Care log statistics and notes** offer two choices. **Import care log statistics** is on by default for a new setup, and **Show notes and who logged each entry** is off. If you set up the integration before these choices existed, both are off until you turn them on. The notes choice controls the [care log calendar](#care-log-calendar), and the statistics choice the [care log statistics](#care-log-statistics). Changing either reloads the integration.
 
 ### Care log calendar
 
@@ -114,6 +114,50 @@ Each baby gets a read-only **Care log** calendar, on the camera's device (a baby
 - The calendar never has a current event: its state is always off, so nothing from an entry reaches Home Assistant's history that way.
 
 With **Show notes and who logged each entry** on, each event's description also shows its note and "Logged by" the person's name and relation to the baby. Anyone who can read the calendar can see them, automations that use the calendar can copy them, and a voice assistant you expose the calendar to can receive them. On current Home Assistant versions a user needs read permission for the calendar; on 2025.12 any signed-in user can read calendar events. Home Assistant's debug logs and backups can hold copies of what an automation did with them. Even when this is off, the calendar shows care routines, times and amounts. Changing the choice reloads the integration and drops everything the calendar kept in memory.
+
+### Care log statistics
+
+With **Import care log statistics** on, each baby's care logs are saved as hourly long-term statistics in Home Assistant's recorder, for charts over weeks and months. Each baby gets up to 16:
+
+- Diaper changes, and one for each type (pee, poo, mixed and dry)
+- Bottle feeds and bottle volume
+- Nursing sessions and nursing time, together and for each side
+- Pumping sessions, pumped volume (together and for each side) and pumping time
+
+Counts are numbers of entries, volumes are in mL and times in minutes. The names begin with the baby's name, such as "Nursery bottle volume". The ids look like `nanit:<code>_bottle_volume`, where the code is a one-way code made from the baby's Nanit id, not the id itself. Pick them in a **Statistics graph** card, or find them in **Developer tools → Statistics** (**Settings → Tools → Statistics** on newer Home Assistant versions). A statistic appears once its first entry exists, and starts at that entry's hour.
+
+To chart a daily total, add a **Statistics graph** card with the statistic, set the period to **Day**, the chart type to **Bar** and the stat type to **Change**: each bar is that day's total. These statistics are running totals, so **Sum** draws the total since the statistic began instead, which only goes up.
+
+When entries count:
+
+- An entry counts in the hour it is dated. A nursing or pumping session's whole time counts in the hour it started.
+- Only finished hours are written, at the first read after the hour ends, so a few minutes after the hour.
+- The rows are on UTC hours. In a time zone offset from UTC by 30 or 45 minutes, a day starts in the middle of a row, so a daily bar can include a slice of the neighbouring day, and a daily chart can differ slightly from the matching "today" sensor.
+
+Corrections:
+
+- A new entry, or a raised amount, is written as soon as the integration reads it: within about 5 minutes for an entry dated in the last 24 hours, and at the next read of the whole history for an older one.
+- Anything that would lower a number (a deleted entry, a smaller amount, an entry moved to another time, a changed diaper type) is written only after a second read from Nanit, at least 5 minutes later, agrees.
+- Nanit doesn't say when an entry was deleted, only that it is no longer there. So there is a small chance that a deleted entry lingers, or that an entry Nanit leaves out of two reads in a row is dropped until Nanit returns it again.
+- The whole history is read again once a day and after every restart or reload, with one request per 90 days of history. It starts a year before the baby's birth date or the date the baby was added to Nanit, whichever is earlier (three years back when Nanit gives neither).
+- An amount or time Nanit sends but that can't be used leaves that hour's volume or time as it was. The entry still counts.
+
+What it costs, measured with made-up history:
+
+- At most about 16 rows per hour per baby, one for each statistic from its first entry on, so fewer when a kind is never logged.
+- One baby with a year of history is roughly 140,000 rows, about 10 MB of database, and a minute or two for the first import, which runs in the background.
+- An extreme case, three babies with five years each, was about 2.1 million rows, 146 MB and 23 minutes.
+
+Privacy and control:
+
+- The statistics show care routines, times and amounts to anyone who can read statistics in this Home Assistant. The recorder's include and exclude settings don't apply to them, and they stay until you delete them.
+- Turning **Import care log statistics** off stops the import and leaves what was already imported.
+- To delete them, turn the import off first (or it writes them again), then in **Developer tools → Statistics** search for the baby's name, select the statistics and choose **Delete selected statistics**.
+- The integration keeps nothing extra on disk for this. What it has read is held in memory, and read again from Nanit after a restart.
+- When two Nanit sign-ins in this Home Assistant see the same baby and both have the import on, only one of them writes that baby's statistics. The other takes over, starting from scratch, when the first is removed or has the import turned off.
+- The import needs Home Assistant's recorder. Without it nothing is imported, and Nanit is asked for nothing beyond the usual care log reads.
+
+The five "today" sensors no longer record long-term statistics of their own; these statistics take their place, whether or not the import is on. If you ran an earlier test build that recorded them, their old statistics show in **Developer tools → Statistics** with an issue saying the entity no longer has a state class, and you can delete them there.
 
 ## Read-only mode (optional)
 

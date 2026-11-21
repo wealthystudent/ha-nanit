@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import logging
 import sys
@@ -16,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from freezegun.api import FrozenDateTimeFactory
+from homeassistant.components.calendar.helper import api_event_dict_factory
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import STATE_OFF, STATE_UNAVAILABLE
 from homeassistant.core import HomeAssistant
@@ -1089,6 +1091,81 @@ async def test_clocks_going_back_fall_back_to_a_moment_and_keep_the_rest(
     assert first.end - first.start == timedelta(minutes=1)
     assert diaper.end - diaper.start == timedelta(minutes=1)
     assert second.end - second.start == timedelta(minutes=10)
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+def _sent(event: Any) -> tuple[datetime, datetime]:
+    """The start and end the frontend is sent for an event, as UTC instants."""
+    sent = dataclasses.asdict(event, dict_factory=api_event_dict_factory)
+    start = datetime.fromisoformat(sent["start"]["dateTime"])
+    end = datetime.fromisoformat(sent["end"]["dateTime"])
+    return dt_util.as_utc(start), dt_util.as_utc(end)
+
+
+async def test_a_half_hour_session_across_the_clocks_going_back_keeps_its_length_in_its_text(
+    hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory
+) -> None:
+    """US/Pacific, 1 November 2026: 30 minutes from 01:45 PDT end at 01:15 PST.
+
+    Home Assistant checks the span on the wall clock, where it reads reversed,
+    and turns every datetime into local time before it does, so no form of
+    the start and end can pass. The session is shown as a moment, and its
+    text still gives its real length.
+    """
+    freezer.move_to(NOW)
+    fake = FakeNanit()
+    nursing = datetime.fromisoformat("2026-11-01T08:45:00+00:00")
+    fake.add(_log("n1", "nursing", nursing, left_duration_s=1200.0, right_duration_s=600.0))
+    pumping = datetime.fromisoformat("2026-11-01T08:40:00+00:00")
+    fake.add(_log("p1", "pumping", pumping, duration_s=1800.0, left_amount_ml=30.0))
+    entry, calendar = await _one_calendar(hass, client, fake)
+
+    events = await _events(
+        hass, calendar, _local("2026-11-01T00:00:00"), _local("2026-11-02T00:00:00")
+    )
+
+    pumped, nursed = events
+    assert _sent(nursed) == (nursing, nursing + timedelta(minutes=1))
+    assert nursed.summary == "Nursing, 30 min"
+    assert nursed.description == "Left side: 20 min\nRight side: 10 min"
+    assert _sent(pumped) == (pumping, pumping + timedelta(minutes=1))
+    # A pumping title holds its amount, as it always does: the length is in
+    # the description.
+    assert pumped.summary == "Pumping, 30 mL"
+    assert pumped.description == "Left side: 30 mL\nDuration: 30 min"
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_sessions_across_a_30_minute_clock_change(hass: HomeAssistant, client: Any) -> None:
+    """Australia/Lord_Howe, 5 April 2026: 02:00 (+11:00) goes back to 01:30 (+10:30).
+
+    Run on the real clock: freezegun's datetimes drop ``fold`` on a time
+    zone conversion, and with it which of two repeated wall-clock times is
+    meant, so under the frozen clock the end would be sent as the start.
+    """
+    await hass.config.async_set_time_zone("Australia/Lord_Howe")
+    fake = FakeNanit()
+    # 30 minutes from 01:45 (+11:00) end at 01:45 (+10:30): no time at all on
+    # the wall clock, which Home Assistant accepts, and sent with both
+    # offsets, so the frontend gets the real half hour.
+    whole = datetime.fromisoformat("2026-04-04T14:45:00+00:00")
+    fake.add(_log("n1", "nursing", whole, left_duration_s=1800.0))
+    # 20 minutes from 01:50 (+11:00) end at 01:40 (+10:30): reversed, so a moment.
+    reversed_start = datetime.fromisoformat("2026-04-04T14:50:00+00:00")
+    fake.add(_log("n2", "nursing", reversed_start, right_duration_s=1200.0))
+    entry, calendar = await _one_calendar(hass, client, fake)
+
+    events = await _events(
+        hass, calendar, _local("2026-04-05T00:00:00"), _local("2026-04-06T00:00:00")
+    )
+
+    shown, moment = events
+    assert _sent(shown) == (whole, whole + timedelta(minutes=30))
+    assert shown.start.utcoffset() == timedelta(hours=11)
+    assert shown.end.utcoffset() == timedelta(hours=10, minutes=30)
+    assert shown.summary == "Nursing, 30 min"
+    assert _sent(moment) == (reversed_start, reversed_start + timedelta(minutes=1))
+    assert moment.summary == "Nursing, 20 min"
     assert await hass.config_entries.async_unload(entry.entry_id)
 
 

@@ -609,6 +609,101 @@ async def test_a_long_range_is_fetched_in_pieces_two_at_a_time(
     assert await hass.config_entries.async_unload(entry.entry_id)
 
 
+async def _until(condition: Any) -> None:
+    for _ in range(50):
+        if condition():
+            return
+        await asyncio.sleep(0)
+    raise AssertionError("condition never met")
+
+
+async def test_a_30_year_range_adds_no_more_tasks_than_its_workers(
+    hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory
+) -> None:
+    freezer.move_to(NOW)
+    fake = FakeNanit()
+    entry, calendar = await _one_calendar(hass, client, fake)
+    fake.gate = asyncio.Event()
+    start = RANGE_START - timedelta(days=30 * 365)
+    before = len(asyncio.all_tasks())
+
+    pending = hass.async_create_task(_events(hass, calendar, start, RANGE_END))
+    await _until(lambda: fake.in_flight == 2)
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    # The caller, the range's one fetch, and its two workers.
+    assert len(asyncio.all_tasks()) - before <= 4
+    fake.gate.set()
+    assert await pending == []
+    calls = fake.calendar_calls()
+    assert len(calls) > 120
+    assert fake.most_in_flight == 2
+    bounds = sorted((s, e) for _m, s, e in calls)
+    for (_low, high), (next_low, _next_high) in pairwise(bounds):
+        assert high == next_low
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_a_sole_caller_giving_up_stops_the_fetch(
+    hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory
+) -> None:
+    freezer.move_to(NOW)
+    fake = FakeNanit()
+    _day_of_entries(fake)
+    entry, calendar = await _one_calendar(hass, client, fake)
+    fake.gate = asyncio.Event()
+
+    pending = hass.async_create_task(_events(hass, calendar, RANGE_START, RANGE_END))
+    await _until(lambda: fake.in_flight == 1)
+    (task,) = calendar._in_flight.values()
+    pending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+    await _until(task.done)
+
+    assert task.cancelled()
+    assert fake.in_flight == 0
+    assert calendar._in_flight == {}
+    assert calendar._cache == {}
+    # The next caller starts a fetch of its own and gets its answer.
+    fake.gate.set()
+    assert len(await _events(hass, calendar, RANGE_START, RANGE_END)) == 4
+    assert len(fake.calendar_calls()) == 2
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_a_calendar_fetches_a_bounded_number_of_ranges_at_once(
+    hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory
+) -> None:
+    freezer.move_to(NOW)
+    fake = FakeNanit()
+    _day_of_entries(fake)
+    entry, calendar = await _one_calendar(hass, client, fake)
+    fake.gate = asyncio.Event()
+    limit = CARE_LOG_CACHE_SIZE
+
+    def day(index: int) -> tuple[datetime, datetime]:
+        return RANGE_START - timedelta(days=index), RANGE_END - timedelta(days=index)
+
+    pending = [hass.async_create_task(_events(hass, calendar, *day(i))) for i in range(limit)]
+    await _until(lambda: len(calendar._in_flight) == limit)
+
+    # Another range is refused at once; one already in flight is still shared.
+    refused = hass.async_create_task(_events(hass, calendar, *day(limit)))
+    await _until(refused.done)
+    with pytest.raises(HomeAssistantError):
+        refused.result()
+    shared = hass.async_create_task(_events(hass, calendar, *day(0)))
+    fake.gate.set()
+
+    answers = await asyncio.gather(*pending)
+    assert len(answers[0]) == 4
+    assert len(await shared) == 4
+    assert len(fake.calendar_calls()) == limit
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
 # ---------------------------------------------------------------------------
 # Kinds, text and units
 # ---------------------------------------------------------------------------

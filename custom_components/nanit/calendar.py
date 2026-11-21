@@ -15,7 +15,7 @@ import dataclasses
 import logging
 import math
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -67,7 +67,9 @@ _MICROSECOND = timedelta(microseconds=1)
 # into it. A margin, not a proven maximum.
 CARE_LOG_REACH_BACK = timedelta(hours=24)
 
-# The longest single request, and how many requests may run at once.
+# The longest single request, and how many requests may run at once. A
+# range is fetched by this many workers taking its pieces in turn, so a
+# long range adds no more tasks than a short one.
 CARE_LOG_MAX_PIECE = timedelta(days=90)
 CARE_LOG_MAX_IN_FLIGHT = 2
 
@@ -75,6 +77,10 @@ CARE_LOG_MAX_IN_FLIGHT = 2
 # An answer is removed when its time is up, even if nothing asks again.
 CARE_LOG_CACHE_TTL = timedelta(minutes=5)
 CARE_LOG_CACHE_SIZE = 16
+
+# How many different ranges one calendar fetches at once: as many as it
+# keeps. A request for another range meanwhile gets the usual error.
+CARE_LOG_MAX_RANGES_IN_FLIGHT = CARE_LOG_CACHE_SIZE
 
 # A stated length longer than the reach-back can't be trusted to be shown
 # whole, and could overflow a date: such an entry is shown as a moment.
@@ -445,16 +451,15 @@ def _event(
     return None
 
 
-def _pieces(start: int, end: int) -> list[tuple[int, int]]:
-    """Split an inclusive range into requests of at most CARE_LOG_MAX_PIECE."""
+def _pieces(start: int, end: int) -> Iterator[tuple[int, int]]:
+    """Split an inclusive range into requests of at most CARE_LOG_MAX_PIECE, in order."""
     step = int(CARE_LOG_MAX_PIECE.total_seconds())
-    pieces: list[tuple[int, int]] = []
     low = start
     while True:
         high = min(low + step, end)
-        pieces.append((low, high))
+        yield low, high
         if high >= end:
-            return pieces
+            return
         # Nanit includes both ends, so neighbouring pieces share one second;
         # an entry at it is returned twice and removed by its uid.
         low = high
@@ -501,6 +506,8 @@ class NanitCareLogCalendar(CoordinatorEntity[NanitCareLogCoordinator], CalendarE
             self._attr_translation_placeholders = {"baby_name": display_name(baby.name, baby.uid)}
         self._cache: dict[_CacheKey, _Cached] = {}
         self._in_flight: dict[_CacheKey, asyncio.Task[tuple[_Row, ...]]] = {}
+        # How many callers wait for each fetch in flight.
+        self._waiting: dict[_CacheKey, int] = {}
         self._requests = asyncio.Semaphore(CARE_LOG_MAX_IN_FLIGHT)
         self._removed = False
         self._cancel_expiry: CALLBACK_TYPE | None = None
@@ -539,6 +546,7 @@ class NanitCareLogCalendar(CoordinatorEntity[NanitCareLogCoordinator], CalendarE
         for task in self._in_flight.values():
             task.cancel()
         self._in_flight.clear()
+        self._waiting.clear()
         await super().async_will_remove_from_hass()
 
     async def async_get_events(
@@ -582,11 +590,14 @@ class NanitCareLogCalendar(CoordinatorEntity[NanitCareLogCoordinator], CalendarE
             return cached.rows
         task = self._in_flight.get(key)
         if task is None:
+            if len(self._in_flight) >= CARE_LOG_MAX_RANGES_IN_FLIGHT:
+                raise _unavailable()
             task = self.coordinator.config_entry.async_create_background_task(
                 self.hass, self._async_fetch_and_keep(key), f"{DOMAIN} care log calendar fetch"
             )
             self._in_flight[key] = task
             task.add_done_callback(lambda done: self._fetch_done(key, done))
+        self._waiting[key] = self._waiting.get(key, 0) + 1
         failed = False
         rows: tuple[_Row, ...] = ()
         try:
@@ -600,14 +611,32 @@ class NanitCareLogCalendar(CoordinatorEntity[NanitCareLogCoordinator], CalendarE
                 raise
             # The fetch was stopped because the calendar was removed.
             failed = True
+        finally:
+            self._stop_waiting(key, task)
         if failed:
             # Raised here, outside the handler, so nothing of the failure is chained.
             raise _unavailable()
         return rows
 
+    def _stop_waiting(self, key: _CacheKey, task: asyncio.Task[tuple[_Row, ...]]) -> None:
+        """Count a caller out, and stop the fetch when nobody waits for it any more."""
+        if self._in_flight.get(key) is not task:
+            return
+        waiting = self._waiting.get(key, 0) - 1
+        if waiting > 0:
+            self._waiting[key] = waiting
+            return
+        self._waiting.pop(key, None)
+        if not task.done():
+            # Every caller gave up. Forgotten at once, so a caller arriving
+            # next starts a fetch of its own instead of sharing a stopped one.
+            del self._in_flight[key]
+            task.cancel()
+
     def _fetch_done(self, key: _CacheKey, task: asyncio.Task[tuple[_Row, ...]]) -> None:
         if self._in_flight.get(key) is task:
             del self._in_flight[key]
+            self._waiting.pop(key, None)
         if not task.cancelled():
             # Marks a failure as seen when every caller has already gone.
             task.exception()
@@ -662,11 +691,19 @@ class NanitCareLogCalendar(CoordinatorEntity[NanitCareLogCoordinator], CalendarE
                 fetch = await client.async_get_calendar_result(baby_uid, low, high)
                 return [_Row(_stripped(log), None) for log in fetch.logs]
 
+        pieces = _pieces(start, end)
+        rows: list[_Row] = []
+
+        async def worker() -> None:
+            # The workers share one iterator, so each piece is fetched once.
+            for low, high in pieces:
+                rows.extend(await piece(low, high))
+
         failure: str | None = None
-        tasks: list[asyncio.Task[list[_Row]]] = []
         try:
             async with asyncio.TaskGroup() as group:
-                tasks = [group.create_task(piece(low, high)) for low, high in _pieces(start, end)]
+                for _ in range(CARE_LOG_MAX_IN_FLIGHT):
+                    group.create_task(worker())
         except* NanitError as errors:
             failure = type(errors.exceptions[0]).__name__
         if failure is not None:
@@ -674,7 +711,7 @@ class NanitCareLogCalendar(CoordinatorEntity[NanitCareLogCoordinator], CalendarE
             # here needs more, and the baby's uid never goes in a log line.
             _LOGGER.debug("Care log calendar fetch failed (%s)", failure)
             raise _unavailable()
-        return _unique(row for task in tasks for row in task.result())
+        return _unique(rows)
 
 
 def _stripped(log: CareLog) -> CareLog:

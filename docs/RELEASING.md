@@ -103,7 +103,7 @@ The guarantees above depend on these settings. Only admins can change them.
 | Setting | Value | Why |
 |---------|-------|-----|
 | Merge methods | Squash only, title = PR title, body = PR body | Commits on `main` are GitHub-signed squashes. Release notes find PRs by the `(#N)` squash suffix. |
-| Branch ruleset on `main` | Signed commits, PR required, required checks `CI OK` and `PR Metadata` | Nothing reaches `main` unreviewed or untested. |
+| Branch ruleset on `main` | Signed commits, PR required, required checks `CI OK` and `PR Metadata` | Nothing reaches `main` unreviewed or untested. `PR Metadata` also names unverified commits, which the ruleset would block without saying why. |
 | Tag ruleset "only wealthy" (exists) | All tags: no deletion, no update, no force push, signed; admin bypass | A published version can never be moved and rebuilt from different code. |
 | Tag ruleset for stable tags | Restrict creation of `refs/tags/v*`, excluding `refs/tags/v*-beta.*`; admin bypass | Only the owner can cut a stable tag. Beta tags stay open for auto-beta. |
 | Environment `release-stable` | Required reviewer: owner | Owner approves every stable publish (`just release` does it for you). |

@@ -39,9 +39,10 @@ reads wait, the oldest is lost: a waiting start-up pass starts over, and
 every change waiting for a confirming read is forgotten, so nothing is
 confirmed across the gap.
 
-Nanit is asked for nothing beyond the reader's own polls while the recorder
-is not ready, and nothing at all when the config entry has polling
-disabled.
+Nanit is asked for nothing beyond the reader's own polls, and nothing is
+written, while the recorder is not ready (not loaded, its database not
+ready, or recording paused with the ``recorder.disable`` action), and
+nothing at all when the config entry has polling disabled.
 
 Privacy: no entry id, baby uid, baby name or baby code appears in a log
 line, an exception or ``diagnostics`` here. Unexpected errors are logged by

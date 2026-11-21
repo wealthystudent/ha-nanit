@@ -174,14 +174,8 @@ class Comparison:
     rows_read: int
 
 
-def care_log_recorder_ready(hass: HomeAssistant) -> bool:
-    """Whether the recorder is loaded, its database ready, and it is recording.
-
-    The same test on every supported Home Assistant version: the integration
-    is set up, its instance exists, the database was marked ready (not
-    failed), no migration is running, and its event listener is in place
-    (it is removed when the recorder stops or gives up on a backlog).
-    """
+def _database_ready(hass: HomeAssistant) -> bool:
+    """Whether the recorder is loaded, its database ready and no migration running."""
     if RECORDER_DOMAIN not in hass.config.components:
         return False
     instance = hass.data.get(DATA_INSTANCE)
@@ -190,11 +184,32 @@ def care_log_recorder_ready(hass: HomeAssistant) -> bool:
     ready = instance.async_db_ready
     if not ready.done() or ready.cancelled() or not ready.result():
         return False
-    return not instance.migration_in_progress and instance.recording
+    return not instance.migration_in_progress
+
+
+def care_log_recorder_ready(hass: HomeAssistant) -> bool:
+    """Whether the recorder is loaded, its database ready, and it is recording.
+
+    The same test on every supported Home Assistant version: the integration
+    is set up, its instance exists, the database was marked ready (not
+    failed), no migration is running, its event listener is in place (it is
+    removed when the recorder stops or gives up on a backlog), and it is
+    enabled (the ``recorder.disable`` action turns that off and leaves the
+    listener in place).
+    """
+    if not _database_ready(hass):
+        return False
+    instance = hass.data[DATA_INSTANCE]
+    return bool(instance.recording and instance.enabled)
 
 
 def _require_ready(hass: HomeAssistant) -> None:
     if not care_log_recorder_ready(hass):
+        raise CareLogRecorderUnavailableError
+
+
+def _require_database(hass: HomeAssistant) -> None:
+    if not _database_ready(hass):
         raise CareLogRecorderUnavailableError
 
 
@@ -341,8 +356,16 @@ class _Reader:
         self.hass = hass
         self.rows_read = 0
 
-    async def job[T](self, target: Callable[..., T], *args: object) -> T:
-        _require_ready(self.hass)
+    async def job[T](self, target: Callable[..., T], *args: object, recording: bool = True) -> T:
+        """Run a read in the recorder's executor.
+
+        It needs the recorder ready to record; a read that checks a batch
+        already sent (``recording=False``) needs only the database.
+        """
+        if recording:
+            _require_ready(self.hass)
+        else:
+            _require_database(self.hass)
         try:
             return await get_instance(self.hass).async_add_executor_job(target, *args)
         except SQLAlchemyError as err:
@@ -536,7 +559,7 @@ class _Sync:
             if attempt:
                 await asyncio.sleep(VERIFY_RETRY_DELAY * 2 ** (attempt - 1))
             await _async_wait_for_recorder(self.hass)
-            stored = await self.reader.job(_read_rows, self.hass, sid, low, high)
+            stored = await self.reader.job(_read_rows, self.hass, sid, low, high, recording=False)
             if all(
                 (row := stored.get(hour)) is not None
                 and not _differs(row[0], state)

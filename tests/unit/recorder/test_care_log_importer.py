@@ -451,6 +451,49 @@ async def test_without_a_ready_recorder_nothing_is_fetched_or_written_until_it_i
     assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(OLD)] == 90.0
 
 
+async def test_the_recorder_disable_action_pauses_the_import_until_enabled_again(
+    make: Callable[..., Harness], hass: HomeAssistant, sent: Sent
+) -> None:
+    truth = Truth(BASE)
+    harness = make(truth)
+    await hass.services.async_call("recorder", "disable", blocking=True)
+    harness.start()
+    await harness.poll()
+    await harness.tick_and_poll(timedelta(minutes=5))
+    assert harness.diag()["state"] == "waiting_for_recorder"
+    assert truth.own == []
+    assert sent == []
+
+    await hass.services.async_call("recorder", "enable", blocking=True)
+    await harness.tick_and_poll(timedelta(minutes=5))  # 18:20
+    assert harness.diag()["state"] == "running"
+    assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(OLD)] == 90.0
+
+    # Disabled while running: reads still reach the book, nothing is asked
+    # of Nanit or written.
+    await hass.services.async_call("recorder", "disable", blocking=True)
+    truth.own.clear()
+    written = len(sent)
+    late = _bottle("b_late", NOW - timedelta(hours=1, minutes=30), 30.0)
+    truth.put(late)
+    truth.delete(D2.uid)
+    await harness.tick_and_poll(timedelta(minutes=5))  # 18:25
+    await harness.advance(MIN_GAP)  # a confirm fetch would be due
+    await harness.tick_and_poll(timedelta(hours=1))  # an hour finished
+    assert truth.own == []
+    assert len(sent) == written
+    assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(late)] == 0.0
+
+    await hass.services.async_call("recorder", "enable", blocking=True)
+    await harness.tick_and_poll(timedelta(minutes=5))
+    await harness.advance(MIN_GAP)
+
+    assert truth.own
+    assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(late)] == 30.0
+    assert (await _stored(hass, S.DIAPER_PEE))[_hour(D2)] == 0.0
+    assert max(await _stored(hass, S.BOTTLE_VOLUME)) == _end_hour() - H
+
+
 async def test_a_restart_after_a_deletion_waits_for_a_second_agreeing_pass(
     make: Callable[..., Harness], hass: HomeAssistant, sent: Sent
 ) -> None:

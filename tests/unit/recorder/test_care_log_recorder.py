@@ -1049,6 +1049,14 @@ async def test_a_recorder_that_is_not_recording_is_not_ready(
             await _compare(hass, ledger)
     with patch.object(recorder_mock, "migration_in_progress", True):
         assert not care_log_recorder_ready(hass)
+    # The recorder.disable action: the listener stays, recording is off.
+    await hass.services.async_call("recorder", "disable", blocking=True)
+    assert recorder_mock.recording
+    assert not care_log_recorder_ready(hass)
+    with pytest.raises(CareLogRecorderUnavailableError):
+        await _sync(hass, ledger)
+    await hass.services.async_call("recorder", "enable", blocking=True)
+    assert care_log_recorder_ready(hass)
     assert sent == []
     assert await _metadata_ids(hass) == set()
 

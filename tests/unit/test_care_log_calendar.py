@@ -915,6 +915,39 @@ async def test_absent_and_invalid_measurements_are_left_out(
     ]
 
 
+async def test_measurements_whose_sum_overflows_leave_the_rest_of_the_range(
+    hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory
+) -> None:
+    """Two finite sides that add up to infinity show no total, and nothing else is lost."""
+    freezer.move_to(NOW)
+    fake = FakeNanit()
+    _day_of_entries(fake)
+    at = _local("2026-11-20T12:00:00")
+    fake.add(_log("p9", "pumping", at, left_amount_ml=1e308, right_amount_ml=1e308))
+    fake.add(
+        _log(
+            "n9",
+            "nursing",
+            at + timedelta(minutes=1),
+            left_duration_s=1e308,
+            right_duration_s=1e308,
+        )
+    )
+
+    events = await _day(hass, client, fake)
+
+    assert _summaries(events) == [
+        "Diaper, mixed",
+        "Bottle, 30 mL",
+        "Nursing, 15 min",
+        "Pumping, 30 mL",
+        "Pumping",
+        "Nursing",
+    ]
+    for event in events[-2:]:
+        assert event.end - event.start == timedelta(minutes=1)
+
+
 async def test_an_unknown_kind_is_shown_generically_and_sleep_is_skipped(
     hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory
 ) -> None:

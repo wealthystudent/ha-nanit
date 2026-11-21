@@ -234,8 +234,12 @@ def _valid(log: CareLog, name: str) -> float | None:
 
 
 def _total(*values: float | None) -> float | None:
+    """Return the sum of the values present, or None when none is or the sum isn't finite."""
     present = [value for value in values if value is not None]
-    return sum(present) if present else None
+    if not present:
+        return None
+    total = sum(present)
+    return total if math.isfinite(total) else None
 
 
 def _length(log: CareLog) -> float | None:

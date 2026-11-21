@@ -168,8 +168,10 @@ class CareLog:
 
     Numbers and short tokens only: the notes and names an entry can carry
     are never kept here (see ``CareLogDetail``). A measurement the row
-    carried but that could not be used (negative, not a finite number) is
-    None like a missing one, and its field name is in ``invalid_fields``.
+    carried but that could not be used (negative, not a finite number, or
+    above a ceiling no real entry reaches: 100,000 mL, or 7 days in
+    seconds) is None like a missing one, and its field name is in
+    ``invalid_fields``.
     """
 
     uid: str

@@ -882,6 +882,95 @@ class TestGetCalendar:
             ),
         ]
 
+    async def test_get_calendar_measurements_above_a_ceiling_read_as_not_logged(
+        self, client: NanitRestClient
+    ) -> None:
+        """100,000 mL and 7 days are kept; anything above is rejected like a negative value."""
+        week = 7 * 24 * 3600
+        with mock_api() as m:
+            m.get(
+                CALENDAR_URL,
+                payload={
+                    "calendar": [
+                        {
+                            "uid": "b1",
+                            "type": "bottle_feed",
+                            "time": 1700000200,
+                            "feed_amount": 100_000,
+                        },
+                        {
+                            "uid": "b2",
+                            "type": "bottle_feed",
+                            "time": 1700000250,
+                            "feed_amount": 100_000.5,
+                        },
+                        {
+                            "uid": "n1",
+                            "type": "nursing",
+                            "time": 1700000300,
+                            "left_duration": week,
+                            "right_duration": week + 1,
+                        },
+                        {
+                            # Each finite, but their sum is not.
+                            "uid": "p1",
+                            "type": "pumping",
+                            "time": 1700000400,
+                            "left_amount": 1e308,
+                            "right_amount": 1e308,
+                            "duration": 1e308,
+                        },
+                        {
+                            "uid": "s1",
+                            "type": "sleep",
+                            "time": 1700000500,
+                            "duration": 1e300,
+                            "net_duration": week + 0.5,
+                        },
+                    ]
+                },
+            )
+            logs = await self._fetch(client)
+
+        assert logs == [
+            CareLog(
+                uid="b1",
+                log_type="bottle_feed",
+                timestamp=1700000200.0,
+                baby_uid="baby123",
+                feed_amount_ml=100_000.0,
+            ),
+            CareLog(
+                uid="b2",
+                log_type="bottle_feed",
+                timestamp=1700000250.0,
+                baby_uid="baby123",
+                invalid_fields=frozenset({"feed_amount_ml"}),
+            ),
+            CareLog(
+                uid="n1",
+                log_type="nursing",
+                timestamp=1700000300.0,
+                baby_uid="baby123",
+                left_duration_s=float(week),
+                invalid_fields=frozenset({"right_duration_s"}),
+            ),
+            CareLog(
+                uid="p1",
+                log_type="pumping",
+                timestamp=1700000400.0,
+                baby_uid="baby123",
+                invalid_fields=frozenset({"left_amount_ml", "right_amount_ml", "duration_s"}),
+            ),
+            CareLog(
+                uid="s1",
+                log_type="sleep",
+                timestamp=1700000500.0,
+                baby_uid="baby123",
+                invalid_fields=frozenset({"duration_s", "net_duration_s"}),
+            ),
+        ]
+
     async def test_get_calendar_parses_sleep_fields(self, client: NanitRestClient) -> None:
         with mock_api() as m:
             m.get(

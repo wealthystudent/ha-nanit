@@ -124,18 +124,27 @@ def _finite_number(value: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
-def _measurement(row: dict[str, Any], key: str, name: str, invalid: set[str]) -> float | None:
+# Ceilings no real entry reaches: 100 litres, and a week. A value above one
+# is unusable like a negative one, so that adding up an entry's measurements
+# (two sides, a day of feeds) can never overflow.
+MAX_AMOUNT_ML = 100_000.0
+MAX_DURATION_S = 7 * 24 * 3600.0
+
+
+def _measurement(
+    row: dict[str, Any], key: str, name: str, invalid: set[str], ceiling: float
+) -> float | None:
     """Return the amount or duration under ``key``, or None when it is missing or unusable.
 
-    A value that is there but unusable (negative, not a finite number)
-    adds ``name`` to ``invalid``, so a caller can tell it from a missing
-    one. JSON null counts as missing.
+    A value that is there but unusable (negative, above ``ceiling``, not a
+    finite number) adds ``name`` to ``invalid``, so a caller can tell it
+    from a missing one. JSON null counts as missing.
     """
     value = row.get(key)
     if value is None:
         return None
     number = _finite_number(value)
-    if number is None or number < 0:
+    if number is None or number < 0 or number > ceiling:
         invalid.add(name)
         return None
     return number
@@ -235,14 +244,20 @@ def _parse_care_log(row: Any, baby_uid: str) -> CareLog | None:
         timestamp=timestamp,
         baby_uid=baby_uid,
         change_type=_token(row.get("change_type")),
-        feed_amount_ml=_measurement(row, "feed_amount", "feed_amount_ml", invalid),
-        left_duration_s=_measurement(row, "left_duration", "left_duration_s", invalid),
-        right_duration_s=_measurement(row, "right_duration", "right_duration_s", invalid),
-        left_amount_ml=_measurement(row, "left_amount", "left_amount_ml", invalid),
-        right_amount_ml=_measurement(row, "right_amount", "right_amount_ml", invalid),
-        duration_s=_measurement(row, "duration", "duration_s", invalid),
+        feed_amount_ml=_measurement(row, "feed_amount", "feed_amount_ml", invalid, MAX_AMOUNT_ML),
+        left_duration_s=_measurement(
+            row, "left_duration", "left_duration_s", invalid, MAX_DURATION_S
+        ),
+        right_duration_s=_measurement(
+            row, "right_duration", "right_duration_s", invalid, MAX_DURATION_S
+        ),
+        left_amount_ml=_measurement(row, "left_amount", "left_amount_ml", invalid, MAX_AMOUNT_ML),
+        right_amount_ml=_measurement(
+            row, "right_amount", "right_amount_ml", invalid, MAX_AMOUNT_ML
+        ),
+        duration_s=_measurement(row, "duration", "duration_s", invalid, MAX_DURATION_S),
         end_timestamp=_end_timestamp(row, timestamp),
-        net_duration_s=_measurement(row, "net_duration", "net_duration_s", invalid),
+        net_duration_s=_measurement(row, "net_duration", "net_duration_s", invalid, MAX_DURATION_S),
         status=_token(row.get("status")),
         logged_at=_timestamp(row.get("created_at")),
         start_source=_token(row.get("start_source")),
@@ -560,7 +575,8 @@ class NanitRestClient:
         missing or fractional one. Rows that lack a uid, type or time, whose
         type is not a short lowercase token, or whose time is not Unix
         seconds, are skipped rather than failing the whole fetch. A negative
-        amount or duration reads as not logged, and is named in the entry's
+        amount or duration, or one above ``MAX_AMOUNT_ML`` or
+        ``MAX_DURATION_S``, reads as not logged, and is named in the entry's
         ``invalid_fields``.
         """
         return list((await self.async_get_calendar_result(access_token, baby_uid, start, end)).logs)

@@ -101,6 +101,8 @@ A few limits to know about:
 
 Like any sensor, these are kept in Home Assistant's history, visible to everyone who can use your Home Assistant, and available to voice assistants you expose them to.
 
+Setup and **Settings → Devices & Services → Nanit → Configure → Care log statistics and notes** offer two choices for care log features still being built. **Import care log statistics** is on by default for a new setup, and **Show notes and who logged each entry** is off. If you set up the integration before these choices existed, both are off until you turn them on. The statistics import and the care log calendar these choices control come in a later update; for now, changing them does nothing else.
+
 ## Read-only mode (optional)
 
 Turn on **Read-only mode** during setup, or later under **Settings → Devices & Services → Nanit → Configure → Read-only mode**, if Home Assistant should only *watch*. It gives Home Assistant no control over device settings:

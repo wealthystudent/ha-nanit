@@ -75,6 +75,12 @@ DEFAULT_LOCAL_STREAM_PORT = 1935
 # Stills from the live stream when the cloud snapshot fails (off by default).
 CONF_STREAM_STILLS = "stream_stills"
 
+# Care log privacy choices. A new sign-in stores both explicitly (import on,
+# notes off); an entry from before they existed has neither key, so both read
+# as off until the user turns them on.
+CONF_IMPORT_CARE_LOG_STATISTICS = "import_care_log_statistics"
+CONF_SHOW_CARE_LOG_NOTES = "show_care_log_notes"
+
 
 def is_read_only(entry: ConfigEntry) -> bool:
     """Return whether the entry is in read-only mode (no device control at all)."""
@@ -84,6 +90,16 @@ def is_read_only(entry: ConfigEntry) -> bool:
 def is_stream_stills(entry: ConfigEntry) -> bool:
     """Return whether camera stills may be taken from the live stream."""
     return entry.options.get(CONF_STREAM_STILLS, False) is True
+
+
+def is_import_care_log_statistics(entry: ConfigEntry) -> bool:
+    """Return whether care log totals may be imported into long-term statistics."""
+    return entry.options.get(CONF_IMPORT_CARE_LOG_STATISTICS, False) is True
+
+
+def is_show_care_log_notes(entry: ConfigEntry) -> bool:
+    """Return whether care log notes and who logged each entry may be shown."""
+    return entry.options.get(CONF_SHOW_CARE_LOG_NOTES, False) is True
 
 
 def uses_external_go2rtc(hass: HomeAssistant) -> bool:

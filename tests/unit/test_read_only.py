@@ -278,7 +278,12 @@ async def test_read_only_setup_keeps_the_power_sensor(
 
 
 def test_read_only_platforms_cannot_control_a_device() -> None:
-    assert set(READ_ONLY_PLATFORMS) == {Platform.SENSOR, Platform.BINARY_SENSOR, Platform.CAMERA}
+    assert set(READ_ONLY_PLATFORMS) == {
+        Platform.SENSOR,
+        Platform.BINARY_SENSOR,
+        Platform.CAMERA,
+        Platform.CALENDAR,
+    }
     assert set(READ_ONLY_PLATFORMS) < set(PLATFORMS)
 
 

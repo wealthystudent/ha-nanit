@@ -518,7 +518,7 @@ async def test_half_open_range_and_boundaries(
 
     assert [(e.start, e.end) for e in events] == [
         (start - timedelta(minutes=10), start - timedelta(minutes=10) + timedelta(seconds=601)),
-        (start, start),
+        (start, start + timedelta(minutes=1)),
     ]
     assert await hass.config_entries.async_unload(entry.entry_id)
 
@@ -629,8 +629,8 @@ async def _day(
         (
             METRIC_SYSTEM,
             [
-                ("Diaper, mixed", None, 0),
-                ("Bottle, 30 mL", "Logged at 2026-11-20 08:20", 0),
+                ("Diaper, mixed", None, 60),
+                ("Bottle, 30 mL", "Logged at 2026-11-20 08:20", 60),
                 ("Nursing, 15 min", "Left side: 10 min\nRight side: 5 min", 900),
                 (
                     "Pumping, 30 mL",
@@ -642,8 +642,8 @@ async def _day(
         (
             US_CUSTOMARY_SYSTEM,
             [
-                ("Diaper, mixed", None, 0),
-                ("Bottle, 1.01 fl oz", "Logged at 2026-11-20 08:20", 0),
+                ("Diaper, mixed", None, 60),
+                ("Bottle, 1.01 fl oz", "Logged at 2026-11-20 08:20", 60),
                 ("Nursing, 15 min", "Left side: 10 min\nRight side: 5 min", 900),
                 (
                     "Pumping, 1.01 fl oz",
@@ -810,13 +810,13 @@ async def test_absent_and_invalid_measurements_are_left_out(
     events = await _day(hass, client, fake)
 
     assert [(e.summary, e.description, e.end - e.start) for e in events] == [
-        ("Bottle", None, timedelta(0)),
-        ("Bottle", None, timedelta(0)),
+        ("Bottle", None, timedelta(minutes=1)),
+        ("Bottle", None, timedelta(minutes=1)),
         ("Nursing, 2 min", "Right side: 2 min", timedelta(minutes=2)),
-        ("Nursing", None, timedelta(0)),
-        ("Pumping, 15.5 mL", "Left side: 15.5 mL", timedelta(0)),
-        ("Pumping", None, timedelta(0)),
-        ("Diaper", None, timedelta(0)),
+        ("Nursing", None, timedelta(minutes=1)),
+        ("Pumping, 15.5 mL", "Left side: 15.5 mL", timedelta(minutes=1)),
+        ("Pumping", None, timedelta(minutes=1)),
+        ("Diaper", None, timedelta(minutes=1)),
     ]
 
 
@@ -843,7 +843,7 @@ async def test_an_unknown_kind_is_shown_generically_and_sleep_is_skipped(
 
     assert [(e.summary, e.description, e.end - e.start) for e in events] == [
         ("Solid food", "Duration: 5 min", timedelta(minutes=5)),
-        ("Medicine", None, timedelta(0)),
+        ("Medicine", None, timedelta(minutes=1)),
     ]
 
 
@@ -861,7 +861,7 @@ async def test_an_unusable_length_falls_back_to_a_moment(
     events = await _day(hass, client, fake)
 
     assert len(events) == 4
-    assert all(e.end == e.start for e in events)
+    assert all(e.end - e.start == timedelta(minutes=1) for e in events)
 
 
 async def test_clocks_going_back_fall_back_to_a_moment_and_keep_the_rest(
@@ -886,8 +886,139 @@ async def test_clocks_going_back_fall_back_to_a_moment_and_keep_the_rest(
     assert _summaries(events) == ["Nursing, 20 min", "Diaper", "Nursing, 10 min"]
     first, diaper, second = events
     assert first.start == first.end == dt_util.as_local(across)
-    assert diaper.start == diaper.end
+    assert diaper.end - diaper.start == timedelta(minutes=1)
     assert second.end - second.start == timedelta(minutes=10)
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+def _local_day() -> tuple[datetime, datetime]:
+    """20 November 2026 in Home Assistant's time zone, read when the test runs."""
+    return _local("2026-11-20T00:00:00"), _local("2026-11-21T00:00:00")
+
+
+async def _moments(
+    hass: HomeAssistant,
+    client: Any,
+    times: list[datetime],
+    start: datetime,
+    end: datetime,
+    kinds: tuple[str, ...] = ("diaper_change", "bottle_feed", "medicine"),
+) -> list[Any]:
+    """The events of one moment of each kind at each time, in [start, end)."""
+    fake = FakeNanit()
+    for index, at in enumerate(times):
+        for kind in kinds:
+            fake.add(_log(f"{kind}_{index}", kind, at))
+    entry, calendar = await _one_calendar(hass, client, fake)
+    events = await _events(hass, calendar, start, end)
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    return events
+
+
+def _spans(events: list[Any]) -> set[tuple[datetime, datetime]]:
+    return {(dt_util.as_utc(e.start), dt_util.as_utc(e.end)) for e in events}
+
+
+async def test_a_moment_lasts_one_minute(
+    hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory
+) -> None:
+    """A diaper change, a bottle and any other kind without a length alike."""
+    freezer.move_to(NOW)
+    at = _local("2026-11-20T14:00:00")
+
+    events = await _moments(hass, client, [at], *_local_day())
+
+    assert len(events) == 3
+    assert {(e.start, e.end) for e in events} == {(at, _local("2026-11-20T14:01:00"))}
+
+
+@pytest.mark.parametrize(
+    ("moment", "length"),
+    [("2026-11-20T23:59:30", timedelta(seconds=30)), ("2026-11-20T23:59:59", timedelta(seconds=1))],
+)
+async def test_a_moment_just_before_midnight_ends_at_midnight(
+    hass: HomeAssistant,
+    client: Any,
+    freezer: FrozenDateTimeFactory,
+    moment: str,
+    length: timedelta,
+) -> None:
+    freezer.move_to(NOW)
+    at = _local(moment)
+    start, end = _local_day()
+
+    events = await _moments(hass, client, [at], start, end)
+
+    assert len(events) == 3
+    assert {(e.start, e.end) for e in events} == {(at, end)}
+    assert all(e.end - e.start == length for e in events)
+
+
+@pytest.mark.parametrize(
+    ("day", "next_day"),
+    [("2026-03-08", "2026-03-09"), ("2026-11-01", "2026-11-02")],
+    ids=["clocks_forward", "clocks_back"],
+)
+async def test_moments_on_a_day_the_clocks_change(
+    hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory, day: str, next_day: str
+) -> None:
+    """US/Pacific: 8 March has 23 hours, 1 November 25."""
+    freezer.move_to(NOW)
+    start, end = _local(f"{day}T00:00:00"), _local(f"{next_day}T00:00:00")
+    before_change = _local(f"{day}T00:59:30")
+    late = _local(f"{day}T23:59:30")
+
+    events = await _moments(hass, client, [before_change, late], start, end, kinds=("bottle_feed",))
+
+    utc = dt_util.as_utc
+    assert _spans(events) == {
+        (utc(before_change), utc(before_change) + timedelta(minutes=1)),
+        (utc(late), utc(end)),
+    }
+    assert utc(end) - utc(late) == timedelta(seconds=30)
+
+
+async def test_moments_in_a_time_zone_offset_by_30_minutes(
+    hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory
+) -> None:
+    """Asia/Kolkata (UTC+05:30): midnight there falls at half past a UTC hour."""
+    await hass.config.async_set_time_zone("Asia/Kolkata")
+    freezer.move_to(NOW)
+    start, end = _local("2026-11-20T00:00:00"), _local("2026-11-21T00:00:00")
+    assert dt_util.as_utc(end) == datetime.fromisoformat("2026-11-20T18:30:00+00:00")
+    afternoon = _local("2026-11-20T14:00:00")
+    late = _local("2026-11-20T23:59:30")
+
+    events = await _moments(hass, client, [afternoon, late], start, end, kinds=("diaper_change",))
+
+    assert {(e.start, e.end) for e in events} == {
+        (afternoon, afternoon + timedelta(minutes=1)),
+        (late, end),
+    }
+    assert all(e.start.utcoffset() == timedelta(hours=5, minutes=30) for e in events)
+
+
+async def test_a_range_takes_a_moment_by_its_start_as_before(
+    hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory
+) -> None:
+    """The nominal minute changes no range: at the start is in, at the end is out."""
+    freezer.move_to(NOW)
+    start, end = _local("2026-11-20T12:00:00"), _local("2026-11-20T13:00:00")
+    fake = FakeNanit()
+    fake.add(_log("at_start", "diaper_change", start))
+    # Its minute runs into the range, but it happened before it.
+    fake.add(_log("just_before", "diaper_change", start - timedelta(seconds=30)))
+    # Its minute runs past the end, but it happened inside.
+    fake.add(_log("just_inside", "bottle_feed", end - timedelta(seconds=30)))
+    fake.add(_log("at_end", "diaper_change", end))
+    entry, calendar = await _one_calendar(hass, client, fake)
+
+    events = await _events(hass, calendar, start, end)
+
+    assert [(e.start, e.end) for e in events] == [
+        (start, start + timedelta(minutes=1)),
+        (end - timedelta(seconds=30), end + timedelta(seconds=30)),
+    ]
     assert await hass.config_entries.async_unload(entry.entry_id)
 
 

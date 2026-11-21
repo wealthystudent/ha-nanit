@@ -53,9 +53,11 @@ PARALLEL_UPDATES = 0
 # Sleep entries are not shown yet: these kinds are skipped entirely.
 CARE_LOG_SLEEP_KINDS = frozenset({"sleep", "auto_sleep", "semi_auto_sleep"})
 
-# How long an entry without a usable length is shown for. Zero shows it as
-# a moment; a nominal minute would be timedelta(minutes=1).
-CARE_LOG_MOMENT_LENGTH = timedelta(0)
+# How long an entry without a usable length (a moment) is shown for, cut
+# short at the next local midnight so it never reaches into the next day.
+# Home Assistant's calendar view draws an event of zero length an hour long,
+# so a moment late in the evening would reach into the next day.
+CARE_LOG_MOMENT_LENGTH = timedelta(minutes=1)
 
 # Nanit matches a range by an entry's start only, so every request reaches
 # this far back to catch an entry that started before the range and runs
@@ -342,28 +344,46 @@ def _moment(timestamp: float | None) -> datetime | None:
         return None
 
 
-def _span(log: CareLog) -> tuple[datetime, datetime] | None:
-    """Return when the entry starts and ends (UTC), or None when its start is unusable."""
+def _moment_end(start: datetime) -> datetime:
+    """Return where a moment's nominal length ends: a minute on, or the next local midnight.
+
+    Midnight is in Home Assistant's time zone, so the moment never reaches
+    into the next day; its length is more than zero and at most a minute.
+    """
+    end = start + CARE_LOG_MOMENT_LENGTH
+    midnight = dt_util.start_of_local_day(dt_util.as_local(start).date() + timedelta(days=1))
+    if start < midnight < end:
+        return midnight
+    return end
+
+
+def _span(log: CareLog) -> tuple[datetime, datetime, bool] | None:
+    """Return when the entry starts and ends (UTC) and whether it is a moment.
+
+    None when its start is unusable.
+    """
     start = _moment(log.timestamp)
     if start is None:
         return None
     seconds = _length(log)
     try:
-        end = start + (
-            timedelta(seconds=seconds) if seconds is not None else CARE_LOG_MOMENT_LENGTH
-        )
+        if seconds is None:
+            return start, _moment_end(start), True
+        return start, start + timedelta(seconds=seconds), False
     except OverflowError:
-        end = start
-    return start, end
+        return start, start, True
 
 
-def _overlaps(start: datetime, end: datetime, range_start: datetime, range_end: datetime) -> bool:
+def _overlaps(
+    start: datetime, end: datetime, moment: bool, range_start: datetime, range_end: datetime
+) -> bool:
     """Return whether an event falls in the half-open range [range_start, range_end).
 
-    A moment counts when it is at or after the start and before the end; an
-    interval counts when any part of it lies inside.
+    A moment counts when it starts at or after the start and before the end,
+    whatever its nominal length; an interval counts when any part of it lies
+    inside.
     """
-    if end <= start:
+    if moment or end <= start:
         return range_start <= start < range_end
     return start < range_end and end > range_start
 
@@ -500,8 +520,8 @@ class NanitCareLogCalendar(CoordinatorEntity[NanitCareLogCoordinator], CalendarE
         for row in rows:
             if (span := _span(row.log)) is None:
                 continue
-            start, end = span
-            if not _overlaps(start, end, start_date, end_date):
+            start, end, moment = span
+            if not _overlaps(start, end, moment, start_date, end_date):
                 continue
             event = _event(
                 start, end, formatter.summary(row.log), formatter.description(row, show_notes)

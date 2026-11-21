@@ -108,7 +108,7 @@ Setup and **Settings → Devices & Services → Nanit → Configure → Care log
 Each baby gets a read-only **Care log** calendar, on the camera's device (a baby without a camera gets one of its own, named after the baby). It shows the diaper changes, bottles, nursing and pumping sessions logged in the app, and any other kind of entry by its name. Sleep entries are not shown yet.
 
 - Each event's title is the kind and its main number, such as "Bottle, 30 mL" or "Nursing, 15 min". Volumes follow your unit system. The description has the rest: each side's minutes or amounts, and when the entry was logged.
-- Nursing runs for both sides' minutes together and pumping for its duration. A diaper change, a bottle, or an entry without a length is shown at the moment it happened.
+- Nursing runs for both sides' minutes together and pumping for its duration. A diaper change, a bottle, or an entry without a length is shown as a one-minute event from the moment it happened, cut short at midnight so it stays on its day. A range includes it when it happened inside the range.
 - Entries are fetched from Nanit when the calendar is opened or asked for a range, and kept in memory for up to 5 minutes. Nothing is stored. An open calendar view refreshes with the 5-minute Care Logs poll. If Nanit can't be reached, the calendar shows an error for that range.
 - Nanit finds entries by when they started, so the calendar also asks for the 24 hours before the range, to catch a session that began earlier. A session that began more than 24 hours earlier can be missed.
 - The calendar never has a current event: its state is always off, so nothing from an entry reaches Home Assistant's history that way.

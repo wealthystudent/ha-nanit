@@ -156,8 +156,9 @@ git push --force-with-lease
 
 The force-push needs a fresh approval before the PR can merge.
 
-If the branch has merge commits and the rebase stops on a conflict, run
-`git rebase --abort` and squash it into one signed commit instead with
+If the branch has merge commits, don't rebase: the rebase drops them, and
+with them any change made in a merge, without stopping. Squash the branch into
+one signed commit instead with
 `git reset --soft "$(git merge-base HEAD origin/main)"` and `git commit -S`.
 
 Agents use whatever signing the host has configured, and never change it. On a

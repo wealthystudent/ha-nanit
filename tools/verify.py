@@ -166,7 +166,9 @@ def sign_fix(base_ref: str) -> str:
     return (
         f"Set up signing ({SIGNING_DOCS}), then sign them in place and force-push:\n"
         f'  git rebase --force-rebase --gpg-sign "$(git merge-base HEAD {base_ref})"\n'
-        "  git push --force-with-lease"
+        "  git push --force-with-lease\n"
+        "If the branch has merge commits, the rebase drops them, so squash instead:\n"
+        f'  git reset --soft "$(git merge-base HEAD {base_ref})" && git commit -S'
     )
 
 

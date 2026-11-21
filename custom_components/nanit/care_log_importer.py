@@ -17,6 +17,11 @@ written until a second pass of the same bounds, at least the book's minimum
 gap later, agrees with it (at most ``MAX_STARTUP_PASSES`` passes, then it
 waits for the next daily pass).
 
+The comparison and every sync are given the start of the history the
+ledger was built from (``care_log_history_start``, as the last pass used
+it), and leave every stored row before it alone: the ledger knows nothing
+of them, so nothing there is lowered, whatever moved the start.
+
 Running, each reader read goes through ``CareLogBook.process`` and an
 incremental sync follows. A change that lowers a chart waits for the book's
 confirm request, which the importer reads itself. Once a day the history is
@@ -249,6 +254,9 @@ class CareLogStatisticsImporter:
         # Running.
         self._newest_read_at: datetime | None = None
         self._reader_start: int | None = None
+        # The start of the history the ledger was built from: the recorder
+        # functions never touch rows before it.
+        self._coverage_start: int | None = None
         self._piece_bounds: set[Bounds] = set()
         self._dirty: dict[CareLogSeries, int] = {}
         self._need_full = False
@@ -544,7 +552,11 @@ class CareLogStatisticsImporter:
 
         candidate: Ledger = await self._hass.async_add_executor_job(self._book.candidate, reads)
         comparison = await async_compare_care_log_statistics(
-            self._hass, code=self._code, ledger=candidate, end_hour=self._end_hour()
+            self._hass,
+            code=self._code,
+            ledger=candidate,
+            end_hour=self._end_hour(),
+            coverage_start=reads[0].start,
         )
         del candidate
         if comparison.lowering_cells == 0:
@@ -593,6 +605,7 @@ class CareLogStatisticsImporter:
         self._startup_due = None
         self._newest_read_at = max(read.read_at for read in reads)
         self._reader_start = reads[-1].start
+        self._coverage_start = reads[0].start
         self._piece_bounds = {(read.start, read.end) for read in reads[:-1]}
         self._dirty.clear()
         self._need_full = True
@@ -702,6 +715,8 @@ class CareLogStatisticsImporter:
             self._process(read)
             self._process_reader_queue()
         self._note_connection_success()
+        # The history this pass read: from now on the rows the ledger covers.
+        self._coverage_start = min(history_start, reader_start)
         now = dt_util.utcnow()
         self._passes_completed += 1
         self._last_history_at = now
@@ -728,6 +743,8 @@ class CareLogStatisticsImporter:
             self._hass, statistic_baby_name(self._baby.name, self._code)
         )
         changed_from = None if self._need_full else dict(self._dirty)
+        coverage_start = self._coverage_start
+        assert coverage_start is not None  # set when the ledger was adopted
         try:
             report = await async_sync_care_log_statistics(
                 self._hass,
@@ -735,6 +752,7 @@ class CareLogStatisticsImporter:
                 names=names,
                 ledger=self._book.ledger,
                 end_hour=self._end_hour(),
+                coverage_start=coverage_start,
                 changed_from=changed_from,
                 should_stop=self._should_stop,
             )

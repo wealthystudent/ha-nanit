@@ -204,7 +204,13 @@ async def test_the_cost_of_the_writer(recorder_mock: Recorder, hass: HomeAssista
         probe.start()
         began = time.perf_counter()
         report = await async_sync_care_log_statistics(
-            hass, code=code, names=names, ledger=book.ledger, end_hour=end_hour, **kwargs
+            hass,
+            code=code,
+            names=names,
+            ledger=book.ledger,
+            end_hour=end_hour,
+            coverage_start=read_start,
+            **kwargs,
         )
         took = time.perf_counter() - began
         return report, took, await probe.stop()

@@ -139,7 +139,7 @@ Corrections:
 - A new entry, or a raised amount, is written as soon as the integration reads it: within about 5 minutes for an entry dated in the last 24 hours, and at the next read of the whole history for an older one.
 - Anything that would lower a number (a deleted entry, a smaller amount, an entry moved to another time, a changed diaper type) is written only after a second read from Nanit, at least 5 minutes later, agrees.
 - Nanit doesn't say when an entry was deleted, only that it is no longer there. So there is a small chance that a deleted entry lingers, or that an entry Nanit leaves out of two reads in a row is dropped until Nanit returns it again.
-- The whole history is read again once a day and after every restart or reload, with one request per 90 days of history. It starts a year before the baby's birth date or the date the baby was added to Nanit, whichever is earlier (three years back when Nanit gives neither).
+- The whole history is read again once a day and after every restart or reload, with one request per 90 days of history. It starts a year before the baby's birth date or the date the baby was added to Nanit, whichever is earlier (three years back when Nanit gives neither). Rows older than the history read are left as they are.
 - An amount or time Nanit sends but that can't be used leaves that hour's volume or time as it was. The entry still counts.
 
 What it costs, measured with made-up history:

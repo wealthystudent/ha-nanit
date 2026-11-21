@@ -294,6 +294,22 @@ async def _stored(hass: HomeAssistant, series: CareLogSeries) -> dict[int, float
     return {int(row["start"]): row["state"] for row in found.get(sid, [])}
 
 
+async def _rows(hass: HomeAssistant, series: CareLogSeries) -> dict[int, tuple[float, float]]:
+    """Stored (state, sum) by hour."""
+    sid = statistic_id(CODE, series)
+    found = await get_instance(hass).async_add_executor_job(
+        statistics_during_period,
+        hass,
+        FAR_PAST,
+        FAR_FUTURE,
+        {sid},
+        "hour",
+        None,
+        {"state", "sum"},
+    )
+    return {int(row["start"]): (row["state"], row["sum"]) for row in found.get(sid, [])}
+
+
 def _end_hour() -> int:
     return hour_start(dt_util.utcnow().timestamp())
 
@@ -583,6 +599,67 @@ async def test_stopping_during_a_long_first_import_returns_promptly_and_a_new_im
     await again.poll()
     assert again.diag()["state"] == "running"
     assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(OLD)] == 90.0
+
+
+# ---------------------------------------------------------------------------
+# History coverage
+# ---------------------------------------------------------------------------
+
+
+async def test_a_row_before_a_later_history_start_survives_a_restart_whose_passes_agree(
+    make: Callable[..., Harness], hass: HomeAssistant
+) -> None:
+    early = _bottle("b_early", datetime(2025, 7, 15, 9, 30, tzinfo=UTC), 80.0)
+    truth = Truth([*BASE, early])
+    first = await _imported(make, truth)
+    await first.stop()
+    volume = await _rows(hass, S.BOTTLE_VOLUME)
+    assert volume[_hour(early)] == (80.0, 80.0)
+    # The baby record now gives a later birth date: the history starts after
+    # the early bottle. A deletion makes the restart need two passes.
+    later = Baby(uid=UID, name="Nursery", camera_uid="cam_1", birth_date=date(2026, 9, 1))
+    assert care_log_history_start(later, NOW) > early.timestamp
+    truth.delete(D2.uid)
+
+    second = make(truth, baby=later)
+    second.start()
+    await second.poll()
+    assert second.diag()["state"] == "waiting_for_second_pass"
+    await second.advance(MIN_GAP)
+
+    assert second.diag()["state"] == "running"
+    assert second.diag()["passes_completed"] == 2
+    assert await _rows(hass, S.BOTTLE_VOLUME) == volume
+    assert (await _stored(hass, S.DIAPER_PEE))[_hour(D2)] == 0.0
+
+
+async def test_the_fallback_history_start_moving_on_by_a_piece_erases_nothing(
+    make: Callable[..., Harness], hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    undated = Baby(uid=UID, name="Nursery", camera_uid="cam_1")
+    start = care_log_history_start(undated, NOW)
+    edge = _bottle("b_edge", datetime.fromtimestamp(start, UTC) + timedelta(days=2), 70.0)
+    truth = Truth([*BASE, edge])
+    first = make(truth, baby=undated)
+    first.start()
+    await first.poll()
+    assert first.diag()["state"] == "running"
+    await first.stop()
+    before = await _rows(hass, S.BOTTLE_VOLUME)
+    assert before[_hour(edge)] == (70.0, 70.0)
+
+    freezer.tick(HISTORY_PIECE)
+    assert care_log_history_start(undated, dt_util.utcnow()) == start + PIECE
+    second = make(truth, baby=undated)
+    second.start()
+    await second.poll()
+    await second.advance(MIN_GAP)
+
+    assert second.diag()["state"] == "running"
+    after = await _rows(hass, S.BOTTLE_VOLUME)
+    assert {hour: after[hour] for hour in before} == before
+    assert after[_end_hour() - H] == (0.0, 280.0)
+    assert max(after) == _end_hour() - H
 
 
 # ---------------------------------------------------------------------------

@@ -260,6 +260,8 @@ def _merge_earliest(into: dict[CareLogSeries, int], other: Mapping[CareLogSeries
 type _Record = tuple[float, int, int, int, *tuple[float, ...]]
 
 _SERIES: tuple[CareLogSeries, ...] = tuple(sorted(CareLogSeries, key=lambda series: series.value))
+# An hour later than any entry's: the open end of a search.
+_NO_END = 2**62
 _BITS: Mapping[CareLogSeries, int] = {series: 1 << index for index, series in enumerate(_SERIES)}
 
 
@@ -403,6 +405,25 @@ class Ledger:
                 _note_first(first, record)
             self._first = first
         return self._first.get(series)
+
+    def first_hour_from(self, series: CareLogSeries, start_hour: int) -> int | None:
+        """Return the earliest hour at or after ``start_hour`` with a positive amount of a series.
+
+        The cached first hour answers it unless it is earlier; only then are
+        the hours from ``start_hour`` on searched, oldest first.
+        """
+        first = self.first_hour(series)
+        if first is None or first >= start_hour:
+            return first
+        entries = self._entries
+        bit = _BITS[series]
+        below = bit - 1
+        for hour in self._hours_within(start_hour, _NO_END):
+            for uid in self._by_hour[hour]:
+                record = entries[uid]
+                if record[2] & bit and record[4 + (record[2] & below).bit_count()] > 0:
+                    return hour
+        return None
 
     def amounts(self, start_hour: int, end_hour: int) -> HourlyAmounts:
         """Return every series' amounts in ``[start_hour, end_hour)``, like ``hourly_amounts``."""

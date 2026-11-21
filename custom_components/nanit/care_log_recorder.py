@@ -8,18 +8,27 @@ ledger changed or an hour finished.
 
 The rows of a series, for one baby:
 
+- Only hours the ledger's history covers are compared or written. The
+  caller gives ``coverage_start``, the start of the history the ledger was
+  built from; rounded up to an hour it is the coverage hour. Rows before
+  it (the prefix) are never written, and never counted as lowering,
+  raising or missing: the ledger knows nothing about them, so an entry
+  that only they hold is not treated as deleted.
 - They start at the series' first hour: the earlier of the ledger's first
-  hour for it and the first row already stored. Rows already stored keep
-  the start where it was, so a deleted first entry leaves a first row of 0;
-  an entry backdated before the first row moves the start back. A series
-  with no entry and no stored row gets no statistic at all.
+  hour for it and the first row already stored, both at or after the
+  coverage hour. Rows already stored keep the start where it was, so a
+  deleted first entry leaves a first row of 0; an entry backdated before
+  the first row moves the start back. A series with no entry and no stored
+  row gets no statistic at all.
 - They are dense from there up to, not including, ``end_hour`` (the hour in
   progress): a row for every hour, 0 for an hour with nothing. Rows at or
   after ``end_hour`` are never read or written.
 - Each row's ``state`` is the ledger's amount for the hour and its ``sum``
-  the running total from the series' first row, with one exception: in a
-  keep cell (an hour holding a rejected amount, ``Ledger.keep_hours``) a
-  stored ``state`` is kept as it is, and the running total uses it.
+  the running total, with one exception: in a keep cell (an hour holding a
+  rejected amount, ``Ledger.keep_hours``) a stored ``state`` is kept as it
+  is, and the running total uses it. The running total continues from the
+  ``sum`` of the latest stored row before the series' first hour, wherever
+  that row is (0 when there is none), so a prefix keeps its totals.
 
 A sync compares stored rows with these targets, a chunk of at most
 ``CHUNK_HOURS`` hours at a time, and sends only the rows that differ by
@@ -35,9 +44,17 @@ Finding a series' first stored row: Home Assistant has no public query for
 it. The rows are dense, and a series' stored rows are written oldest first
 (every batch starts where the one before ended), so the first stored row is
 found by reading back from the ledger's first hour (or from the last stored
-row, whichever is earlier) one chunk at a time until a chunk holds no row.
-In the usual case, nothing stored before the ledger's first hour, that is a
-single read of an empty chunk. All of it runs in one executor job.
+row, whichever is earlier) one chunk at a time until a chunk holds no row,
+never below the coverage hour. In the usual case, nothing stored before the
+ledger's first hour, that is a single read of an empty chunk. All of it
+runs in one executor job.
+
+Finding the total to continue from: the ``sum`` of the latest stored row
+before a series' first hour comes from Home Assistant's public
+``statistic_during_period`` with no start and the first hour as its end,
+asking only for ``change``: that is the newest stored ``sum`` before the
+end minus 0, one query that orders by time and reads one row, in the
+recorder's executor. The prefix itself is never loaded.
 
 Event loop and memory: every database read, and turning its rows into plain
 values, runs in the recorder's executor. On the loop, one chunk is compared
@@ -61,6 +78,7 @@ from homeassistant.components.recorder.models import StatisticData, StatisticMet
 from homeassistant.components.recorder.statistics import (
     async_add_external_statistics,
     get_last_statistics,
+    statistic_during_period,
     statistics_during_period,
 )
 from homeassistant.components.recorder.util import get_instance
@@ -136,7 +154,8 @@ class SyncReport:
 class Comparison:
     """How the stored rows of one baby differ from its ledger, numbers only.
 
-    Over every hour from each series' first hour up to ``end_hour``:
+    Over every hour from each series' first hour up to ``end_hour`` (the
+    prefix before the coverage hour is never counted):
     ``lowering_cells`` are stored rows whose state is above the ledger's
     amount (keep cells excepted), ``raising_cells`` stored rows whose state
     is below it (keep cells excepted), ``missing_rows`` hours with no stored
@@ -209,23 +228,42 @@ def _read_last(hass: HomeAssistant, sid: str) -> tuple[int, float | None] | None
     return int(rows[0]["start"]), rows[0].get("sum")
 
 
-def _read_first_before(hass: HomeAssistant, sid: str, before: int) -> tuple[int | None, int]:
+def _read_first_before(
+    hass: HomeAssistant, sid: str, before: int, floor: int
+) -> tuple[int | None, int]:
     """Walk back from ``before`` a chunk at a time; return the earliest row's hour and rows read.
 
-    Stops at the first chunk that holds no row. The hour is None when no
-    row is stored before ``before``.
+    Stops at the first chunk that holds no row, and never reads before
+    ``floor``. The hour is None when no row is stored in ``[floor, before)``.
     """
     earliest: int | None = None
     read = 0
     high = before
     step = CHUNK_HOURS * HOUR_SECONDS
-    while True:
-        rows = _read_rows(hass, sid, high - step, high)
+    while high > floor:
+        rows = _read_rows(hass, sid, max(high - step, floor), high)
         if not rows:
-            return earliest, read
+            break
         read += len(rows)
         earliest = min(rows)
         high -= step
+    return earliest, read
+
+
+def _read_sum_before(hass: HomeAssistant, sid: str, hour: int) -> float | None:
+    """Return the ``sum`` of the newest stored row before ``hour``, or None.
+
+    ``change`` with no start is the newest stored sum before the end, less
+    0: one row, read by time, however many rows lie before it.
+    """
+    found = statistic_during_period(hass, None, _utc(hour), sid, {"change"}, None)
+    change = found.get("change")
+    return None if change is None else float(change)
+
+
+def coverage_hour(coverage_start: int) -> int:
+    """Return the coverage start, in Unix seconds, rounded up to the start of an hour."""
+    return -(-coverage_start // HOUR_SECONDS) * HOUR_SECONDS
 
 
 # ---------------------------------------------------------------------------
@@ -303,21 +341,39 @@ class _Reader:
             self.rows_read += 1
         return last
 
-    async def first_before(self, sid: str, before: int) -> int | None:
-        earliest, read = await self.job(_read_first_before, self.hass, sid, before)
+    async def first_before(self, sid: str, before: int, floor: int) -> int | None:
+        earliest, read = await self.job(_read_first_before, self.hass, sid, before, floor)
         self.rows_read += read
         return earliest
 
+    async def sum_before(self, sid: str, hour: int) -> float:
+        """Return the sum of the newest stored row before ``hour``, or 0 when there is none."""
+        found = await self.job(_read_sum_before, self.hass, sid, hour)
+        if found is None:
+            return 0.0
+        self.rows_read += 1
+        return found
+
     async def series_start(
-        self, sid: str, first: int | None, last: int | None, end: int
-    ) -> int | None:
-        """Return a series' first hour: the earlier of the ledger's and the first stored row."""
-        if last is None:
-            return first
-        before = last + HOUR_SECONDS if first is None else min(first, last + HOUR_SECONDS)
-        stored_first = await self.first_before(sid, min(before, end))
+        self, sid: str, first: int | None, last: int | None, cov: int, end: int
+    ) -> tuple[int, float] | None:
+        """Return a series' first hour and the total it continues from, or None.
+
+        The first hour is the earlier of the ledger's (``first``, at or
+        after ``cov``) and the first stored row at or after ``cov``; the
+        total is the sum of the latest stored row before it. ``last`` is the
+        newest stored row's hour, None when nothing is stored.
+        """
+        stored_first: int | None = None
+        if last is not None and last >= cov:
+            before = last + HOUR_SECONDS if first is None else min(first, last + HOUR_SECONDS)
+            stored_first = await self.first_before(sid, min(before, end), cov)
         candidates = [hour for hour in (first, stored_first) if hour is not None]
-        return min(candidates) if candidates else None
+        if not candidates:
+            return None
+        start = min(candidates)
+        total = 0.0 if last is None else await self.sum_before(sid, start)
+        return start, total
 
 
 class _Sync:
@@ -331,6 +387,7 @@ class _Sync:
         names: Mapping[CareLogSeries, str],
         ledger: Ledger,
         end_hour: int,
+        cov: int,
         should_stop: Callable[[], bool] | None,
     ) -> None:
         self.hass = hass
@@ -338,6 +395,7 @@ class _Sync:
         self.names = names
         self.ledger = ledger
         self.end = end_hour
+        self.cov = cov
         self.should_stop = should_stop
         self.reader = _Reader(hass)
         self.series_examined = 0
@@ -360,12 +418,16 @@ class _Sync:
     async def series(self, series: CareLogSeries, changed_from: int | None, *, full: bool) -> None:
         """Bring one series up to date."""
         sid = statistic_id(self.code, series)
-        first = self.ledger.first_hour(series)
-        if first is not None and first >= self.end:
-            first = None
+        cov = self.cov
+        first = _first_hour(self.ledger, series, cov, self.end)
         last_row = await self.reader.last(sid)
         if last_row is None and first is None:
             return
+        if last_row is not None and last_row[0] < cov:
+            # Every stored row is in the prefix: only the ledger's hours are new.
+            if first is None:
+                return
+            full = True
         self.series_examined += 1
         metadata = statistic_metadata(self.code, series, self.names[series])
         if last_row is None:
@@ -374,18 +436,21 @@ class _Sync:
             return
         last, last_sum = last_row
         if not full and changed_from is not None and changed_from <= last:
-            # A change inside the stored rows: continue from the row before it.
-            before = changed_from - HOUR_SECONDS
-            previous = (await self.reader.rows(sid, before, changed_from)).get(before)
-            if previous is not None and previous[1] is not None:
-                await self._scan(series, metadata, changed_from, previous[1])
-                return
+            # A change inside the stored rows: continue from the row before it,
+            # when that row is covered too.
+            changed = max(changed_from, cov)
+            before = changed - HOUR_SECONDS
+            if before >= cov:
+                previous = (await self.reader.rows(sid, before, changed)).get(before)
+                if previous is not None and previous[1] is not None:
+                    await self._scan(series, metadata, changed, previous[1])
+                    return
             # No row before it: the change is at or before the first stored row.
             full = True
         if full or last_sum is None:
-            start = await self.reader.series_start(sid, first, last, self.end)
-            if start is not None:
-                await self._scan(series, metadata, start, 0.0)
+            found = await self.reader.series_start(sid, first, last, cov, self.end)
+            if found is not None:
+                await self._scan(series, metadata, *found)
             return
         # Nothing changed in the stored rows: append the newly finished hours.
         await self._scan(series, metadata, last + HOUR_SECONDS, last_sum)
@@ -459,6 +524,12 @@ def _check_end(end_hour: int) -> None:
         raise ValueError("end_hour must be the start of a UTC hour")
 
 
+def _first_hour(ledger: Ledger, series: CareLogSeries, cov: int, end: int) -> int | None:
+    """Return the ledger's first hour of a series at or after ``cov``, if before ``end``."""
+    first = ledger.first_hour_from(series, cov)
+    return first if first is not None and first < end else None
+
+
 async def async_sync_care_log_statistics(
     hass: HomeAssistant,
     *,
@@ -466,10 +537,15 @@ async def async_sync_care_log_statistics(
     names: Mapping[CareLogSeries, str],
     ledger: Ledger,
     end_hour: int,
+    coverage_start: int,
     changed_from: Mapping[CareLogSeries, int] | None = None,
     should_stop: Callable[[], bool] | None = None,
 ) -> SyncReport:
     """Make one baby's stored statistics equal its ledger, for the hours before ``end_hour``.
+
+    ``coverage_start`` (Unix seconds) is the start of the history the
+    ledger was built from: nothing before it, rounded up to an hour, is
+    read to compare or written (see the module docstring).
 
     With ``changed_from`` None, a full sync: every series is compared from
     its first row. With ``changed_from`` given, an incremental sync: only the
@@ -493,7 +569,13 @@ async def async_sync_care_log_statistics(
     for series in CareLogSeries:
         statistic_id(code, series)  # Raises for anything but a baby code.
     sync = _Sync(
-        hass, code=code, names=names, ledger=ledger, end_hour=end_hour, should_stop=should_stop
+        hass,
+        code=code,
+        names=names,
+        ledger=ledger,
+        end_hour=end_hour,
+        cov=coverage_hour(coverage_start),
+        should_stop=should_stop,
     )
     full = changed_from is None
     changed = {series: hour_start(hour) for series, hour in (changed_from or {}).items()}
@@ -518,29 +600,31 @@ async def async_sync_care_log_statistics(
 
 
 async def async_compare_care_log_statistics(
-    hass: HomeAssistant, *, code: str, ledger: Ledger, end_hour: int
+    hass: HomeAssistant, *, code: str, ledger: Ledger, end_hour: int, coverage_start: int
 ) -> Comparison:
-    """Compare every stored row of one baby with its ledger, without writing.
+    """Compare every covered stored row of one baby with its ledger, without writing.
+
+    ``coverage_start`` is as for ``async_sync_care_log_statistics``: rows
+    before it, rounded up to an hour, are not compared.
 
     Raises ``CareLogRecorderUnavailableError`` when the recorder is not ready.
     """
     _check_end(end_hour)
     _require_ready(hass)
+    cov = coverage_hour(coverage_start)
     reader = _Reader(hass)
     lowering = raising = missing = to_write = 0
     step = CHUNK_HOURS * HOUR_SECONDS
     for series in CareLogSeries:
         sid = statistic_id(code, series)
-        first = ledger.first_hour(series)
-        if first is not None and first >= end_hour:
-            first = None
+        first = _first_hour(ledger, series, cov, end_hour)
         last_row = await reader.last(sid)
-        start = await reader.series_start(
-            sid, first, None if last_row is None else last_row[0], end_hour
+        found = await reader.series_start(
+            sid, first, None if last_row is None else last_row[0], cov, end_hour
         )
-        if start is None:
+        if found is None:
             continue
-        total = 0.0
+        start, total = found
         for low in range(start, end_hour, step):
             high = min(low + step, end_hour)
             stored = await reader.rows(sid, low, high)

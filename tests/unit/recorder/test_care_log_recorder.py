@@ -206,6 +206,7 @@ async def _sync(
     changed_from: dict[CareLogSeries, int] | None = None,
     should_stop: Callable[[], bool] | None = None,
     code: str = CODE,
+    coverage: int = READ_START,
 ) -> SyncReport:
     return await async_sync_care_log_statistics(
         hass,
@@ -213,13 +214,18 @@ async def _sync(
         names=NAMES,
         ledger=ledger,
         end_hour=end,
+        coverage_start=coverage,
         changed_from=changed_from,
         should_stop=should_stop,
     )
 
 
-async def _compare(hass: HomeAssistant, ledger: Ledger, *, end: int = END) -> Comparison:
-    return await async_compare_care_log_statistics(hass, code=CODE, ledger=ledger, end_hour=end)
+async def _compare(
+    hass: HomeAssistant, ledger: Ledger, *, end: int = END, coverage: int = READ_START
+) -> Comparison:
+    return await async_compare_care_log_statistics(
+        hass, code=CODE, ledger=ledger, end_hour=end, coverage_start=coverage
+    )
 
 
 Sent = list[tuple[str, list[tuple[int, float, float]]]]
@@ -550,6 +556,88 @@ async def test_a_diaper_type_change_lowers_one_series_and_raises_another(
     assert pee[_h(TUE, 15)] == (0.0, 1.0)
     assert poo[_h(TUE, 15)] == (1.0, 2.0)
     await _assert_matches(hass, book.ledger, STARTS)
+
+
+# ---------------------------------------------------------------------------
+# History coverage
+# ---------------------------------------------------------------------------
+
+
+async def test_rows_before_the_coverage_hour_are_never_compared_or_written_and_totals_continue(
+    recorder_mock: Recorder, hass: HomeAssistant, sent: Sent
+) -> None:
+    await _imported(hass)
+    before = {series: await _stored(hass, series) for series in STARTS}
+    sent.clear()
+    # A history that starts half an hour before Tuesday: Monday's entries are
+    # not in it, and the coverage hour is Tuesday 00:00.
+    coverage = int(TUE.timestamp()) - 1800
+    late = _bottle("b9", _at(TUE, 3, 5), 50.0)
+    book = _Book([D2, D3, N1, B2, late], start=coverage)
+
+    comparison = await _compare(hass, book.ledger, coverage=coverage)
+    assert (comparison.lowering_cells, comparison.raising_cells) == (0, 2)
+    assert comparison.missing_rows == 0
+
+    await _sync(hass, book.ledger, coverage=coverage)
+
+    assert min(hour for _sid, rows in sent for hour, _s, _t in rows) == _h(TUE, 3)
+    volume = await _stored(hass, S.BOTTLE_VOLUME)
+    assert [row for row in volume if row[0] < _h(TUE, 0)] == [
+        row for row in before[S.BOTTLE_VOLUME] if row[0] < _h(TUE, 0)
+    ]
+    by_hour = {hour: (state, total) for hour, state, total in volume}
+    assert by_hour[_h(TUE, 2)] == (0.0, 180.0)
+    assert by_hour[_h(TUE, 3)] == (50.0, 230.0)
+    assert by_hour[END - H] == (0.0, 350.0)
+    feeds = {hour: (state, total) for hour, state, total in await _stored(hass, S.BOTTLE_FEEDS)}
+    assert feeds[_h(TUE, 3)] == (1.0, 3.0)
+    assert feeds[END - H] == (0.0, 4.0)
+    for series in (S.DIAPER_CHANGES, S.DIAPER_PEE):
+        assert await _stored(hass, series) == before[series]
+    sent.clear()
+    assert (await _sync(hass, book.ledger, coverage=coverage)).rows_written == 0
+    assert sent == []
+
+    # A change after the coverage hour continues the totals too.
+    changed = book.update([D2, D3, N1, B2, late, _bottle("b8", _at(WED, 1), 30.0)])
+    await _sync(hass, book.ledger, changed_from=changed, coverage=coverage)
+    by_hour = {hour: (s, t) for hour, s, t in await _stored(hass, S.BOTTLE_VOLUME)}
+    assert by_hour[_h(WED, 1)] == (30.0, 260.0)
+    assert by_hour[END - H] == (0.0, 380.0)
+
+
+async def test_a_series_stored_only_before_the_coverage_hour_is_left_alone(
+    recorder_mock: Recorder, hass: HomeAssistant, sent: Sent
+) -> None:
+    await _imported(hass, [B0, B1, D2])
+    before = {series: await _stored(hass, series) for series in CareLogSeries}
+    sent.clear()
+    coverage = END + 1800  # every stored row is before the coverage hour, Thursday 01:00
+    empty = _Book([], start=coverage)
+
+    comparison = await _compare(hass, empty.ledger, end=END + 3 * H, coverage=coverage)
+    assert (
+        comparison.lowering_cells,
+        comparison.raising_cells,
+        comparison.missing_rows,
+        comparison.rows_to_write,
+    ) == (0, 0, 0, 0)
+    await _sync(hass, empty.ledger, end=END + 3 * H, coverage=coverage)
+    assert sent == []
+
+    # A new entry after the coverage hour starts there, from the prefix's total.
+    book = _Book([_bottle("b9", _at(THU, 1, 10), 40.0)], start=coverage)
+    await _sync(hass, book.ledger, end=END + 3 * H, coverage=coverage)
+    assert _sent_series(sent) == _ids(S.BOTTLE_FEEDS, S.BOTTLE_VOLUME)
+    assert min(hour for _sid, rows in sent for hour, _s, _t in rows) == END + H
+    by_hour = {hour: (s, t) for hour, s, t in await _stored(hass, S.BOTTLE_VOLUME)}
+    assert END not in by_hour
+    assert by_hour[END + H] == (40.0, 220.0)
+    assert by_hour[END + 2 * H] == (0.0, 220.0)
+    for series in CareLogSeries:
+        if series not in (S.BOTTLE_FEEDS, S.BOTTLE_VOLUME):
+            assert await _stored(hass, series) == before[series]
 
 
 # ---------------------------------------------------------------------------
@@ -889,7 +977,7 @@ async def test_no_uid_baby_id_name_or_code_in_logs_errors_or_reports(
     caplog.set_level(logging.DEBUG, logger="custom_components.nanit")
 
     report = await async_sync_care_log_statistics(
-        hass, code=code, names=names, ledger=book.ledger, end_hour=END
+        hass, code=code, names=names, ledger=book.ledger, end_hour=END, coverage_start=READ_START
     )
     late = book.update([_bottle(uid, _at(MON, 6), 70.0), D1, _bottle("x2", _at(MON, 8), 1.0)])
     calls: list[str] = []
@@ -902,7 +990,13 @@ async def test_no_uid_baby_id_name_or_code_in_logs_errors_or_reports(
         pytest.raises(CareLogSyncError) as failure,
     ):
         await async_sync_care_log_statistics(
-            hass, code=code, names=names, ledger=book.ledger, end_hour=END, changed_from=late
+            hass,
+            code=code,
+            names=names,
+            ledger=book.ledger,
+            end_hour=END,
+            coverage_start=READ_START,
+            changed_from=late,
         )
 
     ours = [r for r in caplog.records if r.name.startswith("custom_components.nanit")]
@@ -921,7 +1015,9 @@ async def test_no_uid_baby_id_name_or_code_in_logs_errors_or_reports(
 
 
 async def _compare_code(hass: HomeAssistant, code: str, ledger: Ledger) -> Comparison:
-    return await async_compare_care_log_statistics(hass, code=code, ledger=ledger, end_hour=END)
+    return await async_compare_care_log_statistics(
+        hass, code=code, ledger=ledger, end_hour=END, coverage_start=READ_START
+    )
 
 
 async def test_a_long_sync_yields_between_chunks(

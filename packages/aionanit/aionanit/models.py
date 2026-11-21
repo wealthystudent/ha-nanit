@@ -162,6 +162,11 @@ class CareLog:
     pumping and naps. The calendar also carries the camera's own sleep
     sessions (``auto_sleep``). Only the fields that apply to ``log_type``
     are set; the rest stay None.
+
+    Numbers and short tokens only: the notes and names an entry can carry
+    are never kept here (see ``CareLogDetail``). A measurement the row
+    carried but that could not be used (negative, not a finite number) is
+    None like a missing one, and its field name is in ``invalid_fields``.
     """
 
     uid: str
@@ -175,6 +180,13 @@ class CareLog:
     left_amount_ml: float | None = None  # pumping
     right_amount_ml: float | None = None  # pumping
     duration_s: float | None = None  # pumping, sleep, auto_sleep
+    end_timestamp: float | None = None  # Unix timestamp of the end, when the row gives one
+    net_duration_s: float | None = None  # sleep, semi_auto_sleep
+    status: str | None = None  # auto_sleep: "eligible" or "not_eligible"
+    logged_at: float | None = None  # Unix timestamp of when the entry was logged
+    start_source: str | None = None  # semi_auto_sleep: "camera", "user", ...
+    end_source: str | None = None  # semi_auto_sleep
+    invalid_fields: frozenset[str] = frozenset()  # measurement fields present but rejected
 
 
 @dataclass(frozen=True)

@@ -542,7 +542,7 @@ class TestGetEvents:
 
 
 class TestGetCalendar:
-    """Rows are shaped like a live /calendar response (names and notes left out)."""
+    """Rows are shaped like a live /calendar response, with made-up values."""
 
     async def _fetch(self, client: NanitRestClient) -> list[CareLog]:
         return await client.async_get_calendar("token123", "baby123", 1700000000, 1700086400)
@@ -603,6 +603,7 @@ class TestGetCalendar:
                 timestamp=1700000100.0,
                 baby_uid="baby123",
                 change_type="mixed",
+                status="eligible",
             ),
             CareLog(
                 uid="b1",
@@ -634,6 +635,7 @@ class TestGetCalendar:
                 timestamp=1700000500.0,
                 baby_uid="baby123",
                 duration_s=465.0,
+                end_timestamp=1700000965.0,
             ),
         ]
 
@@ -660,7 +662,13 @@ class TestGetCalendar:
             logs = await self._fetch(client)
 
         assert logs == [
-            CareLog(uid="ok", log_type="bottle_feed", timestamp=1700000100.0, baby_uid="baby123")
+            CareLog(
+                uid="ok",
+                log_type="bottle_feed",
+                timestamp=1700000100.0,
+                baby_uid="baby123",
+                invalid_fields=frozenset({"feed_amount_ml"}),
+            )
         ]
 
     async def test_get_calendar_skips_rows_without_a_time_in_seconds(
@@ -710,7 +718,13 @@ class TestGetCalendar:
 
         assert logs == [
             CareLog(uid="d1", log_type="diaper_change", timestamp=1700000100.0, baby_uid="baby123"),
-            CareLog(uid="b1", log_type="bottle_feed", timestamp=1700000200.0, baby_uid="baby123"),
+            CareLog(
+                uid="b1",
+                log_type="bottle_feed",
+                timestamp=1700000200.0,
+                baby_uid="baby123",
+                invalid_fields=frozenset({"feed_amount_ml"}),
+            ),
         ]
 
     async def test_get_calendar_negative_amounts_read_as_not_logged(
@@ -748,13 +762,20 @@ class TestGetCalendar:
             logs = await self._fetch(client)
 
         assert logs == [
-            CareLog(uid="b1", log_type="bottle_feed", timestamp=1700000200.0, baby_uid="baby123"),
+            CareLog(
+                uid="b1",
+                log_type="bottle_feed",
+                timestamp=1700000200.0,
+                baby_uid="baby123",
+                invalid_fields=frozenset({"feed_amount_ml"}),
+            ),
             CareLog(
                 uid="n1",
                 log_type="nursing",
                 timestamp=1700000300.0,
                 baby_uid="baby123",
                 right_duration_s=0.0,
+                invalid_fields=frozenset({"left_duration_s"}),
             ),
             CareLog(
                 uid="p1",
@@ -762,8 +783,290 @@ class TestGetCalendar:
                 timestamp=1700000400.0,
                 baby_uid="baby123",
                 right_amount_ml=7.39,
+                invalid_fields=frozenset({"duration_s", "left_amount_ml"}),
             ),
         ]
+
+    async def test_get_calendar_parses_sleep_fields(self, client: NanitRestClient) -> None:
+        with mock_api() as m:
+            m.get(
+                CALENDAR_URL,
+                payload={
+                    "calendar": [
+                        {
+                            "uid": "s1",
+                            "baby_uid": "baby123",
+                            "type": "sleep",
+                            "time": 1700000100,
+                            "created_at": "2023-11-14T22:30:00.000Z",
+                            "status": "logged",
+                            "duration": 3600,
+                            "end_time": 1700003700,
+                            "net_duration": 3300,
+                        },
+                        {
+                            "uid": "s2",
+                            "type": "semi_auto_sleep",
+                            "time": 1700010000,
+                            "created_at": "2023-11-15T03:00:00+01:00",
+                            "duration": 1800,
+                            "end_time": 1700011800,
+                            "net_duration": 1700,
+                            "start_source": "camera",
+                            "end_source": "user",
+                        },
+                        {
+                            "uid": "s3",
+                            "type": "auto_sleep",
+                            "time": 1700020000,
+                            "begin_ts": 1700020000,
+                            "end_ts": 1700020600,
+                            "duration": 600,
+                            "status": "not_eligible",
+                        },
+                    ]
+                },
+            )
+            logs = await self._fetch(client)
+
+        assert logs == [
+            CareLog(
+                uid="s1",
+                log_type="sleep",
+                timestamp=1700000100.0,
+                baby_uid="baby123",
+                duration_s=3600.0,
+                end_timestamp=1700003700.0,
+                net_duration_s=3300.0,
+                status="logged",
+                logged_at=1700001000.0,
+            ),
+            CareLog(
+                uid="s2",
+                log_type="semi_auto_sleep",
+                timestamp=1700010000.0,
+                baby_uid="baby123",
+                duration_s=1800.0,
+                end_timestamp=1700011800.0,
+                net_duration_s=1700.0,
+                logged_at=1700013600.0,
+                start_source="camera",
+                end_source="user",
+            ),
+            CareLog(
+                uid="s3",
+                log_type="auto_sleep",
+                timestamp=1700020000.0,
+                baby_uid="baby123",
+                duration_s=600.0,
+                end_timestamp=1700020600.0,
+                status="not_eligible",
+            ),
+        ]
+
+    @pytest.mark.parametrize(
+        ("ends", "expected"),
+        [
+            ({"end_ts": 1700000500, "end_time": 1700000900}, 1700000500.0),
+            ({"end_time": 1700000900}, 1700000900.0),
+            ({"end_ts": None, "end_time": 1700000900}, 1700000900.0),
+            # The first end the row carries decides, even when it is unusable.
+            ({"end_ts": "later", "end_time": 1700000900}, None),
+            ({"end_ts": 1700000000000, "end_time": 1700000900}, None),
+            ({"end_ts": 1699999999}, None),  # before the start
+            ({"end_ts": 1700000000}, 1700000000.0),  # zero length
+            ({"end_time": True}, None),
+            ({"end_time": -5}, None),
+            ({"end_time": float("nan")}, None),
+            ({}, None),
+            ({"duration": 600}, None),  # never worked out from a duration
+        ],
+    )
+    async def test_get_calendar_end_timestamp(
+        self, client: NanitRestClient, ends: dict[str, object], expected: float | None
+    ) -> None:
+        row = {"uid": "s1", "type": "sleep", "time": 1700000000, **ends}
+        with mock_api() as m:
+            m.get(CALENDAR_URL, payload={"calendar": [row]})
+            (log,) = await self._fetch(client)
+
+        assert log.end_timestamp == expected
+
+    @pytest.mark.parametrize(
+        ("created_at", "expected"),
+        [
+            ("2023-11-14T22:30:00Z", 1700001000.0),
+            ("2023-11-14T22:30:00.250+00:00", 1700001000.25),
+            ("2023-11-14T23:30:00+01:00", 1700001000.0),
+            (1700001000, 1700001000.0),
+            (1700001000.5, 1700001000.5),
+            ("2023-11-14T22:30:00", None),  # no offset: not guessed at
+            ("2023-11-14", None),
+            ("yesterday", None),
+            ("", None),
+            ("2023-11-14T22:30:00Z" + " " * 40, None),
+            ("1700001000", None),
+            ("1969-12-31T23:59:59Z", None),
+            ("2300-01-01T00:00:00Z", None),
+            (1700001000000, None),
+            (True, None),
+            (None, None),
+            ({"at": 1}, None),
+        ],
+    )
+    async def test_get_calendar_logged_at(
+        self, client: NanitRestClient, created_at: object, expected: float | None
+    ) -> None:
+        row = {"uid": "d1", "type": "diaper_change", "time": 1700000000, "created_at": created_at}
+        with mock_api() as m:
+            m.get(CALENDAR_URL, payload={"calendar": [row]})
+            (log,) = await self._fetch(client)
+
+        assert log.logged_at == expected
+
+    async def test_get_calendar_logged_at_absent(self, client: NanitRestClient) -> None:
+        row = {"uid": "d1", "type": "diaper_change", "time": 1700000000}
+        with mock_api() as m:
+            m.get(CALENDAR_URL, payload={"calendar": [row]})
+            (log,) = await self._fetch(client)
+
+        assert log.logged_at is None
+
+    async def test_get_calendar_invalid_measurements_differ_from_absent_ones(
+        self, client: NanitRestClient
+    ) -> None:
+        with mock_api() as m:
+            m.get(
+                CALENDAR_URL,
+                payload={
+                    "calendar": [
+                        {"uid": "absent", "type": "sleep", "time": 1700000000},
+                        {
+                            "uid": "null",
+                            "type": "sleep",
+                            "time": 1700000000,
+                            "duration": None,
+                            "net_duration": None,
+                        },
+                        {
+                            "uid": "invalid",
+                            "type": "sleep",
+                            "time": 1700000000,
+                            "duration": "an hour",
+                            "net_duration": -1,
+                            "feed_amount": True,
+                            "left_duration": [60],
+                            "right_duration": 10**400,
+                            "left_amount": {"ml": 5},
+                        },
+                        {
+                            "uid": "valid",
+                            "type": "sleep",
+                            "time": 1700000000,
+                            "duration": 0,
+                            "net_duration": 0.5,
+                        },
+                    ]
+                },
+            )
+            absent, null, invalid, valid = await self._fetch(client)
+
+        assert absent.invalid_fields == frozenset()
+        assert null.invalid_fields == frozenset()
+        assert invalid.invalid_fields == frozenset(
+            {
+                "duration_s",
+                "net_duration_s",
+                "feed_amount_ml",
+                "left_duration_s",
+                "right_duration_s",
+                "left_amount_ml",
+            }
+        )
+        assert invalid.duration_s is None
+        assert invalid.net_duration_s is None
+        assert valid.invalid_fields == frozenset()
+        assert (valid.duration_s, valid.net_duration_s) == (0.0, 0.5)
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "Eligible",
+            "not eligible",
+            "camera<script>",
+            "x" * 33,
+            "1camera",
+            "_camera",
+            "camera\n",
+            "camëra",
+            "",
+            7,
+            None,
+            ["camera"],
+        ],
+    )
+    async def test_get_calendar_tokens_that_are_not_safe_become_absent(
+        self, client: NanitRestClient, value: object
+    ) -> None:
+        row = {
+            "uid": "s1",
+            "type": "semi_auto_sleep",
+            "time": 1700000000,
+            "status": value,
+            "start_source": value,
+            "end_source": value,
+            "change_type": value,
+        }
+        with mock_api() as m:
+            m.get(CALENDAR_URL, payload={"calendar": [row]})
+            (log,) = await self._fetch(client)
+
+        assert log == CareLog(
+            uid="s1", log_type="semi_auto_sleep", timestamp=1700000000.0, baby_uid="baby123"
+        )
+
+    async def test_get_calendar_drops_rows_whose_type_is_not_a_token(
+        self, client: NanitRestClient
+    ) -> None:
+        with mock_api() as m:
+            m.get(
+                CALENDAR_URL,
+                payload={
+                    "calendar": [
+                        {"uid": "a", "type": "Diaper_Change", "time": 1700000000},
+                        {"uid": "b", "type": "diaper change", "time": 1700000000},
+                        {"uid": "c", "type": "<b>nap</b>", "time": 1700000000},
+                        {"uid": "d", "type": "x" * 33, "time": 1700000000},
+                        {"uid": "e", "type": "", "time": 1700000000},
+                        {"uid": "f", "type": "tummy_time2", "time": 1700000000},
+                        {"uid": "g", "type": "x" * 32, "time": 1700000000},
+                    ]
+                },
+            )
+            logs = await self._fetch(client)
+
+        # Unknown but well-formed kinds are kept.
+        assert [log.log_type for log in logs] == ["tummy_time2", "x" * 32]
+
+    async def test_get_calendar_never_keeps_notes_or_names(self, client: NanitRestClient) -> None:
+        row = {
+            "uid": "d1",
+            "baby_uid": "baby123",
+            "type": "diaper_change",
+            "change_type": "pee",
+            "time": 1700000000,
+            "created_at": "2023-11-14T22:13:20Z",
+            "status": "logged",
+            "comment": "MARKER-NOTE-7f3a",
+            "user": {"name": "MARKER-NAME-7f3a", "relation": "MARKER-RELATION-7f3a"},
+            "source_uid": "MARKER-SOURCE-7f3a",
+        }
+        with mock_api() as m:
+            m.get(CALENDAR_URL, payload={"calendar": [row]})
+            (log,) = await self._fetch(client)
+
+        assert "MARKER" not in repr(log)
+        assert all("MARKER" not in str(value) for value in vars(log).values())
 
     async def test_get_calendar_empty(self, client: NanitRestClient) -> None:
         with mock_api() as m:

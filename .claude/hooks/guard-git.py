@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import re
 import shlex
+import subprocess
 import sys
 
 SIGNING_KEYS = re.compile(r"^(commit|tag|rebase)\.gpgsign$|^gpg\.|^user\.signingkey$", re.I)
@@ -34,7 +35,19 @@ def segments(command: str) -> list[list[str]]:
     return words
 
 
-def problem(words: list[str]) -> str | None:
+def current_branch(cwd: str | None) -> str:
+    """Return the checked-out branch in cwd, or '' if git can't tell."""
+    result = subprocess.run(
+        ["git", "symbolic-ref", "--short", "-q", "HEAD"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout.strip()
+
+
+def problem(words: list[str], cwd: str | None = None) -> str | None:
     """Why this git command is not allowed, or None."""
     if not words or words[0] != "git":
         return None
@@ -55,8 +68,15 @@ def problem(words: list[str]) -> str | None:
     sub, rest = args[0], args[1:]
 
     if sub == "config":
-        keys = [a for a in rest if not a.startswith("-")]
-        if keys and SIGNING_KEYS.search(keys[0]) and len(keys) > 1:
+        words_ = [a for a in rest if not a.startswith("-")]
+        action = words_.pop(0) if words_ and words_[0] in ("set", "unset", "get", "list") else ""
+        writes = (
+            action in ("set", "unset")
+            or (not action and len(words_) > 1)
+            or any(a.startswith(("--unset", "--replace-all", "--add", "--rename-section",
+                                 "--remove-section", "--edit")) for a in rest)
+        )  # fmt: skip
+        if writes and (not words_ or SIGNING_KEYS.search(words_[0])):
             return "Changing signing config is not allowed. Use the host's signing as it is."
     if "--no-verify" in rest or (sub == "commit" and "-n" in rest):
         return "Skipping git hooks is not allowed; fix what the hook reports."
@@ -68,7 +88,9 @@ def problem(words: list[str]) -> str | None:
         if bare or plus:
             return "Use --force-with-lease, and only on a branch you created."
         refs = [a for a in rest if not a.startswith("-")][1:]
-        if any(r.split(":")[-1] in ("main", "refs/heads/main") for r in refs):
+        to_main = any(r.split(":")[-1] in ("main", "refs/heads/main") for r in refs)
+        implicit = not refs or refs == ["HEAD"]  # pushes the current branch
+        if to_main or (implicit and current_branch(cwd) == "main"):
             return "Never push to main; open a PR."
     return None
 
@@ -78,7 +100,7 @@ def main() -> int:
     data = json.load(sys.stdin)
     command = data.get("tool_input", {}).get("command", "")
     for words in segments(command):
-        if reason := problem(words):
+        if reason := problem(words, data.get("cwd")):
             sys.stderr.write(f"Blocked by .claude/hooks/guard-git.py: {reason}\n")
             return 2
     return 0

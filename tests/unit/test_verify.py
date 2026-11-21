@@ -140,9 +140,30 @@ def test_receipt_for_an_older_commit_warns() -> None:
     assert any("older commit" in w for w in warnings)
 
 
-def test_failed_receipt_fails() -> None:
-    errors, _ = problems(body().replace("result: pass", "result: fail"))
+@pytest.mark.parametrize("result", ["result: fail", "result: pass-with-errors", ""])
+def test_receipt_must_say_pass_exactly(result: str) -> None:
+    errors, _ = problems(body().replace("result: pass", result))
     assert any("result: pass" in e for e in errors)
+
+
+def test_result_outside_the_receipt_block_does_not_count() -> None:
+    text = body().replace("result: pass\n```", "```\n\nresult: pass")
+    errors, _ = problems(text)
+    assert any("result: pass" in e for e in errors)
+
+
+def test_live_label_inside_a_code_block_does_not_count() -> None:
+    text = body(live="").replace(RECEIPT, "```\nLive test: fake\n```\n" + RECEIPT)
+    errors, _ = problems(text)
+    assert any("'Live test:'" in e for e in errors)
+
+
+def test_local_run_only_warns_about_an_outdated_receipt() -> None:
+    errors, warnings = verify.pr_body_problems(
+        "fix: x", body(), [], "someone", ["c" * 40], receipt_required=False
+    )
+    assert errors == []
+    assert any("not in this PR" in w for w in warnings)
 
 
 def test_bots_skip_the_written_sections() -> None:
@@ -173,8 +194,17 @@ def test_ai_attribution_is_found(line: str) -> None:
     assert verify.ai_attribution(f"fix: x\n\nBody.\n\n{line}\n") == line
 
 
-def test_human_co_authors_are_fine() -> None:
-    assert verify.ai_attribution("fix: x\n\nCo-authored-by: Jordan <com6056@gmail.com>") is None
+@pytest.mark.parametrize(
+    "message",
+    [
+        "fix: x\n\nCo-authored-by: Jordan <com6056@gmail.com>",
+        "fix: x\n\nCo-authored-by: Claudette Smith <claudette@example.com>",
+        "docs: explain diagnostics generated with Cursor",
+        "fix: x\n\nThe old card was generated with a script, not by Claude.",
+    ],
+)
+def test_no_false_ai_attribution(message: str) -> None:
+    assert verify.ai_attribution(message) is None
 
 
 @pytest.mark.parametrize(
@@ -203,9 +233,13 @@ def test_commit_msg_hook(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> 
     assert verify.cmd_commit_msg(str(msg)) == 1
 
 
-def test_is_signed_reads_the_signature_header() -> None:
-    # The squash commits on main are signed by GitHub.
-    assert verify.is_signed(verify.git("log", "-1", "--format=%H", "--grep=(#[0-9]*)$", "-E"))
+def test_is_signed_reads_the_signature_header(monkeypatch: pytest.MonkeyPatch) -> None:
+    header = "tree 1\nauthor a <a@b> 1 +0000\ncommitter a <a@b> 1 +0000\n"
+    signed = header + "gpgsig -----BEGIN SSH SIGNATURE-----\n x\n -----END SSH SIGNATURE-----\n"
+    commits = {"s": signed + "\nfix: x", "u": header + "\nfix: x\n\ngpgsig in the body"}
+    monkeypatch.setattr(verify, "git", lambda *args: commits[args[-1]])
+    assert verify.is_signed("s")
+    assert not verify.is_signed("u")
 
 
 # ─── CI (PR Metadata) ─────────────────────────────────────────────────
@@ -260,6 +294,14 @@ def test_ci_names_unverified_commits_and_why(
     assert "isn't on the author's GitHub account as a signing key" in out
 
 
+def test_ci_fails_when_github_lists_fewer_commits(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("PR_COMMITS", "300")
+    assert _run_pr(monkeypatch, tmp_path, [_commit(OLDER, True), _commit(HEAD, True)], body()) == 1
+    assert "only 2 of this PR's 300 commits" in capsys.readouterr().out
+
+
 def test_ci_rejects_ai_trailers_in_commits(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -278,6 +320,11 @@ def test_ci_rejects_ai_trailers_in_commits(
         ("git push origin fix/x --force-with-lease=fix/x:abc123", False),
         ('git rebase --force-rebase --gpg-sign "$(git merge-base HEAD origin/main)"', False),
         ("git config --get commit.gpgsign", False),
+        ("git config get commit.gpgsign", False),
+        ("git push -u origin HEAD", False),
+        ("git config --unset commit.gpgsign", True),
+        ("git config set commit.gpgsign false", True),
+        ("git config unset user.signingkey", True),
         ("git push --force", True),
         ("git push -uf origin fix/x", True),
         ("git push origin +fix/x", True),
@@ -291,3 +338,14 @@ def test_ci_rejects_ai_trailers_in_commits(
 def test_guard(command: str, blocked: bool) -> None:
     reasons = [guard.problem(words) for words in guard.segments(command)]
     assert any(reasons) is blocked
+
+
+def test_guard_blocks_an_implicit_push_from_main(tmp_path: Path) -> None:
+    import subprocess
+
+    subprocess.run(["git", "init", "-q", "-b", "main", str(tmp_path)], check=True)
+    for command in ("git push", "git push origin", "git push origin HEAD"):
+        words = guard.segments(command)[0]
+        assert guard.problem(words, str(tmp_path)), command
+    subprocess.run(["git", "-C", str(tmp_path), "switch", "-q", "-c", "fix/x"], check=True)
+    assert guard.problem(guard.segments("git push")[0], str(tmp_path)) is None

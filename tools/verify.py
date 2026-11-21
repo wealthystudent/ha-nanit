@@ -27,6 +27,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import tomllib
 import urllib.request
 from collections.abc import Iterable
@@ -42,13 +43,15 @@ UPSTREAM_RE = re.compile(r"[:/]wealthystudent/ha-nanit(\.git)?/?$")
 BRANCH_RE = re.compile(r"^(feat|fix|perf|refactor|docs|test|chore|ci|build|revert)/\S")
 EXEMPT_SUBJECT_PREFIXES = ("fixup! ", "squash! ", "amend! ", "Merge ", 'Revert "')
 AI_NAMES = (
-    r"claude|anthropic|copilot|codex|openai|chatgpt|gpt-\d|gemini|cursor|devin|aider"
-    r"|jules|windsurf|codeium|kiro|grok"
+    r"\b(?:claude|anthropic|copilot|codex|openai|chatgpt|gpt-\d[\w.-]*|gemini|cursor|devin"
+    r"|aider|jules|windsurf|codeium|kiro|grok)\b"
 )
-AI_TRAILER_RE = re.compile(rf"^co-authored-by:.*\b({AI_NAMES})", re.I | re.M)
-AI_GENERATED_RE = re.compile(rf"generated (with|by)\b.*\b({AI_NAMES})", re.I)
+# Only trailer and footer lines, never the subject: "docs: explain logs generated
+# with Cursor" is fine, "Generated with [Claude Code](...)" in a footer is not.
+AI_TRAILER_RE = re.compile(rf"^co-authored-by:.*{AI_NAMES}", re.I)
+AI_GENERATED_RE = re.compile(rf"^\W*generated (?:with|by)\b.*{AI_NAMES}", re.I)
 RECEIPT_RE = re.compile(r"^ha-nanit verify ([0-9a-f]{7,40})\b", re.M)
-RESULT_RE = re.compile(r"^result: (\w+)", re.M)
+FENCED_RE = re.compile(r"^[ \t]*(```|~~~).*?^[ \t]*\1[ \t]*$", re.M | re.S)
 LIVE_RE = re.compile(r"^[*_ \t]*live test[*_ \t]*:[*_ \t]*(.*)$", re.I | re.M | re.S)
 SIGNING_DOCS = "CONTRIBUTING.md#signed-commits"
 STATUS_ORDER = ("fail", "warn", "ci", "skip", "pass")
@@ -112,8 +115,8 @@ def is_signed(sha: str) -> bool:
 
 def ai_attribution(message: str) -> str | None:
     """Return the line that credits an AI tool, if any."""
-    for line in message.splitlines():
-        if AI_TRAILER_RE.match(line) or AI_GENERATED_RE.search(line):
+    for line in message.splitlines()[1:]:
+        if AI_TRAILER_RE.match(line) or AI_GENERATED_RE.match(line):
             return line.strip()
     return None
 
@@ -193,22 +196,40 @@ def needs_text(areas: list[Area], unmapped: list[str]) -> str:
 
 
 def live_text(testing: str) -> str:
-    """The text after 'Live test:', up to the receipt."""
-    match = LIVE_RE.search(testing)
+    """The text after 'Live test:' outside code blocks, up to the receipt."""
+    match = LIVE_RE.search(FENCED_RE.sub("", testing))
     if not match:
         return ""
-    text = match.group(1)
-    for stop in ("```", "~~~", "ha-nanit verify "):
-        text = text.split(stop, 1)[0]
-    return text.strip()
+    return match.group(1).split("ha-nanit verify ", 1)[0].strip()
+
+
+def receipt_block(testing: str) -> tuple[str, list[str]] | None:
+    """The receipt's commit and its lines, up to the end of its code block."""
+    match = RECEIPT_RE.search(testing)
+    if not match:
+        return None
+    lines = []
+    for line in testing[match.start() :].splitlines():
+        if line.lstrip().startswith(("```", "~~~")):
+            break
+        lines.append(line.strip())
+    return match.group(1), lines
 
 
 def pr_body_problems(
-    title: str, body: str, labels: list[str], author: str, shas: list[str]
+    title: str,
+    body: str,
+    labels: list[str],
+    author: str,
+    shas: list[str],
+    *,
+    receipt_required: bool = True,
 ) -> tuple[list[str], list[str]]:
     """Check a PR's title and description. Return (errors, warnings).
 
-    shas are the PR's commits, oldest first, so the last is its head.
+    shas are the PR's commits, oldest first, so the last is its head. With
+    receipt_required=False (`just verify`, which prints the replacement) a
+    missing or outdated receipt is only a warning.
     """
     errors = release_notes.pr_errors(title, body, labels)
     warnings: list[str] = []
@@ -233,38 +254,46 @@ def pr_body_problems(
             "`just verify` lists what this change needs."
         )
 
-    receipt = RECEIPT_RE.search(testing)
-    if not receipt:
-        errors.append(
+    receipt_errors: list[str] = []
+    found = receipt_block(testing)
+    if not found:
+        receipt_errors.append(
             "'## How I tested this' has no `just verify` receipt. Run `just verify` on the "
             "PR's head and paste the block it prints, unchanged."
         )
-        return errors, warnings
-    sha = receipt.group(1)
-    if shas and not any(s.startswith(sha) for s in shas):
-        errors.append(
-            f"The receipt is for commit {sha}, which is not in this PR. Run `just verify` "
-            "on the PR's head and paste the new receipt."
-        )
-    elif shas and not shas[-1].startswith(sha):
-        warnings.append(
-            f"The receipt is for {sha}, an older commit of this PR. Run `just verify` again "
-            "and replace it when the change is done."
-        )
-    result = RESULT_RE.search(testing[receipt.start() :])
-    if not result or result.group(1) != "pass":
-        errors.append("The receipt doesn't say 'result: pass'. Fix what failed and run it again.")
+    else:
+        sha, lines = found
+        if shas and not any(s.startswith(sha) for s in shas):
+            receipt_errors.append(
+                f"The receipt is for commit {sha}, which is not in this PR. Run `just verify` "
+                "on the PR's head and paste the new receipt."
+            )
+        elif shas and not shas[-1].startswith(sha):
+            warnings.append(
+                f"The receipt is for {sha}, an older commit of this PR. Run `just verify` "
+                "again and replace it when the change is done."
+            )
+        if "result: pass" not in lines:
+            receipt_errors.append(
+                "The receipt doesn't say 'result: pass'. Fix what failed and run it again."
+            )
+    if receipt_required:
+        errors += receipt_errors
+    else:
+        warnings += [f"{e} (replace it with the receipt below)" for e in receipt_errors]
     return errors, warnings
 
 
 # ─── Branch checks ────────────────────────────────────────────────────
 
 
-def branch_checks(base_ref: str, commits: list[str]) -> list[Check]:
-    """Checks on the commits and git setup, shared by `verify` and `verify branch`."""
+def branch_checks(base_ref: str, commits: list[str], dirty: str) -> list[Check]:
+    """Checks on the commits and git setup, shared by `verify` and `verify branch`.
+
+    dirty is `git status --porcelain` from before any check ran.
+    """
     checks: list[Check] = []
 
-    dirty = git("status", "--porcelain", "--untracked-files=normal")
     if dirty:
         checks.append(
             Check(
@@ -378,8 +407,11 @@ def git_config(key: str) -> str:
     return run("git", "config", "--get", key).stdout.strip()
 
 
-def pr_check(commits: list[str]) -> list[Check]:
-    """Check the open PR of this branch, if there is one and gh can see it."""
+def pr_check(commits: list[str], *, full: bool) -> list[Check]:
+    """Check the open PR of this branch, if there is one and gh can see it.
+
+    A full run prints a new receipt, so the old one only gets a warning there.
+    """
     if not shutil.which("gh"):
         return [Check("skip", "pr", "gh not installed; CI checks the description")]
     result = run("gh", "pr", "view", "--json", "number,title,body,labels,author,headRefOid,state")
@@ -394,16 +426,13 @@ def pr_check(commits: list[str]) -> list[Check]:
         [label["name"] for label in pr["labels"]],
         pr["author"]["login"],
         commits,
+        receipt_required=not full,
     )
     head = git("rev-parse", "HEAD")
     if pr["headRefOid"] != head:
         warnings.append(
             f"#{pr['number']} is at {pr['headRefOid'][:12]}, you are at {head[:12]}: push."
         )
-    # The receipt you are about to paste can't be in the description yet.
-    first_run = [e for e in errors if "no `just verify` receipt" in e]
-    errors = [e for e in errors if e not in first_run]
-    warnings += ["Paste this receipt into '## How I tested this'." for _ in first_run]
     if errors:
         return [Check("fail", "pr", f"#{pr['number']}: " + " ".join(errors), " ".join(warnings))]
     if warnings:
@@ -418,8 +447,11 @@ def _tail(output: str, lines: int = 40) -> str:
     return "\n".join(output.strip().splitlines()[-lines:])
 
 
-def code_checks(areas: list[Area]) -> list[Check]:
-    """Run what CI runs, as far as this machine can."""
+def code_checks(areas: list[Area], *, clean: bool) -> list[Check]:
+    """Run what CI runs, as far as this machine can.
+
+    The card check rebuilds into the checkout, so it only runs on a clean tree.
+    """
     checks: list[Check] = []
     touched = {a.name for a in areas}
 
@@ -473,35 +505,40 @@ def code_checks(areas: list[Area]) -> list[Check]:
         else Check("fail", "library", _tail(out), "Fix the failing aionanit tests.")
     )
 
-    checks.append(card_check("card" in touched))
+    checks.append(card_check("card" in touched, clean=clean))
     checks.append(protobuf_check("protobuf" in touched or "sound-light" in touched))
     checks.append(Check("ci", "ci-only", "hassfest and workflow lint run in CI only"))
     return checks
 
 
-def card_check(touched: bool) -> Check:
+def card_check(touched: bool, *, clean: bool) -> Check:
     """Rebuild the card and compare it with the committed bundle."""
     if not touched:
         return Check("skip", "card", "card not touched")
+    if not clean:
+        return Check("fail", "card", "not checked: commit your changes first")
     if not shutil.which("npm"):
         return Check("fail", "card", "npm not found", "Install Node.js 24 (frontend/.nvmrc).")
     frontend = ROOT / "frontend"
-    for step in (
-        ("npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"),
-        ("npm", "run", "build"),
-    ):
-        result = run(*step, cwd=frontend)
-        if result.returncode != 0:
-            return Check("fail", "card", _tail(result.stdout + result.stderr), "Fix the build.")
     bundle = "custom_components/nanit/frontend/nanit-card.js"
-    if run("git", "diff", "--quiet", "--", bundle).returncode != 0:
+    try:
+        for step in (
+            ("npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"),
+            ("npm", "run", "build"),
+        ):
+            result = run(*step, cwd=frontend)
+            if result.returncode != 0:
+                return Check("fail", "card", _tail(result.stdout + result.stderr), "Fix the build.")
+        if run("git", "diff", "--quiet", "--", bundle).returncode != 0:
+            return Check(
+                "fail",
+                "card",
+                "nanit-card.js doesn't match frontend/src",
+                "Run `just card` and commit.",
+            )
+    finally:
+        # The tree was clean, so this only undoes the build's own output.
         run("git", "checkout", "--", bundle)
-        return Check(
-            "fail",
-            "card",
-            "nanit-card.js doesn't match frontend/src",
-            "Run `just card` and commit.",
-        )
     wanted = (frontend / ".nvmrc").read_text().strip().lstrip("v").split(".")[0]
     have = run("node", "--version").stdout.strip().lstrip("v").split(".")[0]
     note = "" if wanted == have else f" (built with Node {have}, CI uses {wanted})"
@@ -509,26 +546,36 @@ def card_check(touched: bool) -> Check:
 
 
 def protobuf_check(touched: bool) -> Check:
-    """Regenerate the S&L protobuf module and compare, like CI's drift check."""
+    """Regenerate the S&L protobuf module in a scratch folder and compare, like CI."""
     if not touched:
         return Check("skip", "protobuf", "no protobuf change")
     protoc = run("protoc", "--version") if shutil.which("protoc") else None
     if not protoc or "29.5" not in protoc.stdout:
         return Check("ci", "protobuf", "protoc 29.5 not found here; CI's drift check runs it")
-    sl = "custom_components/nanit/aionanit_sl"
-    run(
-        "protoc",
-        f"--python_out={sl}",
-        f"--pyi_out={sl}",
-        f"--proto_path={sl}",
-        f"{sl}/sound_light.proto",
-    )
-    if run("git", "diff", "--quiet", "--", sl).returncode != 0:
-        run("git", "checkout", "--", sl)
+    sl = ROOT / "custom_components" / "nanit" / "aionanit_sl"
+    with tempfile.TemporaryDirectory() as out:
+        result = run(
+            "protoc",
+            f"--python_out={out}",
+            f"--pyi_out={out}",
+            f"--proto_path={sl}",
+            str(sl / "sound_light.proto"),
+        )
+        if result.returncode != 0:
+            return Check(
+                "fail", "protobuf", _tail(result.stdout + result.stderr), "Fix the .proto."
+            )
+        stale = [
+            name
+            for name in ("sound_light_pb2.py", "sound_light_pb2.pyi")
+            if not (sl / name).exists()
+            or (sl / name).read_bytes() != (Path(out) / name).read_bytes()
+        ]
+    if stale:
         return Check(
             "fail",
             "protobuf",
-            "sound_light_pb2 doesn't match the .proto",
+            f"{', '.join(stale)} doesn't match the .proto",
             "Regenerate with protoc 29.5.",
         )
     return Check("pass", "protobuf", "generated code matches the .proto")
@@ -584,9 +631,10 @@ def print_fixes(checks: list[Check]) -> None:
 def cmd_verify(*, full: bool) -> int:
     base_ref, merge_base, commits, files = context()
     areas, unmapped = areas_for(files)
-    checks = code_checks(areas) if full else []
-    checks += branch_checks(base_ref, commits)
-    checks += pr_check(commits)
+    dirty = git("status", "--porcelain", "--untracked-files=normal")
+    checks = code_checks(areas, clean=not dirty) if full else []
+    checks += branch_checks(base_ref, commits, dirty)
+    checks += pr_check(commits, full=full)
     result = "fail" if any(c.status == "fail" for c in checks) else "pass"
 
     head = git("rev-parse", "HEAD")
@@ -633,20 +681,26 @@ def cmd_commit_msg(path: str) -> int:
 
 
 def cmd_pre_push() -> int:
-    # pre-commit leaves the refs unset when the remote has none of the
-    # history (a new remote), so check everything HEAD adds to main then.
-    to_ref = os.environ.get("PRE_COMMIT_TO_REF") or "HEAD"
+    to_ref = os.environ.get("PRE_COMMIT_TO_REF", "")
     from_ref = os.environ.get("PRE_COMMIT_FROM_REF", "")
-    if set(to_ref) == {"0"}:  # deleting a branch
+    if to_ref and set(to_ref) == {"0"}:  # deleting a branch
         return 0
     base_ref = f"{upstream_remote()}/main"
-    span = [to_ref] if not from_ref or set(from_ref) == {"0"} else [f"{from_ref}..{to_ref}"]
+    if not to_ref:
+        # pre-commit leaves the refs unset when the remote has none of the
+        # history (a new remote), so check every local commit no remote has.
+        span = ["--branches", "--not", "--remotes"]
+    elif not from_ref or set(from_ref) == {"0"}:
+        span = [to_ref]
+    else:
+        span = [f"{from_ref}..{to_ref}"]
     not_main = (
-        ["--not", base_ref]
+        ["^" + base_ref]
         if run("git", "rev-parse", "--verify", "-q", base_ref).returncode == 0
         else []
     )
-    commits = git("rev-list", *span, *not_main).split()
+    # ^main goes first: a later --not would flip it.
+    commits = git("rev-list", *not_main, *span).split()
     unsigned = [c for c in commits if not is_signed(c)]
     credited = [c for c in commits if ai_attribution(git("log", "-1", "--format=%B", c))]
     for sha in unsigned:
@@ -704,6 +758,7 @@ def cmd_pr() -> int:
         if len(batch) < 100:
             break
 
+    expected = int(env.get("PR_COMMITS") or 0)
     errors, warnings = pr_body_problems(
         env.get("PR_TITLE", ""),
         env.get("PR_BODY", ""),
@@ -711,6 +766,11 @@ def cmd_pr() -> int:
         env.get("PR_AUTHOR", ""),
         [str(c["sha"]) for c in commits],
     )
+    if expected > len(commits):
+        errors.append(
+            f"GitHub listed only {len(commits)} of this PR's {expected} commits, so not all "
+            "signatures could be checked. Squash the branch into fewer commits."
+        )
     unverified = []
     for c in commits:
         commit = c["commit"]

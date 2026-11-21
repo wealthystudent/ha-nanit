@@ -27,8 +27,12 @@ jobs:
       contents: read
       pull-requests: read # list the PR's commits and their signatures
     steps:
+      # The checker comes from the base branch, not the PR, so a PR can't
+      # change the rules it is checked by. A PR that edits tools/verify.py
+      # is checked by the base's copy until it merges.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.base.sha }}
           persist-credentials: false
           sparse-checkout: tools
           sparse-checkout-cone-mode: false
@@ -41,4 +45,11 @@ jobs:
           PR_BODY: ${{ github.event.pull_request.body }}
           PR_LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
-        run: python3 tools/verify.py pr
+          PR_COMMITS: ${{ github.event.pull_request.commits }}
+        # Until verify.py is on the base branch, the base's older check runs.
+        run: |
+          if [ -f tools/verify.py ]; then
+            python3 tools/verify.py pr
+          else
+            python3 tools/release_notes.py --check
+          fi

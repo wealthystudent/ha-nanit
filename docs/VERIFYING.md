@@ -103,7 +103,9 @@ them.
 | `PR Metadata` | conventional title, `## Changelog`, `## How I tested this` with a filled-in live test and a passing receipt from this PR, `## AI use`, every commit verified by GitHub, no AI co-author trailers | yes |
 
 PRs from bots (Dependabot) skip the testing and AI use sections. Their
-commits still have to be verified.
+commits still have to be verified. `PR Metadata` runs the checker from the
+PR's base branch, so a PR that changes `tools/verify.py` is checked by the
+rules it would replace.
 
 ## Git hooks
 

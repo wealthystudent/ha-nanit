@@ -20,7 +20,6 @@ import re
 import shutil
 import sys
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 try:
@@ -460,9 +459,31 @@ async def action_create_pr(state: State) -> None:
     if label and changelog.strip().lower() in ("", "none"):
         console.print("  [red]✗ A release label needs a changelog entry.[/]")
         return
-    template = Path(".github/pull_request_template.md")
-    body = template.read_text() if template.exists() else "## Changelog\n"
-    body = body.replace("## Changelog\n", f"## Changelog\n\n{changelog.strip()}\n", 1)
+    what = Prompt.ask("\n  [bold]What does this do[/] [dim](the change and why)[/]\n  [bold]▸[/]")
+    live = Prompt.ask(
+        "\n  [bold]Live test[/] [dim](what you ran in a real Home Assistant and saw, "
+        "or 'not tested live' and why)[/]\n  [bold]▸[/]"
+    )
+    ai_use = Prompt.ask(
+        "\n  [bold]AI use[/] [dim](none, or the tool and 'assisted' or "
+        "'generated and reviewed')[/]\n  [bold]▸[/]",
+        default="none",
+    )
+    with console.status("  [bold]Running just verify..."):
+        proc = await asyncio.create_subprocess_exec(
+            "uv", "run", "tools/verify.py", stdout=asyncio.subprocess.PIPE
+        )
+        out = (await proc.communicate())[0].decode()
+    receipt = re.search(r"^```text\nha-nanit verify .*?^```$", out, re.M | re.S)
+    if proc.returncode != 0 or not receipt:
+        console.print("  [red]✗ just verify failed. Run it, fix what it reports, try again.[/]")
+        return
+    body = (
+        f"## What does this do\n\n{what.strip()}\n\n"
+        f"## Changelog\n\n{changelog.strip()}\n\n"
+        f"## How I tested this\n\n**Live test:** {live.strip()}\n\n{receipt.group(0)}\n\n"
+        f"## AI use\n\n{ai_use.strip()}\n"
+    )
 
     with console.status("  [bold]Pushing branch..."):
         push_ok = await sh_ok("git", "push", "-u", "origin", state.branch)

@@ -511,11 +511,14 @@ class NanitCareLogCalendar(CoordinatorEntity[NanitCareLogCoordinator], CalendarE
         fetch_start = math.floor((start_date - CARE_LOG_REACH_BACK).timestamp())
         fetch_end = math.ceil(end_date.timestamp())
         rows = await self._async_rows((fetch_start, max(fetch_start, fetch_end), show_notes))
-        # The option may have changed while the answer was on its way.
+        texts = await _async_texts(hass)
+        # The option may have changed, or the calendar gone, while the answer
+        # was on its way. Checked after the last await, so nothing can change
+        # between this and the answer being returned.
         if self._removed or is_show_care_log_notes(entry) != show_notes:
             raise _unavailable()
 
-        formatter = _Formatter(hass, await _async_texts(hass))
+        formatter = _Formatter(hass, texts)
         found: list[tuple[datetime, str, CalendarEvent]] = []
         for row in rows:
             if (span := _span(row.log)) is None:

@@ -1247,6 +1247,48 @@ async def test_an_answer_is_not_delivered_when_the_notes_option_changed_meanwhil
     assert await hass.config_entries.async_unload(entry.entry_id)
 
 
+@pytest.mark.parametrize("change", ["option_off", "removed"])
+async def test_notes_are_not_returned_when_consent_ends_during_the_text_lookup(
+    hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory, change: str
+) -> None:
+    """The last await before the answer is the translation lookup: the check comes after it."""
+    freezer.move_to(NOW)
+    fake = FakeNanit()
+    _day_of_entries(fake)
+    entry, calendar = await _one_calendar(hass, client, fake, notes=True)
+    looking_up = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_translations(*_args: Any) -> dict[str, str]:
+        looking_up.set()
+        await release.wait()
+        return {}
+
+    with patch.object(calendar_module, "async_get_translations", side_effect=slow_translations):
+        pending = hass.async_create_task(_events(hass, calendar, RANGE_START, RANGE_END))
+        await looking_up.wait()
+        if change == "option_off":
+            # Only the option changes: the reload it would start is held back,
+            # so the calendar is still there when the answer is built.
+            with patch.object(entry, "update_listeners", []):
+                hass.config_entries.async_update_entry(
+                    entry, options={**entry.options, CONF_SHOW_CARE_LOG_NOTES: False}
+                )
+            assert not calendar._removed
+        else:
+            assert await hass.config_entries.async_unload(entry.entry_id)
+            assert calendar._removed
+        release.set()
+        with pytest.raises(HomeAssistantError) as raised:
+            await pending
+
+    assert raised.value.translation_key == "care_log_calendar_unavailable"
+    for marker in PRIVATE_MARKERS:
+        assert marker not in str(raised.value)
+    if change == "option_off":
+        assert await hass.config_entries.async_unload(entry.entry_id)
+
+
 async def test_the_cache_is_bounded(
     hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory
 ) -> None:

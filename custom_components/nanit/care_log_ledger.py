@@ -563,6 +563,31 @@ def _agree(first: CareLogRead, second: CareLogRead, cutoff: int) -> bool:
     return a.keys() == b.keys() and all(a[uid].same_for_charts(b[uid]) for uid in a)
 
 
+def _sightings_agree(
+    reads: Sequence[CareLogRead], seen: Iterable[CareLogRead], cutoff: int
+) -> bool:
+    """Whether no read in ``seen`` returns, before ``cutoff`` and within the pass, another state.
+
+    The pass's state of an entry is the one its latest read holds, as for a
+    candidate.
+    """
+    low, high = reads[0].start, reads[-1].end
+    held: dict[str, tuple[datetime, EntryFacts]] = {}
+    for read in reads:
+        for uid, facts in read.entries.items():
+            current = held.get(uid)
+            if current is None or read.read_at >= current[0]:
+                held[uid] = (read.read_at, facts)
+    for read in seen:
+        for uid, facts in read.entries.items():
+            if facts.hour >= cutoff or not low <= facts.timestamp <= high:
+                continue
+            mine = held.get(uid)
+            if mine is None or not mine[1].same_for_charts(facts):
+                return False
+    return True
+
+
 # ---------------------------------------------------------------------------
 # The book
 # ---------------------------------------------------------------------------
@@ -737,13 +762,24 @@ class CareLogBook:
         )
         return ledger
 
-    def passes_agree(self, first: Sequence[CareLogRead], second: Sequence[CareLogRead]) -> bool:
+    def passes_agree(
+        self,
+        first: Sequence[CareLogRead],
+        second: Sequence[CareLogRead],
+        seen: Iterable[CareLogRead] = (),
+    ) -> bool:
         """Whether a second pass confirms a first one.
 
         Same bounds pairwise, this reader throughout, nothing dropped, each
         read of the second at least ``min_gap`` after its pair in the first,
         and the same entries, read by read, in every hour that was finished
         when the first pass began.
+
+        ``seen`` are other reads taken since the first pass began. None of
+        them may return, in an hour that was finished when the first pass
+        began and at a time inside the pass's bounds, an entry the second
+        pass lacks or holds with other chart facts: such a sighting says
+        the two passes are not the whole story.
         """
         try:
             self._check_pass(first)
@@ -762,7 +798,7 @@ class CareLogBook:
                 return False
             if not _agree(a, b, cutoff):
                 return False
-        return True
+        return _sightings_agree(second, seen, cutoff)
 
     def adopt(self, reads: Sequence[CareLogRead]) -> None:
         """Replace the ledger with a pass's candidate and forget every waiting change."""
@@ -904,6 +940,15 @@ class CareLogBook:
     def drop_pending(self, start: int, end: int) -> bool:
         """Forget the waiting record for some bounds; return whether there was one."""
         return self._pending.pop((start, end), None) is not None
+
+    def drop_all_pending(self) -> int:
+        """Forget every waiting record, so nothing is confirmed across lost reads.
+
+        Return how many there were.
+        """
+        count = len(self._pending)
+        self._pending.clear()
+        return count
 
     def stats(self) -> BookStats:
         """Return counts for diagnostics."""

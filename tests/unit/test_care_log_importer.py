@@ -274,6 +274,7 @@ async def test_diagnostics_before_anything_happened(hass: HomeAssistant) -> None
         "confirm_fetches": 0,
         "give_ups": 0,
         "sync_failures": 0,
+        "queue_overflows": 0,
         "rows_written": 0,
         "rows_written_last_sync": 0,
         "minutes_since_last_sync": None,

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from datetime import UTC, date, datetime, timedelta
 from itertools import pairwise
 from typing import Any
@@ -112,6 +112,10 @@ class Truth:
         self.dropped_own = 0
         self.errors: list[BaseException] = []
         self.after_own: Callable[[int, int], None] | None = None
+        # Left out of every own fetch while set.
+        self.omit_own: set[str] = set()
+        # Awaited inside an own fetch, before it is answered.
+        self.during_own: Callable[[int, int], Awaitable[None]] | None = None
 
     def put(self, log: CareLog) -> None:
         self.logs[log.uid] = log
@@ -132,7 +136,12 @@ class Truth:
         self.own.append((start, end))
         if self.errors:
             raise self.errors.pop(0)
+        if self.during_own is not None:
+            await self.during_own(start, end)
         result = self.answer(start, end)
+        if self.omit_own:
+            logs = tuple(log for log in result.logs if log.uid not in self.omit_own)
+            result = CareLogFetch(logs=logs, start=start, end=end, dropped=result.dropped)
         if self.dropped_own:
             result = CareLogFetch(logs=result.logs, start=start, end=end, dropped=self.dropped_own)
         if self.after_own is not None:
@@ -973,6 +982,129 @@ async def test_an_unexpected_error_is_logged_and_the_worker_carries_on(
 
 
 # ---------------------------------------------------------------------------
+# Sightings
+# ---------------------------------------------------------------------------
+
+
+async def test_absent_present_absent_at_start_up_lowers_nothing(
+    make: Callable[..., Harness], hass: HomeAssistant
+) -> None:
+    truth = Truth(BASE)
+    first = await _imported(make, truth)
+    await first.stop()
+    second = make(truth)
+    truth.omit_next = {B1.uid}  # the reader's read the first pass starts from
+    second.start()
+    await second.poll()  # 18:10
+    assert second.diag()["state"] == "waiting_for_second_pass"
+
+    await second.tick_and_poll(timedelta(minutes=2))  # 18:12, the reader returns b1
+    truth.omit_own = {B1.uid}  # and the second pass leaves it out again
+    await second.advance(MIN_GAP - timedelta(minutes=2))  # 18:15, the second pass
+
+    assert second.diag()["passes_completed"] == 2
+    assert second.diag()["state"] == "waiting_for_second_pass"
+    assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(B1)] == 120.0
+
+    truth.omit_own = set()
+    for _ in range(3):
+        await second.advance(MIN_GAP)
+    assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(B1)] == 120.0
+
+
+async def test_a_reader_read_during_the_confirm_fetch_cancels_the_removal(
+    make: Callable[..., Harness], hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    truth = Truth(BASE)
+    harness = await _imported(make, truth)
+    truth.omit_next = {B1.uid}
+    await harness.tick_and_poll(timedelta(minutes=1))  # left out once: a removal waits
+    assert len(harness.importer._book.pending_requests()) == 1
+
+    async def reader_poll_meanwhile(_start: int, _end: int) -> None:
+        truth.during_own = None
+        freezer.tick(timedelta(seconds=1))
+        await harness.coordinator.async_refresh()  # returns b1
+        freezer.tick(timedelta(seconds=1))
+        truth.omit_own = {B1.uid}  # the confirm fetch, answered last, leaves it out
+
+    truth.during_own = reader_poll_meanwhile
+    await harness.advance(MIN_GAP)
+
+    assert harness.diag()["confirm_fetches"] == 1
+    assert B1.uid in harness.importer._book.ledger
+    assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(B1)] == 120.0
+
+    truth.omit_own = set()
+    for _ in range(2):
+        await harness.advance(MIN_GAP)
+    assert harness.importer._book.pending_requests() == ()
+    assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(B1)] == 120.0
+
+
+async def test_a_reader_queue_overflow_forgets_every_waiting_change(
+    make: Callable[..., Harness], hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    truth = Truth(BASE)
+    harness = await _imported(make, truth)
+    truth.delete(B1.uid)
+    await harness.tick_and_poll(timedelta(minutes=1))  # the removal waits
+    assert len(harness.importer._book.pending_requests()) == 1
+
+    async def reader_polls_meanwhile(_start: int, _end: int) -> None:
+        truth.during_own = None
+        for _ in range(3):
+            freezer.tick(timedelta(seconds=1))
+            await harness.coordinator.async_refresh()
+        freezer.tick(timedelta(seconds=1))
+
+    truth.during_own = reader_polls_meanwhile
+    with patch.object(care_log_importer, "READER_QUEUE", 2):
+        await harness.advance(MIN_GAP)
+
+    # A read was lost while the confirm fetch ran: the fetch, which would
+    # have confirmed the removal, only starts a new round.
+    assert harness.diag()["queue_overflows"] == 1
+    assert harness.diag()["confirm_fetches"] == 1
+    assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(B1)] == 120.0
+    assert len(harness.importer._book.pending_requests()) == 1
+
+    await harness.advance(MIN_GAP)
+    assert harness.diag()["confirm_fetches"] == 2
+    assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(B1)] == 0.0
+
+
+async def test_an_older_read_processed_late_ends_at_the_truth(
+    make: Callable[..., Harness], hass: HomeAssistant
+) -> None:
+    truth = Truth(BASE)
+    first = await _imported(make, truth)
+    await first.stop()
+    truth.delete(D2.uid)  # the restart needs a second pass
+    second = make(truth)
+    second.start()
+    await second.poll()  # 18:10, the first pass
+    late = _bottle("b_running", NOW + timedelta(minutes=1), 50.0)  # in the running hour
+    truth.put(late)
+    await second.tick_and_poll(timedelta(minutes=2))  # 18:12, kept: it returns the bottle
+    truth.delete(late.uid)
+    await second.advance(MIN_GAP - timedelta(minutes=2))  # 18:15, the second pass agrees
+
+    assert second.diag()["state"] == "running"
+    # The kept read, older than the adopted pass, adds the bottle back.
+    assert late.uid in second.importer._book.ledger
+
+    # Once its hour has finished, the next read and its re-read remove it.
+    await second.tick_and_poll(timedelta(minutes=50))  # 19:05
+    await second.advance(MIN_GAP)  # 19:10
+    assert late.uid not in second.importer._book.ledger
+    volume = await _rows(hass, S.BOTTLE_VOLUME)
+    assert volume[_hour(late)] == (0.0, 210.0)
+    assert volume[_end_hour() - H] == (0.0, 210.0)
+    assert (await _stored(hass, S.DIAPER_PEE))[_hour(D2)] == 0.0
+
+
+# ---------------------------------------------------------------------------
 # Privacy
 # ---------------------------------------------------------------------------
 
@@ -1063,6 +1195,7 @@ async def test_no_entry_id_baby_id_name_or_code_in_logs_or_diagnostics(
         "confirm_fetches",
         "give_ups",
         "sync_failures",
+        "queue_overflows",
         "rows_written",
         "rows_written_last_sync",
         "minutes_since_last_sync",

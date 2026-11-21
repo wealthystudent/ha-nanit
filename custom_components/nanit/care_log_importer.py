@@ -27,6 +27,18 @@ incremental sync follows. A change that lowers a chart waits for the book's
 confirm request, which the importer reads itself. Once a day the history is
 read again.
 
+No read is ever dropped for being older than another. Reads waiting to be
+processed, the reader's and the importer's own, go to the book in the
+order they were taken: an older read processed late can add or cancel,
+never confirm. From the start of the first start-up pass, the reader's
+reads are kept. A second pass is adopted only when none of them returns,
+in an hour that was finished when the first pass began and inside the
+pass's bounds, an entry the second pass lacks or holds otherwise; after
+the adoption they are processed in order. When more than ``READER_QUEUE``
+reads wait, the oldest is lost: a waiting start-up pass starts over, and
+every change waiting for a confirming read is forgotten, so nothing is
+confirmed across the gap.
+
 Nanit is asked for nothing beyond the reader's own polls while the recorder
 is not ready, and nothing at all when the config entry has polling
 disabled.
@@ -116,8 +128,10 @@ HISTORY_FALLBACK: Final = timedelta(days=3 * 365)
 HISTORY_FLOOR: Final = datetime(2014, 1, 1, tzinfo=UTC)
 # After a failed sync, the next one (a full sync) waits this long.
 SYNC_RETRY_DELAY: Final = timedelta(minutes=15)
-# Reader updates kept for the worker while it is busy (oldest dropped).
-READER_QUEUE: Final = 8
+# Reader updates kept for the worker while it is busy, or for a start-up
+# pass waiting for its second pass. Past this, the oldest is dropped and
+# counted as an overflow: observations were lost.
+READER_QUEUE: Final = 64
 # An own answer with more entries than this is turned into a read off the
 # event loop.
 LARGE_READ: Final = 500
@@ -243,16 +257,20 @@ class CareLogStatisticsImporter:
 
         # Reader updates not yet taken by the worker, and the newest seen.
         self._last_handled_read_at: datetime | None = None
-        self._reader_queue: deque[CareLogData] = deque(maxlen=READER_QUEUE)
+        self._reader_queue: deque[CareLogData] = deque()
         self._newest_reader: CareLogData | None = None
+        # Set when a reader update was lost to a full queue, until handled.
+        self._overflowed = False
 
-        # Start-up.
+        # Start-up. ``_keeping``: reader updates are kept for the start-up
+        # passes (from the start of a first pass until the adoption).
         self._first_pass: tuple[CareLogRead, ...] | None = None
+        self._first_pass_began: datetime | None = None
+        self._keeping = False
         self._passes = 0
         self._startup_due: datetime | None = None
 
         # Running.
-        self._newest_read_at: datetime | None = None
         self._reader_start: int | None = None
         # The start of the history the ledger was built from: the recorder
         # functions never touch rows before it.
@@ -278,6 +296,7 @@ class CareLogStatisticsImporter:
         self._confirm_fetches = 0
         self._give_ups = 0
         self._sync_failures = 0
+        self._queue_overflows = 0
         self._rows_written = 0
         self._rows_last_sync = 0
         self._last_sync_at: datetime | None = None
@@ -341,8 +360,16 @@ class CareLogStatisticsImporter:
         if last is not None and coverage.read_at <= last:
             return False
         self._last_handled_read_at = coverage.read_at
-        self._reader_queue.append(data)
         self._newest_reader = data
+        if self._book.established or self._keeping:
+            queue = self._reader_queue
+            if len(queue) >= READER_QUEUE:
+                queue.popleft()
+                self._queue_overflows += 1
+                self._overflowed = True
+            queue.append(data)
+        # Otherwise no pass waits for it: the next first pass starts from
+        # the newest, which is kept above.
         return True
 
     @callback
@@ -508,6 +535,8 @@ class CareLogStatisticsImporter:
         if not self._recorder_ready():
             self._state = STATE_WAITING_FOR_RECORDER
             return
+        if self._overflowed and self._first_pass is not None:
+            self._start_over()
         now = dt_util.utcnow()
         if self._startup_due is not None and now < self._startup_due:
             return
@@ -530,6 +559,11 @@ class CareLogStatisticsImporter:
             self._note_sync_failure()
             self._startup_due = self._sync_retry_at
             self._state = STATE_WAITING_TO_RETRY
+        if self._first_pass is None and not self._book.established:
+            # No pass waits for the reader's reads: the next first pass
+            # starts from the newest.
+            self._keeping = False
+            self._reader_queue.clear()
 
     async def _async_first_pass(self) -> None:
         newest = self._newest_reader
@@ -537,7 +571,10 @@ class CareLogStatisticsImporter:
             self._state = STATE_WAITING_FOR_READER
             return
         self._state = STATE_STARTING
+        # From here on, every reader read is kept for this round.
         self._reader_queue.clear()
+        self._overflowed = False
+        self._keeping = True
         reader_read = self._read_from_reader(newest)
         history_start = care_log_history_start(self._baby, dt_util.utcnow())
         pieces = care_log_history_pieces(history_start, reader_read.start - 1)
@@ -564,10 +601,11 @@ class CareLogStatisticsImporter:
             return
         # It would lower a stored cell: nothing is written until a second
         # pass of the same bounds agrees.
-        self._wait_for_next_pass(reads)
+        self._wait_for_next_pass(reads, reader_read.read_at)
 
     async def _async_second_pass(self, first: Sequence[CareLogRead]) -> None:
         self._state = STATE_STARTING
+        began = dt_util.utcnow()
         reads: list[CareLogRead] = []
         for index, read in enumerate(first):
             await self._async_pause(index)
@@ -575,7 +613,20 @@ class CareLogStatisticsImporter:
         self._note_connection_success()
         self._passes_completed += 1
         self._passes += 1
-        agree: bool = await self._hass.async_add_executor_job(self._book.passes_agree, first, reads)
+        if self._overflowed:
+            # A reader read taken during this round was lost: what it said is
+            # unknown, so the passes cannot be trusted to agree.
+            self._start_over()
+            return
+        since = self._first_pass_began
+        seen = [
+            read
+            for read in map(self._read_from_reader, self._reader_queue)
+            if since is None or read.read_at >= since
+        ]
+        agree: bool = await self._hass.async_add_executor_job(
+            self._book.passes_agree, first, reads, seen
+        )
         if agree:
             await self._async_adopt(reads)
             return
@@ -586,24 +637,41 @@ class CareLogStatisticsImporter:
             )
             self._give_ups += 1
             self._first_pass = None
+            self._first_pass_began = None
+            self._keeping = False
+            self._reader_queue.clear()
             self._passes = 0
             self._startup_due = dt_util.utcnow() + HISTORY_INTERVAL
             self._state = STATE_GAVE_UP
             return
-        self._wait_for_next_pass(reads)
+        self._wait_for_next_pass(reads, began)
 
-    def _wait_for_next_pass(self, reads: Sequence[CareLogRead]) -> None:
+    def _wait_for_next_pass(self, reads: Sequence[CareLogRead], began: datetime) -> None:
+        """Make ``reads`` the first pass of the next round; it began at ``began``."""
         self._first_pass = tuple(reads)
+        self._first_pass_began = min(began, *(read.read_at for read in reads))
         self._startup_due = max(read.read_at for read in reads) + MIN_GAP
         self._state = STATE_WAITING_FOR_SECOND_PASS
+
+    def _start_over(self) -> None:
+        """Forget a waiting start-up pass: the next step starts a new first pass."""
+        self._first_pass = None
+        self._first_pass_began = None
+        self._keeping = False
+        self._reader_queue.clear()
+        self._overflowed = False
+        self._passes = 0
+        self._startup_due = None
+        self._wake()
 
     async def _async_adopt(self, reads: Sequence[CareLogRead]) -> None:
         await self._hass.async_add_executor_job(self._book.adopt, reads)
         now = dt_util.utcnow()
         self._first_pass = None
+        self._first_pass_began = None
+        self._keeping = False
         self._passes = 0
         self._startup_due = None
-        self._newest_read_at = max(read.read_at for read in reads)
         self._reader_start = reads[-1].start
         self._coverage_start = reads[0].start
         self._piece_bounds = {(read.start, read.end) for read in reads[:-1]}
@@ -613,13 +681,15 @@ class CareLogStatisticsImporter:
         self._last_history_at = now
         self._history_due = now + HISTORY_INTERVAL
         self._state = STATE_RUNNING
+        # The reader reads kept since the first pass began, in order.
+        self._process_reads()
         await self._async_sync()
 
     # -- running ------------------------------------------------------------------
 
     async def _async_running_step(self) -> None:
         self._state = STATE_RUNNING
-        self._process_reader_queue()
+        self._process_reads()
         if not self._recorder_ready():
             # Reads still update the book; nothing is asked of Nanit or written
             # until the recorder is back.
@@ -641,23 +711,26 @@ class CareLogStatisticsImporter:
             self._note_connection_failure(dt_util.utcnow())
             _LOGGER.debug("A care log read could not reach Nanit; trying again later")
 
-    def _process_reader_queue(self) -> None:
-        while self._reader_queue:
-            data = self._reader_queue.popleft()
-            read = self._read_from_reader(data)
-            if self._process(read) is not None:
-                self._reader_start = read.start
+    def _process_reads(self, *own: CareLogRead) -> None:
+        """Give the book the importer's own reads and every queued reader read, oldest first.
 
-    def _process(self, read: CareLogRead) -> Outcome | None:
-        """Give the book one read; None when it is older than one already taken.
-
-        A read older than the newest one taken could bring back what that
-        one removed; what it holds is found again by the next read.
+        None is dropped for being older than another. After a queue
+        overflow, every waiting change is forgotten first: reads were lost,
+        so no record may be confirmed across the gap.
         """
-        if self._newest_read_at is not None and read.read_at < self._newest_read_at:
-            return None
+        if self._overflowed:
+            self._overflowed = False
+            self._book.drop_all_pending()
+        reader = [self._read_from_reader(data) for data in self._reader_queue]
+        self._reader_queue.clear()
+        for read in reader:
+            self._reader_start = read.start  # oldest first: the newest stays
+        for read in sorted([*own, *reader], key=lambda read: read.read_at):
+            self._process(read)
+
+    def _process(self, read: CareLogRead) -> Outcome:
+        """Give the book one read, and note what it changed."""
         outcome = self._book.process(read)
-        self._newest_read_at = read.read_at
         _merge_earliest(self._dirty, outcome.changed_from)
         self._sync_wanted = True
         if outcome.gave_up:
@@ -695,8 +768,7 @@ class CareLogStatisticsImporter:
         self._confirm_fetches += 1
         read = await self._async_own_read(request.start, request.end)
         self._note_connection_success()
-        self._process(read)
-        self._process_reader_queue()
+        self._process_reads(read)
         await self._async_sync()
 
     async def _async_history_pass(self) -> None:
@@ -712,8 +784,7 @@ class CareLogStatisticsImporter:
         for index, (start, end) in enumerate(pieces):
             await self._async_pause(index)
             read = await self._async_own_read(start, end)
-            self._process(read)
-            self._process_reader_queue()
+            self._process_reads(read)
         self._note_connection_success()
         # The history this pass read: from now on the rows the ledger covers.
         self._coverage_start = min(history_start, reader_start)
@@ -803,6 +874,7 @@ class CareLogStatisticsImporter:
             "confirm_fetches": self._confirm_fetches,
             "give_ups": self._give_ups,
             "sync_failures": self._sync_failures,
+            "queue_overflows": self._queue_overflows,
             "rows_written": self._rows_written,
             "rows_written_last_sync": self._rows_last_sync,
             "minutes_since_last_sync": _whole_minutes(self._last_sync_at, now),

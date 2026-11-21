@@ -751,6 +751,35 @@ def test_two_passes_disagree(second: list[CareLogRead]) -> None:
     assert not book.passes_agree(first, second)
 
 
+def test_a_sighting_since_the_first_pass_that_the_second_lacks_stops_agreement() -> None:
+    book = CareLogBook(reader=READER, min_gap=GAP)
+    without_b1 = _PASS_LOGS[1:]
+    first = _pass(without_b1, T0, cuts=[NOON])
+    second = _pass(without_b1, T0 + GAP, cuts=[NOON])
+    between = T0 + timedelta(minutes=2)
+    assert book.passes_agree(first, second)
+    # A read in between returned b1, in a finished hour inside the pass.
+    assert not book.passes_agree(first, second, [_read(_PASS_LOGS, at=between)])
+    # A sighting that lacks an entry says nothing about it.
+    assert book.passes_agree(first, second, [_read([], at=between)])
+
+
+def test_a_sighting_with_other_facts_stops_agreement_but_not_outside_the_pass() -> None:
+    book = CareLogBook(reader=READER, min_gap=GAP)
+    first = _pass(_PASS_LOGS, T0, cuts=[NOON])
+    second = _pass(_PASS_LOGS, T0 + GAP, cuts=[NOON])
+    between = T0 + timedelta(minutes=2)
+    edited = [_bottle("b1", AT_9, 80.0), _PASS_LOGS[1]]
+    assert not book.passes_agree(first, second, [_read(edited, at=between)])
+    # In the hour still running when the first pass began: not a disagreement.
+    running = _diaper("d9", T0 + timedelta(minutes=1))
+    assert book.passes_agree(first, second, [_read([*_PASS_LOGS, running], at=between)])
+    # At a time outside the pass's bounds: not a disagreement either.
+    outside = _bottle("b7", DAY - timedelta(hours=2), 40.0)
+    wide = _read([*_PASS_LOGS, outside], at=between, start=START - 86400)
+    assert book.passes_agree(first, second, [wide])
+
+
 def test_a_first_pass_with_a_dropped_row_never_agrees() -> None:
     book = CareLogBook(reader=READER, min_gap=GAP)
     first = _pass(_PASS_LOGS, T0, cuts=[NOON], dropped=1)
@@ -1210,6 +1239,21 @@ def test_pending_requests_list_every_record() -> None:
     stats = book.stats()
     assert (stats.entries, stats.pending_records, stats.waiting_entries) == (2, 2, 2)
     assert stats.established
+
+
+def test_dropping_every_waiting_record() -> None:
+    book = _book([_bottle("b1", AT_9), _diaper("d1", AT_10)])
+    book.process(_read([_diaper("d1", AT_10)], at=T0, end=NOON - 1))
+    book.process(_read([], at=T0, start=_hour(AT_10)))
+    assert len(book.pending_requests()) == 2
+
+    assert book.drop_all_pending() == 2
+
+    assert book.pending_requests() == ()
+    assert book.drop_all_pending() == 0
+    # Nothing can be confirmed now: the next read starts a new round.
+    book.process(_read([_diaper("d1", AT_10)], at=T0 + GAP, end=NOON - 1))
+    assert "b1" in book.ledger
 
 
 def test_a_record_is_removed_when_nothing_lowering_is_left() -> None:

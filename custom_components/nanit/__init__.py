@@ -24,6 +24,7 @@ from .const import (
     CONF_CAMERA_IP,
     CONF_CAMERA_IPS,
     CONF_CAMERA_UID,
+    CONF_MANUAL_SPEAKERS,
     CONF_SPEAKER_IPS,
     CONF_STORE_CREDENTIALS,
     CONF_UNPAIRED_SPEAKERS,
@@ -442,6 +443,7 @@ def _async_remove_stale_devices(
     if isinstance(stored_map, dict):
         valid_uids.update(uid for uid in stored_map.values() if isinstance(uid, str))
     valid_uids.update(hub.unpaired_speakers)
+    valid_uids.update(hub.manual_speakers)
     stored_unpaired = entry.data.get(CONF_UNPAIRED_SPEAKERS, {})
     if isinstance(stored_unpaired, dict):
         valid_uids.update(uid for uid in stored_unpaired if isinstance(uid, str))
@@ -512,6 +514,21 @@ async def async_remove_config_entry_device(
                 entry,
                 data={**entry.data, CONF_UNPAIRED_SPEAKERS: pruned_unpaired},
             )
+    manual = entry.options.get(CONF_MANUAL_SPEAKERS, {})
+    speaker_ips = entry.options.get(CONF_SPEAKER_IPS, {})
+    new_options: dict[str, Any] = {}
+    if isinstance(manual, dict):
+        pruned_manual = {k: v for k, v in manual.items() if k not in device_uids}
+        if pruned_manual != manual:
+            new_options[CONF_MANUAL_SPEAKERS] = pruned_manual
+    # A deleted machine's IP goes too, so re-adding it starts clean and a
+    # leftover address can't override discovery if the cloud reports it later.
+    if isinstance(speaker_ips, dict):
+        pruned_ips = {k: v for k, v in speaker_ips.items() if k not in device_uids}
+        if pruned_ips != speaker_ips:
+            new_options[CONF_SPEAKER_IPS] = pruned_ips
+    if new_options:
+        hass.config_entries.async_update_entry(entry, options={**entry.options, **new_options})
     return True
 
 

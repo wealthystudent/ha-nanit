@@ -144,22 +144,32 @@ The pre-push hook stops an unsigned commit before it leaves your machine,
 `just verify branch` checks the whole branch, and `PR Metadata` names any
 commit GitHub can't verify, and why.
 
-If a branch you already pushed has unsigned commits, sign them in place (same
-base, same changes) and force-push. From a fork, use your remote for this repo
-(often `upstream`) instead of `origin`:
+If a branch you already pushed has unsigned commits, sign them again and
+force-push. Commit everything first, so nothing else ends up in the new
+commits. From a fork, use your remote for this repo (often `upstream`) instead
+of `origin`:
 
 ```bash
 git fetch origin main
-git rebase --force-rebase --gpg-sign "$(git merge-base HEAD origin/main)"
-git push --force-with-lease
+base="$(git merge-base HEAD origin/main)"
+git log --merges --oneline "$base..HEAD"   # any merge commits?
 ```
 
-The force-push needs a fresh approval before the PR can merge.
+With no merge commits, sign each commit in place (same base, same changes):
 
-If the branch has merge commits, don't rebase: the rebase drops them, and
-with them any change made in a merge, without stopping. Squash the branch into
-one signed commit instead with
-`git reset --soft "$(git merge-base HEAD origin/main)"` and `git commit -S`.
+```bash
+git rebase --force-rebase --gpg-sign "$base"
+```
+
+With merge commits, don't rebase: it drops them, and any change made in them,
+without stopping. Squash the branch into one signed commit instead:
+
+```bash
+git reset --soft "$base" && git commit -S
+```
+
+Then `git push --force-with-lease`. The force-push needs a fresh approval
+before the PR can merge.
 
 Agents use whatever signing the host has configured, and never change it. On a
 host without signing, an agent stops and asks its person to set it up rather

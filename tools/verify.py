@@ -163,12 +163,14 @@ def subject_error(subject: str) -> str | None:
 
 def sign_fix(base_ref: str) -> str:
     """How to sign the commits of a branch you already pushed."""
+    base = f'"$(git merge-base HEAD {base_ref})"'
     return (
-        f"Set up signing ({SIGNING_DOCS}), then sign them in place and force-push:\n"
-        f'  git rebase --force-rebase --gpg-sign "$(git merge-base HEAD {base_ref})"\n'
-        "  git push --force-with-lease\n"
-        "If the branch has merge commits, the rebase drops them, so squash instead:\n"
-        f'  git reset --soft "$(git merge-base HEAD {base_ref})" && git commit -S'
+        f"Set up signing ({SIGNING_DOCS}), commit everything, then sign the branch again.\n"
+        f"With no merge commits (git log --merges {base_ref}..HEAD), sign each in place:\n"
+        f"  git rebase --force-rebase --gpg-sign {base}\n"
+        "With merge commits, a rebase drops them, so squash into one signed commit:\n"
+        f"  git reset --soft {base} && git commit -S\n"
+        "Then: git push --force-with-lease"
     )
 
 

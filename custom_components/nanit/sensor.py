@@ -518,7 +518,7 @@ class NanitCareLogSensor(NanitCareLogEntity, SensorEntity):
         super().__init__(coordinator)
         self.entity_description = description
         self._attr_unique_id = f"{coordinator.baby.camera_uid}_{description.key}"
-        # Care Logs need Nanit's Insights plan. An account with no entries
+        # Not every family uses Care Logs. An account with no entries
         # in the first fetch's lookback gets these registered disabled, so
         # it isn't handed a set of sensors that never change.
         data = coordinator.data

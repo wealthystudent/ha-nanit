@@ -156,7 +156,7 @@ class CloudEvent:
 
 @dataclass(frozen=True)
 class CareLog:
-    """An entry from the Nanit app's Care Logs (Insights plan).
+    """An entry from the Nanit app's Care Logs.
 
     Parents log these by hand in the app: diaper changes, bottles, nursing,
     pumping and naps. The calendar also carries the camera's own sleep

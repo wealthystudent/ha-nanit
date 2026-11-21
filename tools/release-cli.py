@@ -22,6 +22,8 @@ import sys
 from dataclasses import dataclass, field
 from typing import Any
 
+import release_notes  # tools/, next to this script
+
 try:
     from rich import box
     from rich.console import Console
@@ -449,6 +451,10 @@ async def action_create_pr(state: State) -> None:
     last_commit = await sh("git", "log", "-1", "--format=%s")
     title = Prompt.ask("  [bold]PR title[/]", default=last_commit)
 
+    if not release_notes.TITLE_RE.match(title):
+        console.print("  [red]✗ The title must be a conventional commit, e.g. 'fix: ...'.[/]")
+        return
+
     label = _ask_bump(state)
 
     console.print(
@@ -459,16 +465,6 @@ async def action_create_pr(state: State) -> None:
     if label and changelog.strip().lower() in ("", "none"):
         console.print("  [red]✗ A release label needs a changelog entry.[/]")
         return
-    what = Prompt.ask("\n  [bold]What does this do[/] [dim](the change and why)[/]\n  [bold]▸[/]")
-    live = Prompt.ask(
-        "\n  [bold]Live test[/] [dim](what you ran in a real Home Assistant and saw, "
-        "or 'not tested live' and why)[/]\n  [bold]▸[/]"
-    )
-    ai_use = Prompt.ask(
-        "\n  [bold]AI use[/] [dim](none, or the tool and 'assisted' or "
-        "'generated and reviewed')[/]\n  [bold]▸[/]",
-        default="none",
-    )
     with console.status("  [bold]Running just verify..."):
         proc = await asyncio.create_subprocess_exec(
             "uv", "run", "tools/verify.py", stdout=asyncio.subprocess.PIPE
@@ -478,11 +474,24 @@ async def action_create_pr(state: State) -> None:
     if proc.returncode != 0 or not receipt:
         console.print("  [red]✗ just verify failed. Run it, fix what it reports, try again.[/]")
         return
+    needs = out.split("\nLive test: ", 1)[-1].split("\nTo fix:", 1)[0]
+    console.print(f"\n  [bold]Live test[/] [dim]{needs.strip()}[/]")
+
+    answers = {}
+    for key, question in (
+        ("what", "What does this do [dim](the change and why)[/]"),
+        ("live", "Live test [dim](what you ran and saw, or 'not tested live' and why)[/]"),
+        ("ai", "AI use [dim](none, or the tool and 'assisted' or 'generated and reviewed')[/]"),
+    ):
+        answers[key] = Prompt.ask(f"\n  [bold]{question}[/]\n  [bold]▸[/]").strip()
+        if not answers[key]:
+            console.print("  [red]✗ Every section needs an answer.[/]")
+            return
     body = (
-        f"## What does this do\n\n{what.strip()}\n\n"
+        f"## What does this do\n\n{answers['what']}\n\n"
         f"## Changelog\n\n{changelog.strip()}\n\n"
-        f"## How I tested this\n\n**Live test:** {live.strip()}\n\n{receipt.group(0)}\n\n"
-        f"## AI use\n\n{ai_use.strip()}\n"
+        f"## How I tested this\n\n**Live test:** {answers['live']}\n\n{receipt.group(0)}\n\n"
+        f"## AI use\n\n{answers['ai']}\n"
     )
 
     with console.status("  [bold]Pushing branch..."):

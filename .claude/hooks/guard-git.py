@@ -11,11 +11,13 @@ command text, so it is an accident guard, not a security boundary.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 import subprocess
 import sys
 
+CONFIG_OPTIONS_WITH_VALUE = {"-f", "--file", "--blob", "--type", "--default", "--comment"}
 SIGNING_KEYS = re.compile(r"^(commit|tag|rebase)\.gpgsign$|^gpg\.|^user\.signingkey$", re.I)
 
 
@@ -33,6 +35,19 @@ def segments(command: str) -> list[list[str]]:
         if split:
             words.append(split)
     return words
+
+
+def positional(args: list[str], with_value: set[str]) -> list[str]:
+    """Return the arguments that are not options or option values."""
+    out, skip = [], False
+    for arg in args:
+        if skip:
+            skip = False
+        elif arg in with_value:
+            skip = True
+        elif not arg.startswith("-"):
+            out.append(arg)
+    return out
 
 
 def current_branch(cwd: str | None) -> str:
@@ -59,6 +74,8 @@ def problem(words: list[str], cwd: str | None = None) -> str | None:
             value = args.pop(0)
             if option == "-c":
                 configs.append(value)
+            else:
+                cwd = os.path.join(cwd or os.getcwd(), value)
     for value in configs:
         key = value.split("=", 1)[0]
         if SIGNING_KEYS.search(key):
@@ -68,7 +85,7 @@ def problem(words: list[str], cwd: str | None = None) -> str | None:
     sub, rest = args[0], args[1:]
 
     if sub == "config":
-        words_ = [a for a in rest if not a.startswith("-")]
+        words_ = positional(rest, CONFIG_OPTIONS_WITH_VALUE)
         action = words_.pop(0) if words_ and words_[0] in ("set", "unset", "get", "list") else ""
         writes = (
             action in ("set", "unset")
@@ -87,7 +104,7 @@ def problem(words: list[str], cwd: str | None = None) -> str | None:
         plus = any(a.startswith("+") for a in rest if not a.startswith("-"))
         if bare or plus:
             return "Use --force-with-lease, and only on a branch you created."
-        refs = [a for a in rest if not a.startswith("-")][1:]
+        refs = positional(rest, {"-o", "--push-option", "--repo", "--receive-pack", "--exec"})[1:]
         to_main = any(r.split(":")[-1] in ("main", "refs/heads/main") for r in refs)
         implicit = not refs or refs == ["HEAD"]  # pushes the current branch
         if to_main or (implicit and current_branch(cwd) == "main"):

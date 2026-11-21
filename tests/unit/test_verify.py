@@ -158,6 +158,20 @@ def test_live_label_inside_a_code_block_does_not_count() -> None:
     assert any("'Live test:'" in e for e in errors)
 
 
+def test_receipt_must_be_in_a_closed_code_block() -> None:
+    unfenced = body().replace("```text\n", "").replace("result: pass\n```", "result: pass")
+    assert any("no `just verify` receipt" in e for e in problems(unfenced)[0])
+    unclosed = body().replace("result: pass\n```", "result: pass")
+    assert any("no `just verify` receipt" in e for e in problems(unclosed)[0])
+
+
+def test_longer_fences_work() -> None:
+    text = body().replace("```text", "````text").replace("result: pass\n```", "result: pass\n````")
+    assert problems(text) == ([], [])
+    hidden = body(live="").replace(RECEIPT, "````\nLive test: fake\n```\n````\n" + RECEIPT)
+    assert any("'Live test:'" in e for e in problems(hidden)[0])
+
+
 def test_local_run_only_warns_about_an_outdated_receipt() -> None:
     errors, warnings = verify.pr_body_problems(
         "fix: x", body(), [], "someone", ["c" * 40], receipt_required=False
@@ -187,6 +201,8 @@ def test_title_and_changelog_rules_still_apply() -> None:
         "Co-Authored-By: Claude <noreply@anthropic.com>",
         "Co-authored-by: Copilot <175728472+Copilot@users.noreply.github.com>",
         "co-authored-by: codex <codex@openai.com>",
+        "Co-authored-by: Cursor Agent <cursoragent@cursor.com>",
+        "Co-authored-by: devin-ai-integration[bot] <158243242+devin-ai-integration[bot]@users.noreply.github.com>",
         "🤖 Generated with [Claude Code](https://claude.com/claude-code)",
     ],
 )
@@ -199,6 +215,8 @@ def test_ai_attribution_is_found(line: str) -> None:
     [
         "fix: x\n\nCo-authored-by: Jordan <com6056@gmail.com>",
         "fix: x\n\nCo-authored-by: Claudette Smith <claudette@example.com>",
+        "fix: x\n\nCo-authored-by: Devin Smith <devin@example.com>",
+        "fix: x\n\nCo-authored-by: Jules Martin <jules@example.org>",
         "docs: explain diagnostics generated with Cursor",
         "fix: x\n\nThe old card was generated with a script, not by Claude.",
     ],
@@ -302,6 +320,14 @@ def test_ci_fails_when_github_lists_fewer_commits(
     assert "only 2 of this PR's 300 commits" in capsys.readouterr().out
 
 
+def test_ci_fails_when_the_head_moved(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("PR_HEAD_SHA", "d" * 40)
+    assert _run_pr(monkeypatch, tmp_path, [_commit(OLDER, True), _commit(HEAD, True)], body()) == 1
+    assert "moved to a new head" in capsys.readouterr().out
+
+
 def test_ci_rejects_ai_trailers_in_commits(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -325,6 +351,8 @@ def test_ci_rejects_ai_trailers_in_commits(
         ("git config --unset commit.gpgsign", True),
         ("git config set commit.gpgsign false", True),
         ("git config unset user.signingkey", True),
+        ("git config --file .git/config commit.gpgsign false", True),
+        ("git config -f x.cfg --get commit.gpgsign", False),
         ("git push --force", True),
         ("git push -uf origin fix/x", True),
         ("git push origin +fix/x", True),
@@ -347,5 +375,6 @@ def test_guard_blocks_an_implicit_push_from_main(tmp_path: Path) -> None:
     for command in ("git push", "git push origin", "git push origin HEAD"):
         words = guard.segments(command)[0]
         assert guard.problem(words, str(tmp_path)), command
+    assert guard.problem(guard.segments(f"git -C {tmp_path} push")[0], "/")
     subprocess.run(["git", "-C", str(tmp_path), "switch", "-q", "-c", "fix/x"], check=True)
     assert guard.problem(guard.segments("git push")[0], str(tmp_path)) is None

@@ -39,19 +39,29 @@ import release_notes
 
 ROOT = Path(__file__).resolve().parents[1]
 AREAS_FILE = ROOT / "tools" / "verify-areas.toml"
+BUNDLE = Path("custom_components/nanit/frontend/nanit-card.js")
 UPSTREAM_RE = re.compile(r"[:/]wealthystudent/ha-nanit(\.git)?/?$")
 BRANCH_RE = re.compile(r"^(feat|fix|perf|refactor|docs|test|chore|ci|build|revert)/\S")
 EXEMPT_SUBJECT_PREFIXES = ("fixup! ", "squash! ", "amend! ", "Merge ", 'Revert "')
-AI_NAMES = (
-    r"\b(?:claude|anthropic|copilot|codex|openai|chatgpt|gpt-\d[\w.-]*|gemini|cursor|devin"
-    r"|aider|jules|windsurf|codeium|kiro|grok)\b"
+# AI tools by the identity they sign co-author trailers with, so a person
+# called Devin or Jules is never mistaken for one.
+AI_EMAIL_RE = re.compile(
+    r"@(?:anthropic\.com|openai\.com|cursor\.com|cursor\.sh|devin\.ai|aider\.chat"
+    r"|windsurf\.com|codeium\.com)>?$"
+    r"|\b(?:copilot|claude|codex|chatgpt|gemini-code-assist|google-labs-jules|devin-ai-integration"
+    r"|cursor(?:agent)?)(?:\[bot\])?@users\.noreply\.github\.com>?$",
+    re.I,
 )
-# Only trailer and footer lines, never the subject: "docs: explain logs generated
-# with Cursor" is fine, "Generated with [Claude Code](...)" in a footer is not.
-AI_TRAILER_RE = re.compile(rf"^co-authored-by:.*{AI_NAMES}", re.I)
-AI_GENERATED_RE = re.compile(rf"^\W*generated (?:with|by)\b.*{AI_NAMES}", re.I)
-RECEIPT_RE = re.compile(r"^ha-nanit verify ([0-9a-f]{7,40})\b", re.M)
-FENCED_RE = re.compile(r"^[ \t]*(```|~~~).*?^[ \t]*\1[ \t]*$", re.M | re.S)
+AI_NAME_RE = re.compile(
+    r"^(?:claude(?: code)?|(?:github )?copilot|codex|chatgpt|gemini|cursor ?agent|aider\b.*)$",
+    re.I,
+)
+AI_TOOLS = r"\b(?:claude|copilot|codex|chatgpt|gemini|cursor|aider|devin|jules|windsurf)\b"
+TRAILER_RE = re.compile(r"^co-authored-by:\s*(.*?)\s*(<[^>]*>)?\s*$", re.I)
+# Only footer lines, never the subject: "docs: explain logs generated with
+# Cursor" is fine, "Generated with [Claude Code](...)" in a footer is not.
+AI_GENERATED_RE = re.compile(rf"^\W*generated (?:with|by)\b.*{AI_TOOLS}", re.I)
+RECEIPT_RE = re.compile(r"^ha-nanit verify ([0-9a-f]{7,40})\b")
 LIVE_RE = re.compile(r"^[*_ \t]*live test[*_ \t]*:[*_ \t]*(.*)$", re.I | re.M | re.S)
 SIGNING_DOCS = "CONTRIBUTING.md#signed-commits"
 STATUS_ORDER = ("fail", "warn", "ci", "skip", "pass")
@@ -116,7 +126,12 @@ def is_signed(sha: str) -> bool:
 def ai_attribution(message: str) -> str | None:
     """Return the line that credits an AI tool, if any."""
     for line in message.splitlines()[1:]:
-        if AI_TRAILER_RE.match(line) or AI_GENERATED_RE.match(line):
+        trailer = TRAILER_RE.match(line.strip())
+        if trailer and (
+            AI_NAME_RE.match(trailer.group(1)) or AI_EMAIL_RE.search(trailer.group(2) or "")
+        ):
+            return line.strip()
+        if AI_GENERATED_RE.match(line):
             return line.strip()
     return None
 
@@ -195,25 +210,42 @@ def needs_text(areas: list[Area], unmapped: list[str]) -> str:
 # ─── PR description ───────────────────────────────────────────────────
 
 
+def split_fences(text: str) -> tuple[str, list[list[str]]]:
+    """Split Markdown into the text outside code blocks and each closed block's lines.
+
+    An unclosed block runs to the end and doesn't count as a block.
+    """
+    outside: list[str] = []
+    blocks: list[list[str]] = []
+    fence = ""
+    current: list[str] = []
+    for line in text.splitlines():
+        after = release_notes.next_fence(fence, line)
+        if not fence and after:
+            current = []
+        elif fence and not after:
+            blocks.append(current)
+        elif fence:
+            current.append(line)
+        else:
+            outside.append(line)
+        fence = after
+    return "\n".join(outside), blocks
+
+
 def live_text(testing: str) -> str:
-    """The text after 'Live test:' outside code blocks, up to the receipt."""
-    match = LIVE_RE.search(FENCED_RE.sub("", testing))
-    if not match:
-        return ""
-    return match.group(1).split("ha-nanit verify ", 1)[0].strip()
+    """The text after 'Live test:' outside code blocks."""
+    match = LIVE_RE.search(split_fences(testing)[0])
+    return match.group(1).strip() if match else ""
 
 
 def receipt_block(testing: str) -> tuple[str, list[str]] | None:
-    """The receipt's commit and its lines, up to the end of its code block."""
-    match = RECEIPT_RE.search(testing)
-    if not match:
-        return None
-    lines = []
-    for line in testing[match.start() :].splitlines():
-        if line.lstrip().startswith(("```", "~~~")):
-            break
-        lines.append(line.strip())
-    return match.group(1), lines
+    """The receipt's commit and its lines: a closed code block that starts with it."""
+    for block in split_fences(testing)[1]:
+        lines = [line.strip() for line in block if line.strip()]
+        if lines and (match := RECEIPT_RE.match(lines[0])):
+            return match.group(1), lines
+    return None
 
 
 def pr_body_problems(
@@ -273,7 +305,7 @@ def pr_body_problems(
                 f"The receipt is for {sha}, an older commit of this PR. Run `just verify` "
                 "again and replace it when the change is done."
             )
-        if "result: pass" not in lines:
+        if [line for line in lines if line.startswith("result:")] != ["result: pass"]:
             receipt_errors.append(
                 "The receipt doesn't say 'result: pass'. Fix what failed and run it again."
             )
@@ -450,7 +482,7 @@ def _tail(output: str, lines: int = 40) -> str:
 def code_checks(areas: list[Area], *, clean: bool) -> list[Check]:
     """Run what CI runs, as far as this machine can.
 
-    The card check rebuilds into the checkout, so it only runs on a clean tree.
+    The card check compares against HEAD, so it only runs on a clean tree.
     """
     checks: list[Check] = []
     touched = {a.name for a in areas}
@@ -512,7 +544,7 @@ def code_checks(areas: list[Area], *, clean: bool) -> list[Check]:
 
 
 def card_check(touched: bool, *, clean: bool) -> Check:
-    """Rebuild the card and compare it with the committed bundle."""
+    """Build the card into a scratch file and compare it with the committed bundle."""
     if not touched:
         return Check("skip", "card", "card not touched")
     if not clean:
@@ -520,16 +552,23 @@ def card_check(touched: bool, *, clean: bool) -> Check:
     if not shutil.which("npm"):
         return Check("fail", "card", "npm not found", "Install Node.js 24 (frontend/.nvmrc).")
     frontend = ROOT / "frontend"
-    bundle = "custom_components/nanit/frontend/nanit-card.js"
+    # A scratch file next to the bundle (the TypeScript plugin wants the output
+    # inside its outDir), so the committed bundle is never touched.
+    fd, name = tempfile.mkstemp(prefix=".verify-", suffix=".js", dir=ROOT / BUNDLE.parent)
+    os.close(fd)
+    built = Path(name)
     try:
         for step in (
             ("npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"),
-            ("npm", "run", "build"),
+            ("npm", "run", "build", "--", "--file", str(built)),
         ):
             result = run(*step, cwd=frontend)
             if result.returncode != 0:
                 return Check("fail", "card", _tail(result.stdout + result.stderr), "Fix the build.")
-        if run("git", "diff", "--quiet", "--", bundle).returncode != 0:
+        committed = subprocess.run(
+            ["git", "show", f"HEAD:{BUNDLE}"], cwd=ROOT, capture_output=True, check=False
+        ).stdout
+        if built.read_bytes() != committed:
             return Check(
                 "fail",
                 "card",
@@ -537,8 +576,7 @@ def card_check(touched: bool, *, clean: bool) -> Check:
                 "Run `just card` and commit.",
             )
     finally:
-        # The tree was clean, so this only undoes the build's own output.
-        run("git", "checkout", "--", bundle)
+        built.unlink(missing_ok=True)
     wanted = (frontend / ".nvmrc").read_text().strip().lstrip("v").split(".")[0]
     have = run("node", "--version").stdout.strip().lstrip("v").split(".")[0]
     note = "" if wanted == have else f" (built with Node {have}, CI uses {wanted})"
@@ -688,8 +726,10 @@ def cmd_pre_push() -> int:
     base_ref = f"{upstream_remote()}/main"
     if not to_ref:
         # pre-commit leaves the refs unset when the remote has none of the
-        # history (a new remote), so check every local commit no remote has.
-        span = ["--branches", "--not", "--remotes"]
+        # history (a new remote): check what the pushed branch adds to it.
+        branch = os.environ.get("PRE_COMMIT_LOCAL_BRANCH") or "HEAD"
+        remote = os.environ.get("PRE_COMMIT_REMOTE_NAME", "")
+        span = [branch, "--not", f"--remotes={remote}"] if remote else [branch]
     elif not from_ref or set(from_ref) == {"0"}:
         span = [to_ref]
     else:
@@ -766,6 +806,12 @@ def cmd_pr() -> int:
         env.get("PR_AUTHOR", ""),
         [str(c["sha"]) for c in commits],
     )
+    head_sha = env.get("PR_HEAD_SHA", "")
+    if head_sha and (not commits or commits[-1]["sha"] != head_sha):
+        errors.append(
+            f"The PR moved to a new head while this ran (expected {head_sha[:8]}). "
+            "Re-run the check."
+        )
     if expected > len(commits):
         errors.append(
             f"GitHub listed only {len(commits)} of this PR's {expected} commits, so not all "

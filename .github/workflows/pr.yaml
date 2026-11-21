@@ -46,6 +46,7 @@ jobs:
           PR_LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           PR_COMMITS: ${{ github.event.pull_request.commits }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         # Until verify.py is on the base branch, the base's older check runs.
         run: |
           if [ -f tools/verify.py ]; then

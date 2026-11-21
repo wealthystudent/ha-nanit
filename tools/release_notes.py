@@ -32,7 +32,7 @@ TITLE_RE = re.compile(
 )
 PR_REF_RE = re.compile(r"\(#(\d+)\)$")
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
-FENCE_RE = re.compile(r"^\s*(```|~~~)")
+FENCE_RE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})(.*)$")
 COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
 NONE_VALUES = {"none", "n/a", "-", "no"}
 USER_FACING_TYPES = {"feat", "fix", "perf"}
@@ -60,6 +60,22 @@ def git(*args: str) -> str:
     return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout.strip()
 
 
+def next_fence(fence: str, line: str) -> str:
+    """Track Markdown code blocks: the open fence after this line, or '' outside one.
+
+    A block closes on a bare fence of the same character, at least as long.
+    """
+    match = FENCE_RE.match(line)
+    if not match:
+        return fence
+    marker, rest = match.groups()
+    if not fence:
+        return marker
+    if marker[0] == fence[0] and len(marker) >= len(fence) and not rest.strip():
+        return ""
+    return fence
+
+
 def section_text(body: str | None, name: str) -> str | None:
     """Return the text under the first '## <name>' heading, or None if absent.
 
@@ -67,13 +83,12 @@ def section_text(body: str | None, name: str) -> str | None:
     template's guidance) are dropped, and the section ends at the next
     level 1 or 2 heading.
     """
-    in_fence = False
+    fence = ""
     collecting = False
     lines: list[str] = []
     for line in COMMENT_RE.sub("", body or "").splitlines():
-        if FENCE_RE.match(line):
-            in_fence = not in_fence
-        heading = None if in_fence else HEADING_RE.match(line)
+        fence = next_fence(fence, line)
+        heading = None if fence or FENCE_RE.match(line) else HEADING_RE.match(line)
         if collecting:
             if heading and len(heading.group(1)) <= 2:
                 break

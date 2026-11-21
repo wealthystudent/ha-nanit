@@ -202,6 +202,7 @@ def test_title_and_changelog_rules_still_apply() -> None:
         "Co-authored-by: Copilot <175728472+Copilot@users.noreply.github.com>",
         "co-authored-by: codex <codex@openai.com>",
         "Co-authored-by: Cursor Agent <cursoragent@cursor.com>",
+        "Co-authored-by: chatgpt-codex-connector[bot] <199175422+chatgpt-codex-connector[bot]@users.noreply.github.com>",
         "Co-authored-by: devin-ai-integration[bot] <158243242+devin-ai-integration[bot]@users.noreply.github.com>",
         "🤖 Generated with [Claude Code](https://claude.com/claude-code)",
     ],
@@ -217,6 +218,8 @@ def test_ai_attribution_is_found(line: str) -> None:
         "fix: x\n\nCo-authored-by: Claudette Smith <claudette@example.com>",
         "fix: x\n\nCo-authored-by: Devin Smith <devin@example.com>",
         "fix: x\n\nCo-authored-by: Jules Martin <jules@example.org>",
+        "fix: x\n\nCo-authored-by: Sam Altwork <sam@openai.com>",
+        "fix: x\n\nCo-authored-by: Dario <dario@anthropic.com>",
         "docs: explain diagnostics generated with Cursor",
         "fix: x\n\nThe old card was generated with a script, not by Claude.",
     ],
@@ -353,6 +356,7 @@ def test_ci_rejects_ai_trailers_in_commits(
         ("git config unset user.signingkey", True),
         ("git config --file .git/config commit.gpgsign false", True),
         ("git config -f x.cfg --get commit.gpgsign", False),
+        ("git config --file x.cfg --get commit.gpgsign true", False),
         ("git push --force", True),
         ("git push -uf origin fix/x", True),
         ("git push origin +fix/x", True),
@@ -378,3 +382,17 @@ def test_guard_blocks_an_implicit_push_from_main(tmp_path: Path) -> None:
     assert guard.problem(guard.segments(f"git -C {tmp_path} push")[0], "/")
     subprocess.run(["git", "-C", str(tmp_path), "switch", "-q", "-c", "fix/x"], check=True)
     assert guard.problem(guard.segments("git push")[0], str(tmp_path)) is None
+
+
+def test_pre_push_checks_every_pushed_ref(capsys: pytest.CaptureFixture[str]) -> None:
+    head = verify.git("rev-parse", "HEAD")
+    tree = verify.git("rev-parse", "HEAD^{tree}")
+    # Objects only, no refs or checkout change: commit-tree never signs without -S.
+    unsigned = verify.git("commit-tree", tree, "-p", head, "-m", "fix: unsigned")
+    zero = "0" * 40
+    good = f"refs/heads/a {head} refs/heads/a {head}"
+    bad = f"refs/heads/b {unsigned} refs/heads/b {head}"
+    deletion = f"(delete) {zero} refs/heads/c {head}"
+    assert verify.cmd_pre_push("origin", [good, deletion]) == 0
+    assert verify.cmd_pre_push("origin", [good, bad]) == 1
+    assert "fix: unsigned is not signed" in capsys.readouterr().err

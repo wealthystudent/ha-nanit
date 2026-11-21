@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import release_notes  # tools/, next to this script
+import verify
 
 try:
     from rich import box
@@ -493,6 +494,13 @@ async def action_create_pr(state: State) -> None:
         f"## How I tested this\n\n**Live test:** {answers['live']}\n\n{receipt.group(0)}\n\n"
         f"## AI use\n\n{answers['ai']}\n"
     )
+
+    head = await sh("git", "rev-parse", "HEAD")
+    errors, _ = verify.pr_body_problems(title, body, [label] if label else [], "", [head])
+    if errors:
+        for error in errors:
+            console.print(f"  [red]✗ {error}[/]")
+        return
 
     with console.status("  [bold]Pushing branch..."):
         push_ok = await sh_ok("git", "push", "-u", "origin", state.branch)

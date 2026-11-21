@@ -87,7 +87,8 @@ def problem(words: list[str], cwd: str | None = None) -> str | None:
     if sub == "config":
         words_ = positional(rest, CONFIG_OPTIONS_WITH_VALUE)
         action = words_.pop(0) if words_ and words_[0] in ("set", "unset", "get", "list") else ""
-        writes = (
+        reads = {"--get", "--get-all", "--get-regexp", "--get-urlmatch", "--list", "-l"}
+        writes = not reads & set(rest) and (
             action in ("set", "unset")
             or (not action and len(words_) > 1)
             or any(a.startswith(("--unset", "--replace-all", "--add", "--rename-section",

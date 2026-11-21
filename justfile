@@ -12,6 +12,7 @@ default:
 setup:
     uv sync
     uv run pre-commit install
+    uv run tools/verify.py install-hooks
     echo "Ready. Run 'just verify' before you open or update a PR."
 
 # Before a PR: CI's checks, your commits and your PR, then the receipt to paste: just verify [branch|areas]

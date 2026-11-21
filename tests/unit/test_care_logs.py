@@ -19,10 +19,11 @@ from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from aionanit.exceptions import NanitAuthError, NanitConnectionError
-from aionanit.models import Baby, CareLog
+from aionanit.models import Baby, CareLog, CareLogFetch
 from custom_components.nanit.const import CARE_LOG_SEED_DAYS, DOMAIN
 from custom_components.nanit.coordinator import (
     CareLogData,
+    CareLogRequestCoverage,
     NanitCareLogCoordinator,
     build_care_log_data,
 )
@@ -218,6 +219,78 @@ def test_entry_returned_again_unchanged_before_the_window_needs_no_seed() -> Non
     assert data.needs_seed is False
 
 
+def test_summary_keeps_the_whole_fetch_with_sleep_once_per_uid_oldest_first() -> None:
+    nap = _log("s1", "sleep", 3000, duration_s=1800.0, net_duration_s=1500.0)
+    camera_sleep = _log("s2", "auto_sleep", -7200, end_timestamp=MIDNIGHT - 3600, status="eligible")
+    unknown_kind = _log("x1", "solids", 100)
+    bottle = _log("b1", "bottle_feed", 600, feed_amount_ml=90.0)
+    coverage = CareLogRequestCoverage(
+        start=int(SEED_START), end=int(MIDNIGHT + 3600), read_at=DAY_START, dropped=2
+    )
+
+    data = build_care_log_data(
+        [nap, bottle, camera_sleep, unknown_kind, nap],
+        window_start=SEED_START,
+        day_start=DAY_START,
+        previous=None,
+        request_coverage=coverage,
+    )
+
+    assert data.all_entries == (camera_sleep, unknown_kind, bottle, nap)
+    assert data.request_coverage == coverage
+    # The sensors' own fields still hold the four kinds only.
+    assert data.entries == (bottle,)
+    assert data.latest == {"bottle_feed": bottle}
+    assert data.today == (bottle,)
+
+
+def test_whole_fetch_is_only_the_last_fetch() -> None:
+    """Entries carried forward for the sensors are not part of the whole fetch."""
+    yesterdays_pump = _log("p1", "pumping", -7200)
+    seed = _summary([yesterdays_pump, _log("s1", "sleep", -3600)])
+
+    data = _summary([_log("d1", "diaper_change", 600)], window_start=MIDNIGHT, previous=seed)
+
+    assert data.latest["pumping"] == yesterdays_pump
+    assert data.all_entries == (_log("d1", "diaper_change", 600),)
+    assert data.request_coverage is None
+
+
+def _sensor_readings(data: CareLogData) -> dict[str, tuple[Any, Any, Any]]:
+    readings: dict[str, tuple[Any, Any, Any]] = {}
+    for description in CARE_LOG_SENSORS:
+        sensor = _sensor(description.key, data)
+        readings[description.key] = (
+            sensor.native_value,
+            sensor.extra_state_attributes,
+            sensor.last_reset,
+        )
+    return readings
+
+
+def test_whole_fetch_does_not_change_what_the_sensors_show() -> None:
+    """Sleep rows, other kinds and the request coverage leave all eight sensors as they were."""
+    care_only = list(DAY.entries)
+    extra = [
+        _log("s1", "sleep", 7000, duration_s=3600.0),
+        _log("s2", "auto_sleep", 100, status="eligible", end_timestamp=MIDNIGHT + 900),
+        _log("x1", "solids", 9500),
+    ]
+    whole = build_care_log_data(
+        [*care_only, *extra],
+        window_start=SEED_START,
+        day_start=DAY_START,
+        previous=None,
+        request_coverage=CareLogRequestCoverage(
+            start=int(SEED_START), end=int(MIDNIGHT + 86400), read_at=DAY_START, dropped=3
+        ),
+    )
+
+    assert len(whole.all_entries) == len(care_only) + len(extra)
+    assert _sensor_readings(whole) == _sensor_readings(DAY)
+    assert _sensor("last_diaper_change", whole).entity_registry_enabled_default is True
+
+
 # ---------------------------------------------------------------------------
 # NanitCareLogCoordinator
 # ---------------------------------------------------------------------------
@@ -229,13 +302,25 @@ def _no_retry_wait() -> Iterator[None]:
         yield
 
 
-def _coordinator(hass: HomeAssistant, fetch: AsyncMock) -> NanitCareLogCoordinator:
+def _coordinator(
+    hass: HomeAssistant, fetch: AsyncMock, *, dropped: int = 0
+) -> NanitCareLogCoordinator:
+    """Return a coordinator whose calendar fetch answers with what ``fetch`` returns.
+
+    ``fetch`` is awaited with the baby's uid and the two bounds and returns
+    the entries; this wraps them as the library's whole fetch result.
+    """
     entry = MockConfigEntry(
         domain=DOMAIN, data=mock_entry_data_v2(), version=2, unique_id=MOCK_EMAIL
     )
     entry.add_to_hass(hass)
+
+    async def fetch_result(baby_uid: str, start: int, end: int) -> CareLogFetch:
+        logs = await fetch(baby_uid, start, end)
+        return CareLogFetch(logs=tuple(logs), start=start, end=end, dropped=dropped)
+
     hub = MagicMock()
-    hub.client.async_get_calendar = fetch
+    hub.client.async_get_calendar_result = AsyncMock(side_effect=fetch_result)
     return NanitCareLogCoordinator(
         hass, entry, hub, Baby(uid="baby_1", name="Nursery", camera_uid="cam_1")
     )
@@ -374,6 +459,73 @@ async def test_poll_summarises_the_fetch(hass: HomeAssistant) -> None:
 
     assert coordinator.last_update_success is True
     assert coordinator.data.latest == {"diaper_change": diaper}
+
+
+async def test_poll_publishes_the_whole_fetch_and_its_request_coverage(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    freezer.move_to("2026-11-20T18:00:00+00:00")
+    now = dt_util.utcnow()
+    nap = CareLog(
+        uid="s1",
+        log_type="sleep",
+        timestamp=now.timestamp() - 7200,
+        baby_uid="baby_1",
+        duration_s=3600.0,
+    )
+    diaper = CareLog(
+        uid="d1",
+        log_type="diaper_change",
+        timestamp=now.timestamp() - 60,
+        baby_uid="baby_1",
+        change_type="pee",
+    )
+    fetch = AsyncMock(return_value=[diaper, nap, nap])
+    coordinator = _coordinator(hass, fetch, dropped=2)
+
+    await coordinator.async_refresh()
+
+    data = coordinator.data
+    assert data.all_entries == (nap, diaper)
+    assert data.entries == (diaper,)
+    assert data.request_coverage == CareLogRequestCoverage(
+        start=int((now - timedelta(days=CARE_LOG_SEED_DAYS)).timestamp()),
+        end=int((now + timedelta(hours=1)).timestamp()),
+        read_at=now,
+        dropped=2,
+    )
+
+    # The next, shorter, poll replaces it with its own range.
+    freezer.tick(timedelta(minutes=5))
+    fetch.return_value = [diaper]
+    await coordinator.async_refresh()
+
+    later = dt_util.utcnow()
+    assert coordinator.data.all_entries == (diaper,)
+    assert coordinator.data.request_coverage == CareLogRequestCoverage(
+        start=int((later - timedelta(hours=24)).timestamp()),
+        end=int((later + timedelta(hours=1)).timestamp()),
+        read_at=later,
+        dropped=2,
+    )
+
+
+async def test_failed_poll_keeps_the_last_successful_request_coverage(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    freezer.move_to("2026-11-20T18:00:00+00:00")
+    fetch = AsyncMock(return_value=[])
+    coordinator = _coordinator(hass, fetch)
+    await coordinator.async_refresh()
+    coverage = coordinator.data.request_coverage
+    assert coverage is not None
+
+    freezer.tick(timedelta(minutes=5))
+    fetch.side_effect = NanitConnectionError("Calendar fetch failed with HTTP 503")
+    await coordinator.async_refresh()
+
+    assert coordinator.last_update_success is False
+    assert coordinator.data.request_coverage == coverage
 
 
 async def test_poll_retries_before_going_unavailable(hass: HomeAssistant) -> None:
@@ -630,9 +782,28 @@ async def test_care_log_coordinator_auth_failure_propagates(
     await hub.async_close()
 
 
-@pytest.mark.parametrize(("data", "has_data"), [(DAY, True), (_summary([]), False), (None, False)])
+_WITH_DROPPED_ROWS = build_care_log_data(
+    [_log("s1", "sleep", 60), _log("d1", "diaper_change", 600)],
+    window_start=SEED_START,
+    day_start=DAY_START,
+    previous=None,
+    request_coverage=CareLogRequestCoverage(
+        start=int(SEED_START), end=int(MIDNIGHT), read_at=DAY_START, dropped=4
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("data", "has_data", "dropped_rows"),
+    [
+        (DAY, True, None),
+        (_summary([]), False, None),
+        (None, False, None),
+        (_WITH_DROPPED_ROWS, True, 4),
+    ],
+)
 async def test_diagnostics_report_only_whether_there_are_care_logs(
-    data: CareLogData | None, has_data: bool
+    data: CareLogData | None, has_data: bool, dropped_rows: int | None
 ) -> None:
     care = MagicMock(last_update_success=True, last_exception=None, data=data)
     cam_data = MagicMock(
@@ -651,4 +822,5 @@ async def test_diagnostics_report_only_whether_there_are_care_logs(
         "last_update_success": True,
         "last_exception": None,
         "has_data": has_data,
+        "dropped_rows": dropped_rows,
     }

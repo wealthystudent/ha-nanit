@@ -309,6 +309,24 @@ _CARE_LOG_LOOKBACK = timedelta(hours=24)
 
 
 @dataclass(frozen=True)
+class CareLogRequestCoverage:
+    """What the last successful Care Log fetch asked Nanit for.
+
+    This is request coverage: the range that was asked for, not a promise
+    that Nanit's answer held everything in it (its answer carries no sign
+    of being complete). ``start`` and ``end`` are the Unix seconds sent,
+    both inclusive, as Nanit matches an entry by its start. ``read_at`` is
+    when the answer arrived, and ``dropped`` how many of its rows were
+    skipped as malformed.
+    """
+
+    start: int
+    end: int
+    read_at: datetime
+    dropped: int = 0
+
+
+@dataclass(frozen=True)
 class CareLogData:
     """A summary of one baby's Care Logs.
 
@@ -321,6 +339,12 @@ class CareLogData:
     window turned up again inside it (its date was edited), so what came
     before it is no longer known and the next fetch has to look back as far
     as the first one did.
+
+    The sensors use only the fields above, which hold the kinds in
+    ``CARE_LOG_TYPES``. ``all_entries`` is the whole numeric answer of the
+    last fetch, every kind (sleep included), each uid once, oldest first,
+    with the range that fetch asked for in ``request_coverage``. Neither
+    carries anything forward from earlier fetches.
     """
 
     latest: Mapping[str, CareLog]
@@ -329,6 +353,8 @@ class CareLogData:
     entries: tuple[CareLog, ...] = ()
     before_window: Mapping[str, CareLog] = field(default_factory=dict)
     needs_seed: bool = False
+    all_entries: tuple[CareLog, ...] = ()
+    request_coverage: CareLogRequestCoverage | None = None
 
 
 def _order(log: CareLog) -> tuple[float, str]:
@@ -359,6 +385,7 @@ def build_care_log_data(
     window_start: float,
     day_start: datetime,
     previous: CareLogData | None,
+    request_coverage: CareLogRequestCoverage | None = None,
 ) -> CareLogData:
     """Summarise one calendar fetch covering ``window_start`` up to now.
 
@@ -368,6 +395,7 @@ def build_care_log_data(
     longer returns was deleted in the app, so it no longer counts.
     """
     fetched = _by_uid(logs)
+    all_entries = tuple(sorted(fetched.values(), key=_order))
     entries = tuple(log for log in fetched.values() if log.log_type in CARE_LOG_TYPES)
 
     before_window: dict[str, CareLog] = {}
@@ -407,6 +435,8 @@ def build_care_log_data(
         entries=entries,
         before_window=before_window,
         needs_seed=needs_seed,
+        all_entries=all_entries,
+        request_coverage=request_coverage,
     )
 
 
@@ -461,8 +491,8 @@ class NanitCareLogCoordinator(DataUpdateCoordinator[CareLogData]):
         end = int((now + _CARE_LOG_END_SLACK).timestamp())
         try:
             client = self._hub.client
-            logs = await _async_fetch_with_retries(
-                self, lambda: client.async_get_calendar(self.baby.uid, start, end)
+            fetch = await _async_fetch_with_retries(
+                self, lambda: client.async_get_calendar_result(self.baby.uid, start, end)
             )
         except NanitAuthError as err:
             raise ConfigEntryAuthFailed(
@@ -478,8 +508,15 @@ class NanitCareLogCoordinator(DataUpdateCoordinator[CareLogData]):
             ) from err
 
         self._last_fetch = now
+        coverage = CareLogRequestCoverage(
+            start=fetch.start, end=fetch.end, read_at=dt_util.utcnow(), dropped=fetch.dropped
+        )
         return build_care_log_data(
-            logs, window_start=start, day_start=day_start, previous=self.data
+            fetch.logs,
+            window_start=start,
+            day_start=day_start,
+            previous=self.data,
+            request_coverage=coverage,
         )
 
 

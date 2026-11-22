@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from custom_components.nanit.sanitize import display_name, sanitize_name
@@ -57,9 +59,31 @@ def test_encoded_tags_are_stripped(raw: str, expected: str) -> None:
     assert sanitize_name(raw) == expected
 
 
-def test_unclosed_tag_stays_literal_text() -> None:
-    """A "<" without a closing ">" is no tag, so it's kept as text."""
-    assert sanitize_name("<img src=x onerror=alert(1)") == "<img src=x onerror=alert(1)"
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "<<b>img src=x onerror=alert(1)>",
+        "<scr<b>ipt>alert(1)</scr<b>ipt>",
+    ],
+)
+def test_tags_hidden_inside_tags_never_come_back(raw: str) -> None:
+    """Stripping a nested tag can't leave a live tag behind."""
+    assert not re.search(r"<[^>]+>", sanitize_name(raw))
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("<img src=x onerror=alert(1)", "< img src=x onerror=alert(1)"),
+        ("</div", "< /div"),
+        ("<!-- x", "< !-- x"),
+        ("Baby <3", "Baby <3"),
+        ("1 < 2", "1 < 2"),
+    ],
+)
+def test_unclosed_tag_opener_is_defused(raw: str, expected: str) -> None:
+    """A leftover "<" that could open a tag gets a space; other "<" stay as typed."""
+    assert sanitize_name(raw) == expected
 
 
 def test_collapses_whitespace() -> None:

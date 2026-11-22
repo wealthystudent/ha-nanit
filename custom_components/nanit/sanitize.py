@@ -9,6 +9,8 @@ import html
 import re
 
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
+# A "<" that a browser would read as the start of a tag, comment or end tag.
+_TAG_OPENER_RE = re.compile(r"<(?=[A-Za-z/!?])")
 
 
 def sanitize_name(value: str | None) -> str:
@@ -18,8 +20,10 @@ def sanitize_name(value: str | None) -> str:
     The result is plain text, not HTML: Home Assistant and the card render
     names as text, and markdown surfaces (repairs, flow text) get no tags
     because they are stripped here. Entities are decoded first, so an
-    encoded tag such as ``&lt;script&gt;`` is stripped too. A ``<`` with
-    no closing ``>`` is not a tag and stays as literal text.
+    encoded tag such as ``&lt;script&gt;`` is stripped too. A ``<`` left
+    over that could still open a tag (an unclosed ``<img src=x ...``) gets
+    a space after it, so it stays text even if a name is later dropped
+    into HTML. ``Baby <3`` is left alone.
     """
     if not value:
         return ""
@@ -31,6 +35,7 @@ def sanitize_name(value: str | None) -> str:
             break
         cleaned = decoded
     cleaned = _HTML_TAG_RE.sub("", cleaned)
+    cleaned = _TAG_OPENER_RE.sub("< ", cleaned)
     return re.sub(r"\s+", " ", cleaned).strip()
 
 

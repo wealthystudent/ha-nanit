@@ -536,6 +536,74 @@ async def test_the_recorder_disable_action_pauses_the_import_until_enabled_again
     assert max(await _stored(hass, S.BOTTLE_VOLUME)) == _end_hour() - H
 
 
+def _disable_after_own_requests(hass: HomeAssistant, truth: Truth, count: int) -> None:
+    """Pause recording with the real ``recorder.disable`` action inside own request ``count``."""
+
+    async def disable(_start: int, _end: int) -> None:
+        if len(truth.own) == count:
+            truth.during_own = None
+            await hass.services.async_call("recorder", "disable", blocking=True)
+
+    truth.during_own = disable
+
+
+async def test_the_recorder_disable_action_during_a_first_pass_stops_its_requests(
+    make: Callable[..., Harness], hass: HomeAssistant, sent: Sent
+) -> None:
+    truth = Truth(BASE)
+    pieces = list(_expected_pieces(_first_poll_start()))
+    assert len(pieces) >= 3
+    harness = make(truth)
+    _disable_after_own_requests(hass, truth, 2)
+    harness.start()
+    await harness.poll()
+
+    # The request in flight is answered; no other is made.
+    assert truth.own == pieces[:2]
+    assert harness.diag()["state"] == "waiting_for_recorder"
+    await harness.tick_and_poll(timedelta(minutes=5))
+    assert truth.own == pieces[:2]
+    assert harness.importer._failures == 0  # not a connection failure
+    assert sent == []
+
+    await hass.services.async_call("recorder", "enable", blocking=True)
+    truth.own.clear()
+    await harness.tick_and_poll(timedelta(minutes=5))
+
+    assert truth.own == list(_expected_pieces(truth.reader[-1][0]))
+    assert harness.diag()["state"] == "running"
+    assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(OLD)] == 90.0
+
+
+async def test_the_recorder_disable_action_during_a_daily_pass_stops_its_requests(
+    make: Callable[..., Harness], hass: HomeAssistant
+) -> None:
+    truth = Truth(BASE)
+    harness = await _imported(make, truth)
+    backdated = _bottle("b_back", NOW - timedelta(days=30), 70.0)
+    truth.put(backdated)
+    await harness.advance(timedelta(hours=24) - timedelta(minutes=1))
+    await harness.poll()
+    pieces = list(_expected_pieces(truth.reader[-1][0]))
+    _disable_after_own_requests(hass, truth, 2)
+
+    await harness.advance(timedelta(minutes=1))  # the daily pass is due
+
+    assert truth.own == pieces[:2]
+    await harness.tick_and_poll(timedelta(minutes=5))
+    assert truth.own == pieces[:2]
+    assert harness.importer._failures == 0
+    assert harness.diag()["passes_completed"] == 1
+
+    await hass.services.async_call("recorder", "enable", blocking=True)
+    truth.own.clear()
+    await harness.tick_and_poll(timedelta(minutes=5))
+
+    assert truth.own == list(_expected_pieces(truth.reader[-1][0]))
+    assert harness.diag()["passes_completed"] == 2
+    assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(backdated)] == 70.0
+
+
 async def test_a_restart_after_a_deletion_waits_for_a_second_agreeing_pass(
     make: Callable[..., Harness], hass: HomeAssistant, sent: Sent
 ) -> None:

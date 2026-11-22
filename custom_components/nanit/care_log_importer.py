@@ -49,7 +49,11 @@ across the gap.
 Nanit is asked for nothing beyond the reader's own polls, and nothing is
 written, while the recorder is not ready (not loaded, its database not
 ready, or recording paused with the ``recorder.disable`` action), and
-nothing at all when the config entry has polling disabled.
+nothing at all when the config entry has polling disabled. Readiness is
+checked before every request of the importer's own (each piece of a
+pass and each confirm fetch): when it is gone, the pass is abandoned
+there, not counted as a connection failure, and runs again from its
+start at a reader update once the recorder is back.
 
 When a batch's outcome is unknown (``care_log_recorder``: the baby is
 unsettled, by this importer or an earlier one), every step first waits, at
@@ -508,6 +512,10 @@ class CareLogStatisticsImporter:
     def _recorder_ready(self) -> bool:
         return care_log_recorder_ready(self._hass)
 
+    def _require_recorder(self) -> None:
+        if not self._recorder_ready():
+            raise CareLogRecorderUnavailableError
+
     def _end_hour(self, reads: Sequence[CareLogRead] = ()) -> int:
         """Return the hour compares and syncs stop before: the first one not observed.
 
@@ -578,7 +586,12 @@ class CareLogStatisticsImporter:
     # -- own reads -------------------------------------------------------------
 
     async def _async_own_read(self, start: int, end: int) -> CareLogRead:
-        """Read some bounds with a request of the importer's own."""
+        """Read some bounds with a request of the importer's own.
+
+        Raises ``CareLogRecorderUnavailableError``, asking nothing, while the
+        recorder is not ready.
+        """
+        self._require_recorder()
         try:
             result = await self._fetch(start, end)
         except NanitAuthError as err:
@@ -826,6 +839,10 @@ class CareLogStatisticsImporter:
         except NanitConnectionError:
             self._note_connection_failure(dt_util.utcnow())
             _LOGGER.debug("A care log read could not reach Nanit; trying again later")
+        except CareLogRecorderUnavailableError:
+            # Abandoned before a request of its own; a reader update once the
+            # recorder is back runs it again, from its start.
+            return
 
     def _process_reads(self, *own: CareLogRead) -> None:
         """Give the book the importer's own reads and every queued reader read, oldest first.
@@ -881,6 +898,7 @@ class CareLogStatisticsImporter:
         return request, self._own_request_time(due)
 
     async def _async_confirm(self, request: ConfirmRequest) -> None:
+        self._require_recorder()
         self._last_confirm_at = dt_util.utcnow()
         self._confirm_fetches += 1
         read = await self._async_own_read(request.start, request.end)

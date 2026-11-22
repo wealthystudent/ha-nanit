@@ -20,7 +20,11 @@ waits for the next daily pass).
 The comparison and every sync are given the start of the history the
 ledger was built from (``care_log_history_start``, as the last pass used
 it), and leave every stored row before it alone: the ledger knows nothing
-of them, so nothing there is lowered, whatever moved the start.
+of them, so nothing there is lowered, whatever moved the start. They also
+stop before the first hour no read has observed: an hour is observed once
+a read of bounds holding all of it was taken after it ended. While the
+reader keeps failing, nothing is written for the hours since its last
+read; the rows follow once a read succeeds.
 
 Running, each reader read goes through ``CareLogBook.process`` and an
 incremental sync follows. A change that lowers a chart waits for the book's
@@ -238,6 +242,15 @@ def _merge_earliest(into: dict[CareLogSeries, int], other: Mapping[CareLogSeries
             into[series] = hour
 
 
+def _observed_end(read: CareLogRead) -> int:
+    """Return the start of the first hour a read did not observe whole and finished.
+
+    The earlier of the hour it was taken in and the hour holding the second
+    after its bounds.
+    """
+    return min(hour_start(read.read_at.timestamp()), hour_start(read.end + 1))
+
+
 def _taken_at(data: CareLogData) -> datetime:
     """Return when a queued reader update's answer arrived."""
     coverage = data.request_coverage
@@ -308,6 +321,8 @@ class CareLogStatisticsImporter:
         # The start of the history the ledger was built from: the recorder
         # functions never touch rows before it.
         self._coverage_start: int | None = None
+        # The first hour no read the book took has observed (see ``_end_hour``).
+        self._observed_end: int | None = None
         self._piece_bounds: set[Bounds] = set()
         self._dirty: dict[CareLogSeries, int] = {}
         self._need_full = False
@@ -493,8 +508,23 @@ class CareLogStatisticsImporter:
     def _recorder_ready(self) -> bool:
         return care_log_recorder_ready(self._hass)
 
-    def _end_hour(self) -> int:
-        return hour_start(dt_util.utcnow().timestamp())
+    def _end_hour(self, reads: Sequence[CareLogRead] = ()) -> int:
+        """Return the hour compares and syncs stop before: the first one not observed.
+
+        An hour is observed once a read of bounds holding all of it was
+        taken after it ended: the newest such hour among the reads the book
+        took (and ``reads``), never later than the hour in progress.
+        """
+        ends = [_observed_end(read) for read in reads]
+        if self._observed_end is not None:
+            ends.append(self._observed_end)
+        now = hour_start(dt_util.utcnow().timestamp())
+        return min(now, max(ends)) if ends else now
+
+    def _note_observed(self, read: CareLogRead) -> None:
+        end = _observed_end(read)
+        if self._observed_end is None or end > self._observed_end:
+            self._observed_end = end
 
     # -- timers ---------------------------------------------------------------
 
@@ -660,7 +690,7 @@ class CareLogStatisticsImporter:
             self._hass,
             code=self._code,
             ledger=candidate,
-            end_hour=self._end_hour(),
+            end_hour=self._end_hour(reads),
             coverage_start=reads[0].start,
         )
         self._check_round(generation)
@@ -746,6 +776,8 @@ class CareLogStatisticsImporter:
     async def _async_adopt(self, reads: Sequence[CareLogRead], candidate: Ledger) -> None:
         """Adopt a pass whose candidate was built (no wait before the book is changed)."""
         self._book.adopt_candidate(candidate)
+        for read in reads:
+            self._note_observed(read)
         # Older evidence never overrides newer: a kept read taken no later
         # than the pass's latest read is discarded, whatever it holds.
         latest = max(read.read_at for read in reads)
@@ -815,6 +847,7 @@ class CareLogStatisticsImporter:
     def _process(self, read: CareLogRead) -> Outcome:
         """Give the book one read, and note what it changed."""
         outcome = self._book.process(read)
+        self._note_observed(read)
         _merge_earliest(self._dirty, outcome.changed_from)
         self._sync_wanted = True
         if outcome.gave_up:

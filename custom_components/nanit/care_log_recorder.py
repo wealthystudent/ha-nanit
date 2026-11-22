@@ -19,7 +19,12 @@ The rows of a series, for one baby:
   coverage hour. Rows already stored keep the start where it was, so a
   deleted first entry leaves a first row of 0; an entry backdated before
   the first row moves the start back. A series with no entry and no stored
-  row gets no statistic at all.
+  row gets no statistic at all. An established series, one with a stored
+  row before the coverage hour, starts at the coverage hour, whether or not
+  the ledger has an entry for it there: Home Assistant's single-period
+  change query takes the row of the hour before a period as its baseline,
+  so a gap after the prefix would read the first total after it as both
+  baseline and endpoint.
 - They are dense from there up to, not including, ``end_hour`` (the hour in
   progress): a row for every hour, 0 for an hour with nothing. Rows at or
   after ``end_hour`` are never read or written.
@@ -29,6 +34,12 @@ The rows of a series, for one baby:
   is, and the running total uses it. The running total continues from the
   ``sum`` of the latest stored row before the series' first hour, wherever
   that row is (0 when there is none), so a prefix keeps its totals.
+- One case cannot be made exact: an entry already counted in the prefix
+  that is re-dated to a time after the coverage hour is counted again,
+  since the prefix is never lowered. It can only happen when the history
+  start moves later: when Nanit gives neither a birth date nor a creation
+  date and the three-year fallback start moves on, or when the birth date
+  Nanit gives is changed to a later one.
 
 A sync compares stored rows with these targets, a chunk of at most
 ``CHUNK_HOURS`` hours at a time, and sends only the rows that differ by
@@ -72,8 +83,9 @@ hour and the first entry (a year before birth: four). All of it runs in one
 executor job, holding at most one chunk of rows.
 
 Finding the total to continue from: the ``sum`` of the latest stored row
-before a series' first hour comes from Home Assistant's public
-``statistic_during_period`` with no start and the first hour as its end,
+before the coverage hour (when there is one, the series is established
+and that is its total) comes from Home Assistant's public
+``statistic_during_period`` with no start and the coverage hour as its end,
 asking only for ``change``: that is the newest stored ``sum`` before the
 end minus 0, one query that orders by time and reads one row, in the
 recorder's executor. The prefix itself is never loaded.
@@ -485,12 +497,11 @@ class _Reader:
         self.rows_read += read
         return earliest
 
-    async def sum_before(self, sid: str, hour: int) -> float:
-        """Return the sum of the newest stored row before ``hour``, or 0 when there is none."""
+    async def sum_before(self, sid: str, hour: int) -> float | None:
+        """Return the sum of the newest stored row before ``hour``, or None when there is none."""
         found = await self.job(_read_sum_before, self.hass, sid, hour)
-        if found is None:
-            return 0.0
-        self.rows_read += 1
+        if found is not None:
+            self.rows_read += 1
         return found
 
     async def series_start(
@@ -498,11 +509,17 @@ class _Reader:
     ) -> tuple[int, float] | None:
         """Return a series' first hour and the total it continues from, or None.
 
-        The first hour is the earlier of the ledger's (``first``, at or
-        after ``cov``) and the first stored row at or after ``cov``; the
-        total is the sum of the latest stored row before it. ``last`` is the
-        newest stored row's hour, None when nothing is stored.
+        The first hour is ``cov`` for an established series (one with a
+        stored row before ``cov``), which continues from that row's sum.
+        Otherwise it is the earlier of the ledger's (``first``, at or after
+        ``cov``) and the first stored row at or after ``cov``, from a total
+        of 0: nothing is stored before it. ``last`` is the newest stored
+        row's hour, None when nothing is stored.
         """
+        if last is not None:
+            prior = await self.sum_before(sid, cov)
+            if prior is not None:
+                return (cov, prior) if cov < end else None
         stored_first: int | None = None
         if last is not None and last >= cov:
             before = last + HOUR_SECONDS if first is None else min(first, last + HOUR_SECONDS)
@@ -510,9 +527,7 @@ class _Reader:
         candidates = [hour for hour in (first, stored_first) if hour is not None]
         if not candidates:
             return None
-        start = min(candidates)
-        total = 0.0 if last is None else await self.sum_before(sid, start)
-        return start, total
+        return min(candidates), 0.0
 
 
 class _Sync:
@@ -563,8 +578,9 @@ class _Sync:
         if last_row is None and first is None:
             return
         if last_row is not None and last_row[0] < cov:
-            # Every stored row is in the prefix: only the ledger's hours are new.
-            if first is None:
+            # Every stored row is in the prefix: the series goes on, dense,
+            # from the coverage hour, whether or not the ledger has an entry.
+            if cov >= self.end:
                 return
             full = True
         self.series_examined += 1

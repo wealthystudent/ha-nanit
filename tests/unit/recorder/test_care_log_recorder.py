@@ -644,11 +644,13 @@ async def test_stale_rows_of_an_interrupted_backfill_are_found_across_a_gap_and_
     assert (await _compare(hass, rebuilt.ledger)).rows_to_write == 0
 
 
-async def test_a_series_stored_only_before_the_coverage_hour_is_left_alone(
+async def test_a_series_stored_only_before_the_coverage_hour_goes_on_from_it_with_zeros(
     recorder_mock: Recorder, hass: HomeAssistant, sent: Sent
 ) -> None:
     await _imported(hass, [B0, B1, D2])
     before = {series: await _stored(hass, series) for series in CareLogSeries}
+    established = [series for series in CareLogSeries if before[series]]
+    assert len(established) == 4
     sent.clear()
     coverage = END + 1800  # every stored row is before the coverage hour, Thursday 01:00
     empty = _Book([], start=coverage)
@@ -659,9 +661,20 @@ async def test_a_series_stored_only_before_the_coverage_hour_is_left_alone(
         comparison.raising_cells,
         comparison.missing_rows,
         comparison.rows_to_write,
-    ) == (0, 0, 0, 0)
+    ) == (0, 0, 2 * len(established), 2 * len(established))
     await _sync(hass, empty.ledger, end=END + 3 * H, coverage=coverage)
-    assert sent == []
+
+    # Dense from the coverage hour, the prefix's total carried on; the prefix
+    # (and the hour before the coverage hour) untouched.
+    assert _sent_series(sent) == _ids(*established)
+    for series in established:
+        total = before[series][-1][2]
+        assert await _stored(hass, series) == [
+            *before[series],
+            (END + H, 0.0, total),
+            (END + 2 * H, 0.0, total),
+        ]
+    sent.clear()
 
     # A new entry after the coverage hour starts there, from the prefix's total.
     book = _Book([_bottle("b9", _at(THU, 1, 10), 40.0)], start=coverage)
@@ -674,7 +687,35 @@ async def test_a_series_stored_only_before_the_coverage_hour_is_left_alone(
     assert by_hour[END + 2 * H] == (0.0, 220.0)
     for series in CareLogSeries:
         if series not in (S.BOTTLE_FEEDS, S.BOTTLE_VOLUME):
-            assert await _stored(hass, series) == before[series]
+            assert [row for row in await _stored(hass, series) if row[0] < END] == before[series]
+
+
+@pytest.mark.usefixtures("utc")
+async def test_an_established_series_is_dense_from_the_coverage_hour_for_both_chart_queries(
+    recorder_mock: Recorder, hass: HomeAssistant
+) -> None:
+    """A prior total of 1, and the next entry on Tuesday at noon: Tuesday's total is 1."""
+    first = _Book([D1])  # Monday 07:10
+    await _sync(hass, first.ledger, end=_h(MON, 8))  # one row, Monday 07:00: 1, 1
+    coverage = int(TUE.timestamp())
+    noon = _diaper("d9", _at(TUE, 12, 5), "pee")
+    book = _Book([noon], start=coverage)
+
+    await _sync(hass, book.ledger, coverage=coverage)
+
+    # Tuesday reads 1 and Wednesday 0, by statistics_during_period and by
+    # statistic_during_period alike.
+    assert await _day_changes(hass, S.DIAPER_CHANGES, TUE, 2) == ([1.0, 0.0], [1.0, 0.0])
+    assert await _day_changes(hass, S.DIAPER_PEE, TUE, 2) == ([1.0, 0.0], [1.0, 0.0])
+    changes = await _stored(hass, S.DIAPER_CHANGES)
+    assert changes[0] == (_h(MON, 7), 1.0, 1.0)
+    assert changes[1] == (_h(TUE, 0), 0.0, 1.0)
+    assert [hour for hour, _s, _t in changes[1:]] == list(range(_h(TUE, 0), END, H))
+    assert (_h(TUE, 12), 1.0, 2.0) in changes
+    # A second sync, full or not, has nothing more to write.
+    assert (await _sync(hass, book.ledger, coverage=coverage)).rows_written == 0
+    comparison = await _compare(hass, book.ledger, coverage=coverage)
+    assert (comparison.lowering_cells, comparison.missing_rows) == (0, 0)
 
 
 # ---------------------------------------------------------------------------

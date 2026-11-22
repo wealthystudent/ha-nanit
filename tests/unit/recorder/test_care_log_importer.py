@@ -48,6 +48,7 @@ from pytest_homeassistant_custom_component.components.recorder.common import (
 from aionanit.exceptions import NanitAuthError, NanitConnectionError
 from aionanit.models import Baby, CareLog, CareLogFetch
 from custom_components.nanit import care_log_importer, care_log_recorder
+from custom_components.nanit import coordinator as coordinator_module
 from custom_components.nanit.baby_code import baby_code
 from custom_components.nanit.care_log_hours import CareLogSeries, hour_start
 from custom_components.nanit.care_log_importer import (
@@ -158,7 +159,12 @@ class Truth:
 
     async def reader_fetch(self, _baby_uid: str, start: int, end: int) -> CareLogFetch:
         self.reader.append((start, end))
+        if self.reader_down:
+            raise NanitConnectionError("HTTP 503")
         return self.answer(start, end)
+
+    # Every reader poll fails while set.
+    reader_down = False
 
 
 class Harness:
@@ -853,6 +859,69 @@ async def test_the_fallback_history_start_moving_on_by_a_piece_erases_nothing(
     assert {hour: after[hour] for hour in before} == before
     assert after[_end_hour() - H] == (0.0, 280.0)
     assert max(after) == _end_hour() - H
+
+
+@pytest.fixture
+def reader_fails_at_once() -> Iterator[None]:
+    """A failed reader poll is not retried within the poll (the retries sleep for real)."""
+    with patch.object(coordinator_module, "_POLL_RETRY_DELAYS", ()):
+        yield
+
+
+@pytest.mark.usefixtures("reader_fails_at_once")
+async def test_no_rows_are_written_for_hours_nobody_read_until_a_read_succeeds(
+    make: Callable[..., Harness], hass: HomeAssistant
+) -> None:
+    truth = Truth(BASE)
+    with patch.object(care_log_importer, "HISTORY_INTERVAL", timedelta(hours=2)):
+        harness = await _imported(make, truth)  # 18:10, rows up to 17:00
+    truth.reader_down = True
+    late = _bottle("b_down", NOW + timedelta(minutes=20), 30.0)  # 18:30
+    truth.put(late)
+
+    for _ in range(3):  # 19:10, 20:10 (a history pass and its syncs), 21:10
+        await harness.advance(timedelta(hours=1))
+    assert truth.own  # the history pass ran
+    volume = await _stored(hass, S.BOTTLE_VOLUME)
+    assert max(volume) == hour_start(_ts(NOW)) - H
+    assert _hour(late) not in volume
+
+    truth.reader_down = False
+    await harness.poll()  # 21:10, observes up to 21:00
+
+    volume = await _stored(hass, S.BOTTLE_VOLUME)
+    assert max(volume) == _end_hour() - H
+    assert volume[_hour(late)] == 30.0
+    assert volume[_hour(late) + H] == 0.0
+    assert volume[_hour(late) + 2 * H] == 0.0
+
+
+@pytest.mark.usefixtures("reader_fails_at_once")
+async def test_a_second_pass_delayed_by_retries_writes_nothing_after_the_last_observed_hour(
+    make: Callable[..., Harness], hass: HomeAssistant
+) -> None:
+    truth = Truth(BASE)
+    first = await _imported(make, truth)
+    await first.stop()
+    truth.delete(D2.uid)  # the restart needs a second pass
+    second = make(truth)
+    second.start()
+    await second.poll()  # 18:10, the first pass; the reader's bounds end at 19:10
+    assert second.diag()["state"] == "waiting_for_second_pass"
+    truth.reader_down = True
+    truth.errors = [NanitConnectionError("HTTP 503") for _ in range(4)]
+
+    # Tried at 18:15, 18:20, 18:35 and 19:35; through at 20:35.
+    for _ in range(30):
+        await second.advance(timedelta(minutes=5))
+    assert second.diag()["state"] == "running"
+    assert dt_util.utcnow() >= NOW + timedelta(hours=2, minutes=25)
+
+    # The second pass re-read the reader's bounds, which end at 19:10: 18:00
+    # is the last hour any read observed whole after it ended.
+    for series in (S.BOTTLE_VOLUME, S.DIAPER_PEE):
+        assert max(await _stored(hass, series)) == hour_start(_ts(NOW))
+    assert (await _stored(hass, S.DIAPER_PEE))[_hour(D2)] == 0.0
 
 
 # ---------------------------------------------------------------------------

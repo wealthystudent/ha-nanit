@@ -55,7 +55,7 @@ from __future__ import annotations
 
 import math
 from bisect import bisect_left
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from functools import lru_cache
@@ -147,7 +147,10 @@ class CareLogRead:
     ``start`` and ``end`` are the inclusive bounds sent (Unix seconds).
     ``reader`` is an opaque id for the sign-in that made the request.
     ``entries`` maps uid to facts, for the counted kinds only, each dated
-    within the bounds.
+    within the bounds: a read-only view that builds the facts when asked.
+    The read itself keeps each entry as a tuple of numbers (see ``_Record``),
+    so that a pass held for minutes, waiting for its second pass, adds
+    nothing to every full collection of the garbage collector.
     """
 
     start: int
@@ -158,13 +161,23 @@ class CareLogRead:
     entries: Mapping[str, EntryFacts] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        """Validate, and keep a read-only copy of the entries."""
+        """Validate, and keep the entries as records, in a read-only view."""
         if self.end < self.start:
             raise ValueError("a read must end at or after its start")
         _require_aware(self.read_at, "read_at")
         if self.dropped < 0:
             raise ValueError("dropped must not be negative")
-        object.__setattr__(self, "entries", MappingProxyType(dict(self.entries)))
+        entries = self.entries
+        if not isinstance(entries, _FactsView):
+            entries = _FactsView({uid: _to_record(facts) for uid, facts in entries.items()})
+        object.__setattr__(self, "entries", entries)
+
+    @property
+    def records(self) -> Mapping[str, _Record]:
+        """The entries as stored: uid to record (read only, by convention)."""
+        entries = self.entries
+        assert isinstance(entries, _FactsView)
+        return entries.records
 
     @classmethod
     def from_logs(
@@ -187,17 +200,26 @@ class CareLogRead:
         kept among the rest, the later-dated one of any kind (as the sensors
         choose), so a copy out of range never displaces one in range.
         """
-        chosen: dict[str, tuple[float, EntryFacts | None]] = {}
+        chosen: dict[str, tuple[float, _Record | None]] = {}
         outside = 0
         for log in logs:
-            facts = EntryFacts.from_log(log)
-            if facts is not None and not start <= facts.timestamp <= end:
+            contribution = entry_contribution(log)
+            if contribution is not None and not start <= log.timestamp <= end:
                 outside += 1
                 continue
             current = chosen.get(log.uid)
             if current is None or log.timestamp > current[0]:
-                chosen[log.uid] = (log.timestamp, facts)
-        entries = {uid: facts for uid, (_, facts) in chosen.items() if facts is not None}
+                record = (
+                    None
+                    if contribution is None
+                    else _record(
+                        log.timestamp, contribution.hour, contribution.raw, contribution.invalid
+                    )
+                )
+                chosen[log.uid] = (log.timestamp, record)
+        entries = _FactsView(
+            {uid: record for uid, (_, record) in chosen.items() if record is not None}
+        )
         return cls(
             start=start,
             end=end,
@@ -318,19 +340,56 @@ def _series_set(bits: int) -> frozenset[CareLogSeries]:
     return frozenset(_series_in(bits))
 
 
+def _record(
+    timestamp: float,
+    hour: int,
+    raw: Sequence[tuple[CareLogSeries, float]],
+    invalid: Iterable[CareLogSeries],
+) -> _Record:
+    """Return the stored form of what an entry adds (``raw`` in any order)."""
+    if hour != hour_start(timestamp):
+        raise ValueError("hour must be the start of the hour the entry is dated in")
+    by_series = dict(raw)
+    bits = 0
+    for series in by_series:
+        bits |= _BITS[series]
+    values = [by_series[series] for series in _series_in(bits)]
+    if len(by_series) != len(raw):
+        raise ValueError("an entry adds to each series at most once")
+    flags = 0
+    for series in invalid:
+        flags |= _BITS[series]
+    return (timestamp, hour, bits, flags, *values)
+
+
 def _to_record(facts: EntryFacts) -> _Record:
     """Return the stored form of an entry's facts."""
-    bits = 0
-    values: list[float] = []
-    for series, value in facts.raw:
-        bits |= _BITS[series]
-        values.append(value)
-    if bits.bit_count() != len(values):
-        raise ValueError("an entry adds to each series at most once")
-    invalid = 0
-    for series in facts.invalid:
-        invalid |= _BITS[series]
-    return (facts.timestamp, facts.hour, bits, invalid, *values)
+    return _record(facts.timestamp, facts.hour, facts.raw, facts.invalid)
+
+
+class _FactsView(Mapping[str, EntryFacts]):
+    """A read's entries: records kept, facts built on demand, nothing to change."""
+
+    __slots__ = ("records",)
+
+    def __init__(self, records: dict[str, _Record]) -> None:
+        self.records = records
+
+    def __getitem__(self, uid: str) -> EntryFacts:
+        return _to_facts(self.records[uid])
+
+    def __contains__(self, uid: object) -> bool:
+        return uid in self.records
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.records)
+
+    def __len__(self) -> int:
+        return len(self.records)
+
+    def __repr__(self) -> str:
+        """Show the count only: no uid or time."""
+        return f"<entries {len(self.records)}>"
 
 
 def _pairs(record: _Record) -> tuple[tuple[CareLogSeries, float], ...]:
@@ -351,7 +410,8 @@ def _contribution(record: _Record) -> EntryContribution:
 class Ledger:
     """The accepted entries of one baby: uid to facts, indexed by hour.
 
-    Changed only through ``apply``. Queries cost the hours they ask for: the
+    Built whole by ``from_records``, then changed only through ``apply``.
+    Queries cost the hours they ask for: the
     indexed hours are kept sorted (rebuilt lazily after the set of hours
     changes) and searched with ``bisect``. ``first_hour`` of every series is
     cached, kept up to date by additions and recomputed in one pass only
@@ -371,6 +431,29 @@ class Ledger:
         self._hours: list[int] | None = []
         self._first: dict[CareLogSeries, int] | None = {}
 
+    @classmethod
+    def from_records(cls, items: Iterable[tuple[str, _Record]]) -> Ledger:
+        """Build a ledger from records, each uid once, with its index and caches ready.
+
+        Records are taken as stored (from a read, which built them), so no
+        facts are made; the sorted hours and the first hours are computed
+        here too, so a ledger built off the event loop costs it nothing later.
+        """
+        ledger = cls()
+        entries = ledger._entries
+        by_hour: dict[int, list[str]] = {}
+        first: dict[CareLogSeries, int] = {}
+        for uid, record in items:
+            if uid in entries:
+                raise ValueError("each uid is added once")
+            entries[uid] = record
+            by_hour.setdefault(record[1], []).append(uid)
+            _note_first(first, record)
+        ledger._by_hour = {hour: tuple(uids) for hour, uids in by_hour.items()}
+        ledger._hours = sorted(ledger._by_hour)
+        ledger._first = first
+        return ledger
+
     def __len__(self) -> int:
         """Return the number of accepted entries."""
         return len(self._entries)
@@ -387,6 +470,10 @@ class Ledger:
         """Return an accepted entry's facts, or None."""
         record = self._entries.get(uid)
         return None if record is None else _to_facts(record)
+
+    def record(self, uid: str) -> _Record | None:
+        """Return an accepted entry as stored, or None."""
+        return self._entries.get(uid)
 
     def _hours_within(self, start_hour: int, end_hour: int) -> list[int]:
         """Return the indexed hours in ``[start_hour, end_hour)``, oldest first."""
@@ -606,16 +693,20 @@ def assess(
     changed = changed_at or {}
     safe: list[Change] = []
     lowering: list[Change] = []
-    for uid, returned in read.entries.items():
+    records = read.records
+    for uid, returned in records.items():
         if taken < changed.get(uid, horizon):
             continue
-        before = ledger.get(uid)
-        after = _carry_forward(before, returned)
+        stored = ledger.record(uid)
+        if stored == returned:
+            continue  # unchanged, without building any facts
+        before = None if stored is None else _to_facts(stored)
+        after = _carry_forward(before, _to_facts(returned))
         if after == before:
             continue
         change = Change(uid=uid, before=before, after=after)
         (lowering if change.needs_confirmation else safe).append(change)
-    for uid in sorted(ledger.uids_between(read.start, read.end) - read.entries.keys()):
+    for uid in sorted(ledger.uids_between(read.start, read.end) - records.keys()):
         if taken < changed.get(uid, horizon):
             continue
         lowering.append(Change(uid=uid, before=ledger.get(uid), after=None))
@@ -624,9 +715,10 @@ def assess(
 
 def _agree(first: CareLogRead, second: CareLogRead, cutoff: int) -> bool:
     """Whether two reads hold the same entries among hours before ``cutoff``."""
-    a = {uid: facts for uid, facts in first.entries.items() if facts.hour < cutoff}
-    b = {uid: facts for uid, facts in second.entries.items() if facts.hour < cutoff}
-    return a.keys() == b.keys() and all(a[uid].same_for_charts(b[uid]) for uid in a)
+    # A record without its time is what ``same_for_charts`` compares.
+    a = {uid: record[1:] for uid, record in first.records.items() if record[1] < cutoff}
+    b = {uid: record[1:] for uid, record in second.records.items() if record[1] < cutoff}
+    return a == b
 
 
 def _sightings_agree(
@@ -638,18 +730,18 @@ def _sightings_agree(
     candidate.
     """
     low, high = reads[0].start, reads[-1].end
-    held: dict[str, tuple[datetime, EntryFacts]] = {}
+    held: dict[str, tuple[datetime, _Record]] = {}
     for read in reads:
-        for uid, facts in read.entries.items():
+        for uid, record in read.records.items():
             current = held.get(uid)
             if current is None or read.read_at >= current[0]:
-                held[uid] = (read.read_at, facts)
+                held[uid] = (read.read_at, record)
     for read in seen:
-        for uid, facts in read.entries.items():
-            if facts.hour >= cutoff or not low <= facts.timestamp <= high:
+        for uid, record in read.records.items():
+            if record[1] >= cutoff or not low <= record[0] <= high:
                 continue
             mine = held.get(uid)
-            if mine is None or not mine[1].same_for_charts(facts):
+            if mine is None or mine[1][1:] != record[1:]:
                 return False
     return True
 
@@ -846,17 +938,13 @@ class CareLogBook:
         ``read_at``; the later read in the pass on a tie).
         """
         self._check_pass(reads)
-        chosen: dict[str, tuple[datetime, EntryFacts]] = {}
+        chosen: dict[str, tuple[datetime, _Record]] = {}
         for read in reads:
-            for uid, facts in read.entries.items():
+            for uid, record in read.records.items():
                 current = chosen.get(uid)
                 if current is None or read.read_at >= current[0]:
-                    chosen[uid] = (read.read_at, facts)
-        ledger = Ledger()
-        ledger.apply(
-            Change(uid=uid, before=None, after=facts) for uid, (_, facts) in sorted(chosen.items())
-        )
-        return ledger
+                    chosen[uid] = (read.read_at, record)
+        return Ledger.from_records((uid, record) for uid, (_, record) in sorted(chosen.items()))
 
     def passes_agree(
         self,

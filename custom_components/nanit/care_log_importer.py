@@ -709,7 +709,11 @@ class CareLogStatisticsImporter:
         )
         self._check_round(generation)
         if comparison.lowering_cells == 0:
-            await self._async_adopt(reads, candidate)
+            self._adopt(reads, candidate)
+            # The pass is not needed any more: let it go before the first sync,
+            # which can take minutes, so the collector does not keep visiting it.
+            del reads, reader_read, candidate
+            await self._async_sync()
             return
         del candidate
         # It would lower a stored cell: nothing is written until a second
@@ -742,7 +746,10 @@ class CareLogStatisticsImporter:
         if agree:
             candidate: Ledger = await self._hass.async_add_executor_job(self._book.candidate, reads)
             self._check_round(generation)
-            await self._async_adopt(reads, candidate)
+            self._adopt(reads, candidate)
+            # Both passes are let go before the sync (see the first pass).
+            del first, reads, read, seen, candidate
+            await self._async_sync()
             return
         if self._passes >= MAX_STARTUP_PASSES:
             _LOGGER.warning(
@@ -787,8 +794,12 @@ class CareLogStatisticsImporter:
         self._startup_due = None
         self._wake()
 
-    async def _async_adopt(self, reads: Sequence[CareLogRead], candidate: Ledger) -> None:
-        """Adopt a pass whose candidate was built (no wait before the book is changed)."""
+    def _adopt(self, reads: Sequence[CareLogRead], candidate: Ledger) -> None:
+        """Adopt a pass whose candidate was built; the caller syncs next.
+
+        Without a wait, so nothing can arrive between the round's last check
+        and the book's change.
+        """
         self._book.adopt_candidate(candidate)
         for read in reads:
             self._note_observed(read)
@@ -813,7 +824,6 @@ class CareLogStatisticsImporter:
         self._state = STATE_RUNNING
         # The reader reads kept since the pass's latest read, in order.
         self._process_reads()
-        await self._async_sync()
 
     # -- running ------------------------------------------------------------------
 

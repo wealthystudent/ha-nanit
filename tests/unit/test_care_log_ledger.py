@@ -581,6 +581,39 @@ def test_the_tracked_objects_of_a_ledger_do_not_grow_with_its_entries() -> None:
     assert large_added - small_added < 300
 
 
+def _varied_logs(count: int, seed: int) -> list[CareLog]:
+    rng = random.Random(seed)
+    base = DAY.timestamp()
+    return [_random_log(rng, f"u{i}", base + rng.uniform(0, 12 * 3600)) for i in range(count)]
+
+
+def test_the_tracked_objects_of_a_read_do_not_grow_with_its_entries() -> None:
+    """A pass waiting minutes for its second pass must not weigh on every full collection."""
+    small_logs, large_logs = _varied_logs(400, seed=3), _varied_logs(4000, seed=3)
+    enabled = gc.isenabled()
+    gc.disable()
+    try:
+        gc.collect()
+        before = len(gc.get_objects())
+        small = _read(small_logs, at=T0)
+        gc.collect()
+        small_added = len(gc.get_objects()) - before
+        large = _read(large_logs, at=T0)
+        gc.collect()
+        large_added = len(gc.get_objects()) - before - small_added
+    finally:
+        if enabled:
+            gc.enable()
+    assert len(large.entries) > 9 * len(small.entries) > 3000
+    # EntryFacts held per entry added about six tracked objects each: 20,000 here.
+    assert large_added - small_added < 300
+    assert not any(gc.is_tracked(record) for record in large.records.values())
+    # The facts are still there on demand, equal to those of each entry.
+    sample = next(iter(large.entries))
+    by_uid = {log.uid: log for log in large_logs}
+    assert large.entries[sample] == _facts(by_uid[sample])
+
+
 # ---------------------------------------------------------------------------
 # Assessing a read
 # ---------------------------------------------------------------------------

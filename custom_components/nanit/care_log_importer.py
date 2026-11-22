@@ -27,17 +27,20 @@ incremental sync follows. A change that lowers a chart waits for the book's
 confirm request, which the importer reads itself. Once a day the history is
 read again.
 
-No read is ever dropped for being older than another. Reads waiting to be
-processed, the reader's and the importer's own, go to the book in the
-order they were taken: an older read processed late can add or cancel,
-never confirm. From the start of the first start-up pass, the reader's
-reads are kept. A second pass is adopted only when none of them returns,
-in an hour that was finished when the first pass began and inside the
-pass's bounds, an entry the second pass lacks or holds otherwise; after
-the adoption they are processed in order. When more than ``READER_QUEUE``
-reads wait, the oldest is lost: a waiting start-up pass starts over, and
-every change waiting for a confirming read is forgotten, so nothing is
-confirmed across the gap.
+Reads waiting to be processed, the reader's and the importer's own, go to
+the book in the order they were taken: an older read processed late can
+add or cancel, never confirm. From the start of the first start-up pass,
+the reader's reads are kept. A second pass is adopted only when none of
+the reads kept since its round's first pass began returns, in an hour that
+was finished when that pass began and inside the pass's bounds, an entry
+the second pass lacks or holds otherwise. Older evidence never overrides
+newer: once a pass is adopted, every kept read taken no later than the
+pass's latest read is discarded unprocessed, and only the reads taken
+after it go to the book. When more than ``READER_QUEUE`` reads wait, the
+oldest is lost: a start-up round in progress or waiting starts over (it is
+checked after every wait of the round, up to the adoption), and every
+change waiting for a confirming read is forgotten, so nothing is confirmed
+across the gap.
 
 Nanit is asked for nothing beyond the reader's own polls, and nothing is
 written, while the recorder is not ready (not loaded, its database not
@@ -224,11 +227,22 @@ class _AuthFailedError(Exception):
     """Unwinds the worker after Nanit refused the sign-in."""
 
 
+class _RoundLostReadsError(Exception):
+    """Unwinds a start-up round after a reader read was lost to a full queue."""
+
+
 def _merge_earliest(into: dict[CareLogSeries, int], other: Mapping[CareLogSeries, int]) -> None:
     for series, hour in other.items():
         current = into.get(series)
         if current is None or hour < current:
             into[series] = hour
+
+
+def _taken_at(data: CareLogData) -> datetime:
+    """Return when a queued reader update's answer arrived."""
+    coverage = data.request_coverage
+    assert coverage is not None  # only updates with coverage are queued
+    return coverage.read_at
 
 
 def _whole_minutes(since: datetime | None, now: datetime) -> int | None:
@@ -276,8 +290,10 @@ class CareLogStatisticsImporter:
         self._last_handled_read_at: datetime | None = None
         self._reader_queue: deque[CareLogData] = deque()
         self._newest_reader: CareLogData | None = None
-        # Set when a reader update was lost to a full queue, until handled.
+        # Set when a reader update was lost to a full queue, until handled;
+        # the generation counts every loss, for a start-up round to check.
         self._overflowed = False
+        self._overflow_generation = 0
 
         # Start-up. ``_keeping``: reader updates are kept for the start-up
         # passes (from the start of a first pass until the adoption).
@@ -384,6 +400,7 @@ class CareLogStatisticsImporter:
                 queue.popleft()
                 self._queue_overflows += 1
                 self._overflowed = True
+                self._overflow_generation += 1
             queue.append(data)
         # Otherwise no pass waits for it: the next first pass starts from
         # the newest, which is kept above.
@@ -587,6 +604,10 @@ class CareLogStatisticsImporter:
                 await self._async_first_pass()
             else:
                 await self._async_second_pass(self._first_pass)
+        except _RoundLostReadsError:
+            # A reader read taken during this round was lost: what it said is
+            # unknown, so the round cannot be trusted. It starts over.
+            self._start_over()
         except NanitConnectionError:
             self._note_connection_failure(dt_util.utcnow())
             self._startup_due = self._retry_at
@@ -617,6 +638,7 @@ class CareLogStatisticsImporter:
         self._reader_queue.clear()
         self._overflowed = False
         self._keeping = True
+        generation = self._overflow_generation
         reader_read = self._read_from_reader(newest)
         history_start = care_log_history_start(self._baby, dt_util.utcnow())
         # The last piece shares the reader read's first second.
@@ -624,13 +646,16 @@ class CareLogStatisticsImporter:
         reads: list[CareLogRead] = []
         for index, (start, end) in enumerate(pieces):
             await self._async_pause(index)
+            self._check_round(generation)
             reads.append(await self._async_own_read(start, end))
+            self._check_round(generation)
         reads.append(reader_read)
         self._note_connection_success()
         self._passes_completed += 1
         self._passes = 1
 
         candidate: Ledger = await self._hass.async_add_executor_job(self._book.candidate, reads)
+        self._check_round(generation)
         comparison = await async_compare_care_log_statistics(
             self._hass,
             code=self._code,
@@ -638,29 +663,28 @@ class CareLogStatisticsImporter:
             end_hour=self._end_hour(),
             coverage_start=reads[0].start,
         )
-        del candidate
+        self._check_round(generation)
         if comparison.lowering_cells == 0:
-            await self._async_adopt(reads)
+            await self._async_adopt(reads, candidate)
             return
+        del candidate
         # It would lower a stored cell: nothing is written until a second
         # pass of the same bounds agrees.
         self._wait_for_next_pass(reads, reader_read.read_at)
 
     async def _async_second_pass(self, first: Sequence[CareLogRead]) -> None:
         self._state = STATE_STARTING
+        generation = self._overflow_generation
         began = dt_util.utcnow()
         reads: list[CareLogRead] = []
         for index, read in enumerate(first):
             await self._async_pause(index)
+            self._check_round(generation)
             reads.append(await self._async_own_read(read.start, read.end))
+            self._check_round(generation)
         self._note_connection_success()
         self._passes_completed += 1
         self._passes += 1
-        if self._overflowed:
-            # A reader read taken during this round was lost: what it said is
-            # unknown, so the passes cannot be trusted to agree.
-            self._start_over()
-            return
         since = self._first_pass_began
         seen = [
             read
@@ -670,8 +694,11 @@ class CareLogStatisticsImporter:
         agree: bool = await self._hass.async_add_executor_job(
             self._book.passes_agree, first, reads, seen
         )
+        self._check_round(generation)
         if agree:
-            await self._async_adopt(reads)
+            candidate: Ledger = await self._hass.async_add_executor_job(self._book.candidate, reads)
+            self._check_round(generation)
+            await self._async_adopt(reads, candidate)
             return
         if self._passes >= MAX_STARTUP_PASSES:
             _LOGGER.warning(
@@ -692,9 +719,18 @@ class CareLogStatisticsImporter:
     def _wait_for_next_pass(self, reads: Sequence[CareLogRead], began: datetime) -> None:
         """Make ``reads`` the first pass of the next round; it began at ``began``."""
         self._first_pass = tuple(reads)
-        self._first_pass_began = min(began, *(read.read_at for read in reads))
+        since = min(began, *(read.read_at for read in reads))
+        self._first_pass_began = since
+        # Only the reads kept since this round's first pass began count as
+        # sightings; older ones are dropped, never replayed.
+        self._reader_queue = deque(data for data in self._reader_queue if _taken_at(data) >= since)
         self._startup_due = max(read.read_at for read in reads) + MIN_GAP
         self._state = STATE_WAITING_FOR_SECOND_PASS
+
+    def _check_round(self, generation: int) -> None:
+        """Raise ``_RoundLostReadsError`` when a reader read was lost since ``generation``."""
+        if self._overflow_generation != generation:
+            raise _RoundLostReadsError
 
     def _start_over(self) -> None:
         """Forget a waiting start-up pass: the next step starts a new first pass."""
@@ -707,8 +743,13 @@ class CareLogStatisticsImporter:
         self._startup_due = None
         self._wake()
 
-    async def _async_adopt(self, reads: Sequence[CareLogRead]) -> None:
-        await self._hass.async_add_executor_job(self._book.adopt, reads)
+    async def _async_adopt(self, reads: Sequence[CareLogRead], candidate: Ledger) -> None:
+        """Adopt a pass whose candidate was built (no wait before the book is changed)."""
+        self._book.adopt_candidate(candidate)
+        # Older evidence never overrides newer: a kept read taken no later
+        # than the pass's latest read is discarded, whatever it holds.
+        latest = max(read.read_at for read in reads)
+        self._reader_queue = deque(data for data in self._reader_queue if _taken_at(data) > latest)
         now = dt_util.utcnow()
         self._first_pass = None
         self._first_pass_began = None
@@ -724,7 +765,7 @@ class CareLogStatisticsImporter:
         self._last_history_at = now
         self._history_due = now + HISTORY_INTERVAL
         self._state = STATE_RUNNING
-        # The reader reads kept since the first pass began, in order.
+        # The reader reads kept since the pass's latest read, in order.
         self._process_reads()
         await self._async_sync()
 

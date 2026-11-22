@@ -843,7 +843,15 @@ class CareLogBook:
 
     def adopt(self, reads: Sequence[CareLogRead]) -> None:
         """Replace the ledger with a pass's candidate and forget every waiting change."""
-        self._ledger = self.candidate(reads)
+        self.adopt_candidate(self.candidate(reads))
+
+    def adopt_candidate(self, ledger: Ledger) -> None:
+        """Replace the ledger with one ``candidate`` built, and forget every waiting change.
+
+        Quick, so it can run on the event loop after the candidate was built
+        off it.
+        """
+        self._ledger = ledger
         self._pending.clear()
         self._established = True
 

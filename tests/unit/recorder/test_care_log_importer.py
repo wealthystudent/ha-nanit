@@ -1307,16 +1307,113 @@ async def test_an_older_read_processed_late_ends_at_the_truth(
     await second.advance(MIN_GAP - timedelta(minutes=2))  # 18:15, the second pass agrees
 
     assert second.diag()["state"] == "running"
-    # The kept read, older than the adopted pass, adds the bottle back.
-    assert late.uid in second.importer._book.ledger
+    # The kept read, older than the adopted pass, is discarded: it does not
+    # add the bottle back.
+    assert late.uid not in second.importer._book.ledger
 
-    # Once its hour has finished, the next read and its re-read remove it.
+    # Once its hour has finished, nothing of it is stored either.
     await second.tick_and_poll(timedelta(minutes=50))  # 19:05
     await second.advance(MIN_GAP)  # 19:10
     assert late.uid not in second.importer._book.ledger
     volume = await _rows(hass, S.BOTTLE_VOLUME)
     assert volume[_hour(late)] == (0.0, 210.0)
     assert volume[_end_hour() - H] == (0.0, 210.0)
+    assert (await _stored(hass, S.DIAPER_PEE))[_hour(D2)] == 0.0
+
+
+async def test_a_reader_omission_between_two_agreeing_passes_is_not_replayed_after_them(
+    make: Callable[..., Harness], hass: HomeAssistant
+) -> None:
+    """Both passes return b1; a reader poll between them leaves it out."""
+    truth = Truth(BASE)
+    first = await _imported(make, truth)
+    await first.stop()
+    truth.delete(D2.uid)  # the restart needs a second pass
+    second = make(truth)
+    second.start()
+    await second.poll()  # 18:10, the first pass
+    truth.omit_next = {B1.uid}
+    await second.tick_and_poll(timedelta(minutes=2))  # 18:12, leaves b1 out
+    await second.advance(MIN_GAP - timedelta(minutes=2))  # 18:15, the second pass agrees
+    assert second.diag()["state"] == "running"
+
+    # One more omission at that poll's bounds, a gap after it (18:17), would
+    # confirm a removal the older poll had started: none was started.
+    truth.omit_own = {B1.uid}
+    await second.advance(timedelta(minutes=2))  # 18:17
+    assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(B1)] == 120.0
+    assert B1.uid in second.importer._book.ledger
+    assert second.diag()["confirm_fetches"] == 0
+
+
+async def test_a_removal_confirmed_by_passes_two_and_three_is_not_undone_by_an_older_sighting(
+    make: Callable[..., Harness], hass: HomeAssistant
+) -> None:
+    truth = Truth(BASE)
+    first = await _imported(make, truth)
+    await first.stop()
+    truth.delete(D2.uid)  # deleted while stopped
+    second = make(truth)
+    second.start()
+    await second.poll()  # 18:10, the first pass
+    truth.put(D2)
+    await second.tick_and_poll(timedelta(minutes=2))  # 18:12, a sighting of d2
+    truth.delete(D2.uid)
+    await second.advance(MIN_GAP - timedelta(minutes=2))  # 18:15, vetoed by the sighting
+    assert second.diag()["state"] == "waiting_for_second_pass"
+    assert second.diag()["passes_completed"] == 2
+
+    await second.advance(MIN_GAP)  # 18:20, the third pass agrees with the second
+
+    assert second.diag()["state"] == "running"
+    assert second.diag()["passes_completed"] == 3
+    assert D2.uid not in second.importer._book.ledger
+    assert (await _stored(hass, S.DIAPER_PEE))[_hour(D2)] == 0.0
+
+
+async def test_a_reader_read_lost_while_the_adoption_waits_starts_the_round_over(
+    make: Callable[..., Harness], hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    truth = Truth(BASE)
+    first = await _imported(make, truth)
+    await first.stop()
+    truth.delete(D2.uid)  # the restart needs a second pass
+    second = make(truth)
+    importer = second.importer
+    real_job = hass.async_add_executor_job
+    injected: list[str] = []
+
+    def job(target: Any, *args: Any) -> Any:
+        name = getattr(target, "__name__", "")
+        if importer._passes >= 2 and name in {"adopt", "candidate"} and not injected:
+            injected.append(name)
+
+            async def polls_meanwhile() -> Any:
+                for _ in range(3):
+                    freezer.tick(timedelta(seconds=1))
+                    await second.coordinator.async_refresh()
+                return await real_job(target, *args)
+
+            return polls_meanwhile()
+        return real_job(target, *args)
+
+    second.start()
+    await second.poll()  # 18:10, the first pass
+    with (
+        patch.object(hass, "async_add_executor_job", job),
+        patch.object(care_log_importer, "READER_QUEUE", 2),
+    ):
+        await second.advance(MIN_GAP)  # 18:15, the second pass agrees
+
+    assert injected
+    assert second.diag()["queue_overflows"] == 1
+    # The round started over: nothing was adopted or lowered.
+    assert second.diag()["state"] == "waiting_for_second_pass"
+    assert not importer._book.established
+    assert (await _stored(hass, S.DIAPER_PEE))[_hour(D2)] == 1.0
+
+    await second.advance(MIN_GAP)
+    assert second.diag()["state"] == "running"
     assert (await _stored(hass, S.DIAPER_PEE))[_hour(D2)] == 0.0
 
 

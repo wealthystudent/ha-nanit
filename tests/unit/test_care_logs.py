@@ -22,6 +22,8 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry, async_
 
 from aionanit.exceptions import NanitAuthError, NanitConnectionError
 from aionanit.models import Baby, CareLog, CareLogFetch
+from custom_components.nanit.care_log_hours import CareLogSeries
+from custom_components.nanit.care_log_ledger import CareLogRead
 from custom_components.nanit.const import CARE_LOG_POLL_INTERVAL, CARE_LOG_SEED_DAYS, DOMAIN
 from custom_components.nanit.coordinator import (
     CareLogData,
@@ -253,6 +255,43 @@ def test_summary_keeps_the_whole_fetch_with_sleep_once_per_uid_oldest_first() ->
     assert data.entries == (bottle,)
     assert data.latest == {"bottle_feed": bottle}
     assert data.today == (bottle,)
+
+
+@pytest.mark.parametrize("later", [True, False], ids=["later_outside", "earlier_outside"])
+@pytest.mark.parametrize("reverse", [False, True], ids=["inside_first", "outside_first"])
+def test_whole_fetch_checks_the_range_before_choosing_one_copy_per_uid(
+    later: bool, reverse: bool
+) -> None:
+    """A copy dated outside the range asked for is dropped, and never displaces the one inside."""
+    coverage = CareLogRequestCoverage(
+        start=int(SEED_START), end=int(MIDNIGHT + 3600), read_at=DAY_START, dropped=2
+    )
+    inside = _log("b1", "bottle_feed", 600, feed_amount_ml=90.0)
+    offset = 7200 if later else SEED_START - MIDNIGHT - 3600
+    outside = _log("b1", "bottle_feed", offset, feed_amount_ml=40.0)
+    logs = [inside, outside][:: -1 if reverse else 1]
+
+    data = build_care_log_data(
+        logs, window_start=SEED_START, day_start=DAY_START, previous=None, request_coverage=coverage
+    )
+
+    assert data.all_entries == (inside,)
+    assert data.request_coverage == CareLogRequestCoverage(
+        start=coverage.start, end=coverage.end, read_at=DAY_START, dropped=2, outside=1
+    )
+    # And so the importer's read of it holds the copy inside, with a drop.
+    read = CareLogRead.from_logs(
+        data.all_entries,
+        start=coverage.start,
+        end=coverage.end,
+        read_at=DAY_START,
+        dropped=data.request_coverage.dropped + data.request_coverage.outside,
+        reader="reader",
+    )
+    assert read.entries["b1"].amount(CareLogSeries.BOTTLE_VOLUME) == 90.0
+    assert read.dropped == 3
+    # The sensors still choose as before, from every row.
+    assert data.entries == ((outside if later else inside),)
 
 
 def test_whole_fetch_is_only_the_last_fetch() -> None:

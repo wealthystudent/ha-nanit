@@ -186,6 +186,35 @@ def test_an_answer_with_an_entry_outside_its_bounds_never_confirms_a_removal() -
     assert "d_old" not in book.ledger
 
 
+def test_a_later_dated_copy_outside_the_bounds_does_not_displace_the_one_inside() -> None:
+    logs = [
+        _bottle("b1", AT_9, 60.0),
+        _bottle("b1", datetime.fromtimestamp(END + 60, UTC), 50.0),  # later, outside
+    ]
+    for order in (logs, logs[::-1]):
+        read = _read(order, at=T0)
+        assert set(read.entries) == {"b1"}
+        assert read.entries["b1"].amount(S.BOTTLE_VOLUME) == 60.0
+        assert read.dropped == 1
+
+
+def test_an_earlier_dated_copy_outside_the_bounds_is_counted_as_dropped() -> None:
+    logs = [
+        _bottle("b1", DAY - timedelta(days=3), 60.0),  # earlier, outside
+        _bottle("b1", AT_10, 50.0),
+    ]
+    for order in (logs, logs[::-1]):
+        read = _read(order, at=T0)
+        assert read.entries["b1"].amount(S.BOTTLE_VOLUME) == 50.0
+        assert read.dropped == 1
+    # So an answer holding it never confirms a removal.
+    book = _book([_bottle("b1", AT_10, 50.0), _diaper("d1", AT_9)])
+    book.process(_read([_bottle("b1", AT_10, 50.0)], at=T0))
+    outcome = book.process(_read(logs, at=T0 + GAP))
+    assert not outcome.confirmed
+    assert "d1" in book.ledger
+
+
 def test_a_read_checks_its_bounds_time_and_dropped_count() -> None:
     with pytest.raises(ValueError):
         _read([], at=T0, start=END, end=START)

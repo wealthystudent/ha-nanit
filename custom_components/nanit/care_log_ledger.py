@@ -70,7 +70,6 @@ from .care_log_hours import (
     HourlyAmounts,
     entry_contribution,
     hour_start,
-    latest_by_uid,
     series_total,
     sum_contributions,
 )
@@ -180,22 +179,25 @@ class CareLogRead:
     ) -> CareLogRead:
         """Build a read from returned entries.
 
-        One entry per uid (the later-dated copy), counted kinds only. A
-        counted entry dated outside the inclusive bounds is left out and
-        counted in ``dropped``: such an answer is not what was asked for,
-        so it can never confirm a removal, and a wrong old date cannot
-        stretch the statistics back by years.
+        Counted kinds only. Each returned row is checked against the
+        inclusive bounds first: a counted row dated outside them is left out
+        and counted in ``dropped`` (such an answer is not what was asked
+        for, so it can never confirm a removal, and a wrong old date cannot
+        stretch the statistics back by years). Only then is one copy per uid
+        kept among the rest, the later-dated one of any kind (as the sensors
+        choose), so a copy out of range never displaces one in range.
         """
-        entries: dict[str, EntryFacts] = {}
+        chosen: dict[str, tuple[float, EntryFacts | None]] = {}
         outside = 0
-        for log in latest_by_uid(logs):
+        for log in logs:
             facts = EntryFacts.from_log(log)
-            if facts is None:
-                continue
-            if start <= facts.timestamp <= end:
-                entries[log.uid] = facts
-            else:
+            if facts is not None and not start <= facts.timestamp <= end:
                 outside += 1
+                continue
+            current = chosen.get(log.uid)
+            if current is None or log.timestamp > current[0]:
+                chosen[log.uid] = (log.timestamp, facts)
+        entries = {uid: facts for uid, (_, facts) in chosen.items() if facts is not None}
         return cls(
             start=start,
             end=end,

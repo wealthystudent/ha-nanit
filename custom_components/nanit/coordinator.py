@@ -24,7 +24,7 @@ import asyncio
 import logging
 import math
 from collections.abc import Awaitable, Callable, Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -42,6 +42,7 @@ from aionanit.models import Baby, CameraEvent, CameraState, CareLog, CloudEvent,
 from .aionanit_sl.models import SoundLightEvent, SoundLightEventKind, SoundLightFullState
 from .aionanit_sl.sound_light import NanitSoundLight
 from .baby_code import baby_code
+from .care_log_hours import entry_contribution
 from .const import (
     CARE_LOG_POLL_INTERVAL,
     CARE_LOG_SEED_DAYS,
@@ -318,13 +319,16 @@ class CareLogRequestCoverage:
     of being complete). ``start`` and ``end`` are the Unix seconds sent,
     both inclusive, as Nanit matches an entry by its start. ``read_at`` is
     when the answer arrived, and ``dropped`` how many of its rows were
-    skipped as malformed.
+    skipped as malformed. ``outside`` counts the rows of a kind the
+    statistics count that were dated outside the range (``CareLogData``
+    leaves them out of ``all_entries``).
     """
 
     start: int
     end: int
     read_at: datetime
     dropped: int = 0
+    outside: int = 0
 
 
 @dataclass(frozen=True)
@@ -345,7 +349,11 @@ class CareLogData:
     ``CARE_LOG_TYPES``. ``all_entries`` is the whole numeric answer of the
     last fetch, every kind (sleep included), each uid once, oldest first,
     with the range that fetch asked for in ``request_coverage``. Neither
-    carries anything forward from earlier fetches.
+    carries anything forward from earlier fetches. Each row of a kind the
+    statistics count is checked against that range before a copy is chosen
+    per uid: one dated outside it is left out of ``all_entries`` and counted
+    in ``request_coverage.outside``, so it neither displaces a copy inside
+    the range nor goes unnoticed.
     """
 
     latest: Mapping[str, CareLog]
@@ -395,8 +403,22 @@ def build_care_log_data(
     earlier fetch returned. An entry inside the window that the API no
     longer returns was deleted in the app, so it no longer counts.
     """
+    logs = tuple(logs)
     fetched = _by_uid(logs)
-    all_entries = tuple(sorted(fetched.values(), key=_order))
+    if request_coverage is None:
+        all_entries = tuple(sorted(fetched.values(), key=_order))
+    else:
+        low, high = request_coverage.start, request_coverage.end
+        in_range: list[CareLog] = []
+        outside = 0
+        for log in logs:
+            if entry_contribution(log) is not None and not low <= log.timestamp <= high:
+                outside += 1
+            else:
+                in_range.append(log)
+        all_entries = tuple(sorted(_by_uid(in_range).values(), key=_order))
+        if outside:
+            request_coverage = replace(request_coverage, outside=outside)
     entries = tuple(log for log in fetched.values() if log.log_type in CARE_LOG_TYPES)
 
     before_window: dict[str, CareLog] = {}

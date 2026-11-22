@@ -1368,6 +1368,78 @@ def test_a_record_is_removed_when_nothing_lowering_is_left() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Running: an older read processed late
+# ---------------------------------------------------------------------------
+
+
+def test_an_older_read_cannot_add_back_an_entry_a_newer_confirmation_removed() -> None:
+    book = _book([_bottle("b1", AT_9), _bottle("b2", AT_10)])
+    book.process(_read([_bottle("b2", AT_10)], at=T0))
+    book.process(_read([_bottle("b2", AT_10)], at=T0 + GAP + timedelta(minutes=1)))
+    assert "b1" not in book.ledger
+
+    # A read taken between the two, of other bounds, arrives late.
+    late = book.process(
+        _read(
+            [_bottle("b1", AT_9), _bottle("b2", AT_10)], at=T0 + timedelta(minutes=5), end=END - 1
+        )
+    )
+
+    assert "b1" not in book.ledger
+    assert (late.accepted, late.waiting) == (0, 0)
+    assert late.changed_from == {}
+
+
+def test_an_older_read_cannot_undo_a_newer_raise() -> None:
+    book = _book([_bottle("b1", AT_9, 90.0)])
+    book.process(_read([_bottle("b1", AT_9, 150.0)], at=T0 + timedelta(minutes=6)))
+    assert _amount(book, S.BOTTLE_VOLUME, AT_9) == 150.0
+
+    # A read from before the raise arrives late, then a newer read of its
+    # bounds says the same, a gap after it: one read after the raise only.
+    old = [_bottle("b1", AT_9, 90.0)]
+    late = book.process(_read(old, at=T0 + timedelta(minutes=3), end=END - 1))
+    assert late.waiting == 0
+    book.process(_read(old, at=T0 + timedelta(minutes=16), end=END - 1))
+
+    assert _amount(book, S.BOTTLE_VOLUME, AT_9) == 150.0
+    assert len(book.pending_requests()) == 1
+    # A second read after the raise confirms it, as any lowering.
+    book.process(_read(old, at=T0 + timedelta(minutes=27), end=END - 1))
+    assert _amount(book, S.BOTTLE_VOLUME, AT_9) == 90.0
+
+
+def test_a_read_later_than_the_last_change_behaves_as_before() -> None:
+    book = _book([_bottle("b1", AT_9, 90.0)])
+    book.process(_read([_bottle("b1", AT_9, 150.0)], at=T0))
+    raised = book.process(_read([_bottle("b1", AT_9, 200.0)], at=T0 + timedelta(minutes=1)))
+    assert raised.accepted == 1
+    assert _amount(book, S.BOTTLE_VOLUME, AT_9) == 200.0
+    first = book.process(_read([], at=T0 + timedelta(minutes=2)))
+    assert first.waiting == 1
+    assert first.confirm is not None
+    book.process(_read([], at=first.confirm.not_before))
+    assert "b1" not in book.ledger
+
+
+def test_changes_older_than_a_day_are_forgotten_and_so_is_every_read_that_old() -> None:
+    book = _book([_bottle("b1", AT_9, 90.0)])
+    book.process(_read([_bottle("b1", AT_9, 150.0)], at=T0))
+    assert book._changed_at
+
+    later = T0 + timedelta(days=1, hours=1)
+    book.process(_read([_bottle("b1", AT_9, 150.0)], at=later))
+    assert book._changed_at == {}
+    # A read older than the bound says nothing at all, whatever it holds.
+    stale = book.process(_read([_bottle("b9", AT_10)], at=T0 + timedelta(minutes=30)))
+    assert "b9" not in book.ledger
+    assert stale.accepted == 0
+    # A read inside the bound still counts.
+    fresh = book.process(_read([_bottle("b9", AT_10)], at=later - timedelta(minutes=1)))
+    assert fresh.accepted == 1
+
+
+# ---------------------------------------------------------------------------
 # Privacy
 # ---------------------------------------------------------------------------
 

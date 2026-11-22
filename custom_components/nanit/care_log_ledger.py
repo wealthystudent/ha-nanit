@@ -33,6 +33,10 @@ update the ledger under one rule:
   other than the one the first read implied (present where it implied a
   removal, or with other values) contradicts that read: the entry stops
   waiting, and a fresh round has to start from a new first read.
+- Newer evidence is never overridden by older: once a read has changed an
+  entry, what a read taken before it says about that entry is ignored,
+  so a read that arrives late cannot add back an entry a newer
+  confirmation removed, or undo a newer edit.
 
 Every entry's change is applied as one unit keyed by uid, so an entry that
 moves from one hour to another is never counted in both.
@@ -49,6 +53,7 @@ logged from this module.
 
 from __future__ import annotations
 
+import math
 from bisect import bisect_left
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -573,17 +578,35 @@ def _carry_forward(before: EntryFacts | None, after: EntryFacts) -> EntryFacts:
     )
 
 
-def assess(ledger: Ledger, read: CareLogRead) -> Assessment:
+def assess(
+    ledger: Ledger,
+    read: CareLogRead,
+    changed_at: Mapping[str, float] | None = None,
+    horizon: float = -math.inf,
+) -> Assessment:
     """Compare a read with the ledger, without changing it.
 
     A returned uid is new, unchanged, a safe edit or an edit that needs
     confirmation (a lowering one, a move wherever its old time was, or one
     that makes a rejected amount valid). An accepted uid within the read's
     bounds that the read does not return is a suspected removal.
+
+    ``changed_at`` maps a uid to when the read that last changed it was
+    taken (Unix seconds), and ``horizon`` stands in for a uid not in it.
+    What a read taken before that says about a uid is ignored: it
+    neither proposes a change for it nor counts its absence. Two reads
+    taken at the same moment cannot be ordered by time, so a tie is not
+    older: the one processed later counts.
     """
+    taken = read.read_at.timestamp()
+    if taken < horizon:
+        return Assessment(safe=(), lowering=())
+    changed = changed_at or {}
     safe: list[Change] = []
     lowering: list[Change] = []
     for uid, returned in read.entries.items():
+        if taken < changed.get(uid, horizon):
+            continue
         before = ledger.get(uid)
         after = _carry_forward(before, returned)
         if after == before:
@@ -591,6 +614,8 @@ def assess(ledger: Ledger, read: CareLogRead) -> Assessment:
         change = Change(uid=uid, before=before, after=after)
         (lowering if change.needs_confirmation else safe).append(change)
     for uid in sorted(ledger.uids_between(read.start, read.end) - read.entries.keys()):
+        if taken < changed.get(uid, horizon):
+            continue
         lowering.append(Change(uid=uid, before=ledger.get(uid), after=None))
     return Assessment(safe=tuple(safe), lowering=tuple(lowering))
 
@@ -714,16 +739,36 @@ def _blocked(change: Change) -> bool:
     return change.after is not None and bool(change.after.invalid)
 
 
+# How long the book remembers when an entry last changed, and how often it
+# forgets what is older (see ``CareLogBook``).
+CHANGE_MEMORY = 86400.0
+_PRUNE_EVERY = 3600.0
+
+
 class CareLogBook:
-    """One baby's ledger, and the reads waiting to confirm a lowering change."""
+    """One baby's ledger, and the reads waiting to confirm a lowering change.
+
+    While running, the book remembers for each uid when the read that last
+    changed it in the ledger (added, edited, moved or removed it) was taken.
+    A read taken before that is ignored for that uid (``assess``), so
+    an older read processed late cannot undo a newer decision. A record
+    older than ``CHANGE_MEMORY`` before the newest read processed is
+    forgotten, and from then on every read older than that is ignored
+    whole: such a read is never processed in practice (reads reach the book
+    minutes after they are taken), so nothing it could say is lost.
+    """
 
     __slots__ = (
+        "_changed_at",
         "_established",
+        "_horizon",
         "_ledger",
         "_max_attempts",
         "_max_pending",
         "_min_gap",
+        "_newest",
         "_pending",
+        "_pruned_at",
         "_reader",
     )
 
@@ -742,6 +787,14 @@ class CareLogBook:
         self._ledger = Ledger()
         self._established = False
         self._pending: dict[tuple[int, int], _Pending] = {}
+        # uid to when the read that last changed it was taken (Unix seconds):
+        # plain floats, so the garbage collector does not track them.
+        self._changed_at: dict[str, float] = {}
+        # Reads taken before this are ignored whole; the newest read
+        # processed, and when the records were last pruned.
+        self._horizon = -math.inf
+        self._newest = -math.inf
+        self._pruned_at = -math.inf
 
     def __repr__(self) -> str:
         """Show counts only."""
@@ -853,6 +906,7 @@ class CareLogBook:
         """
         self._ledger = ledger
         self._pending.clear()
+        self._changed_at.clear()
         self._established = True
 
     # -- running ------------------------------------------------------------
@@ -921,13 +975,39 @@ class CareLogBook:
             else:
                 del self._pending[other]
 
+    def _note_changed(self, changes: Iterable[Change], taken: float) -> None:
+        """Remember that a read taken at ``taken`` changed these uids."""
+        changed_at = self._changed_at
+        for change in changes:
+            if taken > changed_at.get(change.uid, -math.inf):
+                changed_at[change.uid] = taken
+
+    def _forget_old_changes(self, taken: float) -> None:
+        """Forget records older than ``CHANGE_MEMORY`` before the newest read, hourly.
+
+        Every read at or before that bound is ignored from then on, so a
+        forgotten record can never be undercut by a read older than it.
+        """
+        if taken <= self._newest:
+            return
+        self._newest = taken
+        if taken - self._pruned_at < _PRUNE_EVERY:
+            return
+        self._pruned_at = taken
+        bound = taken - CHANGE_MEMORY
+        self._horizon = max(self._horizon, bound)
+        self._changed_at = {uid: at for uid, at in self._changed_at.items() if at > bound}
+
     def process(self, read: CareLogRead) -> Outcome:
         """Take one read while running; see the module docstring for the rule."""
         if not self._established:
             raise ValueError("the book has no ledger yet")
         self._check_reader(read)
-        assessment = assess(self._ledger, read)
+        taken = read.read_at.timestamp()
+        self._forget_old_changes(taken)
+        assessment = assess(self._ledger, read, self._changed_at, self._horizon)
         changed = self._ledger.apply(assessment.safe)
+        self._note_changed(assessment.safe, taken)
         self._cancel_contradicted(read)
 
         key = (read.start, read.end)
@@ -947,6 +1027,7 @@ class CareLogBook:
                 if c.uid in pending.uids and _covered(c, cutoff) and not _blocked(c)
             ]
             _merge_earliest(changed, self._ledger.apply(ready))
+            self._note_changed(ready, taken)
             lowered = len(ready)
             del self._pending[key]
             applied = {change.uid for change in ready}

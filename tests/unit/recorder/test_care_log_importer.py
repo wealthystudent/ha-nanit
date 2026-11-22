@@ -1321,6 +1321,30 @@ async def test_an_older_read_processed_late_ends_at_the_truth(
     assert (await _stored(hass, S.DIAPER_PEE))[_hour(D2)] == 0.0
 
 
+async def test_an_older_read_processed_late_cannot_bring_back_a_confirmed_removal(
+    make: Callable[..., Harness], hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """In a finished hour. The clock is moved back to stamp a read older than one processed."""
+    truth = Truth(BASE)
+    harness = await _imported(make, truth)
+    truth.delete(B1.uid)
+    await harness.tick_and_poll(timedelta(minutes=1))  # 18:11, the removal waits
+    await harness.advance(MIN_GAP)  # 18:16, the confirm fetch removes it
+    assert B1.uid not in harness.importer._book.ledger
+    assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(B1)] == 0.0
+
+    # A reader read taken at 18:15, while b1 was still there, arrives late.
+    truth.put(B1)
+    freezer.move_to(NOW + timedelta(minutes=5))
+    await harness.poll()
+    truth.delete(B1.uid)
+    freezer.move_to(NOW + timedelta(minutes=7))
+    await harness.poll()
+
+    assert B1.uid not in harness.importer._book.ledger
+    assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(B1)] == 0.0
+
+
 async def test_a_reader_omission_between_two_agreeing_passes_is_not_replayed_after_them(
     make: Callable[..., Harness], hass: HomeAssistant
 ) -> None:

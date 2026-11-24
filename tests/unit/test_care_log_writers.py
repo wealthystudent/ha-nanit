@@ -32,7 +32,9 @@ from pytest_homeassistant_custom_component.common import (
 # Camera imports pull in turbojpeg; stub it like test_read_only.py does.
 _ = sys.modules.setdefault("turbojpeg", MagicMock(TurboJPEG=MagicMock()))
 
+from freezegun.api import FrozenDateTimeFactory
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import async_get_platforms
 
 from aionanit.exceptions import NanitRequestRefused
@@ -55,6 +57,7 @@ from custom_components.nanit.const import (
 )
 from custom_components.nanit.coordinator import NanitCareLogCoordinator
 from custom_components.nanit.diagnostics import async_get_config_entry_diagnostics
+from custom_components.nanit.sensor import CARE_LOG_SENSORS
 
 from .conftest import MOCK_BABY_1, mock_entry_data_v2
 from .test_via_device_e2e import camera_fails, nanit_env  # noqa: F401  (shared fixtures)
@@ -895,6 +898,66 @@ async def test_a_sign_in_refused_after_it_read_takes_no_first_ownership(
 
     (importer,) = started
     assert _writer(hass) == (working.entry_id, importer)
+    for entry in (refused, working):
+        assert await hass.config_entries.async_unload(entry.entry_id)
+    assert _no_registry_left(hass)
+
+
+async def test_a_refused_standby_stops_polling_once_another_sign_in_writes(
+    hass: HomeAssistant,
+    client: MagicMock,
+    started: list[CareLogStatisticsImporter],
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """Nanit keeps refusing the first sign-in, whose care entities are all disabled.
+
+    Its reader, a real one, polls only for the chance to take the baby. Once
+    the other sign-in writes the baby that chance is gone, and so is the
+    polling, although a reader that keeps failing never calls its listeners.
+    """
+    refusing = MagicMock(async_close=AsyncMock())
+    refusing.async_get_calendar_result = AsyncMock(
+        side_effect=NanitRequestRefused("Calendar fetch", 403)
+    )
+
+    async def answer(_baby_uid: str, start: int, end: int) -> CareLogFetch:
+        return CareLogFetch(logs=(), start=start, end=end, dropped=0)
+
+    refused = _entry(hass)
+    code = baby_code(MOCK_BABY_1.uid)
+    ent_reg = er.async_get(hass)
+    for platform, key in [
+        *(("sensor", description.key) for description in CARE_LOG_SENSORS),
+        ("calendar", "care_log_calendar"),
+    ]:
+        ent_reg.async_get_or_create(
+            platform,
+            DOMAIN,
+            f"{refused.entry_id}_{code}_{key}",
+            config_entry=refused,
+            disabled_by=er.RegistryEntryDisabler.USER,
+        )
+    client.async_get_calendar_result = AsyncMock(side_effect=refusing.async_get_calendar_result)
+    with patch("custom_components.nanit.hub.NanitCareLogCoordinator", NanitCareLogCoordinator):
+        await _set_up(hass, refused)
+        refused.runtime_data.hub._client = refusing
+        reader = refused.runtime_data.hub.care_log_coordinators[MOCK_BABY_1.uid]
+        assert not reader.last_update_success
+        assert reader._listeners  # waiting for its first read
+
+        client.async_get_calendar_result = AsyncMock(side_effect=answer)
+        working = _second(hass)
+        await _set_up(hass, working)
+
+    (importer,) = started
+    assert _writer(hass) == (working.entry_id, importer)
+    asked = refusing.async_get_calendar_result.await_count
+    for _ in range(6):
+        freezer.tick(timedelta(hours=1))
+        async_fire_time_changed(hass)
+        await hass.async_block_till_done()
+    assert refusing.async_get_calendar_result.await_count == asked
+    assert not reader._listeners
     for entry in (refused, working):
         assert await hass.config_entries.async_unload(entry.entry_id)
     assert _no_registry_left(hass)

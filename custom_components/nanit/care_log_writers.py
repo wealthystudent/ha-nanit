@@ -32,8 +32,10 @@ Ownership is proved, never assumed:
   the baby (it holds a read, its last update succeeded, and Nanit has not
   refused a request of it for the baby since: a sign-in Nanit refuses
   would hold the baby and never import) takes ownership. An entry
-  whose reader has not read yet listens to it, which keeps it polling, and
-  has the registry look again as soon as it has read. Taking ownership
+  whose reader has not read yet listens to it while it could take the baby
+  (it polls, nobody writes the baby and the baby is not paused), which
+  keeps it polling, and has the registry look again as soon as it has
+  read; the registry ends that listening once any entry writes the baby. Taking ownership
   waits until Home Assistant has started, so every entry that loads at
   start-up has offered and the choice does not depend on the order they
   load in.
@@ -180,6 +182,10 @@ def _always() -> bool:
     return True
 
 
+def _nothing() -> None:
+    return None
+
+
 def _marker_store(hass: HomeAssistant) -> Store[dict[str, Any]]:
     """Return a store for the owner marker: owner-only, and replaced atomically (fsync'd)."""
     return Store(hass, STORE_VERSION, STORE_KEY, private=True, atomic_writes=True)
@@ -193,6 +199,8 @@ class _Offer:
     can_claim: bool = True
     # Whether its reader has read the baby's care logs: asked at each look.
     has_read: Callable[[], bool] = _always
+    # Called once an importer runs for the baby, whoever's.
+    on_writer: Callable[[], None] = _nothing
 
 
 @dataclass
@@ -278,18 +286,24 @@ class CareLogWriterRegistry:
         *,
         can_claim: bool = True,
         has_read: Callable[[], bool] = _always,
+        on_writer: Callable[[], None] = _nothing,
     ) -> None:
         """Offer an entry as a baby's writer; it writes when it is, or becomes, the owner.
 
-        Never raises for a failed decision: setup goes on, and the next look
-        tries again.
+        ``on_writer`` is called when an importer starts for the baby, the
+        entry's or another's. Never raises for a failed decision: setup goes
+        on, and the next look tries again.
         """
         self._users += 1
         try:
             async with self._lock:
                 baby = self._babies.setdefault(code, _Baby())
                 baby.offers[entry_id] = _Offer(
-                    owner=owner, factory=factory, can_claim=can_claim, has_read=has_read
+                    owner=owner,
+                    factory=factory,
+                    can_claim=can_claim,
+                    has_read=has_read,
+                    on_writer=on_writer,
                 )
                 try:
                     await self._async_settle(code, baby)
@@ -484,6 +498,8 @@ class CareLogWriterRegistry:
         baby.writer = entry_id
         baby.importer = importer
         importer.async_start()
+        for offer in baby.offers.values():
+            offer.on_writer()
 
     # -- looking again --------------------------------------------------------
 
@@ -577,18 +593,25 @@ async def async_register_writer(
     *,
     can_claim: bool = True,
     has_read: Callable[[], bool] = _always,
+    on_writer: Callable[[], None] = _nothing,
 ) -> None:
     """Offer an entry as the writer of a baby's statistics (see the module docstring).
 
     ``can_claim`` False (polling disabled) keeps the entry from taking a
     first ownership, and so does ``has_read`` returning False when asked (its
     reader has not read the baby's care logs); it still writes when it is
-    the owner.
+    the owner. ``on_writer`` is called when an importer starts for the baby.
     """
     registry = _registry(hass)
     try:
         await registry.async_register(
-            code, entry_id, owner, factory, can_claim=can_claim, has_read=has_read
+            code,
+            entry_id,
+            owner,
+            factory,
+            can_claim=can_claim,
+            has_read=has_read,
+            on_writer=on_writer,
         )
     finally:
         _forget_if_unused(hass, registry)
@@ -694,16 +717,36 @@ class EntryCareLogWriters:
                 factory,
                 can_claim=can_claim,
                 has_read=partial(_has_read, coordinator),
+                on_writer=partial(self._stop_waiting, code),
             )
-            if can_claim and not self._stopped and not _has_read(coordinator):
+            registry = care_log_writer_registry(self._hass)
+            if (
+                can_claim
+                and not self._stopped
+                and not _has_read(coordinator)
+                and registry is not None
+                and registry.writer(code) is None
+                and not care_log_paused(self._hass, code)
+            ):
                 self._wait_for_read(code, coordinator)
+
+    @callback
+    def _stop_waiting(self, code: str) -> None:
+        """Stop listening to a reader that has not read yet, if this entry does."""
+        unsub = self._waiting.pop(code, None)
+        if unsub is not None:
+            unsub()
 
     @callback
     def _wait_for_read(self, code: str, coordinator: NanitCareLogCoordinator) -> None:
         """Look again at the baby once a reader that has not read yet does.
 
-        The listener keeps the reader polling, as the importer would. It
-        goes once the reader has read, or once some entry writes the baby.
+        Only while this entry could take the baby: it polls, nobody writes
+        the baby and the baby is not paused (a pause comes from a writer's
+        importer). The listener keeps the reader polling, as the importer
+        would. It goes once the reader has read, or as soon as any entry
+        writes the baby: the registry says so (``on_writer``), since a
+        reader that keeps failing does not call its listeners again.
         """
 
         @callback
@@ -712,9 +755,7 @@ class EntryCareLogWriters:
             done = registry is None or registry.writer(code) is not None
             if not done and not _has_read(coordinator):
                 return
-            unsub = self._waiting.pop(code, None)
-            if unsub is not None:
-                unsub()
+            self._stop_waiting(code)
             if not done and registry is not None:
                 registry.async_look_again()
 

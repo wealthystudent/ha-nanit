@@ -116,11 +116,12 @@ OWNER_CODE_PREFIX: Final = b"ha-nanit/statistics-owner/v1\x00"
 OWNER_CHECK_INTERVAL: Final = timedelta(minutes=15)
 
 # The states an entry that does not write reports in diagnostics: another
-# sign-in owns the statistics (or nothing is decided yet); statistics exist
-# that no sign-in is known to own; the marker cannot be read. Nobody writes
-# and nothing can be decided while the baby is paused
+# sign-in is known to own the statistics; nothing is decided yet;
+# statistics exist that no sign-in is known to own; the marker cannot be
+# read. Nobody writes and nothing can be decided while the baby is paused
 # (``STATE_PAUSED_UNTIL_RESTART``, from the importer).
 STATE_NOT_OWNER: Final = "not_owner"
+STATE_WAITING_FOR_OWNER_CHECK: Final = "waiting_for_owner_check"
 STATE_UNOWNED: Final = "unowned"
 STATE_OWNER_UNKNOWN: Final = "owner_unknown"
 
@@ -220,16 +221,28 @@ class CareLogWriterRegistry:
         baby = self._babies.get(code)
         return tuple(sorted(baby.offers)) if baby is not None else ()
 
-    def standby_state(self, code: str) -> str:
-        """Return the state an entry that does not write a baby's statistics reports."""
+    def standby_state(self, code: str, entry_id: str) -> str:
+        """Return the state an entry that does not write a baby's statistics reports.
+
+        ``STATE_NOT_OWNER`` only for a known different owner: another entry
+        writes, or the marker names another sign-in. While nothing is
+        decided, ``STATE_WAITING_FOR_OWNER_CHECK``, or
+        ``STATE_PAUSED_UNTIL_RESTART`` when nothing can be until a restart.
+        """
         if self._marker_unreadable:
             return STATE_OWNER_UNKNOWN
         baby = self._babies.get(code)
         if baby is not None and baby.unowned:
             return STATE_UNOWNED
-        if (baby is None or baby.writer is None) and care_log_paused(self._hass, code):
+        if baby is not None and baby.writer is not None and baby.writer != entry_id:
+            return STATE_NOT_OWNER
+        owner = None if self._owners is None else self._owners.get(code)
+        offer = None if baby is None else baby.offers.get(entry_id)
+        if owner is not None and (offer is None or offer.owner != owner):
+            return STATE_NOT_OWNER
+        if care_log_paused(self._hass, code):
             return STATE_PAUSED_UNTIL_RESTART
-        return STATE_NOT_OWNER
+        return STATE_WAITING_FOR_OWNER_CHECK
 
     async def async_register(
         self,
@@ -635,6 +648,10 @@ class EntryCareLogWriters:
             if writer is not None and writer[0] == self._entry.entry_id:
                 babies[f"baby_{index}"] = {"writer": True, **writer[1].diagnostics()}
             else:
-                state = registry.standby_state(code) if registry is not None else STATE_NOT_OWNER
+                state = (
+                    STATE_WAITING_FOR_OWNER_CHECK
+                    if registry is None
+                    else registry.standby_state(code, self._entry.entry_id)
+                )
                 babies[f"baby_{index}"] = {"writer": False, "state": state}
         return {"enabled": is_import_care_log_statistics(self._entry), "babies": babies}

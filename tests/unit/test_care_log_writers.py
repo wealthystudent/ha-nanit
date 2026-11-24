@@ -759,7 +759,8 @@ async def test_an_entry_with_polling_disabled_takes_no_first_ownership(
     assert started == []
     assert STORE_KEY not in hass_storage
     idle_diag = (await async_get_config_entry_diagnostics(hass, idle))["care_log_statistics"]
-    assert idle_diag["babies"] == {"baby_0": {"writer": False, "state": "not_owner"}}
+    # Nothing is decided yet: no owner, known or other.
+    assert idle_diag["babies"] == {"baby_0": {"writer": False, "state": "waiting_for_owner_check"}}
 
     second = _second(hass)
     await _set_up(hass, second)
@@ -767,8 +768,53 @@ async def test_an_entry_with_polling_disabled_takes_no_first_ownership(
     (importer,) = started
     assert _writer(hass) == (second.entry_id, importer)
     assert _marker(hass_storage) == {"owners": {CODE_1: _owner_code("second@example.com")}}
+    # Now the other sign-in is known to own it.
+    idle_diag = (await async_get_config_entry_diagnostics(hass, idle))["care_log_statistics"]
+    assert idle_diag["babies"] == {"baby_0": {"writer": False, "state": "not_owner"}}
     for entry in (idle, second):
         assert await hass.config_entries.async_unload(entry.entry_id)
+    assert _no_registry_left(hass)
+
+
+async def test_a_standby_tells_a_known_owner_from_no_decision_and_from_a_pause(
+    hass: HomeAssistant,
+    client: MagicMock,
+    started: list[CareLogStatisticsImporter],
+    rows: AsyncMock,
+) -> None:
+    """The owner is removed: its sign-in is still the known owner."""
+    from custom_components.nanit.care_log_recorder import PAUSED_KEY
+
+    idle = _entry(hass, entry_id=SECOND_ID, email="second@example.com")
+    hass.config_entries.async_update_entry(idle, pref_disable_polling=True)
+    await _set_up(hass, idle)
+    await _check_owners(hass)
+
+    async def state() -> object:
+        diag = (await async_get_config_entry_diagnostics(hass, idle))["care_log_statistics"]
+        return diag["babies"]["baby_0"]["state"]
+
+    assert await state() == "waiting_for_owner_check"
+    # A batch of unknown outcome: nothing can be decided until a restart
+    # (the database cannot tell whether rows exist).
+    hass.data[PAUSED_KEY] = {CODE_1}
+    rows.return_value = None
+    await _check_owners(hass)
+    assert await state() == "paused_until_restart"
+    hass.data[PAUSED_KEY] = set()
+    rows.return_value = False
+
+    owner = _entry(hass)
+    await _set_up(hass, owner)
+    (importer,) = started
+    assert _writer(hass) == (owner.entry_id, importer)
+    assert await state() == "not_owner"
+    rows.return_value = True
+    assert await hass.config_entries.async_remove(owner.entry_id)
+    await _check_owners(hass)
+    assert await state() == "not_owner"
+    assert started == [importer]
+    assert await hass.config_entries.async_unload(idle.entry_id)
     assert _no_registry_left(hass)
 
 

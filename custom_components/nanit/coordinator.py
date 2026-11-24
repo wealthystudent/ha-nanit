@@ -36,7 +36,12 @@ from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
-from aionanit.exceptions import NanitAuthError, NanitConnectionError
+from aionanit.exceptions import (
+    NanitAuthError,
+    NanitConnectionError,
+    NanitRateLimited,
+    NanitRequestRefused,
+)
 from aionanit.models import Baby, CameraEvent, CameraState, CareLog, CloudEvent, NetworkInfo
 
 from .aionanit_sl.models import SoundLightEvent, SoundLightEventKind, SoundLightFullState
@@ -68,17 +73,26 @@ _AVAILABILITY_GRACE_SECONDS: float = 30.0
 # meanwhile. Setup gets no retries, so it still fails fast.
 _POLL_RETRY_DELAYS: tuple[float, ...] = (5.0, 10.0)
 
+# Failures a retry seconds later can't fix: Nanit refused the request, or is
+# throttling them. They end the poll at once.
+_NOT_RETRIED: tuple[type[NanitConnectionError], ...] = (NanitRequestRefused,)
+
 
 async def _async_fetch_with_retries[T](
     coordinator: DataUpdateCoordinator[Any], fetch: Callable[[], Awaitable[T]]
 ) -> T:
-    """Return ``fetch()``, retrying a NanitConnectionError except during setup."""
+    """Return ``fetch()``, retrying a NanitConnectionError except during setup.
+
+    A refusal or throttling (``_NOT_RETRIED``) is never retried.
+    """
     entry = coordinator.config_entry
     in_setup = entry is not None and entry.state is ConfigEntryState.SETUP_IN_PROGRESS
     delays = () if in_setup else _POLL_RETRY_DELAYS
     for delay in delays:
         try:
             return await fetch()
+        except _NOT_RETRIED:
+            raise
         except NanitConnectionError as err:
             _LOGGER.debug("%s poll failed, retrying in %.0fs: %s", coordinator.name, delay, err)
             await asyncio.sleep(delay)
@@ -308,6 +322,30 @@ _CARE_LOG_END_SLACK = timedelta(hours=1)
 # midnight still has to be seen, as do later edits and deletions of it.
 _CARE_LOG_LOOKBACK = timedelta(hours=24)
 
+# How long the reader waits after Nanit refuses its request (HTTP 403)
+# before it asks again. A refusal is about the account (its role on the
+# baby, or what Nanit offers it), which changes when a person changes it,
+# not between two polls: hourly is 12 times fewer requests than the normal
+# poll, and a permission given back still shows within the hour (at once
+# on a reload).
+CARE_LOG_REFUSED_RECHECK = timedelta(hours=1)
+
+# After Nanit throttles a request (HTTP 429): at least the wait it asks for,
+# never less than the normal poll interval and never more than this. With no
+# wait given, CARE_LOG_THROTTLED_DEFAULT, three normal intervals.
+CARE_LOG_THROTTLED_MAX = timedelta(hours=1)
+CARE_LOG_THROTTLED_DEFAULT = timedelta(minutes=15)
+
+
+def care_log_hold(err: NanitRequestRefused) -> timedelta:
+    """Return how long to wait before asking Nanit for a baby's Care Logs again."""
+    normal = timedelta(seconds=CARE_LOG_POLL_INTERVAL)
+    if not isinstance(err, NanitRateLimited):
+        return CARE_LOG_REFUSED_RECHECK
+    if err.retry_after is None:
+        return CARE_LOG_THROTTLED_DEFAULT
+    return min(max(timedelta(seconds=err.retry_after), normal), CARE_LOG_THROTTLED_MAX)
+
 
 @dataclass(frozen=True)
 class CareLogRequestCoverage:
@@ -495,6 +533,30 @@ class NanitCareLogCoordinator(DataUpdateCoordinator[CareLogData]):
         self.baby = baby
         # When the last successful fetch started.
         self._last_fetch: datetime | None = None
+        # Until when (on the loop's monotonic clock) Nanit should not be
+        # asked for this baby's Care Logs on demand, after a refusal or
+        # throttling; None when it may be.
+        self._held_until: float | None = None
+
+    @property
+    def requests_held(self) -> bool:
+        """Return whether Nanit refused or throttled this baby's Care Logs a moment ago.
+
+        Set by a refusal or throttling that the reader or the calendar got,
+        for as long as ``care_log_hold`` says, and cleared by the reader's
+        next successful fetch. The calendar asks nothing meanwhile. The
+        reader's own polls are timed by its interval instead.
+        """
+        return self._held_until is not None and self.hass.loop.time() < self._held_until
+
+    @callback
+    def hold_requests(self, err: NanitRequestRefused) -> timedelta:
+        """Hold on-demand requests after a refusal or throttling, and return for how long."""
+        hold = care_log_hold(err)
+        until = self.hass.loop.time() + hold.total_seconds()
+        if self._held_until is None or until > self._held_until:
+            self._held_until = until
+        return hold
 
     async def _async_update_data(self) -> CareLogData:
         """Fetch Care Logs from the Nanit API and summarise them."""
@@ -524,6 +586,22 @@ class NanitCareLogCoordinator(DataUpdateCoordinator[CareLogData]):
                 translation_key="auth_failed",
                 translation_placeholders={"error": str(err)},
             ) from err
+        except NanitRequestRefused as err:
+            # Not retried, and the next poll waits: asking again in five
+            # minutes would get the same answer. Reported like any failure.
+            hold = self.hold_requests(err)
+            self.update_interval = hold
+            _LOGGER.debug(
+                "%s: Nanit answered HTTP %s, next poll in %.0fs",
+                self.name,
+                err.status,
+                hold.total_seconds(),
+            )
+            raise UpdateFailed(
+                translation_domain=DOMAIN,
+                translation_key="care_log_fetch_failed",
+                translation_placeholders={"error": str(err)},
+            ) from err
         except NanitConnectionError as err:
             raise UpdateFailed(
                 translation_domain=DOMAIN,
@@ -531,6 +609,8 @@ class NanitCareLogCoordinator(DataUpdateCoordinator[CareLogData]):
                 translation_placeholders={"error": str(err)},
             ) from err
 
+        self._held_until = None
+        self.update_interval = timedelta(seconds=CARE_LOG_POLL_INTERVAL)
         self._last_fetch = now
         coverage = CareLogRequestCoverage(
             start=fetch.start,

@@ -20,7 +20,12 @@ from homeassistant.helpers.update_coordinator import UpdateFailed
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry, async_fire_time_changed
 
-from aionanit.exceptions import NanitAuthError, NanitConnectionError
+from aionanit.exceptions import (
+    NanitAuthError,
+    NanitConnectionError,
+    NanitRateLimited,
+    NanitRequestRefused,
+)
 from aionanit.models import Baby, CareLog, CareLogFetch
 from custom_components.nanit.care_log_hours import CareLogSeries
 from custom_components.nanit.care_log_ledger import CareLogRead
@@ -1182,6 +1187,117 @@ async def test_two_babies_one_failing_one_healthy(
     assert hass.states.get(healthy.entity_id).state == healthy.state
     assert {call.args[0] for call in calendar.await_args_list} == {"baby_1", "baby_2"}
     assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+def _scripted(answers: list[Any]) -> AsyncMock:
+    """Fake the whole calendar fetch: each call takes the next answer, the last repeats."""
+
+    async def fetch(baby_uid: str, start: int, end: int) -> CareLogFetch:
+        answer = answers.pop(0) if len(answers) > 1 else answers[0]
+        if isinstance(answer, BaseException):
+            raise answer
+        return CareLogFetch(logs=tuple(answer), start=start, end=end, dropped=0)
+
+    return AsyncMock(side_effect=fetch)
+
+
+async def _polls(hass: HomeAssistant, freezer: FrozenDateTimeFactory, count: int) -> None:
+    for _ in range(count):
+        await _next_poll(hass, freezer)
+
+
+@pytest.mark.parametrize("at_setup", [False, True], ids=["after_setup", "at_setup"])
+async def test_a_refusal_is_not_retried_and_is_asked_again_hourly(
+    hass: HomeAssistant, mock_nanit_client, freezer: FrozenDateTimeFactory, at_setup: bool
+) -> None:
+    freezer.move_to("2026-11-20T18:00:00+00:00")
+    refused = NanitRequestRefused("Calendar fetch", 403)
+    diaper = _diaper("baby_1")
+    answers: list[Any] = [refused] if at_setup else [[diaper], refused]
+    calendar = _scripted(answers)
+    entry = _hub_entry(hass)
+    assert await _set_up(hass, entry, mock_nanit_client, calendar)
+    reader = entry.runtime_data.hub.care_log_coordinators["baby_1"]
+    entity_id = _care_entity_id(hass, "cam_1", "last_diaper_change")
+    base = 0
+    if not at_setup:
+        assert calendar.await_count == 1
+        base = 1
+        await _next_poll(hass, freezer)
+    # One request, not three: a refusal is not retried within the poll.
+    assert calendar.await_count == base + 1
+    assert reader.last_update_success is False
+    assert hass.states.get(entity_id).state == STATE_UNAVAILABLE
+
+    # Nothing more for the rest of the hour, at the normal five-minute polls.
+    await _polls(hass, freezer, 11)
+    assert calendar.await_count == base + 1
+    # An hour after the refusal, one more request, refused again.
+    await _next_poll(hass, freezer)
+    assert calendar.await_count == base + 2
+    assert hass.states.get(entity_id).state == STATE_UNAVAILABLE
+
+    # The next hourly check succeeds, and the reader is back to its normal pace.
+    answers[:] = [[diaper]]
+    await _polls(hass, freezer, 11)
+    assert calendar.await_count == base + 2
+    await _next_poll(hass, freezer)
+    assert calendar.await_count == base + 3
+    assert reader.last_update_success is True
+    assert (
+        hass.states.get(entity_id).state == dt_util.utc_from_timestamp(diaper.timestamp).isoformat()
+    )
+    await _next_poll(hass, freezer)
+    assert calendar.await_count == base + 4
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+@pytest.mark.parametrize(
+    ("retry_after", "quiet_polls"),
+    [(1200, 3), (None, 2), (30, 0), (99999, 11)],
+    ids=["twenty_minutes", "no_wait_given", "less_than_a_poll", "more_than_an_hour"],
+)
+async def test_throttling_waits_as_asked_between_a_poll_and_an_hour(
+    hass: HomeAssistant,
+    mock_nanit_client,
+    freezer: FrozenDateTimeFactory,
+    retry_after: int | None,
+    quiet_polls: int,
+) -> None:
+    """``quiet_polls`` normal polls pass without a request before the next one is made."""
+    freezer.move_to("2026-11-20T18:00:00+00:00")
+    bounded = NanitRateLimited("Calendar fetch", retry_after)
+    answers: list[Any] = [[_diaper("baby_1")], bounded, []]
+    calendar = _scripted(answers)
+    entry = _hub_entry(hass)
+    assert await _set_up(hass, entry, mock_nanit_client, calendar)
+    reader = entry.runtime_data.hub.care_log_coordinators["baby_1"]
+
+    await _next_poll(hass, freezer)
+    assert calendar.await_count == 2
+    assert reader.last_update_success is False
+    assert hass.states.get(_care_entity_id(hass, "cam_1", "last_diaper_change")).state == (
+        STATE_UNAVAILABLE
+    )
+
+    await _polls(hass, freezer, quiet_polls)
+    assert calendar.await_count == 2
+    await _next_poll(hass, freezer)
+    assert calendar.await_count == 3
+    assert reader.last_update_success is True
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_care_log_hold_bounds() -> None:
+    # Imported here, so the rest of this file also runs against code without it.
+    from custom_components.nanit.coordinator import care_log_hold
+
+    poll = timedelta(seconds=CARE_LOG_POLL_INTERVAL)
+    assert care_log_hold(NanitRequestRefused("x", 403)) == timedelta(hours=1)
+    assert care_log_hold(NanitRateLimited("x", None)) == timedelta(minutes=15)
+    assert care_log_hold(NanitRateLimited("x", 0)) == poll
+    assert care_log_hold(NanitRateLimited("x", 1200)) == timedelta(minutes=20)
+    assert care_log_hold(NanitRateLimited("x", 86400)) == timedelta(hours=1)
 
 
 async def test_unload_stops_every_reader(

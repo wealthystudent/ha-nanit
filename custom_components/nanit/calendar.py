@@ -32,7 +32,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
 from homeassistant.util.unit_conversion import VolumeConverter
 
-from aionanit.exceptions import NanitError
+from aionanit.exceptions import NanitError, NanitRequestRefused
 from aionanit.models import CareLog, CareLogDetail
 
 from . import NanitConfigEntry
@@ -633,6 +633,11 @@ class NanitCareLogCalendar(CoordinatorEntity[NanitCareLogCoordinator], CalendarE
             return cached.rows
         task = self._in_flight.get(key)
         if task is None:
+            if self.coordinator.requests_held:
+                # Nanit refused or throttled this baby's Care Logs a moment
+                # ago: asking again now would get the same answer.
+                _LOGGER.debug("Care log calendar fetch skipped while Nanit refuses or throttles")
+                raise _unavailable()
             if len(self._in_flight) >= CARE_LOG_MAX_RANGES_IN_FLIGHT:
                 raise _unavailable()
             task = self.coordinator.config_entry.async_create_background_task(
@@ -753,6 +758,11 @@ class NanitCareLogCalendar(CoordinatorEntity[NanitCareLogCoordinator], CalendarE
                     group.create_task(worker())
         except* NanitError as errors:
             failure = type(errors.exceptions[0]).__name__
+            # The first error stops every piece still to come, and a refusal
+            # also holds the next fetches back (see requests_held).
+            for error in errors.exceptions:
+                if isinstance(error, NanitRequestRefused):
+                    self.coordinator.hold_requests(error)
         if failure is not None:
             # Only the error's type: the library's text is fixed, but nothing
             # here needs more, and the baby's uid never goes in a log line.

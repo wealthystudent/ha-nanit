@@ -32,7 +32,12 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry, async_
 # Camera imports pull in turbojpeg; stub it like test_read_only.py does.
 _ = sys.modules.setdefault("turbojpeg", MagicMock(TurboJPEG=MagicMock()))
 
-from aionanit.exceptions import NanitAuthError, NanitConnectionError
+from aionanit.exceptions import (
+    NanitAuthError,
+    NanitConnectionError,
+    NanitRateLimited,
+    NanitRequestRefused,
+)
 from aionanit.models import (
     Baby,
     CareLog,
@@ -503,6 +508,73 @@ async def test_privacy_markers_on_a_failed_fetch(
     assert calendar._cache == {}
     if not notes:
         client.async_get_calendar_details.assert_not_awaited()
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+# ---------------------------------------------------------------------------
+# Refusals and throttling
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("notes", [False, True], ids=["notes_off", "notes_on"])
+@pytest.mark.parametrize(
+    "error",
+    [NanitRequestRefused("Calendar fetch", 403), NanitRateLimited("Calendar fetch", 600)],
+    ids=["refused", "throttled"],
+)
+async def test_a_refused_calendar_fetch_asks_nothing_more_until_the_reader_reads(
+    hass: HomeAssistant,
+    client: Any,
+    freezer: FrozenDateTimeFactory,
+    notes: bool,
+    error: NanitRequestRefused,
+) -> None:
+    freezer.move_to(NOW)
+    fake = FakeNanit()
+    _day_of_entries(fake)
+    entry, calendar = await _one_calendar(hass, client, fake, notes=notes)
+    fake.error = error
+
+    # A year: five pieces, of which at most the two first ones are asked for.
+    with pytest.raises(HomeAssistantError):
+        await _events(hass, calendar, RANGE_END - timedelta(days=365), RANGE_END)
+    assert 1 <= len(fake.calendar_calls()) <= 2
+
+    # Asked again, for this range or another, while Nanit refuses: no request.
+    asked = len(fake.calls)
+    fake.error = None
+    for start, end in ((RANGE_END - timedelta(days=365), RANGE_END), (RANGE_START, RANGE_END)):
+        with pytest.raises(HomeAssistantError):
+            await _events(hass, calendar, start, end)
+    assert len(fake.calls) == asked
+
+    # The reader's next successful read lets the calendar ask again.
+    await calendar.coordinator.async_refresh()
+    assert calendar.coordinator.last_update_success
+    fake.forget_calls()
+    events = await _events(hass, calendar, RANGE_START, RANGE_END)
+    assert len(events) == 4
+    assert len(fake.calendar_calls()) == 1
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_a_reader_refusal_holds_the_calendar_back(
+    hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory
+) -> None:
+    freezer.move_to(NOW)
+    fake = FakeNanit()
+    _day_of_entries(fake)
+    entry, calendar = await _one_calendar(hass, client, fake)
+    fake.error = NanitRequestRefused("Calendar fetch", 403)
+    await calendar.coordinator.async_refresh()
+    assert not calendar.coordinator.last_update_success
+    # The reader asked once, without retrying.
+    assert len(fake.calls) == 1
+    fake.forget_calls()
+
+    with pytest.raises(HomeAssistantError):
+        await _events(hass, calendar, RANGE_START, RANGE_END)
+    assert fake.calls == []
     assert await hass.config_entries.async_unload(entry.entry_id)
 
 

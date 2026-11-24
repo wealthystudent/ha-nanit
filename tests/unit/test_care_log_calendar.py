@@ -1329,6 +1329,38 @@ async def test_a_half_hour_session_across_the_clocks_going_back_keeps_its_length
     assert await hass.config_entries.async_unload(entry.entry_id)
 
 
+async def test_a_session_shown_as_a_moment_is_checked_against_the_range_as_shown(
+    hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory
+) -> None:
+    """US/Pacific, 1 November 2026: 20 minutes from 01:50 PDT end at 01:10 PST.
+
+    The session overlaps 01:05 to 01:08 PST, but it is shown as a minute at
+    01:50 PDT, an hour before that range: it is not in it. A range holding
+    its start still gets it.
+    """
+    freezer.move_to(NOW)
+    fake = FakeNanit()
+    start = datetime.fromisoformat("2026-11-01T08:50:00+00:00")  # 01:50 PDT
+    fake.add(_log("n1", "nursing", start, left_duration_s=1200.0))
+    entry, calendar = await _one_calendar(hass, client, fake)
+    pst = timezone(timedelta(hours=-8))
+
+    inside_the_session = await _events(
+        hass,
+        calendar,
+        datetime(2026, 11, 1, 1, 5, tzinfo=pst),
+        datetime(2026, 11, 1, 1, 8, tzinfo=pst),
+    )
+    around_its_start = await _events(
+        hass, calendar, start - timedelta(minutes=5), start + timedelta(minutes=5)
+    )
+
+    assert inside_the_session == []
+    (event,) = around_its_start
+    assert _sent(event) == (start, start + timedelta(minutes=1))
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
 async def test_sessions_across_a_30_minute_clock_change(hass: HomeAssistant, client: Any) -> None:
     """Australia/Lord_Howe, 5 April 2026: 02:00 (+11:00) goes back to 01:30 (+10:30).
 

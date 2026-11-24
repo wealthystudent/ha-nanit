@@ -455,17 +455,19 @@ def _overlaps(
 
 
 def _event(
-    start: datetime, end: datetime, summary: str, description: str | None
-) -> CalendarEvent | None:
+    start: datetime, end: datetime, moment: bool, summary: str, description: str | None
+) -> tuple[CalendarEvent, datetime, bool] | None:
     """Build the event in local time from UTC instants, as a moment if the span is rejected.
 
     Home Assistant checks the span on local wall-clock times, so an entry
     across a repeated hour when the clocks go back can look reversed. It is
-    then shown as a moment at its start rather than dropped.
+    then shown as a moment at its start rather than dropped. Returns the
+    event with the end (UTC) it is shown with, and whether it is shown as a
+    moment, so a range can be checked against what is shown.
     """
-    for event_end in (end, _moment_end(start), start):
+    for event_end, shown_as_moment in ((end, moment), (_moment_end(start), True), (start, True)):
         try:
-            return CalendarEvent(
+            event = CalendarEvent(
                 start=dt_util.as_local(start),
                 end=dt_util.as_local(event_end),
                 summary=summary,
@@ -473,6 +475,7 @@ def _event(
             )
         except HomeAssistantError:
             continue
+        return event, event_end, shown_as_moment
     return None
 
 
@@ -631,10 +634,19 @@ class NanitCareLogCalendar(CoordinatorEntity[NanitCareLogCoordinator], CalendarE
             start, end, moment = span
             if not _overlaps(start, end, moment, start_date, end_date):
                 continue
-            event = _event(
-                start, end, formatter.summary(row.log), formatter.description(row, show_notes)
+            built = _event(
+                start,
+                end,
+                moment,
+                formatter.summary(row.log),
+                formatter.description(row, show_notes),
             )
-            if event is not None:
+            if built is None:
+                continue
+            event, shown_end, shown_as_moment = built
+            # Checked again against the span the event is shown with: one
+            # shortened across the clocks going back can fall outside the range.
+            if _overlaps(start, shown_end, shown_as_moment, start_date, end_date):
                 found.append((start, row.log.uid, event))
         # The option may have changed, or the calendar gone, while the answer
         # was on its way or being built. Checked after the last await, so

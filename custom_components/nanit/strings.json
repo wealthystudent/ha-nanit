@@ -105,14 +105,14 @@
       },
       "care_logs": {
         "title": "Care log statistics and notes",
-        "description": "These choices apply to every baby on this account. Changing them reloads the integration.",
+        "description": "Applies to every baby on this account. Saving reloads the integration.",
         "data": {
           "import_care_log_statistics": "Import care log statistics",
           "show_care_log_notes": "Show notes and who logged each entry"
         },
         "data_description": {
-          "import_care_log_statistics": "Saves hourly totals of the care logged in the Nanit app to Home Assistant's long-term statistics, for charts. They stay until you delete them. Anyone signed in to this Home Assistant can read them, and Home Assistant's recorder settings for including or excluding data don't apply to them.",
-          "show_care_log_notes": "Each entry in the care log calendar shows its note and the name of the person who logged it, with their relation to the baby. Anyone who can read the calendar can see them, automations that use the calendar can copy them, and a voice assistant you expose the calendar to can receive them. Home Assistant's own log can hold them too (with WebSocket debug logging on, or in the error it logs when a browser falls behind), so check a log before you share it. Even when this is off, the calendar shows care routines, times and amounts."
+          "import_care_log_statistics": "Hourly totals for long-term charts. Turn it on any time and everything already logged in Nanit is imported. Imported totals stay until you delete them, even after you turn this off, and the recorder's include and exclude settings don't apply to them.",
+          "show_care_log_notes": "Adds each entry's note and who logged it to the calendar. Anyone who can read the calendar can see them, including automations and voice assistants. They're read from Nanit each time, so turning this on or off applies to every entry, old ones included."
         }
       }
     },

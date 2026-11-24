@@ -558,6 +558,8 @@ class NanitHub:
             # (the dates where care log history starts among them), with
             # the device uids then checked like the baby's.
             parsed = _parse_baby({**baby, "uid": uid})
+            if parsed is None:
+                continue
             babies.append(
                 dataclasses.replace(
                     parsed,

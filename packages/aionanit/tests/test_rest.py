@@ -388,6 +388,29 @@ class TestGetBabies:
 
         assert babies == []
 
+    async def test_get_babies_skips_rows_without_a_string_uid(
+        self, client: NanitRestClient
+    ) -> None:
+        """A row whose uid is not a non-empty string is skipped; its siblings parse."""
+        with mock_api() as m:
+            m.get(
+                BABIES_URL,
+                payload={
+                    "babies": [
+                        {"uid": 12345, "name": "Number", "camera_uid": "cam_n"},
+                        {"uid": "", "name": "Empty"},
+                        {"uid": None, "name": "Null"},
+                        {"uid": ["baby1"], "name": "List"},
+                        {"name": "Missing", "camera_uid": "cam_m"},
+                        "not-an-object",
+                        {"uid": "baby1", "name": "Luna", "camera_uid": "cam1"},
+                    ]
+                },
+            )
+            babies = await client.async_get_babies("token123")
+
+        assert babies == [Baby(uid="baby1", name="Luna", camera_uid="cam1")]
+
     async def test_get_babies_null_name(self, client: NanitRestClient) -> None:
         with mock_api() as m:
             m.get(

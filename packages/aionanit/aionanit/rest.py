@@ -114,17 +114,27 @@ def _parse_camera_last_seen(baby_json: dict[str, Any]) -> int | None:
     return int(val) if isinstance(val, int | float) else None
 
 
-def _parse_baby(baby_json: dict[str, Any]) -> Baby:
-    """Parse one /babies row. Raises KeyError when it has no uid.
+def _parse_baby(baby_json: Any) -> Baby | None:
+    """Parse one /babies row, or return None when it is not an object with a uid.
+
+    The uid must be a non-empty string: every baby id the integration
+    builds (codes, storage keys, request paths) starts from it, so a row
+    whose uid is missing, empty, a number or anything else is skipped
+    instead of reaching them.
 
     A baby without a camera (standalone Sound & Light) has no camera_uid
     in its row: it defaults to "" so mixed accounts parse instead of
-    raising KeyError on the camera-less row.
+    failing on the camera-less row.
     """
+    if not isinstance(baby_json, dict):
+        return None
+    uid = baby_json.get("uid")
+    if not isinstance(uid, str) or not uid:
+        return None
     speaker = baby_json.get("speaker")
     speaker_obj = speaker.get("speaker") if isinstance(speaker, dict) else None
     return Baby(
-        uid=baby_json["uid"],
+        uid=uid,
         name=_sanitize_name(baby_json.get("name")),
         camera_uid=baby_json.get("camera_uid") or "",
         speaker_uid=speaker_obj.get("uid") if isinstance(speaker_obj, dict) else None,
@@ -490,7 +500,14 @@ class NanitRestClient:
         except (TimeoutError, aiohttp.ClientError, ValueError) as err:
             raise NanitConnectionError(f"Invalid babies response: {err}") from err
 
-        return [_parse_baby(baby) for baby in body.get("babies", [])]
+        rows = body.get("babies", []) if isinstance(body, dict) else []
+        # A malformed row is skipped, so it can't take the account's other
+        # babies down with it.
+        return [
+            baby
+            for row in (rows if isinstance(rows, list) else [])
+            if (baby := _parse_baby(row)) is not None
+        ]
 
     async def async_get_device_token(
         self,

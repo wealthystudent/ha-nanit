@@ -2,21 +2,24 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import sys
 from contextlib import suppress
 from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_ACCESS_TOKEN
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry, async_fire_time_changed
 
-from aionanit.models import Baby, NetworkInfo
+from aionanit.models import Baby, CareLogFetch, NetworkInfo
+from aionanit.rest import NanitRestClient
 from custom_components.nanit.const import CONF_CAMERA_IPS, CONF_REFRESH_TOKEN, DOMAIN
-from custom_components.nanit.coordinator import NanitNetworkCoordinator
+from custom_components.nanit.coordinator import NanitCareLogCoordinator, NanitNetworkCoordinator
 from custom_components.nanit.hub import NanitHub
 
 from .conftest import (
@@ -26,6 +29,10 @@ from .conftest import (
     MOCK_EMAIL,
     mock_entry_data_v2,
 )
+
+# A full entry setup imports the camera platform, which pulls in turbojpeg:
+# stub it like test_read_only.py does.
+_ = sys.modules.setdefault("turbojpeg", MagicMock(TurboJPEG=MagicMock()))
 
 
 def _make_entry(hass: HomeAssistant, options: dict[str, object] | None = None) -> MockConfigEntry:
@@ -996,6 +1003,50 @@ async def test_raw_parse_skips_malformed_rows(hass: HomeAssistant, mock_nanit_cl
     assert {baby.uid for baby in hub.babies} == {"baby_8", "baby_9", "baby_10"}
     # Only the row with a clean speaker uid produced a speaker
     assert set(hub.speaker_data) == {"spk_10"}
+
+
+async def test_a_baby_row_without_a_string_uid_never_stops_its_siblings(
+    hass: HomeAssistant, mock_nanit_client
+) -> None:
+    """The library skips a camera-less row with a numeric uid; the healthy camera sets up.
+
+    The rows go through aionanit's real /babies parser, and the real care
+    log readers run, which build the baby's code from its uid.
+    """
+    rows = {
+        "babies": [
+            {"uid": 12345, "name": "Number"},
+            {"uid": "", "name": "Empty", "camera_uid": "cam_empty"},
+            {"uid": "baby_1", "name": "Nursery", "camera_uid": "cam_1"},
+        ]
+    }
+    resp = MagicMock(status=200, ok=True)
+    resp.raise_for_status = MagicMock()
+    resp.json = AsyncMock(return_value=rows)
+    session = MagicMock()
+    session.get = AsyncMock(return_value=resp)
+    rest = NanitRestClient(session)
+
+    async def get_babies() -> list[Baby]:
+        return await rest.async_get_babies("token")
+
+    mock_nanit_client.async_get_babies.side_effect = get_babies
+    mock_nanit_client.async_get_calendar_result = AsyncMock(
+        side_effect=lambda _uid, start, end: CareLogFetch(logs=(), start=start, end=end, dropped=0)
+    )
+    entry = _make_entry(hass)
+
+    with patch("custom_components.nanit.hub.NanitCareLogCoordinator", NanitCareLogCoordinator):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.LOADED
+    hub = entry.runtime_data.hub
+    assert [baby.uid for baby in hub.babies] == ["baby_1"]
+    assert set(hub.camera_data) == {"cam_1"}
+    assert set(hub.care_log_coordinators) == {"baby_1"}
+    assert hub.care_log_coordinators["baby_1"].last_update_success
+    assert await hass.config_entries.async_unload(entry.entry_id)
 
 
 async def test_raw_parse_keeps_the_dates_of_a_valid_baby_beside_a_malformed_one(

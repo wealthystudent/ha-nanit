@@ -548,22 +548,22 @@
           "statistic_name": {
             "name": "Statistic name",
             "state": {
-              "diaper_changes": "diaper changes",
-              "diaper_pee": "pee diapers",
-              "diaper_poo": "poo diapers",
-              "diaper_mixed": "mixed diapers",
-              "diaper_dry": "dry diapers",
-              "bottle_feeds": "bottle feeds",
-              "bottle_volume": "bottle volume",
-              "nursing_sessions": "nursing sessions",
-              "nursing_time": "nursing time",
-              "nursing_time_left": "nursing time, left",
-              "nursing_time_right": "nursing time, right",
-              "pumping_sessions": "pumping sessions",
-              "pumped_volume": "pumped volume",
-              "pumped_volume_left": "pumped volume, left",
-              "pumped_volume_right": "pumped volume, right",
-              "pumping_time": "pumping time"
+              "diaper_changes": "Diaper changes",
+              "diaper_pee": "Pee diapers",
+              "diaper_poo": "Poo diapers",
+              "diaper_mixed": "Mixed diapers",
+              "diaper_dry": "Dry diapers",
+              "bottle_feeds": "Bottle feeds",
+              "bottle_volume": "Bottle volume",
+              "nursing_sessions": "Nursing sessions",
+              "nursing_time": "Nursing time",
+              "nursing_time_left": "Nursing time, left",
+              "nursing_time_right": "Nursing time, right",
+              "pumping_sessions": "Pumping sessions",
+              "pumped_volume": "Pumped volume",
+              "pumped_volume_left": "Pumped volume, left",
+              "pumped_volume_right": "Pumped volume, right",
+              "pumping_time": "Pumping time"
             }
           }
         }

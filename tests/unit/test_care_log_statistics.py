@@ -117,6 +117,8 @@ def test_the_translation_files_label_every_series_with_plain_text() -> None:
     for label in ENGLISH.values():
         assert label
         assert label == label.strip()
+        # Capitalised like an entity name: "Nursery Bottle volume" beside "Nursery Bottle volume today".
+        assert label[0].isupper()
         assert "{" not in label
         assert "}" not in label
     # So every name comes from them, none from the fallback.
@@ -127,32 +129,32 @@ def test_the_translation_files_label_every_series_with_plain_text() -> None:
 def test_the_english_names_are_the_baby_name_then_the_series() -> None:
     names = statistic_names(ENGLISH, "Ada")
     assert names == {
-        S.DIAPER_CHANGES: "Ada diaper changes",
-        S.DIAPER_PEE: "Ada pee diapers",
-        S.DIAPER_POO: "Ada poo diapers",
-        S.DIAPER_MIXED: "Ada mixed diapers",
-        S.DIAPER_DRY: "Ada dry diapers",
-        S.BOTTLE_FEEDS: "Ada bottle feeds",
-        S.BOTTLE_VOLUME: "Ada bottle volume",
-        S.NURSING_SESSIONS: "Ada nursing sessions",
-        S.NURSING_TIME: "Ada nursing time",
-        S.NURSING_TIME_LEFT: "Ada nursing time, left",
-        S.NURSING_TIME_RIGHT: "Ada nursing time, right",
-        S.PUMPING_SESSIONS: "Ada pumping sessions",
-        S.PUMPED_VOLUME: "Ada pumped volume",
-        S.PUMPED_VOLUME_LEFT: "Ada pumped volume, left",
-        S.PUMPED_VOLUME_RIGHT: "Ada pumped volume, right",
-        S.PUMPING_TIME: "Ada pumping time",
+        S.DIAPER_CHANGES: "Ada Diaper changes",
+        S.DIAPER_PEE: "Ada Pee diapers",
+        S.DIAPER_POO: "Ada Poo diapers",
+        S.DIAPER_MIXED: "Ada Mixed diapers",
+        S.DIAPER_DRY: "Ada Dry diapers",
+        S.BOTTLE_FEEDS: "Ada Bottle feeds",
+        S.BOTTLE_VOLUME: "Ada Bottle volume",
+        S.NURSING_SESSIONS: "Ada Nursing sessions",
+        S.NURSING_TIME: "Ada Nursing time",
+        S.NURSING_TIME_LEFT: "Ada Nursing time, left",
+        S.NURSING_TIME_RIGHT: "Ada Nursing time, right",
+        S.PUMPING_SESSIONS: "Ada Pumping sessions",
+        S.PUMPED_VOLUME: "Ada Pumped volume",
+        S.PUMPED_VOLUME_LEFT: "Ada Pumped volume, left",
+        S.PUMPED_VOLUME_RIGHT: "Ada Pumped volume, right",
+        S.PUMPING_TIME: "Ada Pumping time",
     }
 
 
 def test_names_carry_the_baby_name_and_no_raw_id() -> None:
     names = statistic_names(ENGLISH, statistic_baby_name("Nursery", CODE))
-    assert names[S.DIAPER_CHANGES] == "Nursery diaper changes"
-    assert names[S.PUMPED_VOLUME_RIGHT] == "Nursery pumped volume, right"
+    assert names[S.DIAPER_CHANGES] == "Nursery Diaper changes"
+    assert names[S.PUMPED_VOLUME_RIGHT] == "Nursery Pumped volume, right"
     assert len(set(names.values())) == 16
     unnamed = statistic_names(ENGLISH, statistic_baby_name(None, CODE))
-    assert unnamed[S.BOTTLE_FEEDS] == f"Baby {CODE[:8]} bottle feeds"
+    assert unnamed[S.BOTTLE_FEEDS] == f"Baby {CODE[:8]} Bottle feeds"
     assert all(UID not in name for name in (*names.values(), *unnamed.values()))
 
 
@@ -176,7 +178,7 @@ def test_a_long_baby_name_is_cut_so_the_name_fits_the_recorder_and_keeps_its_ser
     assert len(set(names.values())) == 16
     assert len(names[S.DIAPER_CHANGES]) >= 250
     short = statistic_names(ENGLISH, "Ada")
-    assert short[S.DIAPER_CHANGES] == "Ada diaper changes"
+    assert short[S.DIAPER_CHANGES] == "Ada Diaper changes"
 
 
 def test_the_baby_name_is_sanitized() -> None:
@@ -196,14 +198,14 @@ def test_a_translated_label_is_used_and_a_missing_one_falls_back_to_the_key() ->
 
 
 def test_a_name_with_braces_is_not_read_as_a_template() -> None:
-    assert statistic_names(ENGLISH, "{baby_name}")[S.DIAPER_DRY] == "{baby_name} dry diapers"
+    assert statistic_names(ENGLISH, "{baby_name}")[S.DIAPER_DRY] == "{baby_name} Dry diapers"
     assert statistic_names({}, "{baby_name}")[S.DIAPER_DRY] == "{baby_name} diaper_dry"
 
 
 async def test_names_come_from_the_translation_files(hass: HomeAssistant) -> None:
     strings = await async_get_translations(hass, "en", "entity", {"nanit"})
     prefix = "component.nanit.entity.calendar.care_log.state_attributes.statistic_name.state"
-    assert strings[f"{prefix}.diaper_changes"] == "diaper changes"
+    assert strings[f"{prefix}.diaper_changes"] == "Diaper changes"
     names = await async_statistic_names(hass, "Nursery")
     assert names == statistic_names(ENGLISH, "Nursery")
 

@@ -26,7 +26,7 @@ from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.event import async_track_point_in_utc_time
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.translation import async_get_translations
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
@@ -86,6 +86,7 @@ CARE_LOG_MAX_IN_FLIGHT = 2
 # An answer is removed when its time is up, even if nothing asks again.
 CARE_LOG_CACHE_TTL = timedelta(minutes=5)
 CARE_LOG_CACHE_SIZE = 16
+_CACHE_TTL_SECONDS = CARE_LOG_CACHE_TTL.total_seconds()
 
 # And how many rows they may hold together. A row takes about 550 bytes in
 # memory (measured, notes included), so this is some 15 MB at most: room for
@@ -191,7 +192,7 @@ class _Cached:
 
     __slots__ = ("fetched_at", "rows")
 
-    def __init__(self, rows: tuple[_Row, ...], fetched_at: datetime) -> None:
+    def __init__(self, rows: tuple[_Row, ...], fetched_at: float) -> None:
         self.rows = rows
         self.fetched_at = fetched_at
 
@@ -644,7 +645,7 @@ class NanitCareLogCalendar(CoordinatorEntity[NanitCareLogCoordinator], CalendarE
     async def _async_rows(self, key: _CacheKey) -> tuple[_Row, ...]:
         """Return a fetched range from memory, a fetch already running, or a new fetch."""
         cached = self._cache.get(key)
-        if cached is not None and dt_util.utcnow() - cached.fetched_at < CARE_LOG_CACHE_TTL:
+        if cached is not None and self._age(cached) < _CACHE_TTL_SECONDS:
             return cached.rows
         task = self._in_flight.get(key)
         if task is None:
@@ -708,7 +709,7 @@ class NanitCareLogCalendar(CoordinatorEntity[NanitCareLogCoordinator], CalendarE
         """Fetch a range and keep it in memory, unless the calendar is gone."""
         rows = await self._async_fetch(*key)
         if not self._removed and len(rows) <= CARE_LOG_CACHE_MAX_ROWS:
-            self._cache[key] = _Cached(rows, dt_util.utcnow())
+            self._cache[key] = _Cached(rows, self.hass.loop.time())
             # Oldest first, until both the ranges and their rows fit.
             while (
                 len(self._cache) > CARE_LOG_CACHE_SIZE
@@ -725,10 +726,18 @@ class NanitCareLogCalendar(CoordinatorEntity[NanitCareLogCoordinator], CalendarE
         self._stop_expiry()
         if not self._cache:
             return
-        oldest = min(cached.fetched_at for cached in self._cache.values())
-        self._cancel_expiry = async_track_point_in_utc_time(
-            self.hass, self._async_expire, oldest + CARE_LOG_CACHE_TTL
+        oldest = max(self._age(cached) for cached in self._cache.values())
+        self._cancel_expiry = async_call_later(
+            self.hass, max(_CACHE_TTL_SECONDS - oldest, 0.0), self._async_expire
         )
+
+    def _age(self, cached: _Cached) -> float:
+        """Return how many seconds ago an answer was fetched, on a clock that never goes back.
+
+        The loop's monotonic clock, not the wall clock: setting the clock back
+        must not keep an answer (a note among them) past its five minutes.
+        """
+        return self.hass.loop.time() - cached.fetched_at
 
     def _stop_expiry(self) -> None:
         if self._cancel_expiry is not None:
@@ -739,9 +748,8 @@ class NanitCareLogCalendar(CoordinatorEntity[NanitCareLogCoordinator], CalendarE
     def _async_expire(self, _now: datetime) -> None:
         """Drop every answer whose time is up, then wait for the next one."""
         self._cancel_expiry = None
-        now = dt_util.utcnow()
         for key in [
-            k for k, cached in self._cache.items() if now - cached.fetched_at >= CARE_LOG_CACHE_TTL
+            k for k, cached in self._cache.items() if self._age(cached) >= _CACHE_TTL_SECONDS
         ]:
             del self._cache[key]
         self._schedule_expiry()

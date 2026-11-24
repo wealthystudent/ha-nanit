@@ -1742,6 +1742,31 @@ async def test_cached_answers_expire_after_five_minutes(
     assert await hass.config_entries.async_unload(entry.entry_id)
 
 
+@pytest.mark.parametrize("idle", [False, True], ids=["asked_again", "idle"])
+async def test_a_clock_set_back_keeps_no_answer_past_five_minutes(
+    hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory, idle: bool
+) -> None:
+    """Five minutes pass while the wall clock is set back two hours: the notes still go."""
+    freezer.move_to(NOW)
+    fake = FakeNanit()
+    _day_of_entries(fake)
+    entry, calendar = await _one_calendar(hass, client, fake, notes=True)
+    await _events(hass, calendar, RANGE_START, RANGE_END)
+    assert calendar._cache
+
+    freezer.tick(CARE_LOG_CACHE_TTL)
+    set_back = dt_util.utcnow() - timedelta(hours=2)
+    with patch.object(dt_util, "utcnow", return_value=set_back):
+        if idle:
+            async_fire_time_changed(hass)
+            await hass.async_block_till_done()
+            assert calendar._cache == {}
+        else:
+            await _events(hass, calendar, RANGE_START, RANGE_END)
+            assert len(fake.calendar_calls()) == 2
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
 @pytest.mark.parametrize("notes", [False, True], ids=["notes_off", "notes_on"])
 async def test_an_idle_calendar_drops_its_answers_when_they_expire(
     hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory, notes: bool

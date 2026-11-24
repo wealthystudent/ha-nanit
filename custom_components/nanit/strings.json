@@ -112,7 +112,7 @@
         },
         "data_description": {
           "import_care_log_statistics": "Hourly totals for long-term charts. Turn it on any time and everything already logged in Nanit is imported. Imported totals stay until you delete them, even after you turn this off, and the recorder's include and exclude settings don't apply to them.",
-          "show_care_log_notes": "Adds each entry's note and who logged it to the calendar. Anyone who can read the calendar can see them, including automations and voice assistants. They're read from Nanit each time, so turning this on or off applies to every entry, old ones included."
+          "show_care_log_notes": "Adds each entry's note and who logged it to the calendar. Anyone who can read the calendar can see them, including automations and voice assistants. They aren't stored, so turning this on or off applies to every entry, old ones included."
         }
       }
     },

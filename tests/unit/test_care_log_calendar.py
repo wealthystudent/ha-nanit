@@ -920,6 +920,38 @@ async def test_a_refusal_drops_kept_and_in_flight_answers(
     assert await hass.config_entries.async_unload(entry.entry_id)
 
 
+async def test_a_finished_fetch_not_yet_forgotten_is_not_shared_after_a_refusal(
+    hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory
+) -> None:
+    """A range is fetched, notes and all; another request is refused before its task is forgotten.
+
+    A caller who then asks for the range gets the usual error, and no rows.
+    """
+    freezer.move_to(NOW)
+    fake = FakeNanit()
+    _day_of_entries(fake)
+    entry, calendar = await _one_calendar(hass, client, fake, notes=True)
+    held_back: list[tuple[Any, Any]] = []
+    forget = calendar._fetch_done
+    # A finished task is forgotten in a done callback, which the loop runs
+    # later: held back here, to stand for that moment.
+    with patch.object(calendar, "_fetch_done", lambda key, task: held_back.append((key, task))):
+        events = await _events(hass, calendar, RANGE_START, RANGE_END)
+        assert any(NOTE_MARKER in _event_fields(event) for event in events)
+        assert len(calendar._in_flight) == 1
+        fake.error = NanitRequestRefused("Calendar fetch", 403)
+        with pytest.raises(HomeAssistantError):
+            await _events(hass, calendar, RANGE_START - timedelta(days=1), RANGE_START)
+        fake.error = None
+        asked = len(fake.calls)
+        with pytest.raises(HomeAssistantError):
+            await _events(hass, calendar, RANGE_START, RANGE_END)
+        assert len(fake.calls) == asked
+    for key, task in held_back:
+        forget(key, task)
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
 # ---------------------------------------------------------------------------
 # Ranges
 # ---------------------------------------------------------------------------

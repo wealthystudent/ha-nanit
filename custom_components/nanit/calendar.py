@@ -632,8 +632,13 @@ class NanitCareLogCalendar(CoordinatorEntity[NanitCareLogCoordinator], CalendarE
         if self._kept_refusals != self.coordinator.refusals:
             # Nanit refused this baby's care logs since these were kept: none
             # of them is shown again. Throttling keeps them (they stay their
-            # five minutes).
+            # five minutes). Nor is a fetch started before the refusal shared,
+            # even one that has finished but not yet been forgotten.
             self._cache.clear()
+            for stale in self._in_flight.values():
+                stale.cancel()
+            self._in_flight.clear()
+            self._waiting.clear()
             self._stop_expiry()
             self._kept_refusals = self.coordinator.refusals
         cached = self._cache.get(key)

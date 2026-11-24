@@ -51,7 +51,12 @@ from pytest_homeassistant_custom_component.components.recorder.common import (
 )
 from pytest_homeassistant_custom_component.typing import RecorderInstanceContextManager
 
-from aionanit.exceptions import NanitAuthError, NanitConnectionError, NanitRateLimited
+from aionanit.exceptions import (
+    NanitAuthError,
+    NanitConnectionError,
+    NanitRateLimited,
+    NanitResponseTooLarge,
+)
 from aionanit.models import Baby, CareLog, CareLogFetch
 from custom_components.nanit import care_log_importer, care_log_recorder
 from custom_components.nanit import coordinator as coordinator_module
@@ -1056,6 +1061,83 @@ async def test_after_a_ten_day_reader_outage_nothing_is_written_across_the_unrea
     assert max(volume) == _end_hour() - H
     assert volume[_end_hour() - H] == (0.0, 255.0)
     assert len(volume) == (_end_hour() - _hour(OLD)) // H
+
+
+def _second_piece_too_large(truth: Truth) -> int:
+    """Answer the history's second piece with more than the client reads; return its start."""
+    history = care_log_history_start(BABY, NOW)
+    # The pieces lie on a fixed grid: the second starts at the same second
+    # whatever the end of the pass.
+    second = care_log_history_pieces(history, _ts(NOW))[1][0]
+
+    async def too_large(start: int, _end: int) -> None:
+        if start == second:
+            raise NanitResponseTooLarge("Calendar response larger than 16777216 bytes")
+
+    truth.during_own = too_large
+    return second
+
+
+def _too_large_warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [
+        record
+        for record in caplog.records
+        if record.name == care_log_importer.__name__ and "larger than" in record.getMessage()
+    ]
+
+
+async def test_a_history_piece_too_large_to_read_waits_for_the_next_daily_pass(
+    make: Callable[..., Harness], hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The daily pass stops at the oversized piece, and nothing reads it again for a day."""
+    truth = Truth(BASE)
+    harness = await _imported(make, truth)
+    passes = harness.diag()["passes_completed"]
+    second = _second_piece_too_large(truth)
+
+    with caplog.at_level(logging.WARNING):
+        await harness.advance_polling(timedelta(hours=24))
+        assert [start for start, _end in truth.own][1:] == [second]
+        assert harness.diag()["state"] == "history_too_large"
+        (warning,) = _too_large_warnings(caplog)
+        for private in (UID, CODE, BABY.name):
+            assert private not in warning.getMessage()
+
+        # Not before the daily interval: not the earlier piece, not the large one.
+        asked = list(truth.own)
+        await harness.advance_polling(timedelta(hours=23, minutes=50))
+        assert truth.own == asked
+        assert harness.diag()["state"] == "history_too_large"
+        assert harness.diag()["passes_completed"] == passes
+
+        # A day later, once: still too large, and no second warning.
+        await harness.advance_polling(timedelta(minutes=15))
+        assert len(truth.own) == 4
+        assert len(_too_large_warnings(caplog)) == 1
+
+        # Once it can be read, the next daily pass gets through.
+        truth.during_own = None
+        await harness.advance_polling(timedelta(hours=24))
+    assert harness.diag()["state"] == "running"
+    assert harness.diag()["passes_completed"] == passes + 1
+
+
+async def test_a_start_up_piece_too_large_to_read_waits_a_day(
+    make: Callable[..., Harness], hass: HomeAssistant
+) -> None:
+    """At start-up too: the first pass stops at the oversized piece and waits a day."""
+    truth = Truth(BASE)
+    second = _second_piece_too_large(truth)
+    harness = make(truth)
+    harness.start()
+    await harness.poll()
+    assert [start for start, _end in truth.own][1:] == [second]
+    assert harness.diag()["state"] == "history_too_large"
+
+    asked = list(truth.own)
+    await harness.advance_polling(timedelta(hours=23, minutes=50))
+    assert truth.own == asked
+    assert harness.diag()["state"] == "history_too_large"
 
 
 async def test_a_held_request_waits_on_the_retry_schedule_and_keeps_its_pass(

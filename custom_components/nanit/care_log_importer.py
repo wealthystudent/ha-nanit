@@ -44,6 +44,11 @@ incremental sync follows. A change that lowers a chart waits for the book's
 confirm request, which the importer reads itself. Once a day the history is
 read again.
 
+A piece of a pass answered with more than the client reads
+(``NanitResponseTooLarge``) would get the same answer again: the pass stops
+there, the state is ``history_too_large`` (one warning), and the next pass
+is the daily one, never brought forward, until a pass gets through.
+
 Reads waiting to be processed, the reader's and the importer's own, go to
 the book in the order they were taken: an older read processed late can
 add or cancel, never confirm. From the start of the first start-up pass,
@@ -109,7 +114,7 @@ from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers.event import async_track_point_in_utc_time
 from homeassistant.util import dt as dt_util
 
-from aionanit.exceptions import NanitAuthError, NanitConnectionError
+from aionanit.exceptions import NanitAuthError, NanitConnectionError, NanitResponseTooLarge
 from aionanit.models import Baby, CareLogFetch
 
 from .baby_code import baby_code
@@ -203,6 +208,7 @@ STATE_STARTING: Final = "starting"
 STATE_WAITING_FOR_SECOND_PASS: Final = "waiting_for_second_pass"
 STATE_WAITING_TO_RETRY: Final = "waiting_to_retry"
 STATE_GAVE_UP: Final = "gave_up"
+STATE_HISTORY_TOO_LARGE: Final = "history_too_large"
 STATE_RUNNING: Final = "running"
 STATE_PAUSED_UNTIL_RESTART: Final = "paused_until_restart"
 STATE_STOPPED: Final = "stopped"
@@ -416,6 +422,9 @@ class CareLogStatisticsImporter:
         # Set when the wait for the recorder's queue before a comparison
         # timed out: the next step waits for it again before anything else.
         self._queue_busy = False
+        # Set when a history piece was answered with more than the client
+        # reads, until a pass gets through (``_note_too_large``).
+        self._too_large = False
 
         # Reader updates not yet taken by the worker, and the newest seen.
         self._last_handled_read_at: datetime | None = None
@@ -754,6 +763,21 @@ class CareLogStatisticsImporter:
         self._failures = 0
         self._retry_at = None
 
+    def _note_too_large(self) -> None:
+        """Note a history piece answered with more than the client reads.
+
+        Asking for the same piece again gets the same answer, so its pass is
+        not tried again before the daily interval (the caller sets when).
+        One warning while it lasts, with nothing that names the baby.
+        """
+        if not self._too_large:
+            _LOGGER.warning(
+                "Part of the care log history is larger than the integration reads from "
+                "Nanit; the statistics import tries it again in a day"
+            )
+        self._too_large = True
+        self._state = STATE_HISTORY_TOO_LARGE
+
     # -- own reads -------------------------------------------------------------
 
     async def _async_own_read(self, start: int, end: int) -> tuple[CareLogRead, bool]:
@@ -836,6 +860,15 @@ class CareLogStatisticsImporter:
             # A reader read taken during this round was lost: what it said is
             # unknown, so the round cannot be trusted. It starts over.
             self._start_over()
+        except NanitResponseTooLarge:
+            # Asking again gets the same answer: a new first pass, a day later.
+            self._note_too_large()
+            self._first_pass = None
+            self._first_pass_began = None
+            self._keeping = False
+            self._reader_queue.clear()
+            self._passes = 0
+            self._startup_due = dt_util.utcnow() + HISTORY_INTERVAL
         except NanitConnectionError:
             self._note_connection_failure(dt_util.utcnow())
             self._startup_due = self._retry_at
@@ -1036,6 +1069,7 @@ class CareLogStatisticsImporter:
         self._sync_wanted = True
         self._last_history_at = now
         self._history_due = now + HISTORY_INTERVAL
+        self._too_large = False
         self._state = STATE_RUNNING
         # The reader reads kept and not superseded, in order.
         self._process_reads()
@@ -1043,7 +1077,7 @@ class CareLogStatisticsImporter:
     # -- running ------------------------------------------------------------------
 
     async def _async_running_step(self) -> None:
-        self._state = STATE_RUNNING
+        self._state = STATE_HISTORY_TOO_LARGE if self._too_large else STATE_RUNNING
         self._process_reads()
         if not self._recorder_ready():
             # Reads still update the book; nothing is asked of Nanit or written
@@ -1062,6 +1096,10 @@ class CareLogStatisticsImporter:
                 self._own_request_time(self._history_due) <= dt_util.utcnow()
             ):
                 await self._async_history_pass()
+        except NanitResponseTooLarge:
+            # Asking again gets the same answer: the pass waits a day.
+            self._note_too_large()
+            self._history_due = dt_util.utcnow() + HISTORY_INTERVAL
         except NanitConnectionError:
             self._note_connection_failure(dt_util.utcnow())
             _LOGGER.debug("A care log read could not reach Nanit; trying again later")
@@ -1104,6 +1142,9 @@ class CareLogStatisticsImporter:
         return outcome
 
     def _bring_history_forward(self) -> None:
+        if self._too_large:
+            # The history cannot be read: brought forward, it would fail again.
+            return
         now = dt_util.utcnow()
         if self._last_early_at is None or now - self._last_early_at >= EARLY_HISTORY_INTERVAL:
             soonest = now
@@ -1152,6 +1193,8 @@ class CareLogStatisticsImporter:
             spans.append((own[0].start, _reach(own[0])))
             self._process_reads(own)
         self._note_connection_success()
+        self._too_large = False
+        self._state = STATE_RUNNING
         # The history this pass read: from now on the rows the ledger covers.
         coverage = min(history_start, reader_start)
         self._coverage_start = coverage

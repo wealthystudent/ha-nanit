@@ -87,6 +87,17 @@ CARE_LOG_MAX_IN_FLIGHT = 2
 CARE_LOG_CACHE_TTL = timedelta(minutes=5)
 CARE_LOG_CACHE_SIZE = 16
 
+# And how many rows they may hold together. A row takes about 550 bytes in
+# memory (measured, notes included), so this is some 15 MB at most: room for
+# a three-year range of a busy log (20 entries a day). A single answer above
+# it is returned but not kept.
+CARE_LOG_CACHE_MAX_ROWS = 25_000
+
+# How many rows an answer is built from before the event loop gets a turn.
+# Building one event took about 43 microseconds (measured with the loop's
+# debug mode off), so a batch holds the loop for about 10 ms.
+CARE_LOG_ROWS_PER_TURN = 200
+
 # How many different ranges one calendar fetches at once: as many as it
 # keeps. A request for another range meanwhile gets the usual error.
 CARE_LOG_MAX_RANGES_IN_FLIGHT = CARE_LOG_CACHE_SIZE
@@ -604,15 +615,14 @@ class NanitCareLogCalendar(CoordinatorEntity[NanitCareLogCoordinator], CalendarE
         fetch_end = min(fetch_end, latest)
         rows = await self._async_rows((fetch_start, max(fetch_start, fetch_end), show_notes))
         texts = await _async_texts(hass)
-        # The option may have changed, or the calendar gone, while the answer
-        # was on its way. Checked after the last await, so nothing can change
-        # between this and the answer being returned.
-        if self._removed or is_show_care_log_notes(entry) != show_notes:
-            raise _unavailable()
 
         formatter = _Formatter(hass, texts)
         found: list[tuple[datetime, str, CalendarEvent]] = []
-        for row in rows:
+        for index, row in enumerate(rows):
+            if index and not index % CARE_LOG_ROWS_PER_TURN:
+                # A long range has thousands of rows: let the loop run between
+                # batches rather than hold it for the whole answer.
+                await asyncio.sleep(0)
             if (span := _span(row.log)) is None:
                 continue
             start, end, moment = span
@@ -623,6 +633,11 @@ class NanitCareLogCalendar(CoordinatorEntity[NanitCareLogCoordinator], CalendarE
             )
             if event is not None:
                 found.append((start, row.log.uid, event))
+        # The option may have changed, or the calendar gone, while the answer
+        # was on its way or being built. Checked after the last await, so
+        # nothing can change between this and the answer being returned.
+        if self._removed or is_show_care_log_notes(entry) != show_notes:
+            raise _unavailable()
         found.sort(key=lambda item: (item[0], item[1]))
         return [event for _start, _uid, event in found]
 
@@ -692,9 +707,14 @@ class NanitCareLogCalendar(CoordinatorEntity[NanitCareLogCoordinator], CalendarE
     async def _async_fetch_and_keep(self, key: _CacheKey) -> tuple[_Row, ...]:
         """Fetch a range and keep it in memory, unless the calendar is gone."""
         rows = await self._async_fetch(*key)
-        if not self._removed:
+        if not self._removed and len(rows) <= CARE_LOG_CACHE_MAX_ROWS:
             self._cache[key] = _Cached(rows, dt_util.utcnow())
-            while len(self._cache) > CARE_LOG_CACHE_SIZE:
+            # Oldest first, until both the ranges and their rows fit.
+            while (
+                len(self._cache) > CARE_LOG_CACHE_SIZE
+                or sum(len(cached.rows) for cached in self._cache.values())
+                > CARE_LOG_CACHE_MAX_ROWS
+            ):
                 oldest = min(self._cache, key=lambda k: self._cache[k].fetched_at)
                 del self._cache[oldest]
             self._schedule_expiry()

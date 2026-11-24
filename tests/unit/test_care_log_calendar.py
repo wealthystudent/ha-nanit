@@ -61,6 +61,7 @@ from custom_components.nanit.const import (
     CONF_READ_ONLY,
     CONF_SHOW_CARE_LOG_NOTES,
     DOMAIN,
+    is_show_care_log_notes,
 )
 from custom_components.nanit.coordinator import NanitCareLogCoordinator
 from custom_components.nanit.diagnostics import async_get_config_entry_diagnostics
@@ -1907,6 +1908,102 @@ async def test_notes_are_not_returned_when_consent_ends_during_the_text_lookup(
         assert marker not in str(raised.value)
     if change == "option_off":
         assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+def _many_bottles(fake: FakeNanit, count: int) -> None:
+    """``count`` bottles spread over the day of RANGE_START."""
+    step = (RANGE_END - RANGE_START) / (count + 1)
+    for i in range(count):
+        fake.add(
+            _log(f"b{i:05d}", "bottle_feed", RANGE_START + step * (i + 1), feed_amount_ml=30.0)
+        )
+
+
+async def _turns_while(awaitable: Any, on_turn: Any = None) -> tuple[Any, int]:
+    """Await ``awaitable`` in its own task, counting the turns another task gets meanwhile."""
+    task = asyncio.ensure_future(awaitable)
+    turns = 0
+    while not task.done():
+        await asyncio.sleep(0)
+        turns += 1
+        if on_turn is not None:
+            on_turn(turns)
+    return await task, turns
+
+
+@pytest.mark.parametrize("cached", [False, True], ids=["fetched", "from_memory"])
+async def test_a_long_answer_lets_the_event_loop_run_while_it_is_built(
+    hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory, cached: bool
+) -> None:
+    freezer.move_to(NOW)
+    fake = FakeNanit()
+    _many_bottles(fake, 1000)
+    entry, calendar = await _one_calendar(hass, client, fake)
+    if cached:
+        await _events(hass, calendar, RANGE_START, RANGE_END)
+
+    events, turns = await _turns_while(_events(hass, calendar, RANGE_START, RANGE_END))
+
+    assert len(events) == 1000
+    assert [event.start for event in events] == sorted(event.start for event in events)
+    # 1,000 rows, 200 to a batch: the loop ran between every two.
+    assert turns >= 4
+    assert len(fake.calendar_calls()) == 1
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_notes_are_not_returned_when_the_option_goes_off_while_the_answer_is_built(
+    hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory
+) -> None:
+    freezer.move_to(NOW)
+    fake = FakeNanit()
+    _many_bottles(fake, 1000)
+    entry, calendar = await _one_calendar(hass, client, fake, notes=True)
+    await _events(hass, calendar, RANGE_START, RANGE_END)
+
+    def option_off(turn: int) -> None:
+        if turn == 3:
+            # Only the option changes: the reload it would start is held back.
+            with patch.object(entry, "update_listeners", []):
+                hass.config_entries.async_update_entry(
+                    entry, options={**entry.options, CONF_SHOW_CARE_LOG_NOTES: False}
+                )
+
+    with pytest.raises(HomeAssistantError) as raised:
+        await _turns_while(_events(hass, calendar, RANGE_START, RANGE_END), option_off)
+
+    assert raised.value.translation_key == "care_log_calendar_unavailable"
+    assert not is_show_care_log_notes(entry)
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_the_cache_is_bounded_by_rows(
+    hass: HomeAssistant,
+    client: Any,
+    freezer: FrozenDateTimeFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    freezer.move_to(NOW)
+    monkeypatch.setattr(calendar_module, "CARE_LOG_CACHE_MAX_ROWS", 6, raising=False)
+    fake = FakeNanit()
+    _day_of_entries(fake)  # four entries on the day of RANGE_START
+    for i in range(3):
+        fake.add(_log(f"x{i}", "diaper_change", RANGE_START - timedelta(days=3, hours=-i)))
+    entry, calendar = await _one_calendar(hass, client, fake)
+    day_before = (RANGE_START - timedelta(days=3), RANGE_START - timedelta(days=2))
+
+    assert len(await _events(hass, calendar, RANGE_START, RANGE_END)) == 4
+    freezer.tick(timedelta(seconds=1))
+    assert len(await _events(hass, calendar, *day_before)) == 3
+    # Four rows and three would be seven: the older range is dropped.
+    assert [len(cached.rows) for cached in calendar._cache.values()] == [3]
+
+    # A week holds all seven rows: answered, and not kept.
+    freezer.tick(timedelta(seconds=1))
+    week = await _events(hass, calendar, RANGE_START - timedelta(days=6), RANGE_END)
+    assert len(week) == 7
+    assert [len(cached.rows) for cached in calendar._cache.values()] == [3]
+    assert await hass.config_entries.async_unload(entry.entry_id)
 
 
 async def test_the_cache_is_bounded(

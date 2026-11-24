@@ -54,6 +54,13 @@ class NanitRateLimited(NanitRequestRefused):
         self.retry_after = retry_after
 
 
+class NanitResponseTooLarge(NanitConnectionError):
+    """An answer was larger than the client reads, so it was refused unread.
+
+    Asking again for the same range gets the same answer: do not retry it.
+    """
+
+
 class NanitTransportError(NanitError):
     """WebSocket transport error (unexpected close, protocol violation)."""
 

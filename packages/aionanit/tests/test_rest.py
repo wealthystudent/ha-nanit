@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import contextlib
+import gzip
+import json
+import threading
 import traceback
 from datetime import UTC, date, datetime, timedelta
 from email.utils import format_datetime
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 from aiohttp import (
@@ -19,6 +23,7 @@ from aiohttp import (
 from multidict import CIMultiDict, CIMultiDictProxy
 from yarl import URL
 
+from aionanit import rest as rest_module
 from aionanit.client import NanitClient
 from aionanit.exceptions import (
     NanitAuthError,
@@ -26,6 +31,7 @@ from aionanit.exceptions import (
     NanitMfaRequiredError,
     NanitRateLimited,
     NanitRequestRefused,
+    NanitResponseTooLarge,
 )
 from aionanit.models import (
     Baby,
@@ -1481,6 +1487,122 @@ class TestGetCalendar:
 
         assert err.value.retry_after is not None
         assert 590 <= err.value.retry_after <= 601
+
+    @pytest.mark.parametrize(
+        "method", ["async_get_calendar", "async_get_calendar_result", "async_get_calendar_details"]
+    )
+    @pytest.mark.parametrize("compressed", [False, True], ids=["plain", "gzip"])
+    async def test_get_calendar_refuses_an_answer_over_the_size_limit_unread(
+        self,
+        client: NanitRestClient,
+        session: FakeSession,
+        monkeypatch: pytest.MonkeyPatch,
+        method: str,
+        compressed: bool,
+    ) -> None:
+        """Counted after decompression: a small gzip body can hold a large answer."""
+        monkeypatch.setattr(rest_module, "MAX_CALENDAR_BYTES", 10_000)
+        parsed: list[object] = []
+        monkeypatch.setattr(rest_module, "_calendar_rows", lambda body: parsed.append(body))
+        responses = _record_responses(session, monkeypatch)
+        rows = [{"uid": f"d{i}", "type": "diaper_change", "time": 1700000000} for i in range(500)]
+        raw = json.dumps({"calendar": rows}).encode()
+        assert len(raw) > 10_000
+        with mock_api() as m:
+            if compressed:
+                body = gzip.compress(raw)
+                assert len(body) < 10_000
+                m.get(CALENDAR_URL, body=body, headers={"Content-Encoding": "gzip"})
+            else:
+                m.get(CALENDAR_URL, body=raw)
+
+            with pytest.raises(NanitResponseTooLarge) as err:
+                await getattr(client, method)("token123", "baby123", 1700000000, 1700086400)
+
+        assert isinstance(err.value, NanitConnectionError)
+        assert str(err.value) == "Calendar response larger than 10000 bytes"
+        assert err.value.__cause__ is None
+        assert err.value.__context__ is None
+        assert parsed == []
+        (resp,) = responses
+        assert resp.closed
+
+    async def test_get_calendar_reads_an_answer_just_under_the_size_limit(
+        self, client: NanitRestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        raw = json.dumps({"calendar": [{"uid": "d1", "type": "diaper_change", "time": 1}]})
+        monkeypatch.setattr(rest_module, "MAX_CALENDAR_BYTES", len(raw))
+        with mock_api() as m:
+            m.get(CALENDAR_URL, body=raw)
+            fetch = await client.async_get_calendar_result(
+                "token123", "baby123", 1700000000, 1700086400
+            )
+        assert len(fetch.logs) == 1
+
+    async def test_read_at_most_stops_a_streamed_body_without_a_length(self) -> None:
+        class Content:
+            def __init__(self) -> None:
+                self.chunks_read = 0
+
+            async def iter_chunked(self, _size: int) -> Any:
+                for _ in range(100):
+                    self.chunks_read += 1
+                    yield b"x" * 1000
+
+        resp = MagicMock(content_length=None, content=Content())
+        assert await rest_module._async_read_at_most(resp, 4500) is None
+        assert resp.content.chunks_read == 5
+        resp = MagicMock(content_length=None, content=Content())
+        assert await rest_module._async_read_at_most(resp, 100_000) == b"x" * 100_000
+
+    @pytest.mark.parametrize("details", [False, True], ids=["result", "details"])
+    @pytest.mark.parametrize("large", [False, True], ids=["small", "large"])
+    async def test_get_calendar_parses_a_large_answer_off_the_event_loop(
+        self, client: NanitRestClient, monkeypatch: pytest.MonkeyPatch, details: bool, large: bool
+    ) -> None:
+        rows = [
+            {"uid": f"b{i}", "type": "bottle_feed", "time": 1700000000 + i, "feed_amount": 90}
+            for i in range(50)
+        ]
+        raw = json.dumps({"calendar": rows})
+        monkeypatch.setattr(
+            rest_module, "OFF_LOOP_CALENDAR_BYTES", len(raw) - 1 if large else len(raw)
+        )
+        loop_thread = threading.get_ident()
+        threads: list[int] = []
+        real_rows = rest_module._calendar_rows
+
+        def rows_in(body: bytes) -> list[Any]:
+            threads.append(threading.get_ident())
+            return real_rows(body)
+
+        monkeypatch.setattr(rest_module, "_calendar_rows", rows_in)
+        with mock_api() as m:
+            m.get(CALENDAR_URL, body=raw)
+            method = (
+                client.async_get_calendar_details if details else client.async_get_calendar_result
+            )
+            fetch = await method("token123", "baby123", 1700000000, 1700086400)
+
+        count = len(fetch.entries) if isinstance(fetch, CareLogDetailFetch) else len(fetch.logs)
+        assert count == 50
+        assert fetch.dropped == 0
+        (thread,) = threads
+        assert (thread != loop_thread) is large
+
+    async def test_get_calendar_invalid_json_off_the_loop_is_fixed_text(
+        self, client: NanitRestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(rest_module, "OFF_LOOP_CALENDAR_BYTES", 0)
+        with mock_api() as m:
+            m.get(CALENDAR_URL, body='{"calendar": [baby123')
+
+            with pytest.raises(NanitConnectionError) as err:
+                await self._fetch(client)
+
+        assert str(err.value) == "Invalid calendar response: JSONDecodeError"
+        assert err.value.__cause__ is None
+        assert err.value.__context__ is None
 
     @pytest.mark.parametrize("status", [400, 404, 422, 500, 503])
     async def test_get_calendar_other_failures_are_not_refusals(

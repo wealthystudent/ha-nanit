@@ -41,6 +41,7 @@ from aionanit.exceptions import (
     NanitConnectionError,
     NanitRateLimited,
     NanitRequestRefused,
+    NanitResponseTooLarge,
 )
 from aionanit.models import Baby, CameraEvent, CameraState, CareLog, CloudEvent, NetworkInfo
 
@@ -73,9 +74,10 @@ _AVAILABILITY_GRACE_SECONDS: float = 30.0
 # meanwhile. Setup gets no retries, so it still fails fast.
 _POLL_RETRY_DELAYS: tuple[float, ...] = (5.0, 10.0)
 
-# Failures a retry seconds later can't fix: Nanit refused the request, or is
-# throttling them. They end the poll at once.
-_NOT_RETRIED: tuple[type[NanitConnectionError], ...] = (NanitRequestRefused,)
+# Failures a retry seconds later can't fix: Nanit refused the request, is
+# throttling them, or answered with more than the library reads. They end
+# the poll at once.
+_NOT_RETRIED: tuple[type[NanitConnectionError], ...] = (NanitRequestRefused, NanitResponseTooLarge)
 
 
 async def _async_fetch_with_retries[T](

@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import email.utils
+import json
 import math
 import re
 import unicodedata
+from collections.abc import Callable
 from datetime import UTC, date, datetime
+from functools import partial
 from typing import Any
 
 import aiohttp
@@ -17,6 +21,7 @@ from .exceptions import (
     NanitMfaRequiredError,
     NanitRateLimited,
     NanitRequestRefused,
+    NanitResponseTooLarge,
 )
 from .models import (
     Baby,
@@ -367,6 +372,82 @@ def _parse_care_log_detail(row: dict[str, Any]) -> CareLogDetail:
     )
 
 
+# The largest /calendar answer read, counted after decompression. Made-up
+# rows in Nanit's format take about 290 bytes each, so this is some 55,000
+# rows: about ten times what the busiest 90-day request (the longest the
+# integration makes) could hold, and 60 a day for 90 days is 5,400. A larger
+# answer is refused unread rather than held in memory and parsed.
+MAX_CALENDAR_BYTES = 16 * 1024 * 1024
+
+# Above this an answer is decoded and parsed in the loop's default executor.
+# Measured with the event loop's debug mode off, an answer of 1,000 rows
+# (about 280 KB) held the loop for 7 ms (12 ms keeping notes), 5,000 rows for
+# 40 to 80 ms and 20,000 for 170 to 320 ms. At this size it holds the loop
+# for about 10 ms at most, and the reader's five-minute polls, a day or a week
+# of rows, stay well below it and skip the executor's thread hop.
+OFF_LOOP_CALENDAR_BYTES = 256 * 1024
+
+_READ_CHUNK = 64 * 1024
+
+# The content types resp.json() accepts by default.
+_JSON_CONTENT_TYPE_RE = re.compile(r"^application/(?:[\w.+-]+?\+)?json")
+
+
+async def _async_read_at_most(resp: aiohttp.ClientResponse, limit: int) -> bytes | None:
+    """Return the whole body, or None as soon as it is known to be over ``limit`` bytes."""
+    if resp.content_length is not None and resp.content_length > limit:
+        return None
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in resp.content.iter_chunked(_READ_CHUNK):
+        size += len(chunk)
+        if size > limit:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _calendar_rows(body: bytes) -> list[Any]:
+    """Decode a /calendar body and return its rows, unparsed."""
+    failure: str | None = None
+    decoded: Any = None
+    try:
+        decoded = json.loads(body)
+    except ValueError as err:  # JSONDecodeError, UnicodeDecodeError
+        failure = type(err).__name__
+    if failure is not None:
+        raise NanitConnectionError(f"Invalid calendar response: {failure}")
+    rows = decoded.get("calendar") if isinstance(decoded, dict) else None
+    if not isinstance(rows, list):
+        raise NanitConnectionError("Invalid calendar response: no calendar list")
+    return rows
+
+
+def _calendar_result(body: bytes, baby_uid: str, start: int, end: int) -> CareLogFetch:
+    rows = _calendar_rows(body)
+    logs = tuple(log for row in rows if (log := _parse_care_log(row, baby_uid)) is not None)
+    return CareLogFetch(logs=logs, start=start, end=end, dropped=len(rows) - len(logs))
+
+
+def _calendar_details(body: bytes, baby_uid: str, start: int, end: int) -> CareLogDetailFetch:
+    rows = _calendar_rows(body)
+    entries: list[CareLogEntry] = []
+    for row in rows:
+        log = _parse_care_log(row, baby_uid)
+        if log is not None:
+            entries.append(CareLogEntry(log=log, detail=_parse_care_log_detail(row)))
+    return CareLogDetailFetch(
+        entries=tuple(entries), start=start, end=end, dropped=len(rows) - len(entries)
+    )
+
+
+async def _async_off_loop_if_large[T](size: int, work: Callable[[], T]) -> T:
+    """Return ``work()``, run in the loop's default executor when ``size`` is large."""
+    if size <= OFF_LOOP_CALENDAR_BYTES:
+        return work()
+    return await asyncio.get_running_loop().run_in_executor(None, work)
+
+
 # Headers required by the Nanit API. The API rejects requests without
 # nanit-api-version (especially when MFA is enabled) and may reject
 # requests with a non-mobile User-Agent.
@@ -643,10 +724,17 @@ class NanitRestClient:
         start: int,
         end: int,
     ) -> CareLogFetch:
-        """Fetch what ``async_get_calendar`` does, with the range and how many rows were skipped."""
-        rows = await self._async_get_calendar_rows(access_token, baby_uid, start, end)
-        logs = tuple(log for row in rows if (log := _parse_care_log(row, baby_uid)) is not None)
-        return CareLogFetch(logs=logs, start=start, end=end, dropped=len(rows) - len(logs))
+        """Fetch what ``async_get_calendar`` does, with the range and how many rows were skipped.
+
+        An answer larger than ``MAX_CALENDAR_BYTES`` is not read, and raises
+        NanitResponseTooLarge. One larger than ``OFF_LOOP_CALENDAR_BYTES``
+        is decoded and parsed in the event loop's default executor, so the
+        loop is never held for long.
+        """
+        body = await self._async_get_calendar_body(access_token, baby_uid, start, end)
+        return await _async_off_loop_if_large(
+            len(body), partial(_calendar_result, body, baby_uid, start, end)
+        )
 
     async def async_get_calendar_details(
         self,
@@ -658,26 +746,22 @@ class NanitRestClient:
         """Fetch like ``async_get_calendar_result``, keeping each entry's note and logger.
 
         Notes and names are personal data. This is the only method that
-        keeps them; use it only where they are meant to be shown.
+        keeps them; use it only where they are meant to be shown. Large
+        answers are handled as in ``async_get_calendar_result``.
         """
-        rows = await self._async_get_calendar_rows(access_token, baby_uid, start, end)
-        entries: list[CareLogEntry] = []
-        for row in rows:
-            log = _parse_care_log(row, baby_uid)
-            if log is not None:
-                entries.append(CareLogEntry(log=log, detail=_parse_care_log_detail(row)))
-        return CareLogDetailFetch(
-            entries=tuple(entries), start=start, end=end, dropped=len(rows) - len(entries)
+        body = await self._async_get_calendar_body(access_token, baby_uid, start, end)
+        return await _async_off_loop_if_large(
+            len(body), partial(_calendar_details, body, baby_uid, start, end)
         )
 
-    async def _async_get_calendar_rows(
+    async def _async_get_calendar_body(
         self,
         access_token: str,
         baby_uid: str,
         start: int,
         end: int,
-    ) -> list[Any]:
-        """Return the raw rows of a /calendar answer, unparsed.
+    ) -> bytes:
+        """Return the body of a /calendar answer, undecoded.
 
         aiohttp's errors can quote the request URL, and with it the baby's
         uid, which diagnostics and a logged traceback would show
@@ -699,7 +783,7 @@ class NanitRestClient:
         if failure is not None:
             raise NanitConnectionError(f"Calendar fetch failed: {failure}")
 
-        body: Any = None
+        body: bytes | None = None
         try:
             if resp.status == 401:
                 raise NanitAuthError("Access token invalid")
@@ -716,22 +800,27 @@ class NanitRestClient:
             # Like _classify_http_error, without chaining aiohttp's error.
             if not resp.ok:
                 raise NanitConnectionError(f"Calendar fetch failed with HTTP {resp.status}")
+            # The check resp.json() makes, by the name of the error it raises.
+            if not _JSON_CONTENT_TYPE_RE.match(resp.content_type):
+                raise NanitConnectionError("Invalid calendar response: ContentTypeError")
             try:
-                body = await resp.json()
-            except (TimeoutError, aiohttp.ClientError, ValueError) as err:
+                body = await _async_read_at_most(resp, MAX_CALENDAR_BYTES)
+            except (TimeoutError, aiohttp.ClientError) as err:
                 failure = type(err).__name__
             if failure is not None:
                 raise NanitConnectionError(f"Invalid calendar response: {failure}")
+            if body is None:
+                # Closed, not released: the rest of the body is never read.
+                resp.close()
+                raise NanitResponseTooLarge(
+                    f"Calendar response larger than {MAX_CALENDAR_BYTES} bytes"
+                )
         finally:
             # What raise_for_status() does before it raises: an unread body
             # would keep its connection, and its timeout, until collected. A
             # no-op once the body was read to its end.
             resp.release()
-
-        rows = body.get("calendar") if isinstance(body, dict) else None
-        if not isinstance(rows, list):
-            raise NanitConnectionError("Invalid calendar response: no calendar list")
-        return rows
+        return body
 
     async def async_get_speaker_candidates(
         self,

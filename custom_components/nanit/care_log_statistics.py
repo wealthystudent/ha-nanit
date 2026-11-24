@@ -50,6 +50,10 @@ STATISTIC_UNITS: Mapping[SeriesUnit, tuple[str | None, str | None]] = {
     SeriesUnit.MINUTES: (DurationConverter.UNIT_CLASS, UnitOfTime.MINUTES),
 }
 
+# The recorder stores a statistic's name in a column of this many
+# characters; a longer one can be refused by PostgreSQL or a strict MariaDB.
+STATISTIC_NAME_MAX = 255
+
 _CODE_RE = re.compile(r"[0-9a-f]{32}")
 
 # The series names live in the translation files next to the care log
@@ -90,15 +94,32 @@ def statistic_names(strings: Mapping[str, str], baby_name: str) -> dict[CareLogS
     """Return each series' name from translations, falling back to the series key.
 
     A translation is used only when its only placeholder is ``{baby_name}``.
-    The name is substituted plainly, so it is never read as a template.
+    The name is substituted plainly, so it is never read as a template. A
+    name longer than the recorder's metadata column
+    (``STATISTIC_NAME_MAX``) has the baby name cut short, so the series part
+    stays whole.
     """
     names: dict[CareLogSeries, str] = {}
     for series in CareLogSeries:
         template = strings.get(f"{_NAME_PREFIX}.{series.value}")
         if not isinstance(template, str) or set(_PLACEHOLDER_RE.findall(template)) != {"baby_name"}:
             template = fallback_name(series)
-        names[series] = template.replace("{baby_name}", baby_name)
+        room = STATISTIC_NAME_MAX - (len(template) - len("{baby_name}"))
+        names[series] = template.replace("{baby_name}", _shortened(baby_name, room))[
+            :STATISTIC_NAME_MAX
+        ]
     return names
+
+
+def _shortened(baby_name: str, room: int) -> str:
+    """Return the (escaped) baby name cut to ``room`` characters, never inside an entity."""
+    if len(baby_name) <= room:
+        return baby_name
+    cut = baby_name[: max(room, 0)]
+    amp = cut.rfind("&")
+    if amp >= 0 and ";" not in cut[amp:]:
+        cut = cut[:amp]
+    return cut.rstrip()
 
 
 async def async_statistic_names(hass: HomeAssistant, baby_name: str) -> dict[CareLogSeries, str]:

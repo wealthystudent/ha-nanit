@@ -138,6 +138,23 @@ def test_without_a_usable_translation_a_name_is_made_from_the_series_key() -> No
     assert len(set(names.values())) == 16
 
 
+def test_a_long_baby_name_is_cut_so_the_name_fits_the_recorder_and_keeps_its_series() -> None:
+    baby = statistic_baby_name("Ada & " * 100, CODE)  # escaped: "&amp;" each time
+    assert len(baby) > 255
+    names = statistic_names(ENGLISH, baby)
+    for series, name in names.items():
+        assert len(name) <= 255
+        assert name.endswith(ENGLISH[f"{_PREFIX}.{series.value}"].replace("{baby_name}", ""))
+        assert name.startswith("Ada &amp; Ada")
+        # Never cut inside an escaped character.
+        head = name[: name.rindex(" ")]
+        assert head.count("&") == head.count("&amp;")
+    assert len(set(names.values())) == 16
+    assert len(names[S.DIAPER_CHANGES]) >= 250
+    short = statistic_names(ENGLISH, "Ada")
+    assert short[S.DIAPER_CHANGES] == "Ada diaper changes"
+
+
 def test_the_baby_name_is_sanitized() -> None:
     assert statistic_baby_name("<b>Ada</b>  & co", CODE) == "Ada &amp; co"
 

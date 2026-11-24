@@ -17,8 +17,8 @@ from custom_components.nanit import care_log_statistics
 from custom_components.nanit.baby_code import baby_code
 from custom_components.nanit.care_log_hours import CareLogSeries
 from custom_components.nanit.care_log_statistics import (
-    FALLBACK_NAMES,
     async_statistic_names,
+    fallback_name,
     series_amounts,
     statistic_baby_name,
     statistic_id,
@@ -96,22 +96,46 @@ def test_the_metadata_of_every_series() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_the_english_names_match_strings_json() -> None:
-    strings = json.loads(
-        (Path(care_log_statistics.__file__).parent / "strings.json").read_text(encoding="utf-8")
-    )
+_PREFIX = "component.nanit.entity.calendar.care_log.state_attributes.statistic_name.state"
+
+
+def _translations(name: str) -> dict[str, str]:
+    """The series names of one translation file, keyed as Home Assistant looks them up."""
+    folder = Path(care_log_statistics.__file__).parent
+    path = folder / name if name == "strings.json" else folder / "translations" / name
+    strings = json.loads(path.read_text(encoding="utf-8"))
     group = strings["entity"]["calendar"]["care_log"]["state_attributes"]["statistic_name"]
-    assert group["state"] == {series.value: name for series, name in FALLBACK_NAMES.items()}
+    return {f"{_PREFIX}.{key}": value for key, value in group["state"].items()}
+
+
+ENGLISH = _translations("en.json")
+
+
+def test_the_translation_files_name_every_series_with_only_the_baby_name() -> None:
+    assert _translations("strings.json") == ENGLISH
+    assert set(ENGLISH) == {f"{_PREFIX}.{series.value}" for series in CareLogSeries}
+    for template in ENGLISH.values():
+        assert template.count("{baby_name}") == 1
+        assert template.replace("{baby_name}", "").count("{") == 0
+    # So every name comes from them, none from the fallback.
+    names = statistic_names(ENGLISH, "Ada")
+    assert all(names[series] != fallback_name(series).replace("{baby_name}", "Ada") for series in S)
 
 
 def test_names_carry_the_baby_name_and_no_raw_id() -> None:
-    names = statistic_names({}, statistic_baby_name("Nursery", CODE))
+    names = statistic_names(ENGLISH, statistic_baby_name("Nursery", CODE))
     assert names[S.DIAPER_CHANGES] == "Nursery diaper changes"
     assert names[S.PUMPED_VOLUME_RIGHT] == "Nursery pumped volume, right"
     assert len(set(names.values())) == 16
-    unnamed = statistic_names({}, statistic_baby_name(None, CODE))
+    unnamed = statistic_names(ENGLISH, statistic_baby_name(None, CODE))
     assert unnamed[S.BOTTLE_FEEDS] == f"Baby {CODE[:8]} bottle feeds"
     assert all(UID not in name for name in (*names.values(), *unnamed.values()))
+
+
+def test_without_a_usable_translation_a_name_is_made_from_the_series_key() -> None:
+    names = statistic_names({}, "Nursery")
+    assert names == {series: f"Nursery {series.value}" for series in CareLogSeries}
+    assert len(set(names.values())) == 16
 
 
 def test_the_baby_name_is_sanitized() -> None:
@@ -127,12 +151,13 @@ def test_a_translation_is_used_when_it_has_only_the_baby_name() -> None:
     }
     names = statistic_names(strings, "Ada")
     assert names[S.DIAPER_CHANGES] == "Windeln Ada"
-    assert names[S.DIAPER_PEE] == "Ada pee diapers"
-    assert names[S.DIAPER_POO] == "Ada poo diapers"
+    assert names[S.DIAPER_PEE] == "Ada diaper_pee"
+    assert names[S.DIAPER_POO] == "Ada diaper_poo"
 
 
 def test_a_name_with_braces_is_not_read_as_a_template() -> None:
-    assert statistic_names({}, "{baby_name}")[S.DIAPER_DRY] == "{baby_name} dry diapers"
+    assert statistic_names(ENGLISH, "{baby_name}")[S.DIAPER_DRY] == "{baby_name} dry diapers"
+    assert statistic_names({}, "{baby_name}")[S.DIAPER_DRY] == "{baby_name} diaper_dry"
 
 
 async def test_names_come_from_the_translation_files(hass: HomeAssistant) -> None:
@@ -140,15 +165,17 @@ async def test_names_come_from_the_translation_files(hass: HomeAssistant) -> Non
     prefix = "component.nanit.entity.calendar.care_log.state_attributes.statistic_name.state"
     assert strings[f"{prefix}.diaper_changes"] == "{baby_name} diaper changes"
     names = await async_statistic_names(hass, "Nursery")
-    assert names == statistic_names({}, "Nursery")
+    assert names == statistic_names(ENGLISH, "Nursery")
 
 
-async def test_names_fall_back_to_english_when_translations_fail(hass: HomeAssistant) -> None:
+async def test_names_fall_back_to_the_series_key_when_translations_fail(
+    hass: HomeAssistant,
+) -> None:
     with patch.object(
         care_log_statistics, "async_get_translations", AsyncMock(side_effect=RuntimeError)
     ):
         names = await async_statistic_names(hass, "Nursery")
-    assert names[S.NURSING_TIME] == "Nursery nursing time"
+    assert names[S.NURSING_TIME] == "Nursery nursing_time"
 
 
 # ---------------------------------------------------------------------------

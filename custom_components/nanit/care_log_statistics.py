@@ -59,26 +59,15 @@ _CODE_RE = re.compile(r"[0-9a-f]{32}")
 _NAME_PREFIX = f"component.{DOMAIN}.entity.calendar.care_log.state_attributes.statistic_name.state"
 _PLACEHOLDER_RE = re.compile(r"\{([a-z_]+)\}")
 
-# English names, used when a translation can't be read. Kept identical to
-# strings.json by a test.
-FALLBACK_NAMES: Mapping[CareLogSeries, str] = {
-    CareLogSeries.DIAPER_CHANGES: "{baby_name} diaper changes",
-    CareLogSeries.DIAPER_PEE: "{baby_name} pee diapers",
-    CareLogSeries.DIAPER_POO: "{baby_name} poo diapers",
-    CareLogSeries.DIAPER_MIXED: "{baby_name} mixed diapers",
-    CareLogSeries.DIAPER_DRY: "{baby_name} dry diapers",
-    CareLogSeries.BOTTLE_FEEDS: "{baby_name} bottle feeds",
-    CareLogSeries.BOTTLE_VOLUME: "{baby_name} bottle volume",
-    CareLogSeries.NURSING_SESSIONS: "{baby_name} nursing sessions",
-    CareLogSeries.NURSING_TIME: "{baby_name} nursing time",
-    CareLogSeries.NURSING_TIME_LEFT: "{baby_name} nursing time, left",
-    CareLogSeries.NURSING_TIME_RIGHT: "{baby_name} nursing time, right",
-    CareLogSeries.PUMPING_SESSIONS: "{baby_name} pumping sessions",
-    CareLogSeries.PUMPED_VOLUME: "{baby_name} pumped volume",
-    CareLogSeries.PUMPED_VOLUME_LEFT: "{baby_name} pumped volume, left",
-    CareLogSeries.PUMPED_VOLUME_RIGHT: "{baby_name} pumped volume, right",
-    CareLogSeries.PUMPING_TIME: "{baby_name} pumping time",
-}
+
+# Home Assistant fills every key a language lacks from the English
+# translation, so a series' name is missing, or holds another placeholder,
+# only when the translation files themselves are broken (or the lookup
+# raised). Then the name is made from the series key: no English text is
+# kept here (it lives in the translation files alone).
+def fallback_name(series: CareLogSeries) -> str:
+    """Return the name template used when no translation can be: the series key."""
+    return f"{{baby_name}} {series.value}"
 
 
 def statistic_id(code: str, series: CareLogSeries) -> str:
@@ -98,7 +87,7 @@ def statistic_baby_name(name: str | None, code: str) -> str:
 
 
 def statistic_names(strings: Mapping[str, str], baby_name: str) -> dict[CareLogSeries, str]:
-    """Return each series' name from translations, falling back to English.
+    """Return each series' name from translations, falling back to the series key.
 
     A translation is used only when its only placeholder is ``{baby_name}``.
     The name is substituted plainly, so it is never read as a template.
@@ -107,13 +96,13 @@ def statistic_names(strings: Mapping[str, str], baby_name: str) -> dict[CareLogS
     for series in CareLogSeries:
         template = strings.get(f"{_NAME_PREFIX}.{series.value}")
         if not isinstance(template, str) or set(_PLACEHOLDER_RE.findall(template)) != {"baby_name"}:
-            template = FALLBACK_NAMES[series]
+            template = fallback_name(series)
         names[series] = template.replace("{baby_name}", baby_name)
     return names
 
 
 async def async_statistic_names(hass: HomeAssistant, baby_name: str) -> dict[CareLogSeries, str]:
-    """Return each series' name in Home Assistant's language, or English."""
+    """Return each series' name in Home Assistant's language (English for a missing key)."""
     try:
         strings = await async_get_translations(hass, hass.config.language, "entity", {DOMAIN})
     except Exception:  # noqa: BLE001

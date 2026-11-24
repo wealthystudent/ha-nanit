@@ -65,3 +65,12 @@ def test_the_care_log_reader_is_named_by_the_code(hass: HomeAssistant) -> None:
     reader = NanitCareLogCoordinator(hass, MagicMock(), MagicMock(), baby)
     assert reader.name == "nanit_71dc386253a3e9dd0777854a0c04fc5a_care_logs"
     assert baby.uid not in reader.name
+
+
+def test_the_display_name_fallback_holds_no_part_of_the_uid() -> None:
+    from custom_components.nanit.baby_code import baby_display_name
+
+    assert baby_display_name("Nursery", "baby_test_0001") == "Nursery"
+    assert baby_display_name("<b>Nursery</b>", "baby_test_0001") == "Nursery"
+    assert baby_display_name("", "baby_test_0001") == "Baby 71dc3862"
+    assert baby_display_name(None, "baby_test_0001") == "Baby 71dc3862"

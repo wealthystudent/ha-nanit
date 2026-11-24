@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import hashlib
 
+from .sanitize import display_name
+
 BABY_CODE_PREFIX = b"ha-nanit/baby-code/v1\x00"
 BABY_CODE_LENGTH = 32
 
@@ -42,3 +44,12 @@ def baby_code(uid: str) -> str:
     if not uid:
         raise ValueError("A baby code needs a non-empty uid")
     return one_way_code(BABY_CODE_PREFIX, uid)
+
+
+def baby_display_name(name: str | None, uid: str) -> str:
+    """Return the baby's sanitized name, or for an unnamed baby one built on its code.
+
+    For names that outlive a run (an entity name): unlike ``display_name``
+    with the uid, the fallback holds no part of the raw uid.
+    """
+    return display_name(name, baby_code(uid))

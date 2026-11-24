@@ -36,7 +36,7 @@ from aionanit.exceptions import NanitError, NanitRequestRefused
 from aionanit.models import CareLog, CareLogDetail
 
 from . import NanitConfigEntry
-from .baby_code import baby_code
+from .baby_code import baby_code, baby_display_name
 from .const import DOMAIN, is_show_care_log_notes
 from .coordinator import (
     CARE_LOG_BOTTLE,
@@ -547,7 +547,9 @@ class NanitCareLogCalendar(CoordinatorEntity[NanitCareLogCoordinator], CalendarE
         else:
             # No device to carry the baby's name, so the entity name does.
             self._attr_translation_key = "care_log_baby"
-            self._attr_translation_placeholders = {"baby_name": display_name(baby.name, baby.uid)}
+            self._attr_translation_placeholders = {
+                "baby_name": baby_display_name(baby.name, baby.uid)
+            }
         self._cache: dict[_CacheKey, _Cached] = {}
         self._in_flight: dict[_CacheKey, asyncio.Task[tuple[_Row, ...]]] = {}
         # How many callers wait for each fetch in flight.

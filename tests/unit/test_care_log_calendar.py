@@ -2146,6 +2146,27 @@ async def test_a_baby_without_a_camera_gets_a_calendar_of_its_own(
     assert await hass.config_entries.async_unload(entry.entry_id)
 
 
+async def test_an_unnamed_baby_without_a_camera_gets_a_name_without_its_uid(
+    hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory
+) -> None:
+    freezer.move_to(NOW)
+    unnamed_uid = "zqunnamedbaby4471"
+    unnamed = Baby(uid=unnamed_uid, name="", camera_uid="")
+    fake = FakeNanit()
+    entry = await _set_up(hass, client, fake, babies=[BABY, unnamed])
+
+    (calendar,) = (c for c in _calendars(hass, entry) if c.coordinator.baby.uid == unnamed_uid)
+    registered = er.async_get(hass).async_get(calendar.entity_id)
+    assert registered is not None
+    state = hass.states.get(calendar.entity_id)
+    shown = " ".join([calendar.entity_id, registered.unique_id, str(calendar.name), state.name])
+    # Not the uid, nor any piece of it as long as the old fallback's eight characters.
+    for i in range(len(unnamed_uid) - 7):
+        assert unnamed_uid[i : i + 8] not in shown, shown
+    assert state.name == f"Baby {baby_code(unnamed_uid)[:8]} care log"
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
 async def test_two_sign_ins_seeing_the_same_baby_get_two_calendars(
     hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory
 ) -> None:

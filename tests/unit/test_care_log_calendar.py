@@ -9,7 +9,7 @@ import logging
 import sys
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from itertools import pairwise
 from pathlib import Path
 from typing import Any
@@ -777,8 +777,12 @@ async def test_a_thousand_year_range_asks_only_where_care_logs_can_exist(
         ("1000-01-01T00:00:00+00:00", "2013-12-31T00:00:00+00:00"),
         ("2028-01-01T00:00:00+00:00", "2028-02-01T00:00:00+00:00"),
         ("2030-01-01T00:00:00+00:00", "3000-01-01T00:00:00+00:00"),
+        # Ends a second before 2014, and starts a second after a year ahead:
+        # the range asked for is checked, not the 24 hours before it.
+        ("2013-12-30T00:00:00+00:00", (EARLIEST - timedelta(seconds=1)).isoformat()),
+        ((LATEST + timedelta(seconds=1)).isoformat(), (LATEST + timedelta(days=1)).isoformat()),
     ],
-    ids=["before", "long_before", "after", "long_after"],
+    ids=["before", "long_before", "after", "long_after", "just_before", "just_after"],
 )
 async def test_a_range_wholly_outside_asks_nothing(
     hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory, start: str, end: str
@@ -793,6 +797,44 @@ async def test_a_range_wholly_outside_asks_nothing(
 
     assert events == []
     assert fake.calendar_calls() == []
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+# Starts at the very beginning of the year 1, where 24 hours earlier is no
+# date at all.
+YEAR_ONE_STARTS = {
+    "min_utc": datetime.min.replace(tzinfo=UTC),
+    "day_2_utc": datetime(1, 1, 2, tzinfo=UTC),
+    # As Home Assistant passes it in a time zone east of UTC: 1 January in UTC.
+    "day_2_east": datetime(1, 1, 2, tzinfo=timezone(timedelta(hours=9))),
+}
+
+
+@pytest.mark.parametrize("to_now", [False, True], ids=["ends_before_2014", "ends_now"])
+@pytest.mark.parametrize("start", list(YEAR_ONE_STARTS), ids=list(YEAR_ONE_STARTS))
+async def test_a_range_from_the_year_1_asks_only_from_2014(
+    hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory, start: str, to_now: bool
+) -> None:
+    """The range asked for is checked before the reach-back is taken off its start."""
+    freezer.move_to(NOW)
+    fake = FakeNanit()
+    fake.add(_log("early", "diaper_change", EARLIEST))
+    fake.add(_log("now", "bottle_feed", NOW, feed_amount_ml=30.0))
+    entry, calendar = await _one_calendar(hass, client, fake)
+    range_start = YEAR_ONE_STARTS[start]
+    range_end = RANGE_END if to_now else range_start + timedelta(days=1)
+
+    events = await _events(hass, calendar, range_start, range_end)
+
+    calls = fake.calendar_calls()
+    if to_now:
+        assert _summaries(events) == ["Diaper", "Bottle, 30 mL"]
+        # Clamped from the floor: nothing before 2014 is asked for.
+        assert min(low for _m, low, _high in calls) == int(_ts(EARLIEST))
+        assert max(high for _m, _low, high in calls) == int(_ts(RANGE_END))
+    else:
+        assert events == []
+        assert calls == []
     assert await hass.config_entries.async_unload(entry.entry_id)
 
 

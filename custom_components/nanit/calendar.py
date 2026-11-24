@@ -587,14 +587,20 @@ class NanitCareLogCalendar(CoordinatorEntity[NanitCareLogCoordinator], CalendarE
         """Return the care entries that fall in [start_date, end_date)."""
         entry = self.coordinator.config_entry
         show_notes = is_show_care_log_notes(entry)
-        # Elapsed time, on UTC: on a day the clocks change, 24 hours back on
-        # the local clock would be 23 or 25 real ones.
-        fetch_start = math.floor((dt_util.as_utc(start_date) - CARE_LOG_REACH_BACK).timestamp())
+        # The range asked for is checked against where care logs can exist
+        # before the reach-back is taken off its start: 24 hours before a
+        # start early in the year 1 is no date at all.
+        range_start = math.floor(start_date.timestamp())
         fetch_end = math.ceil(end_date.timestamp())
         earliest, latest = _fetch_bounds()
-        if fetch_end < earliest or fetch_start > latest:
+        if fetch_end < earliest or range_start > latest:
             return []
-        fetch_start = max(fetch_start, earliest)
+        fetch_start = earliest
+        if range_start >= earliest:
+            # Elapsed time, on UTC: on a day the clocks change, 24 hours back
+            # on the local clock would be 23 or 25 real ones.
+            reach_back = dt_util.as_utc(start_date) - CARE_LOG_REACH_BACK
+            fetch_start = max(math.floor(reach_back.timestamp()), earliest)
         fetch_end = min(fetch_end, latest)
         rows = await self._async_rows((fetch_start, max(fetch_start, fetch_end), show_notes))
         texts = await _async_texts(hass)

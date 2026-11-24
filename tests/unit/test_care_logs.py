@@ -25,6 +25,7 @@ from aionanit.exceptions import (
     NanitConnectionError,
     NanitRateLimited,
     NanitRequestRefused,
+    NanitResponseTooLarge,
 )
 from aionanit.models import Baby, CareLog, CareLogFetch
 from custom_components.nanit.care_log_hours import CareLogSeries
@@ -602,6 +603,17 @@ async def test_poll_retries_before_going_unavailable(hass: HomeAssistant) -> Non
     assert coordinator.last_update_success is False
     assert isinstance(coordinator.last_exception, UpdateFailed)
     assert fetch.await_count == 3
+
+
+async def test_poll_does_not_retry_an_answer_too_large_to_read(hass: HomeAssistant) -> None:
+    fetch = AsyncMock(side_effect=NanitResponseTooLarge("Calendar response too large"))
+    coordinator = _coordinator(hass, fetch)
+
+    await coordinator.async_refresh()
+
+    assert coordinator.last_update_success is False
+    assert isinstance(coordinator.last_exception, UpdateFailed)
+    assert fetch.await_count == 1
 
 
 async def test_auth_error_starts_reauth(hass: HomeAssistant) -> None:

@@ -818,6 +818,35 @@ async def test_a_standby_tells_a_known_owner_from_no_decision_and_from_a_pause(
     assert _no_registry_left(hass)
 
 
+async def test_a_standby_of_a_known_owner_reports_a_pause_before_the_owner(
+    hass: HomeAssistant,
+    client: MagicMock,
+    started: list[CareLogStatisticsImporter],
+) -> None:
+    """A write may still land: every sign-in that sees the baby shows the pause."""
+    from custom_components.nanit.care_log_recorder import PAUSED_KEY
+
+    owner = _entry(hass)
+    await _set_up(hass, owner)
+    standby = _second(hass)
+    await _set_up(hass, standby)
+    (importer,) = started
+    assert _writer(hass) == (owner.entry_id, importer)
+
+    async def state() -> object:
+        diag = (await async_get_config_entry_diagnostics(hass, standby))["care_log_statistics"]
+        return diag["babies"]["baby_0"]["state"]
+
+    assert await state() == "not_owner"
+    hass.data[PAUSED_KEY] = {CODE_1}
+    assert await state() == "paused_until_restart"
+    hass.data[PAUSED_KEY] = set()
+    assert await state() == "not_owner"
+    for entry in (owner, standby):
+        assert await hass.config_entries.async_unload(entry.entry_id)
+    assert _no_registry_left(hass)
+
+
 @pytest.mark.parametrize("broken", ["newer_version", "unreadable"])
 async def test_a_marker_that_cannot_be_loaded_leaves_the_rest_of_setup_alone(
     hass: HomeAssistant,

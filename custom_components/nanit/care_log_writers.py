@@ -228,11 +228,15 @@ class CareLogWriterRegistry:
     def standby_state(self, code: str, entry_id: str) -> str:
         """Return the state an entry that does not write a baby's statistics reports.
 
-        ``STATE_NOT_OWNER`` only for a known different owner: another entry
-        writes, or the marker names another sign-in. While nothing is
-        decided, ``STATE_WAITING_FOR_OWNER_CHECK``, or
-        ``STATE_PAUSED_UNTIL_RESTART`` when nothing can be until a restart.
+        ``STATE_PAUSED_UNTIL_RESTART`` first, whatever else holds, while the
+        baby is paused: a write may still land, so the pause is what every
+        entry that sees the baby shows. Otherwise ``STATE_NOT_OWNER`` only
+        for a known different owner: another entry writes, or the marker
+        names another sign-in. While nothing is decided,
+        ``STATE_WAITING_FOR_OWNER_CHECK``.
         """
+        if care_log_paused(self._hass, code):
+            return STATE_PAUSED_UNTIL_RESTART
         if self._marker_unreadable:
             return STATE_OWNER_UNKNOWN
         baby = self._babies.get(code)
@@ -244,8 +248,6 @@ class CareLogWriterRegistry:
         offer = None if baby is None else baby.offers.get(entry_id)
         if owner is not None and (offer is None or offer.owner != owner):
             return STATE_NOT_OWNER
-        if care_log_paused(self._hass, code):
-            return STATE_PAUSED_UNTIL_RESTART
         return STATE_WAITING_FOR_OWNER_CHECK
 
     async def async_register(

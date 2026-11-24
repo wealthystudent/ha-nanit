@@ -24,7 +24,9 @@ update the ledger under one rule:
   Both reads must imply the change: the first one, against the ledger as
   it stood then, and the second one, against the ledger now.
 - A re-read of the same bounds that comes before the gap and agrees with
-  the first is neither: the change keeps waiting on the first read.
+  the first is neither: the change keeps waiting on the first read. A read
+  of the same bounds taken before the first never replaces it, starts a
+  new round for those bounds or confirms it: a newer read may lie between.
 - Only a change a re-read could confirm is held at all: one in hours that
   had finished when its read was taken, and with no rejected amount in it.
   Any other such change is left for a later read to find again, once its
@@ -1121,8 +1123,14 @@ class CareLogBook:
         self._horizon = max(self._horizon, bound)
         self._changed_at = {uid: at for uid, at in self._changed_at.items() if at > bound}
 
-    def process(self, read: CareLogRead) -> Outcome:
-        """Take one read while running; see the module docstring for the rule."""
+    def process(self, read: CareLogRead, *, may_lower: bool = True) -> Outcome:
+        """Take one read while running; see the module docstring for the rule.
+
+        With ``may_lower`` False (the caller lost reads that may lie
+        between this one's request and its answer), the read adds, raises
+        and cancels as usual, but neither starts, replaces nor confirms a
+        waiting lowering change.
+        """
         if not self._established:
             raise ValueError("the book has no ledger yet")
         self._check_reader(read)
@@ -1138,7 +1146,12 @@ class CareLogBook:
         lowered = 0
         gave_up = False
         confirmed = False
-        if pending is not None and self._confirms(pending.read, read):
+        if not may_lower or (pending is not None and read.read_at < pending.read.read_at):
+            # It neither starts, replaces nor confirms a waiting record for
+            # these bounds: it may span lost reads, or it is older than the
+            # record's first read, so a newer read may lie between them.
+            pass
+        elif pending is not None and self._confirms(pending.read, read):
             confirmed = True
             cutoff = hour_start(pending.read.read_at.timestamp())
             # Only what the first read implied too: an entry accepted after it

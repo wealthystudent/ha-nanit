@@ -1408,10 +1408,10 @@ async def test_an_unexpected_error_is_logged_and_the_worker_carries_on(
     real_process = CareLogBook.process
     failures = [RuntimeError("boom")]
 
-    def process(book: CareLogBook, read: Any) -> Any:
+    def process(book: CareLogBook, read: Any, **kwargs: Any) -> Any:
         if failures:
             raise failures.pop()
-        return real_process(book, read)
+        return real_process(book, read, **kwargs)
 
     late = _bottle("b_late", NOW - timedelta(hours=1, minutes=30), 30.0)
     truth.put(late)
@@ -1542,6 +1542,67 @@ async def test_a_reader_queue_overflow_forgets_every_waiting_change(
     await harness.advance(MIN_GAP)
     assert harness.diag()["confirm_fetches"] == 2
     assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(B1)] == 0.0
+
+
+async def test_an_own_answer_converted_while_reader_reads_are_lost_starts_no_lowering(
+    make: Callable[..., Harness], hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """The confirm fetch's answer is turned into a read off the loop while the queue overflows."""
+    # Near the start of the 18:11 poll's 24 hours: the polls from 18:16 on
+    # no longer reach either.
+    edge = _bottle("b_edge", NOW - timedelta(hours=23, minutes=57), 65.0)
+    fresh = _bottle("b_fresh", NOW - timedelta(hours=23, minutes=56), 30.0)
+    truth = Truth([*BASE, edge])
+    harness = await _imported(make, truth)
+    truth.omit_next = {edge.uid}
+    await harness.tick_and_poll(timedelta(minutes=1))  # 18:11, left out once: a removal waits
+    first = truth.reader[-1]
+    assert [(r.start, r.end) for r in harness.importer._book.pending_requests()] == [first]
+
+    async def logged_meanwhile(_start: int, _end: int) -> None:
+        truth.during_own = None
+        truth.put(fresh)  # in this answer only
+
+    truth.during_own = logged_meanwhile
+    truth.omit_own = {edge.uid}  # the confirm fetch leaves it out too
+    real_job = hass.async_add_executor_job
+    injected: list[int] = []
+
+    def job(target: Any, *args: Any) -> Any:
+        if getattr(target, "__name__", "") == "_read_from_fetch" and not injected:
+            injected.append(1)
+
+            async def polls_meanwhile() -> Any:
+                for _ in range(3):
+                    freezer.tick(timedelta(seconds=1))
+                    await harness.coordinator.async_refresh()
+                return await real_job(target, *args)
+
+            return polls_meanwhile()
+        return real_job(target, *args)
+
+    with (
+        patch.object(hass, "async_add_executor_job", job),
+        patch.object(care_log_importer, "LARGE_READ", 0),
+        patch.object(care_log_importer, "READER_QUEUE", 2),
+    ):
+        await harness.advance(MIN_GAP)  # 18:16, the confirm fetch
+
+    assert injected
+    assert harness.diag()["queue_overflows"] == 1
+    assert harness.diag()["confirm_fetches"] == 1
+    # The answer still adds what it holds...
+    assert fresh.uid in harness.importer._book.ledger
+    # ...but neither confirms nor starts the removal: a lost read may lie
+    # between its request and its conversion.
+    assert harness.importer._book.pending_requests() == ()
+    truth.omit_own = set()
+
+    await harness.advance(MIN_GAP)  # 18:21
+    assert harness.diag()["confirm_fetches"] == 1
+    assert edge.uid in harness.importer._book.ledger
+    volume = await _stored(hass, S.BOTTLE_VOLUME)
+    assert volume[_hour(edge)] == 95.0
 
 
 async def test_an_older_read_processed_late_ends_at_the_truth(

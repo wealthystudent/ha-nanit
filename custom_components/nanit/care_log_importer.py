@@ -63,7 +63,9 @@ more than ``READER_QUEUE`` reads wait, the
 oldest is lost: a start-up round in progress or waiting starts over (it is
 checked after every wait of the round, up to the adoption), and every
 change waiting for a confirming read is forgotten, so nothing is confirmed
-across the gap.
+across the gap. An answer to a request of the importer's own during which
+a read was lost (from before the request to the end of its conversion)
+may still add or raise, but neither starts nor confirms a lowering.
 
 Nanit is asked for nothing beyond the reader's own polls, and nothing is
 written, while the recorder is not ready (not loaded, its database not
@@ -695,13 +697,17 @@ class CareLogStatisticsImporter:
 
     # -- own reads -------------------------------------------------------------
 
-    async def _async_own_read(self, start: int, end: int) -> CareLogRead:
+    async def _async_own_read(self, start: int, end: int) -> tuple[CareLogRead, bool]:
         """Read some bounds with a request of the importer's own.
 
+        Return the read, and whether it may start or confirm a lowering: not
+        when a reader read was lost to a full queue between the request and
+        the end of its conversion (its answer may predate what was lost).
         Raises ``CareLogRecorderUnavailableError``, asking nothing, while the
         recorder is not ready.
         """
         self._require_recorder()
+        generation = self._overflow_generation
         requested_at = dt_util.utcnow()
         try:
             result = await self._fetch(start, end)
@@ -709,10 +715,12 @@ class CareLogStatisticsImporter:
             raise _AuthFailedError from err
         read_at = dt_util.utcnow()
         if len(result.logs) > LARGE_READ:
-            return await self._hass.async_add_executor_job(
+            read: CareLogRead = await self._hass.async_add_executor_job(
                 self._read_from_fetch, result, read_at, requested_at
             )
-        return self._read_from_fetch(result, read_at, requested_at)
+        else:
+            read = self._read_from_fetch(result, read_at, requested_at)
+        return read, self._overflow_generation == generation
 
     def _read_from_fetch(
         self, result: CareLogFetch, read_at: datetime, requested_at: datetime
@@ -817,7 +825,7 @@ class CareLogStatisticsImporter:
         for index, (start, end) in enumerate(pieces):
             await self._async_pause(index)
             self._check_round(generation)
-            reads.append(await self._async_own_read(start, end))
+            reads.append((await self._async_own_read(start, end))[0])
             self._check_round(generation)
         reads.append(reader_read)
         self._note_connection_success()
@@ -856,7 +864,7 @@ class CareLogStatisticsImporter:
         for index, read in enumerate(first):
             await self._async_pause(index)
             self._check_round(generation)
-            reads.append(await self._async_own_read(read.start, read.end))
+            reads.append((await self._async_own_read(read.start, read.end))[0])
             self._check_round(generation)
         self._note_connection_success()
         self._passes_completed += 1
@@ -1003,25 +1011,27 @@ class CareLogStatisticsImporter:
             # recorder is back runs it again, from its start.
             return
 
-    def _process_reads(self, *own: CareLogRead) -> None:
-        """Give the book the importer's own reads and every queued reader read, oldest first.
+    def _process_reads(self, own: tuple[CareLogRead, bool] | None = None) -> None:
+        """Give the book every queued reader read, and an own read, oldest first.
 
-        None is dropped for being older than another. After a queue
-        overflow, every waiting change is forgotten first: reads were lost,
-        so no record may be confirmed across the gap.
+        ``own`` is a read of the importer's own and whether it may start or
+        confirm a lowering (``_async_own_read``). None is dropped for being
+        older than another. After a queue overflow, every waiting change is
+        forgotten first: reads were lost, so no record may be confirmed
+        across the gap.
         """
         if self._overflowed:
             self._overflowed = False
             self._book.drop_all_pending()
-        reads = [(read, False) for read in own]
-        reads += [(self._read_from_reader(data), True) for data in self._reader_queue]
+        reads = [] if own is None else [(own[0], False, own[1])]
+        reads += [(self._read_from_reader(data), True, True) for data in self._reader_queue]
         self._reader_queue.clear()
-        for read, from_reader in sorted(reads, key=lambda item: item[0].read_at):
-            self._process(read, from_reader=from_reader)
+        for read, from_reader, may_lower in sorted(reads, key=lambda item: item[0].read_at):
+            self._process(read, from_reader=from_reader, may_lower=may_lower)
 
-    def _process(self, read: CareLogRead, *, from_reader: bool) -> Outcome:
+    def _process(self, read: CareLogRead, *, from_reader: bool, may_lower: bool) -> Outcome:
         """Give the book one read, and note what it changed and certified."""
-        outcome = self._book.process(read)
+        outcome = self._book.process(read, may_lower=may_lower)
         self._note_coverage(read, from_reader=from_reader)
         _merge_earliest(self._dirty, outcome.changed_from)
         self._sync_wanted = True
@@ -1059,9 +1069,9 @@ class CareLogStatisticsImporter:
         self._require_recorder()
         self._last_confirm_at = dt_util.utcnow()
         self._confirm_fetches += 1
-        read = await self._async_own_read(request.start, request.end)
+        own = await self._async_own_read(request.start, request.end)
         self._note_connection_success()
-        self._process_reads(read)
+        self._process_reads(own)
         await self._async_sync()
 
     async def _async_history_pass(self) -> None:
@@ -1077,9 +1087,9 @@ class CareLogStatisticsImporter:
         spans: list[tuple[int, int]] = []
         for index, (start, end) in enumerate(pieces):
             await self._async_pause(index)
-            read = await self._async_own_read(start, end)
-            spans.append((read.start, _reach(read)))
-            self._process_reads(read)
+            own = await self._async_own_read(start, end)
+            spans.append((own[0].start, _reach(own[0])))
+            self._process_reads(own)
         self._note_connection_success()
         # The history this pass read: from now on the rows the ledger covers.
         coverage = min(history_start, reader_start)

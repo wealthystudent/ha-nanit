@@ -1042,6 +1042,50 @@ def test_a_too_early_reread_neither_confirms_nor_uses_up_an_attempt() -> None:
     assert "b1" not in book.ledger
 
 
+def test_an_older_read_of_the_same_bounds_never_replaces_restarts_or_confirms_a_record() -> None:
+    """80 at 10:06, a delayed 50 from 10:00, then 50 at 10:11: the 80 stands between."""
+    book = _book([_bottle("b1", AT_9, 100.0)])
+    first = book.process(_read([_bottle("b1", AT_9, 80.0)], at=T0 + timedelta(minutes=6)))
+    request = ConfirmRequest(start=START, end=END, not_before=T0 + timedelta(minutes=6) + GAP)
+    assert first.confirm == request
+
+    delayed = book.process(_read([_bottle("b1", AT_9, 50.0)], at=T0))
+    assert not delayed.confirmed
+    assert delayed.confirm == request  # still waiting on the 80, not on the older 50
+    assert book.pending_requests() == (request,)
+
+    # A gap after the delayed read, but not after the 80: no confirmation.
+    late = book.process(_read([_bottle("b1", AT_9, 50.0)], at=T0 + GAP + timedelta(minutes=1)))
+    assert not late.confirmed
+    assert _amount(book, S.BOTTLE_VOLUME, AT_9) == 100.0
+    # It disagrees with the 80, so it starts the next round itself.
+    assert late.confirm == ConfirmRequest(
+        start=START, end=END, not_before=T0 + 2 * GAP + timedelta(minutes=1)
+    )
+
+
+def test_a_read_that_may_not_lower_adds_and_cancels_but_starts_and_confirms_nothing() -> None:
+    book = _book([_bottle("b1", AT_9, 90.0), _diaper("d1", AT_10)])
+    added = _bottle("b2", AT_10, 30.0)
+    # Neither starts a round for the missing diaper...
+    outcome = book.process(_read([_bottle("b1", AT_9, 90.0), added], at=T0), may_lower=False)
+    assert outcome.accepted == 1
+    assert outcome.waiting == 1
+    assert outcome.confirm is None
+    assert book.pending_requests() == ()
+    assert "b2" in book.ledger
+    # ...nor confirms one that another read started.
+    without = [_bottle("b1", AT_9, 90.0), added]
+    book.process(_read(without, at=T0 + timedelta(minutes=1)))
+    outcome = book.process(_read(without, at=T0 + GAP + timedelta(minutes=1)), may_lower=False)
+    assert not outcome.confirmed
+    assert "d1" in book.ledger
+    assert len(book.pending_requests()) == 1
+    # An ordinary read confirms it.
+    assert book.process(_read(without, at=T0 + GAP + timedelta(minutes=2))).confirmed
+    assert "d1" not in book.ledger
+
+
 def test_a_confirming_read_needs_the_same_bounds() -> None:
     book = _book([_bottle("b1", AT_9), _bottle("b2", AT_10)])
     book.process(_read([_bottle("b2", AT_10)], at=T0))

@@ -149,8 +149,8 @@ class FakeNanit:
         )
         self.strays.append(CareLogEntry(log=log, detail=detail))
 
-    async def _answer(self, method: str, start: int, end: int) -> list[CareLogEntry]:
-        self.calls.append((method, "", start, end))
+    async def _answer(self, method: str, baby_uid: str, start: int, end: int) -> list[CareLogEntry]:
+        self.calls.append((method, baby_uid, start, end))
         self.in_flight += 1
         self.most_in_flight = max(self.most_in_flight, self.in_flight)
         try:
@@ -158,18 +158,23 @@ class FakeNanit:
                 await self.gate.wait()
             if self.error is not None:
                 raise self.error
-            inside = [e for e in self.entries if start <= e.log.timestamp <= end]
+            # Only the asked baby's entries, as Nanit answers for one baby.
+            inside = [
+                e
+                for e in self.entries
+                if e.log.baby_uid == baby_uid and start <= e.log.timestamp <= end
+            ]
             strays = [e for e in self.strays if not start <= e.log.timestamp <= end]
             return strays + inside if self.strays_first else inside + strays
         finally:
             self.in_flight -= 1
 
     async def result(self, baby_uid: str, start: int, end: int) -> CareLogFetch:
-        entries = await self._answer("result", start, end)
+        entries = await self._answer("result", baby_uid, start, end)
         return CareLogFetch(logs=tuple(e.log for e in entries), start=start, end=end, dropped=0)
 
     async def details(self, baby_uid: str, start: int, end: int) -> CareLogDetailFetch:
-        entries = await self._answer("details", start, end)
+        entries = await self._answer("details", baby_uid, start, end)
         return CareLogDetailFetch(entries=tuple(entries), start=start, end=end, dropped=0)
 
     def calendar_calls(self) -> list[tuple[str, int, int]]:
@@ -255,14 +260,23 @@ RANGE_START = _local("2026-11-20T00:00:00")
 RANGE_END = _local("2026-11-21T00:00:00")
 
 
-def _day_of_entries(fake: FakeNanit) -> None:
+def _day_of_entries(fake: FakeNanit, baby_uid: str = BABY_MARKER) -> None:
     """One of each kind on 20 November, with notes, names and relations."""
-    fake.add(_log("d1", "diaper_change", _local("2026-11-20T07:00:00"), change_type="mixed"))
+    fake.add(
+        _log(
+            "d1",
+            "diaper_change",
+            _local("2026-11-20T07:00:00"),
+            baby_uid=baby_uid,
+            change_type="mixed",
+        )
+    )
     fake.add(
         _log(
             "b1",
             "bottle_feed",
             _local("2026-11-20T08:00:00"),
+            baby_uid=baby_uid,
             feed_amount_ml=30.0,
             logged_at=_ts(_local("2026-11-20T08:20:00")),
         )
@@ -272,6 +286,7 @@ def _day_of_entries(fake: FakeNanit) -> None:
             "n1",
             "nursing",
             _local("2026-11-20T09:00:00"),
+            baby_uid=baby_uid,
             left_duration_s=600.0,
             right_duration_s=300.0,
         )
@@ -281,6 +296,7 @@ def _day_of_entries(fake: FakeNanit) -> None:
             "p1",
             "pumping",
             _local("2026-11-20T10:00:00"),
+            baby_uid=baby_uid,
             left_amount_ml=20.0,
             right_amount_ml=10.0,
             duration_s=1200.0,
@@ -2188,8 +2204,16 @@ async def test_a_baby_without_a_camera_gets_a_calendar_of_its_own(
     freezer.move_to(NOW)
     no_camera = Baby(uid="baby_4", name="Spare room", camera_uid="")
     fake = FakeNanit()
-    fake.add(_log("d4", "diaper_change", _local("2026-11-20T07:00:00"), baby_uid="baby_4"))
-    entry = await _set_up(hass, client, fake, babies=[BABY, no_camera])
+    spare_note, nursery_note = "zqsparenote1180", "zqnurserynote6604"
+    fake.add(
+        _log("d4", "diaper_change", _local("2026-11-20T07:00:00"), baby_uid="baby_4"),
+        note=spare_note,
+    )
+    fake.add(
+        _log("b1", "bottle_feed", _local("2026-11-20T08:00:00"), feed_amount_ml=30.0),
+        note=nursery_note,
+    )
+    entry = await _set_up(hass, client, fake, notes=True, babies=[BABY, no_camera])
 
     calendars = {c.coordinator.baby.uid: c for c in _calendars(hass, entry)}
     assert set(calendars) == {BABY_MARKER, "baby_4"}
@@ -2197,8 +2221,16 @@ async def test_a_baby_without_a_camera_gets_a_calendar_of_its_own(
     assert spare.entity_id == "calendar.spare_room_care_log"
     assert er.async_get(hass).async_get(spare.entity_id).device_id is None
     assert hass.states.get(spare.entity_id).state == STATE_OFF
-    assert _summaries(await _events(hass, spare, RANGE_START, RANGE_END)) == ["Diaper"]
-    assert fake.calendar_calls()
+    # Each calendar asks for its own baby and shows only that baby's entries.
+    spare_events = await _events(hass, spare, RANGE_START, RANGE_END)
+    nursery_events = await _events(hass, calendars[BABY_MARKER], RANGE_START, RANGE_END)
+    assert _summaries(spare_events) == ["Diaper"]
+    assert _summaries(nursery_events) == ["Bottle, 30 mL"]
+    spare_text = " ".join(_event_fields(event) for event in spare_events)
+    nursery_text = " ".join(_event_fields(event) for event in nursery_events)
+    assert spare_note in spare_text and nursery_note not in spare_text
+    assert nursery_note in nursery_text and spare_note not in nursery_text
+    assert {baby_uid for _m, baby_uid, _s, _e in fake.calls} == {BABY_MARKER, "baby_4"}
     assert await hass.config_entries.async_unload(entry.entry_id)
 
 
@@ -2227,18 +2259,37 @@ async def test_two_sign_ins_seeing_the_same_baby_get_two_calendars(
     hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory
 ) -> None:
     freezer.move_to(NOW)
-    fake = FakeNanit()
-    _day_of_entries(fake)
-    first = await _set_up(hass, client, fake)
-    second = await _set_up(hass, client, fake, entry=_entry(hass, email="other@example.com"))
+    # Each sign-in has a client of its own, answering with what that account
+    # sees of the same baby: one note each.
+    fakes = {"first": FakeNanit(), "second": FakeNanit()}
+    notes = {"first": "zqfirstsignin3318", "second": "zqsecondsignin7720"}
+    for name, fake in fakes.items():
+        fake.add(_log("d1", "diaper_change", _local("2026-11-20T07:00:00")), note=notes[name])
+    first = await _set_up(hass, client, fakes["first"], notes=True)
+    second = await _set_up(
+        hass,
+        client,
+        fakes["second"],
+        notes=True,
+        entry=_entry(hass, notes=True, email="other@example.com"),
+    )
+    for entry, name in ((first, "first"), (second, "second")):
+        own = MagicMock(async_close=AsyncMock())
+        own.async_get_calendar_result = AsyncMock(side_effect=fakes[name].result)
+        own.async_get_calendar_details = AsyncMock(side_effect=fakes[name].details)
+        entry.runtime_data.hub._client = own
+        fakes[name].forget_calls()
 
     one, two = _calendar(hass, first), _calendar(hass, second)
     assert one.unique_id != two.unique_id
     assert one.entity_id != two.entity_id
-    assert len(await _events(hass, one, RANGE_START, RANGE_END)) == 4
-    assert len(await _events(hass, two, RANGE_START, RANGE_END)) == 4
-    # Each has its own cache, so each fetched.
-    assert len(fake.calendar_calls()) == 2
+    for calendar, name, other in ((one, "first", "second"), (two, "second", "first")):
+        events = await _events(hass, calendar, RANGE_START, RANGE_END)
+        text = " ".join(_event_fields(event) for event in events)
+        assert notes[name] in text
+        assert notes[other] not in text
+        # Each has its own client and cache, so each fetched once, for itself.
+        assert len(fakes[name].calendar_calls()) == 1
     assert await hass.config_entries.async_unload(first.entry_id)
     assert await hass.config_entries.async_unload(second.entry_id)
 
@@ -2326,7 +2377,7 @@ async def test_read_only_mode_keeps_a_filled_calendar(
     """Switched on and off, the calendar stays registered, enabled and readable."""
     freezer.move_to(NOW)
     fake = FakeNanit()
-    _day_of_entries(fake)
+    _day_of_entries(fake, E2E_BABY.uid)
     _wire(nanit_env, fake, [E2E_BABY])
     entry = _entry(hass)
     registry = er.async_get(hass)

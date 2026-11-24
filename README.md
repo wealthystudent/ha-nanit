@@ -163,7 +163,7 @@ Privacy and control:
 - With debug logging turned on for Home Assistant's recorder, and in some of its error messages, the log shows each write of the import in full: the baby's display name in the statistic names, the statistic ids, and every hour's time and numbers (never notes or caregiver names). Remove those lines, or the names and numbers in them, before you share such a log.
 - The import needs Home Assistant's recorder. Without it nothing is imported, and Nanit is asked for nothing beyond the usual care log reads. While recording is paused with the `recorder.disable` action, the import makes no new requests of its own and writes nothing (a request already on its way still completes, and what it read is kept in memory), and it carries on after `recorder.enable`.
 
-The five "today" sensors no longer record long-term statistics of their own; these statistics take their place, whether or not the import is on.
+The five "today" sensors don't record long-term statistics of their own, whether or not the import is on: these statistics are the ones to chart.
 
 ## Read-only mode (optional)
 

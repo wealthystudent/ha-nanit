@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 from collections import Counter
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
@@ -30,6 +32,7 @@ from aionanit.exceptions import (
     NanitResponseTooLarge,
 )
 from aionanit.models import Baby, CareLog, CareLogFetch
+from custom_components.nanit import sensor as sensor_module
 from custom_components.nanit.baby_code import baby_code
 from custom_components.nanit.care_log_hours import CareLogSeries
 from custom_components.nanit.care_log_ledger import CareLogRead
@@ -320,6 +323,18 @@ def test_whole_fetch_is_only_the_last_fetch() -> None:
     assert data.latest["pumping"] == yesterdays_pump
     assert data.all_entries == (_log("d1", "diaper_change", 600),)
     assert data.request_coverage is None
+
+
+def test_a_care_sensor_named_after_its_baby_has_the_icon_of_the_one_on_a_camera() -> None:
+    """Each ``*_baby`` key (a baby without a camera) has its own key's icon mapping."""
+    folder = Path(sensor_module.__file__).parent
+    icons = json.loads((folder / "icons.json").read_text(encoding="utf-8"))["entity"]["sensor"]
+    names = json.loads((folder / "strings.json").read_text(encoding="utf-8"))["entity"]["sensor"]
+    for description in CARE_LOG_SENSORS:
+        key = description.translation_key
+        assert key is not None
+        assert f"{key}_baby" in names
+        assert icons[f"{key}_baby"] == icons[key]
 
 
 def _sensor_readings(data: CareLogData) -> dict[str, tuple[Any, Any, Any]]:

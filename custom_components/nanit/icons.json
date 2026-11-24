@@ -36,6 +36,30 @@
       },
       "pumped_volume_today": {
         "default": "mdi:cup-water"
+      },
+      "last_diaper_change_baby": {
+        "default": "mdi:human-baby-changing-table"
+      },
+      "last_feeding_baby": {
+        "default": "mdi:baby-bottle-outline"
+      },
+      "last_pumping_baby": {
+        "default": "mdi:cup-water"
+      },
+      "diaper_changes_today_baby": {
+        "default": "mdi:human-baby-changing-table"
+      },
+      "feedings_today_baby": {
+        "default": "mdi:baby-bottle"
+      },
+      "bottle_volume_today_baby": {
+        "default": "mdi:baby-bottle"
+      },
+      "nursing_time_today_baby": {
+        "default": "mdi:mother-nurse"
+      },
+      "pumped_volume_today_baby": {
+        "default": "mdi:cup-water"
       }
     },
     "binary_sensor": {

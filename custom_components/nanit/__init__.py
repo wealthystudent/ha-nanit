@@ -439,8 +439,9 @@ def _async_remove_stale_devices(
     """Remove HA devices for cameras/speakers no longer on the Nanit account."""
     # If the API returned no babies (transient outage, account propagation),
     # skip removal — otherwise we would wipe every device for the entry and
-    # force the user to re-add them.
-    if not hub.babies:
+    # force the user to re-add them. Likewise when a row could not be read:
+    # its devices are missing from the list but not from the account.
+    if not hub.babies or not hub.babies_complete:
         return
 
     device_reg = dr.async_get(hass)

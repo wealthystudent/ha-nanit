@@ -11,7 +11,15 @@ import aiohttp
 from .auth import TokenManager
 from .camera import NanitCamera
 from .exceptions import NanitAuthError
-from .models import Baby, CareLog, CareLogDetailFetch, CareLogFetch, CloudEvent, SpeakerCandidate
+from .models import (
+    BabiesFetch,
+    Baby,
+    CareLog,
+    CareLogDetailFetch,
+    CareLogFetch,
+    CloudEvent,
+    SpeakerCandidate,
+)
 from .rest import NanitRestClient
 
 _LOGGER = logging.getLogger(__name__)
@@ -131,6 +139,16 @@ class NanitClient:
         """
         return await self._async_with_retry(
             lambda token: self._rest.async_get_babies(token),
+        )
+
+    async def async_get_babies_result(self) -> BabiesFetch:
+        """Fetch babies like ``async_get_babies``, with how many rows were skipped.
+
+        A skipped row means the list is not the whole account. Retries once
+        on a mid-token-life 401 by refreshing the token.
+        """
+        return await self._async_with_retry(
+            lambda token: self._rest.async_get_babies_result(token),
         )
 
     async def async_get_events(self, baby_uid: str, limit: int = 20) -> list[CloudEvent]:

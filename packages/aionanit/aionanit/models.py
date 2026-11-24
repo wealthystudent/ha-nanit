@@ -148,6 +148,22 @@ class Baby:
     created_at: float | None = field(default=None, repr=False)  # Unix timestamp of the record
 
 
+@dataclass(frozen=True, repr=False)
+class BabiesFetch:
+    """One /babies fetch: the babies it lists, and how many rows were skipped.
+
+    ``dropped`` counts the rows skipped as malformed. When it is not 0 the
+    list is not the whole account: a baby missing from it may still be
+    there. Its printed form shows only the counts.
+    """
+
+    babies: tuple[Baby, ...]
+    dropped: int
+
+    def __repr__(self) -> str:
+        return f"BabiesFetch(<{len(self.babies)} babies>, dropped={self.dropped})"
+
+
 @dataclass(frozen=True)
 class CloudEvent:
     """Event from the Nanit cloud API (motion/sound notifications)."""

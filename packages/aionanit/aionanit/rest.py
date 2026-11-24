@@ -24,6 +24,7 @@ from .exceptions import (
     NanitResponseTooLarge,
 )
 from .models import (
+    BabiesFetch,
     Baby,
     CareLog,
     CareLogDetail,
@@ -159,20 +160,26 @@ def _parse_baby(baby_json: Any) -> Baby | None:
     instead of reaching them.
 
     A baby without a camera (standalone Sound & Light) has no camera_uid
-    in its row: it defaults to "" so mixed accounts parse instead of
-    failing on the camera-less row.
+    in its row: a missing or null one is "" so mixed accounts parse
+    instead of failing on the camera-less row. A camera_uid that is there
+    but not a string skips the row like a bad uid does.
     """
     if not isinstance(baby_json, dict):
         return None
     uid = baby_json.get("uid")
     if not isinstance(uid, str) or not uid:
         return None
+    camera_uid = baby_json.get("camera_uid")
+    if camera_uid is None:
+        camera_uid = ""
+    if not isinstance(camera_uid, str):
+        return None
     speaker = baby_json.get("speaker")
     speaker_obj = speaker.get("speaker") if isinstance(speaker, dict) else None
     return Baby(
         uid=uid,
         name=_sanitize_name(baby_json.get("name")),
-        camera_uid=baby_json.get("camera_uid") or "",
+        camera_uid=camera_uid,
         speaker_uid=speaker_obj.get("uid") if isinstance(speaker_obj, dict) else None,
         network=_parse_network(baby_json),
         camera_connected=_parse_camera_connected(baby_json),
@@ -591,6 +598,18 @@ class NanitRestClient:
         self,
         access_token: str,
     ) -> list[Baby]:
+        """Fetch the account's babies, skipping malformed rows."""
+        return list((await self.async_get_babies_result(access_token)).babies)
+
+    async def async_get_babies_result(
+        self,
+        access_token: str,
+    ) -> BabiesFetch:
+        """Fetch what ``async_get_babies`` does, with how many rows were skipped.
+
+        An answer without a list of babies raises NanitConnectionError: it
+        is not an account without babies.
+        """
         try:
             resp = await self._session.get(
                 f"{self._base_url}/babies",
@@ -612,14 +631,13 @@ class NanitRestClient:
         except (TimeoutError, aiohttp.ClientError, ValueError) as err:
             raise NanitConnectionError(f"Invalid babies response: {err}") from err
 
-        rows = body.get("babies", []) if isinstance(body, dict) else []
+        rows = body.get("babies") if isinstance(body, dict) else None
+        if not isinstance(rows, list):
+            raise NanitConnectionError("Invalid babies response: no babies list")
         # A malformed row is skipped, so it can't take the account's other
-        # babies down with it.
-        return [
-            baby
-            for row in (rows if isinstance(rows, list) else [])
-            if (baby := _parse_baby(row)) is not None
-        ]
+        # babies down with it; the count says the list is not the whole account.
+        babies = tuple(baby for row in rows if (baby := _parse_baby(row)) is not None)
+        return BabiesFetch(babies=babies, dropped=len(rows) - len(babies))
 
     async def async_get_device_token(
         self,

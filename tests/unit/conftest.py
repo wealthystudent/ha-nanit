@@ -11,7 +11,7 @@ from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.syrupy import HomeAssistantSnapshotExtension
 from syrupy.assertion import SnapshotAssertion
 
-from aionanit.models import Baby
+from aionanit.models import BabiesFetch, Baby
 from custom_components.nanit.const import (
     CARE_LOG_SEED_DAYS,
     CONF_BABY_NAME,
@@ -160,6 +160,13 @@ def mock_nanit_client():
 
         client.restore_tokens = MagicMock()
         client.async_get_babies = AsyncMock(return_value=[MOCK_BABY_1])
+
+        # What the hub fetches: the babies async_get_babies fakes, with no
+        # row skipped. A test of skipped rows sets this one itself.
+        async def get_babies_result() -> BabiesFetch:
+            return BabiesFetch(babies=tuple(await client.async_get_babies()), dropped=0)
+
+        client.async_get_babies_result = AsyncMock(side_effect=get_babies_result)
         client.async_get_speaker_candidates = AsyncMock(return_value=[])
         client.async_close = AsyncMock()
 

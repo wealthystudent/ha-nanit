@@ -420,6 +420,61 @@ class TestGetBabies:
 
         assert babies == [Baby(uid="baby1", name="Luna", camera_uid="cam1")]
 
+    async def test_get_babies_skips_a_row_whose_camera_uid_is_not_a_string(
+        self, client: NanitRestClient
+    ) -> None:
+        """A camera_uid that is there but not a string skips the row; a null one is ""."""
+        with mock_api() as m:
+            m.get(
+                BABIES_URL,
+                payload={
+                    "babies": [
+                        {"uid": "baby_o", "name": "Object", "camera_uid": {"uid": "cam_o"}},
+                        {"uid": "baby_n", "name": "Number", "camera_uid": 7},
+                        {"uid": "baby_f", "name": "False", "camera_uid": False},
+                        {"uid": "baby_s", "name": "Speaker only", "camera_uid": None},
+                        {"uid": "baby1", "name": "Luna", "camera_uid": "cam1"},
+                    ]
+                },
+            )
+            babies = await client.async_get_babies("token123")
+
+        assert babies == [
+            Baby(uid="baby_s", name="Speaker only", camera_uid=""),
+            Baby(uid="baby1", name="Luna", camera_uid="cam1"),
+        ]
+
+    async def test_get_babies_result_counts_the_rows_it_skips(
+        self, client: NanitRestClient
+    ) -> None:
+        """The result says how many rows were skipped, so a caller knows the list is partial."""
+        with mock_api() as m:
+            m.get(
+                BABIES_URL,
+                payload={"babies": [None, {"uid": 5}, {"uid": "baby1", "camera_uid": "cam1"}]},
+            )
+            partial = await client.async_get_babies_result("token123")
+        with mock_api() as m:
+            m.get(BABIES_URL, payload={"babies": [{"uid": "baby1", "camera_uid": "cam1"}]})
+            whole = await client.async_get_babies_result("token123")
+
+        assert partial.babies == (Baby(uid="baby1", name="", camera_uid="cam1"),)
+        assert partial.dropped == 2
+        assert whole.dropped == 0
+        assert repr(partial) == "BabiesFetch(<1 babies>, dropped=2)"
+
+    @pytest.mark.parametrize(
+        "body", [{"babies": None}, {"babies": {"uid": "baby1"}}, {}, [], "babies"]
+    )
+    async def test_get_babies_without_a_list_of_babies_fails(
+        self, client: NanitRestClient, body: object
+    ) -> None:
+        """An answer of another shape is a failed request, not an account without babies."""
+        with mock_api() as m:
+            m.get(BABIES_URL, payload=body)
+            with pytest.raises(NanitConnectionError, match="no babies list"):
+                await client.async_get_babies("token123")
+
     async def test_get_babies_null_name(self, client: NanitRestClient) -> None:
         with mock_api() as m:
             m.get(

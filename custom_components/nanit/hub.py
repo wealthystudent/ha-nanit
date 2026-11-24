@@ -31,7 +31,7 @@ from aionanit.exceptions import (
     NanitConnectionError,
     NanitError,
 )
-from aionanit.models import Baby
+from aionanit.models import BabiesFetch, Baby
 
 from .aionanit_sl.sound_light import NanitSoundLight
 from .baby_code import baby_code
@@ -151,6 +151,7 @@ class NanitHub:
         self._camera_data: dict[str, CameraData] = {}
         self._speaker_data: dict[str, SpeakerData] = {}
         self._babies: list[Baby] = []
+        self._babies_complete = True
         self._failed_camera_uids: set[str] = set()
         self._speaker_uid_map: dict[str, str] = {}
         self._camera_speaker_pairs: dict[str, str] = {}
@@ -195,6 +196,15 @@ class NanitHub:
     def babies(self) -> list[Baby]:
         """Return all discovered babies (including ones that failed to connect)."""
         return self._babies
+
+    @property
+    def babies_complete(self) -> bool:
+        """Return False when setup skipped an unreadable /babies row.
+
+        The babies then are not the whole account, so a device missing from
+        them may still be on it.
+        """
+        return self._babies_complete
 
     @property
     def failed_camera_uids(self) -> set[str]:
@@ -261,9 +271,16 @@ class NanitHub:
             self._unsubscribe_tokens = tm.on_tokens_refreshed(self._on_tokens_refreshed)
 
         # Fetch babies (also validates tokens)
-        babies = await self.async_get_babies_tolerant()
+        fetch = await self._async_get_babies_fetch()
+        babies = list(fetch.babies)
 
         self._babies = list(babies)
+        self._babies_complete = fetch.dropped == 0
+        if not self._babies_complete:
+            _LOGGER.debug(
+                "Nanit's device list had %d unreadable row(s); no device is removed this setup",
+                fetch.dropped,
+            )
 
         if not babies:
             _LOGGER.warning("No babies found on Nanit account")
@@ -507,8 +524,12 @@ class NanitHub:
         the hub). Also used by NanitNetworkCoordinator so its polling
         survives mixed accounts on old wheels.
         """
+        return list((await self._async_get_babies_fetch()).babies)
+
+    async def _async_get_babies_fetch(self) -> BabiesFetch:
+        """Fetch babies as ``async_get_babies_tolerant`` does, with the rows skipped."""
         try:
-            return await self._client.async_get_babies()
+            return await self._client.async_get_babies_result()
         except KeyError:
             _LOGGER.debug(
                 "aionanit could not parse /babies (baby without camera?); "
@@ -517,7 +538,7 @@ class NanitHub:
             )
             return await self._async_get_babies_raw()
 
-    async def _async_get_babies_raw(self) -> list[Baby]:
+    async def _async_get_babies_raw(self) -> BabiesFetch:
         """Parse /babies directly, allowing camera-less babies.
 
         Defensive on shape and content: uids are validated before they can
@@ -545,9 +566,11 @@ class NanitHub:
         except (TimeoutError, aiohttp.ClientError) as err:
             raise NanitConnectionError(str(err)) from err
 
-        rows = body.get("babies", []) if isinstance(body, dict) else []
+        rows = body.get("babies") if isinstance(body, dict) else None
+        if not isinstance(rows, list):
+            raise NanitConnectionError("Invalid babies response: no babies list")
         babies: list[Baby] = []
-        for baby in rows if isinstance(rows, list) else []:
+        for baby in rows:
             if not isinstance(baby, dict):
                 continue
             uid = _clean_uid(baby.get("uid"))
@@ -560,14 +583,11 @@ class NanitHub:
             parsed = _parse_baby({**baby, "uid": uid})
             if parsed is None:
                 continue
-            babies.append(
-                dataclasses.replace(
-                    parsed,
-                    camera_uid=_clean_uid(parsed.camera_uid) or "",
-                    speaker_uid=_clean_uid(parsed.speaker_uid),
-                )
-            )
-        return babies
+            if parsed.camera_uid and _clean_uid(parsed.camera_uid) is None:
+                _LOGGER.debug("Skipping /babies row without a usable camera uid")
+                continue
+            babies.append(dataclasses.replace(parsed, speaker_uid=_clean_uid(parsed.speaker_uid)))
+        return BabiesFetch(babies=tuple(babies), dropped=len(rows) - len(babies))
 
     async def _async_resolve_speaker_uids(self, babies: list[Baby]) -> dict[str, str]:
         """Resolve each baby's speaker uid, keyed by baby uid.

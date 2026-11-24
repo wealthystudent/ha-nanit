@@ -2134,6 +2134,45 @@ async def _ends_correct_after_a_restart(
         assert volume[_end_hour() - H] == (0.0, 210.0)
 
 
+async def test_a_paused_importer_lets_the_reader_go_and_one_started_while_paused_never_listens(
+    make: Callable[..., Harness], hass: HomeAssistant, sent: Sent
+) -> None:
+    """The importer is the reader's only listener: once paused, nothing keeps it polling."""
+    truth = Truth(BASE)
+    harness = await _imported(make, truth)
+    assert len(harness.coordinator._listeners) == 1
+
+    async def never_matches(_self: Any, _sid: str, _batch: Any) -> bool:
+        return False
+
+    written = len(sent)
+    truth.put(RAISED)
+    with patch.object(care_log_recorder._Sync, "_read_back", never_matches):
+        await harness.tick_and_poll(timedelta(minutes=1))  # the batch is sent, never verified
+    assert len(sent) == written + 1
+    assert care_log_recorder.care_log_paused(hass, CODE)
+    assert harness.diag()["state"] == "paused_until_restart"
+    assert not harness.coordinator._listeners
+    assert not harness.importer._reader_queue
+    polls = len(truth.reader)
+    for _ in range(12):
+        await harness.advance(timedelta(minutes=5))
+    assert len(truth.reader) == polls
+    assert harness.diag()["state"] == "paused_until_restart"
+    await harness.stop()
+
+    again = make(truth)  # as after a reload
+    again.start()
+    await again.settle()
+    assert again.diag()["state"] == "paused_until_restart"
+    assert not again.coordinator._listeners
+    for _ in range(3):
+        await again.advance(timedelta(minutes=5))
+    assert len(truth.reader) == polls
+    assert truth.own == []
+    assert len(sent) == written + 1
+
+
 @dataclass
 class _HoldUntilQueued(RecorderTask):
     """Holds the recorder's thread until ``count`` tasks wait in its queue (10 s at most)."""

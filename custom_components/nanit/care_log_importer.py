@@ -81,8 +81,10 @@ start at a reader update once the recorder is back.
 When a batch was sent and its outcome is unknown, by this importer or an
 earlier one in this Home Assistant run (``care_log_recorder``: the baby is
 paused), nothing more is compared, synced or asked of Nanit for the baby
-until Home Assistant restarts: the state is ``paused_until_restart`` and no
-timer runs. After the restart the start-up pass compares what is really
+until Home Assistant restarts: the state is ``paused_until_restart``, no
+timer runs, the reader's listener is removed (so it no longer keeps the
+reader polling) and the reads waiting for the worker are dropped; an
+importer started for a paused baby never listens. After the restart the start-up pass compares what is really
 stored. When the bounded wait for the recorder's queue before a start-up
 comparison times out (nothing was sent), the state is
 ``waiting_for_recorder``, no timer runs, and the next reader update waits
@@ -472,12 +474,17 @@ class CareLogStatisticsImporter:
 
     @callback
     def async_start(self) -> None:
-        """Listen to the reader (which keeps it polling) and start the worker."""
+        """Listen to the reader (which keeps it polling) and start the worker.
+
+        A baby paused until Home Assistant restarts gets no listener: the
+        worker only reports the pause (see ``_enter_pause``).
+        """
         if self._task is not None or self._stopping:
             return
-        self._unsub_listener = self._coordinator.async_add_listener(self._on_reader_update)
-        # The reader has usually polled already; that answer counts as an update.
-        self._take_reader_update()
+        if not self._paused():
+            self._unsub_listener = self._coordinator.async_add_listener(self._on_reader_update)
+            # The reader has usually polled already; that answer counts as an update.
+            self._take_reader_update()
         self._task = self._entry.async_create_background_task(
             self._hass, self._async_run(), "nanit care log statistics import"
         )
@@ -503,6 +510,20 @@ class CareLogStatisticsImporter:
             self._unsub_listener()
             self._unsub_listener = None
         self._cancel_timer()
+
+    @callback
+    def _enter_pause(self) -> None:
+        """Report the pause until Home Assistant restarts, and stop reading for it.
+
+        Nothing ends the pause but a restart, so the reader's listener goes
+        (on its own it keeps the reader polling) and the reads waiting for
+        the worker are dropped. The state stays for diagnostics, and the
+        owner marker is the registry's, untouched.
+        """
+        self._state = STATE_PAUSED_UNTIL_RESTART
+        self._release()
+        self._reader_queue.clear()
+        self._newest_reader = None
 
     def _should_stop(self) -> bool:
         return self._stopping
@@ -609,7 +630,7 @@ class CareLogStatisticsImporter:
     async def _async_may_step(self) -> bool:
         """Return whether a step may run (see the module docstring)."""
         if self._paused():
-            self._state = STATE_PAUSED_UNTIL_RESTART
+            self._enter_pause()
             return False
         if not self._queue_busy:
             return True
@@ -821,7 +842,7 @@ class CareLogStatisticsImporter:
             self._state = STATE_WAITING_TO_RETRY
             _LOGGER.debug("A care log history pass could not reach Nanit; trying again later")
         except CareLogPausedError:
-            self._state = STATE_PAUSED_UNTIL_RESTART
+            self._enter_pause()
             self._startup_due = None
         except CareLogQueueBusyError:
             # Nothing was sent: the next reader update waits for the queue
@@ -1045,7 +1066,7 @@ class CareLogStatisticsImporter:
             self._note_connection_failure(dt_util.utcnow())
             _LOGGER.debug("A care log read could not reach Nanit; trying again later")
         except CareLogPausedError:
-            self._state = STATE_PAUSED_UNTIL_RESTART
+            self._enter_pause()
         except CareLogRecorderUnavailableError:
             # Abandoned before a request of its own; a reader update once the
             # recorder is back runs it again, from its start.
@@ -1192,7 +1213,7 @@ class CareLogStatisticsImporter:
                 should_stop=self._should_stop,
             )
         except CareLogPausedError:
-            self._state = STATE_PAUSED_UNTIL_RESTART
+            self._enter_pause()
             return False
         except CareLogRecorderUnavailableError:
             # Tried again at a later wake-up, once the recorder is back.
@@ -1201,7 +1222,7 @@ class CareLogStatisticsImporter:
             # Sent and not verified: the baby is paused until Home Assistant
             # restarts (the recorder module warns once), so no retry is due.
             self._sync_failures += 1
-            self._state = STATE_PAUSED_UNTIL_RESTART
+            self._enter_pause()
             return False
         except CareLogSyncError:
             self._note_sync_failure()

@@ -34,12 +34,14 @@ The rows of a series, for one baby:
   is, and the running total uses it. The running total continues from the
   ``sum`` of the latest stored row before the series' first hour, wherever
   that row is (0 when there is none), so a prefix keeps its totals.
-- One case cannot be made exact: an entry already counted in the prefix
+- Two cases cannot be made exact. An entry already counted in the prefix
   that is re-dated to a time after the coverage hour is counted again,
   since the prefix is never lowered. It can only happen when the history
   start moves later: when Nanit gives neither a birth date nor a creation
   date and the three-year fallback start moves on, or when the birth date
-  Nanit gives is changed to a later one.
+  Nanit gives is changed to a later one. And an entry counted after the
+  coverage hour that is re-dated to before it is taken out of the covered
+  rows but not added to the prefix, which is never raised either.
 
 A sync compares stored rows with these targets, a chunk of at most
 ``CHUNK_HOURS`` hours at a time, and sends only the rows that differ by

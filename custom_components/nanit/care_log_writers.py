@@ -42,10 +42,14 @@ Ownership is proved, never assumed:
   (Home Assistant's store logs a failed write and returns normally), before
   the owner is noted in memory and its importer starts. Any failure leaves
   everything as it was, and the next look tries again.
-- A marker that cannot be loaded (an unreadable file, the wrong shape, a
-  newer version) never fails the entry's setup: nobody writes, every
-  offering entry reports ``STATE_OWNER_UNKNOWN``, one error is logged by
-  type only, and the next look tries again.
+- A marker that cannot be loaded never fails the entry's setup: nobody
+  writes, every offering entry reports ``STATE_OWNER_UNKNOWN``, one error is
+  logged by type only, and the next look tries again. Home Assistant's
+  store raises for a file it cannot read or one of a newer major version;
+  a newer minor version it loads, and saves again in this one's. A file
+  that is not valid JSON it moves aside and loads as nothing: then no owner
+  is on record (see above). A file whose data has another shape names no
+  owner either.
 - Every other entry stays a standby and never writes, whatever happens to
   the owner: unloaded, removed, the import switched off, stopped by a
   refused sign-in, or polling disabled. There is no handover. While a baby

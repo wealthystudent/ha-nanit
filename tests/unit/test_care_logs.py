@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+from collections import Counter
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -1179,9 +1181,11 @@ async def test_two_babies_one_failing_one_healthy(
     mock_nanit_client.async_get_babies.return_value = [MOCK_BABY_1, MOCK_BABY_2]
     mock_nanit_client.camera.side_effect = lambda **kw: _mock_camera(kw["uid"], kw["baby_uid"])
     diaper = _diaper("baby_2", uid="d2")
-    calendar = _answers(
-        {"baby_1": [NanitConnectionError("Calendar fetch failed")], "baby_2": [[diaper]]}
-    )
+    answers: dict[str, list[Any]] = {
+        "baby_1": [NanitConnectionError("Calendar fetch failed")],
+        "baby_2": [[diaper]],
+    }
+    calendar = _answers(answers)
     entry = _hub_entry(hass)
 
     assert await _set_up(hass, entry, mock_nanit_client, calendar)
@@ -1193,11 +1197,22 @@ async def test_two_babies_one_failing_one_healthy(
     assert failing.state == STATE_UNAVAILABLE
     assert healthy.state == dt_util.utc_from_timestamp(diaper.timestamp).isoformat()
 
-    # The failing one keeps trying; the healthy one is unaffected meanwhile.
+    # At the next poll both ask again: the failing one keeps failing (and
+    # retries), the healthy one picks up a newer diaper change.
+    calendar.reset_mock()
+    newer = dataclasses.replace(diaper, uid="d3", timestamp=diaper.timestamp + 30)
+    answers["baby_2"] = [[diaper, newer]]
     await _next_poll(hass, freezer)
+    # The polls run as background tasks: wait for their retries too.
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert Counter(call.args[0] for call in calendar.await_args_list) == {
+        "baby_1": 3,
+        "baby_2": 1,
+    }
     assert hass.states.get(failing.entity_id).state == STATE_UNAVAILABLE
-    assert hass.states.get(healthy.entity_id).state == healthy.state
-    assert {call.args[0] for call in calendar.await_args_list} == {"baby_1", "baby_2"}
+    assert hass.states.get(healthy.entity_id).state == (
+        dt_util.utc_from_timestamp(newer.timestamp).isoformat()
+    )
     assert await hass.config_entries.async_unload(entry.entry_id)
 
 

@@ -543,6 +543,7 @@ async def test_poll_publishes_the_whole_fetch_and_its_request_coverage(
         end=int((now + timedelta(hours=1)).timestamp()),
         read_at=now,
         dropped=2,
+        requested_at=now,
     )
 
     # The next, shorter, poll replaces it with its own range.
@@ -557,6 +558,7 @@ async def test_poll_publishes_the_whole_fetch_and_its_request_coverage(
         end=int((later + timedelta(hours=1)).timestamp()),
         read_at=later,
         dropped=2,
+        requested_at=later,
     )
 
 

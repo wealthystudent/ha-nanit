@@ -318,10 +318,11 @@ class CareLogRequestCoverage:
     that Nanit's answer held everything in it (its answer carries no sign
     of being complete). ``start`` and ``end`` are the Unix seconds sent,
     both inclusive, as Nanit matches an entry by its start. ``read_at`` is
-    when the answer arrived, and ``dropped`` how many of its rows were
-    skipped as malformed. ``outside`` counts the rows of a kind the
-    statistics count that were dated outside the range (``CareLogData``
-    leaves them out of ``all_entries``).
+    when the answer arrived, ``requested_at`` when the request was sent
+    (taken just before it; None when not known), and ``dropped`` how many
+    of its rows were skipped as malformed. ``outside`` counts the rows of a
+    kind the statistics count that were dated outside the range
+    (``CareLogData`` leaves them out of ``all_entries``).
     """
 
     start: int
@@ -329,6 +330,7 @@ class CareLogRequestCoverage:
     read_at: datetime
     dropped: int = 0
     outside: int = 0
+    requested_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -514,6 +516,9 @@ class NanitCareLogCoordinator(DataUpdateCoordinator[CareLogData]):
         window_start = min(day_start, now - lookback)
         start = int(window_start.timestamp())
         end = int((now + _CARE_LOG_END_SLACK).timestamp())
+        # Just before the request (and its retries): an hour that had not
+        # finished by then may gain entries the answer lacks.
+        requested_at = dt_util.utcnow()
         try:
             client = self._hub.client
             fetch = await _async_fetch_with_retries(
@@ -534,7 +539,11 @@ class NanitCareLogCoordinator(DataUpdateCoordinator[CareLogData]):
 
         self._last_fetch = now
         coverage = CareLogRequestCoverage(
-            start=fetch.start, end=fetch.end, read_at=dt_util.utcnow(), dropped=fetch.dropped
+            start=fetch.start,
+            end=fetch.end,
+            read_at=dt_util.utcnow(),
+            dropped=fetch.dropped,
+            requested_at=requested_at,
         )
         return build_care_log_data(
             fetch.logs,

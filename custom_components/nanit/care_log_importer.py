@@ -20,11 +20,23 @@ waits for the next daily pass).
 The comparison and every sync are given the start of the history the
 ledger was built from (``care_log_history_start``, as the last pass used
 it), and leave every stored row before it alone: the ledger knows nothing
-of them, so nothing there is lowered, whatever moved the start. They also
-stop before the first hour no read has observed: an hour is observed once
-a read of bounds holding all of it was taken after it ended. While the
-reader keeps failing, nothing is written for the hours since its last
-read; the rows follow once a read succeeds.
+of them, so nothing there is lowered, whatever moved the start.
+
+They also stop at the watermark, and never go past the hour in progress.
+A read certifies the hours that lie wholly inside its bounds and had
+ended when its request was sent (``CareLogRead.requested_at``): an hour
+still running then may gain entries the answer lacks, whenever the answer
+arrives. The watermark is the end of the contiguous span, from the
+coverage start, of the hours the reads the book took certify: a read
+moves it on only when it starts at or before it, so no row (a zero row of
+an established series included) is written for an hour across a gap no
+read covered. While the reader keeps failing, nothing is written for the
+hours since its last read. When a reader read starts after the watermark
+(it failed for longer than its look-back), the history pass is brought
+forward, at most once an hour (``EARLY_HISTORY_INTERVAL``): it reads up to
+the reader's start, and once it completes the watermark moves on through
+the reader's newest read. Until a pass has covered the gap, nothing is
+written past it.
 
 Running, each reader read goes through ``CareLogBook.process`` and an
 incremental sync follows. A change that lowers a chart waits for the book's
@@ -128,7 +140,8 @@ GAVE_UP_PAUSE: Final = timedelta(minutes=30)
 HISTORY_INTERVAL: Final = timedelta(hours=24)
 # A lowering confirmed in the reader's window brings the next history pass
 # forward (an entry moved to an older date is otherwise missing until the
-# daily pass), but at most one such early pass starts per this.
+# daily pass), and so does a reader read that leaves a gap after the
+# watermark, but at most one such early pass starts per this.
 EARLY_HISTORY_INTERVAL: Final = timedelta(hours=1)
 # One request per this much history per pass. The pieces' inner boundaries
 # are multiples of it since the Unix epoch, so the same bounds recur.
@@ -252,13 +265,30 @@ def _merge_earliest(into: dict[CareLogSeries, int], other: Mapping[CareLogSeries
             into[series] = hour
 
 
-def _observed_end(read: CareLogRead) -> int:
-    """Return the start of the first hour a read did not observe whole and finished.
+def _reach(read: CareLogRead) -> int:
+    """Return how far a read certifies its bounds, in Unix seconds.
 
-    The earlier of the hour it was taken in and the hour holding the second
-    after its bounds.
+    Its end, but no later than the start of the hour its request was sent
+    in: every hour that ends by then and starts at or after its start is
+    certified. A read whose request time is not known certifies nothing.
     """
-    return min(hour_start(read.read_at.timestamp()), hour_start(read.end + 1))
+    requested = read.requested_at
+    if requested is None:
+        return read.start
+    return min(read.end, hour_start(requested.timestamp()))
+
+
+def _extend(watermark: int, start: int, reach: int) -> int:
+    """Return the watermark moved on through a read's reach, when the read leaves no gap."""
+    return max(watermark, reach) if start <= watermark else watermark
+
+
+def _pass_watermark(reads: Sequence[CareLogRead]) -> int:
+    """Return the watermark of one pass (contiguous reads, sorted by start)."""
+    watermark = reads[0].start
+    for read in reads:
+        watermark = _extend(watermark, read.start, _reach(read))
+    return watermark
 
 
 def _taken_at(data: CareLogData) -> datetime:
@@ -334,8 +364,11 @@ class CareLogStatisticsImporter:
         # The start of the history the ledger was built from: the recorder
         # functions never touch rows before it.
         self._coverage_start: int | None = None
-        # The first hour no read the book took has observed (see ``_end_hour``).
-        self._observed_end: int | None = None
+        # Unix seconds: the end of the contiguous span, from the coverage
+        # start, that the reads the book took certify (see the module
+        # docstring); and the start and reach of the newest reader read.
+        self._watermark: int | None = None
+        self._reader_span: tuple[int, int] | None = None
         self._piece_bounds: set[Bounds] = set()
         self._dirty: dict[CareLogSeries, int] = {}
         self._need_full = False
@@ -529,23 +562,29 @@ class CareLogStatisticsImporter:
         if not self._recorder_ready():
             raise CareLogRecorderUnavailableError
 
-    def _end_hour(self, reads: Sequence[CareLogRead] = ()) -> int:
-        """Return the hour compares and syncs stop before: the first one not observed.
+    def _end_hour(self, watermark: int | None = None) -> int:
+        """Return the hour compares and syncs stop before.
 
-        An hour is observed once a read of bounds holding all of it was
-        taken after it ended: the newest such hour among the reads the book
-        took (and ``reads``), never later than the hour in progress.
+        The start of the first hour the watermark (this one's, or the given
+        one) does not certify whole, never later than the hour in progress.
         """
-        ends = [_observed_end(read) for read in reads]
-        if self._observed_end is not None:
-            ends.append(self._observed_end)
-        now = hour_start(dt_util.utcnow().timestamp())
-        return min(now, max(ends)) if ends else now
+        mark = self._watermark if watermark is None else watermark
+        assert mark is not None  # set when the ledger was adopted
+        return min(hour_start(dt_util.utcnow().timestamp()), hour_start(mark))
 
-    def _note_observed(self, read: CareLogRead) -> None:
-        end = _observed_end(read)
-        if self._observed_end is None or end > self._observed_end:
-            self._observed_end = end
+    def _note_coverage(self, read: CareLogRead, *, from_reader: bool) -> None:
+        """Move the watermark on through a read the book took (see the module docstring)."""
+        watermark = self._watermark
+        assert watermark is not None
+        reach = _reach(read)
+        if from_reader:
+            self._reader_start = read.start
+            self._reader_span = (read.start, reach)
+        if read.start <= watermark:
+            self._watermark = max(watermark, reach)
+        elif from_reader and reach > watermark:
+            # A gap: nothing is written past it until a history pass reads it.
+            self._bring_history_forward()
 
     # -- timers ---------------------------------------------------------------
 
@@ -606,16 +645,21 @@ class CareLogStatisticsImporter:
         recorder is not ready.
         """
         self._require_recorder()
+        requested_at = dt_util.utcnow()
         try:
             result = await self._fetch(start, end)
         except NanitAuthError as err:
             raise _AuthFailedError from err
         read_at = dt_util.utcnow()
         if len(result.logs) > LARGE_READ:
-            return await self._hass.async_add_executor_job(self._read_from_fetch, result, read_at)
-        return self._read_from_fetch(result, read_at)
+            return await self._hass.async_add_executor_job(
+                self._read_from_fetch, result, read_at, requested_at
+            )
+        return self._read_from_fetch(result, read_at, requested_at)
 
-    def _read_from_fetch(self, result: CareLogFetch, read_at: datetime) -> CareLogRead:
+    def _read_from_fetch(
+        self, result: CareLogFetch, read_at: datetime, requested_at: datetime
+    ) -> CareLogRead:
         return CareLogRead.from_logs(
             result.logs,
             start=result.start,
@@ -623,6 +667,7 @@ class CareLogStatisticsImporter:
             read_at=read_at,
             dropped=result.dropped,
             reader=self._reader,
+            requested_at=requested_at,
         )
 
     def _read_from_reader(self, data: CareLogData) -> CareLogRead:
@@ -636,6 +681,7 @@ class CareLogStatisticsImporter:
             # A row dated outside the range counts as one the answer dropped.
             dropped=coverage.dropped + coverage.outside,
             reader=self._reader,
+            requested_at=coverage.requested_at,
         )
 
     async def _async_pause(self, index: int) -> None:
@@ -727,7 +773,7 @@ class CareLogStatisticsImporter:
             self._hass,
             code=self._code,
             ledger=candidate,
-            end_hour=self._end_hour(reads),
+            end_hour=self._end_hour(_pass_watermark(reads)),
             coverage_start=reads[0].start,
         )
         self._check_round(generation)
@@ -824,8 +870,9 @@ class CareLogStatisticsImporter:
         and the book's change.
         """
         self._book.adopt_candidate(candidate)
-        for read in reads:
-            self._note_observed(read)
+        self._watermark = _pass_watermark(reads)
+        # The pass's last read is the reader's (or its re-read).
+        self._reader_span = (reads[-1].start, _reach(reads[-1]))
         # Older evidence never overrides newer: a kept read taken no later
         # than the pass's latest read is discarded, whatever it holds.
         latest = max(read.read_at for read in reads)
@@ -890,17 +937,16 @@ class CareLogStatisticsImporter:
         if self._overflowed:
             self._overflowed = False
             self._book.drop_all_pending()
-        reader = [self._read_from_reader(data) for data in self._reader_queue]
+        reads = [(read, False) for read in own]
+        reads += [(self._read_from_reader(data), True) for data in self._reader_queue]
         self._reader_queue.clear()
-        for read in reader:
-            self._reader_start = read.start  # oldest first: the newest stays
-        for read in sorted([*own, *reader], key=lambda read: read.read_at):
-            self._process(read)
+        for read, from_reader in sorted(reads, key=lambda item: item[0].read_at):
+            self._process(read, from_reader=from_reader)
 
-    def _process(self, read: CareLogRead) -> Outcome:
-        """Give the book one read, and note what it changed."""
+    def _process(self, read: CareLogRead, *, from_reader: bool) -> Outcome:
+        """Give the book one read, and note what it changed and certified."""
         outcome = self._book.process(read)
-        self._note_observed(read)
+        self._note_coverage(read, from_reader=from_reader)
         _merge_earliest(self._dirty, outcome.changed_from)
         self._sync_wanted = True
         if outcome.gave_up:
@@ -952,13 +998,17 @@ class CareLogStatisticsImporter:
         pieces = care_log_history_pieces(history_start, reader_start)
         # Confirm requests for yesterday's last piece still count as history.
         self._piece_bounds = {*self._piece_bounds, *pieces}
+        spans: list[tuple[int, int]] = []
         for index, (start, end) in enumerate(pieces):
             await self._async_pause(index)
             read = await self._async_own_read(start, end)
+            spans.append((read.start, _reach(read)))
             self._process_reads(read)
         self._note_connection_success()
         # The history this pass read: from now on the rows the ledger covers.
-        self._coverage_start = min(history_start, reader_start)
+        coverage = min(history_start, reader_start)
+        self._coverage_start = coverage
+        self._extend_after_pass(coverage, spans)
         now = dt_util.utcnow()
         self._passes_completed += 1
         self._last_history_at = now
@@ -971,6 +1021,23 @@ class CareLogStatisticsImporter:
             self._need_full = True
             self._sync_wanted = True
             await self._async_sync()
+
+    def _extend_after_pass(self, coverage: int, spans: Sequence[tuple[int, int]]) -> None:
+        """Move the watermark on after a completed history pass.
+
+        Its pieces end where the reader's newest read started (when that
+        is still the newest), so once they have filled a gap, the watermark
+        goes on through that read. When the history now starts after the
+        watermark, only the pass counts.
+        """
+        watermark = self._watermark
+        assert watermark is not None
+        watermark = max(watermark, coverage)
+        for start, reach in spans:
+            watermark = _extend(watermark, start, reach)
+        if self._reader_span is not None:
+            watermark = _extend(watermark, *self._reader_span)
+        self._watermark = watermark
 
     # -- syncing -----------------------------------------------------------------
 

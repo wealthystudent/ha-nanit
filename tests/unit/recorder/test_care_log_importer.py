@@ -229,6 +229,18 @@ class Harness:
         await self.advance(delta)
         await self.poll()
 
+    async def advance_polling(self, delta: timedelta) -> None:
+        """Move time on in steps of at most 12 hours, the reader polling at each.
+
+        A reader that polls less often than its 24 hour look-back leaves an
+        unread gap: the history pass is then brought forward.
+        """
+        step = timedelta(hours=12)
+        while delta > step:
+            await self.advance(step)
+            delta -= step
+        await self.advance(delta)
+
     def diag(self) -> dict[str, object]:
         return self.importer.diagnostics()
 
@@ -588,7 +600,7 @@ async def test_the_recorder_disable_action_during_a_daily_pass_stops_its_request
     harness = await _imported(make, truth)
     backdated = _bottle("b_back", NOW - timedelta(days=30), 70.0)
     truth.put(backdated)
-    await harness.advance(timedelta(hours=24) - timedelta(minutes=1))
+    await harness.advance_polling(timedelta(hours=24) - timedelta(minutes=1))
     await harness.poll()
     pieces = list(_expected_pieces(truth.reader[-1][0]))
     _disable_after_own_requests(hass, truth, 2)
@@ -998,6 +1010,81 @@ async def test_a_second_pass_delayed_by_retries_writes_nothing_after_the_last_ob
     assert (await _stored(hass, S.DIAPER_PEE))[_hour(D2)] == 0.0
 
 
+@pytest.mark.usefixtures("reader_fails_at_once")
+async def test_after_a_ten_day_reader_outage_nothing_is_written_across_the_unread_days(
+    make: Callable[..., Harness], hass: HomeAssistant
+) -> None:
+    truth = Truth(BASE)
+    harness = await _imported(make, truth)  # 20 November 18:10, rows up to 17:00
+    last_row = hour_start(_ts(NOW)) - H
+    truth.reader_down = True
+    # Logged during the outage, for a day the reader's next read, of seven
+    # days, does not reach.
+    unread = _bottle("b_unread", NOW + timedelta(days=2, hours=4), 45.0)
+    truth.put(unread)
+    for _ in range(10):  # the daily passes go on; the reader keeps failing
+        await harness.advance(timedelta(days=1))
+    assert harness.diag()["passes_completed"] == 11
+    assert max(await _stored(hass, S.BOTTLE_VOLUME)) == last_row
+
+    # The reader is back, with a seven day read: a gap after the last hour
+    # read. The history pass is brought forward, and fails.
+    truth.reader_down = False
+    truth.errors = [NanitConnectionError("HTTP 503")]
+    truth.own.clear()
+    await harness.poll()  # 30 November 18:10
+    assert truth.reader[-1][0] == _first_poll_start(dt_util.utcnow())
+    assert truth.reader[-1][0] > unread.timestamp
+    volume = await _stored(hass, S.BOTTLE_VOLUME)
+    assert max(volume) == last_row
+    assert len(truth.own) == 1  # the pass brought forward, which failed
+
+    # Still failing: still nothing past the gap.
+    truth.errors = [NanitConnectionError("HTTP 503")]
+    await harness.advance(timedelta(minutes=5))  # the retry, and a reader poll
+    assert len(truth.own) == 2
+    assert max(await _stored(hass, S.BOTTLE_VOLUME)) == last_row
+
+    # The next retry reads the gap: the rows follow, with the entry in it.
+    await harness.advance(timedelta(minutes=15))
+    volume = await _rows(hass, S.BOTTLE_VOLUME)
+    assert volume[_hour(unread)] == (45.0, 255.0)
+    assert volume[_hour(unread) - H] == (0.0, 210.0)
+    assert max(volume) == _end_hour() - H
+    assert volume[_end_hour() - H] == (0.0, 255.0)
+    assert len(volume) == (_end_hour() - _hour(OLD)) // H
+
+
+async def test_an_answer_arriving_after_the_hour_turned_does_not_certify_the_hour_it_was_asked_in(
+    make: Callable[..., Harness], hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    truth = Truth(BASE)
+    harness = await _imported(make, truth)  # 18:10, rows up to 17:00
+    await harness.advance(timedelta(minutes=49, seconds=50))  # 18:59:50, a reader poll
+    hour = hour_start(_ts(NOW))  # 18:00
+    late = _bottle("b_late", NOW + timedelta(minutes=49, seconds=55), 25.0)
+    client = harness.coordinator._hub.client
+
+    async def slow(baby_uid: str, start: int, end: int) -> CareLogFetch:
+        answer = await truth.reader_fetch(baby_uid, start, end)
+        truth.put(late)  # logged while the request was on its way
+        freezer.tick(timedelta(seconds=20))  # the answer arrives at 19:00:10
+        return answer
+
+    client.async_get_calendar_result.side_effect = slow
+    await harness.poll()
+    client.async_get_calendar_result.side_effect = truth.reader_fetch
+
+    assert harness.importer._book.ledger.get(late.uid) is None
+    assert hour not in await _stored(hass, S.BOTTLE_VOLUME)
+
+    await harness.tick_and_poll(timedelta(minutes=5))  # 19:05:10, asked after 19:00
+
+    volume = await _rows(hass, S.BOTTLE_VOLUME)
+    assert volume[hour] == (25.0, 235.0)
+    assert max(volume) == hour
+
+
 # ---------------------------------------------------------------------------
 # Running
 # ---------------------------------------------------------------------------
@@ -1228,7 +1315,7 @@ async def test_the_daily_pass_rereads_the_same_grid_and_writes_nothing_when_unch
     first_pieces = list(_expected_pieces(_first_poll_start()))
     harness = await _imported(make, truth)
 
-    await harness.advance(timedelta(hours=24) - timedelta(minutes=1))
+    await harness.advance_polling(timedelta(hours=24) - timedelta(minutes=1))
     assert truth.own == []
     await harness.poll()
     written = _rows_sent(sent)
@@ -1245,7 +1332,7 @@ async def test_the_daily_pass_rereads_the_same_grid_and_writes_nothing_when_unch
 
     # The next one a day after that.
     truth.own.clear()
-    await harness.advance(timedelta(hours=24) - timedelta(seconds=1))
+    await harness.advance_polling(timedelta(hours=24) - timedelta(seconds=1))
     await harness.poll()
     assert truth.own == []
     await harness.advance(timedelta(seconds=1))

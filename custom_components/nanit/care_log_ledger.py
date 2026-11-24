@@ -145,6 +145,11 @@ class CareLogRead:
     """One answer from Nanit's calendar endpoint, as the ledger sees it.
 
     ``start`` and ``end`` are the inclusive bounds sent (Unix seconds).
+    ``read_at`` is when the answer arrived: reads are ordered by it, and
+    the gap before a confirming read is measured with it. ``requested_at``
+    is when the request was sent, None when that is not known; the book
+    does not use it (the importer does, to tell which hours had finished
+    before the request).
     ``reader`` is an opaque id for the sign-in that made the request.
     ``entries`` maps uid to facts, for the counted kinds only, each dated
     within the bounds: a read-only view that builds the facts when asked.
@@ -159,12 +164,15 @@ class CareLogRead:
     dropped: int
     reader: str
     entries: Mapping[str, EntryFacts] = field(default_factory=dict)
+    requested_at: datetime | None = None
 
     def __post_init__(self) -> None:
         """Validate, and keep the entries as records, in a read-only view."""
         if self.end < self.start:
             raise ValueError("a read must end at or after its start")
         _require_aware(self.read_at, "read_at")
+        if self.requested_at is not None:
+            _require_aware(self.requested_at, "requested_at")
         if self.dropped < 0:
             raise ValueError("dropped must not be negative")
         entries = self.entries
@@ -189,6 +197,7 @@ class CareLogRead:
         read_at: datetime,
         dropped: int,
         reader: str,
+        requested_at: datetime | None = None,
     ) -> CareLogRead:
         """Build a read from returned entries.
 
@@ -227,6 +236,7 @@ class CareLogRead:
             dropped=dropped + outside,
             reader=reader,
             entries=entries,
+            requested_at=requested_at,
         )
 
     def __repr__(self) -> str:

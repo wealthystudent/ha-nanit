@@ -28,7 +28,11 @@ Ownership is proved, never assumed:
   baby), or names one that does not offer and the rows are gone (the user
   deleted them, so the marker is void). Then the offering entry whose
   ``entry_id`` sorts first among those with polling enabled (an entry with
-  polling disabled could never import) takes ownership. Taking ownership
+  polling disabled could never import) and whose care log reader has read
+  the baby (it holds a read and its last update succeeded: a sign-in Nanit
+  refuses would hold the baby and never import) takes ownership. An entry
+  whose reader has not read yet listens to it, which keeps it polling, and
+  has the registry look again as soon as it has read. Taking ownership
   waits until Home Assistant has started, so every entry that loads at
   start-up has offered and the choice does not depend on the order they
   load in.
@@ -81,6 +85,7 @@ import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from functools import partial
 from typing import TYPE_CHECKING, Any, Final
 
 from homeassistant.const import CONF_EMAIL
@@ -168,12 +173,18 @@ def _first_time(hass: HomeAssistant, what: str) -> bool:
     return True
 
 
+def _always() -> bool:
+    return True
+
+
 @dataclass(frozen=True, slots=True)
 class _Offer:
     owner: str
     factory: ImporterFactory
     # Whether the entry may take a first ownership (it polls).
     can_claim: bool = True
+    # Whether its reader has read the baby's care logs: asked at each look.
+    has_read: Callable[[], bool] = _always
 
 
 @dataclass
@@ -258,6 +269,7 @@ class CareLogWriterRegistry:
         factory: ImporterFactory,
         *,
         can_claim: bool = True,
+        has_read: Callable[[], bool] = _always,
     ) -> None:
         """Offer an entry as a baby's writer; it writes when it is, or becomes, the owner.
 
@@ -268,7 +280,9 @@ class CareLogWriterRegistry:
         try:
             async with self._lock:
                 baby = self._babies.setdefault(code, _Baby())
-                baby.offers[entry_id] = _Offer(owner=owner, factory=factory, can_claim=can_claim)
+                baby.offers[entry_id] = _Offer(
+                    owner=owner, factory=factory, can_claim=can_claim, has_read=has_read
+                )
                 try:
                     await self._async_settle(code, baby)
                 except Exception as err:  # noqa: BLE001
@@ -411,7 +425,14 @@ class CareLogWriterRegistry:
                     "them; see 'Care log statistics' in the README to choose one"
                 )
             return
-        claimers = [one for one in sorted(baby.offers) if baby.offers[one].can_claim]
+        # Only a sign-in that has read the baby's care logs: one that cannot
+        # (refused, say) would hold the baby and never import. It is looked
+        # at again once its reader reads (``EntryCareLogWriters``).
+        claimers = [
+            one
+            for one in sorted(baby.offers)
+            if baby.offers[one].can_claim and baby.offers[one].has_read()
+        ]
         if not claimers:
             return
         entry_id = claimers[0]
@@ -494,6 +515,11 @@ class CareLogWriterRegistry:
         self._schedule_check()
 
     @callback
+    def async_look_again(self) -> None:
+        """Look again soon at every baby that has offers but no importer."""
+        self._schedule_check()
+
+    @callback
     def _schedule_check(self) -> None:
         if self._check_task is not None and not self._check_task.done():
             return
@@ -542,15 +568,20 @@ async def async_register_writer(
     factory: ImporterFactory,
     *,
     can_claim: bool = True,
+    has_read: Callable[[], bool] = _always,
 ) -> None:
     """Offer an entry as the writer of a baby's statistics (see the module docstring).
 
     ``can_claim`` False (polling disabled) keeps the entry from taking a
-    first ownership; it still writes when it is the owner.
+    first ownership, and so does ``has_read`` returning False when asked (its
+    reader has not read the baby's care logs); it still writes when it is
+    the owner.
     """
     registry = _registry(hass)
     try:
-        await registry.async_register(code, entry_id, owner, factory, can_claim=can_claim)
+        await registry.async_register(
+            code, entry_id, owner, factory, can_claim=can_claim, has_read=has_read
+        )
     finally:
         _forget_if_unused(hass, registry)
 
@@ -587,6 +618,11 @@ def _importer_factory(
     return make
 
 
+def _has_read(coordinator: NanitCareLogCoordinator) -> bool:
+    """Whether a reader holds a read of the baby's care logs and its last update succeeded."""
+    return coordinator.last_update_success and coordinator.data is not None
+
+
 class EntryCareLogWriters:
     """One config entry's offers to write its babies' care log statistics."""
 
@@ -604,6 +640,8 @@ class EntryCareLogWriters:
         self._coordinators = coordinators
         self._codes: list[str] = []
         self._stopped = False
+        # Per baby code, the listener on a reader that has not read yet.
+        self._waiting: dict[str, CALLBACK_TYPE] = {}
 
     @property
     def codes(self) -> tuple[str, ...]:
@@ -631,12 +669,44 @@ class EntryCareLogWriters:
             self._codes.append(code)
             factory = _importer_factory(self._hass, self._entry, self._client, coordinator)
             await async_register_writer(
-                self._hass, code, self._entry.entry_id, owner, factory, can_claim=can_claim
+                self._hass,
+                code,
+                self._entry.entry_id,
+                owner,
+                factory,
+                can_claim=can_claim,
+                has_read=partial(_has_read, coordinator),
             )
+            if can_claim and not self._stopped and not _has_read(coordinator):
+                self._wait_for_read(code, coordinator)
+
+    @callback
+    def _wait_for_read(self, code: str, coordinator: NanitCareLogCoordinator) -> None:
+        """Look again at the baby once a reader that has not read yet does.
+
+        The listener keeps the reader polling, as the importer would. It
+        goes once the reader has read, or once some entry writes the baby.
+        """
+
+        @callback
+        def on_update() -> None:
+            registry = care_log_writer_registry(self._hass)
+            done = registry is None or registry.writer(code) is not None
+            if not done and not _has_read(coordinator):
+                return
+            unsub = self._waiting.pop(code, None)
+            if unsub is not None:
+                unsub()
+            if not done and registry is not None:
+                registry.async_look_again()
+
+        self._waiting[code] = coordinator.async_add_listener(on_update)
 
     async def async_stop(self) -> None:
         """Withdraw every offer, stopping this entry's importers. Safe to call again."""
         self._stopped = True
+        while self._waiting:
+            self._waiting.popitem()[1]()
         while self._codes:
             code = self._codes.pop()
             await async_unregister_writer(self._hass, code, self._entry.entry_id)

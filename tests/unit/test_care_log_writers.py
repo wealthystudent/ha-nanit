@@ -776,6 +776,103 @@ async def test_an_entry_with_polling_disabled_takes_no_first_ownership(
     assert _no_registry_left(hass)
 
 
+@pytest.fixture
+def refused_first(client: MagicMock) -> dict[str, Any]:
+    """The first entry's reader has never read the care logs (Nanit refused it, say).
+
+    Returns the read each such reader would have held, by entry id.
+    """
+    from custom_components.nanit import hub
+
+    make_reader = hub.NanitCareLogCoordinator.side_effect
+    held: dict[str, Any] = {}
+
+    def reader(hass: HomeAssistant, entry: Any, owner_hub: Any, baby: Baby) -> Any:
+        made = make_reader(hass, entry, owner_hub, baby)
+        if entry.entry_id == FIRST_ID:
+            held[entry.entry_id] = made.data
+            made.data = None
+            made.last_update_success = False
+        return made
+
+    hub.NanitCareLogCoordinator.side_effect = reader
+    return held
+
+
+async def test_a_sign_in_whose_reader_has_not_read_takes_no_first_ownership(
+    hass: HomeAssistant,
+    client: MagicMock,
+    started: list[CareLogStatisticsImporter],
+    hass_storage: dict[str, Any],
+    refused_first: dict[str, Any],
+) -> None:
+    """It sorts first; the sign-in that reads takes the baby."""
+    refused = _entry(hass)
+    await _set_up(hass, refused)
+    await _check_owners(hass)
+    assert started == []
+    assert STORE_KEY not in hass_storage
+
+    working = _second(hass)
+    await _set_up(hass, working)
+
+    (importer,) = started
+    assert _writer(hass) == (working.entry_id, importer)
+    assert _marker(hass_storage) == {"owners": {CODE_1: _owner_code("second@example.com")}}
+    # The refused sign-in's reader reads at last: it stays a standby.
+    reader = refused.runtime_data.hub.care_log_coordinators[MOCK_BABY_1.uid]
+    reader.data = refused_first[FIRST_ID]
+    reader.last_update_success = True
+    for call in reader.async_add_listener.call_args_list:
+        call.args[0]()
+    await _check_owners(hass)
+    assert started == [importer]
+    assert _writer(hass) == (working.entry_id, importer)
+    for entry in (refused, working):
+        assert await hass.config_entries.async_unload(entry.entry_id)
+    assert _no_registry_left(hass)
+
+
+async def test_a_sign_in_whose_reader_reads_late_takes_a_free_baby_at_once(
+    hass: HomeAssistant,
+    client: MagicMock,
+    started: list[CareLogStatisticsImporter],
+    hass_storage: dict[str, Any],
+    refused_first: dict[str, Any],
+) -> None:
+    refused = _entry(hass)
+    await _set_up(hass, refused)
+    await hass.async_block_till_done()
+    assert started == []
+    reader = refused.runtime_data.hub.care_log_coordinators[MOCK_BABY_1.uid]
+    (listener,) = [
+        call.args[0]
+        for call in reader.async_add_listener.call_args_list
+        if "_wait_for_read" in getattr(call.args[0], "__qualname__", "")
+    ]
+    unsubscribed = reader.async_add_listener.return_value.call_count
+
+    listener()  # an update that failed again: nothing changes
+    await hass.async_block_till_done()
+    assert started == []
+    reader.data = refused_first[FIRST_ID]
+    reader.last_update_success = True
+    listener()  # the reader has read: the registry looks again, without waiting
+    await hass.async_block_till_done()
+    task = _registry(hass)._check_task
+    assert task is not None
+    await task
+
+    (importer,) = started
+    assert _writer(hass) == (refused.entry_id, importer)
+    assert _marker(hass_storage) == {"owners": {CODE_1: _owner_code("first@example.com")}}
+    # The listener that waited for the read is gone; the importer's stays.
+    assert reader.async_add_listener.return_value.call_count == unsubscribed + 1
+    assert _importer_listeners(reader) == [importer._on_reader_update]
+    assert await hass.config_entries.async_unload(refused.entry_id)
+    assert _no_registry_left(hass)
+
+
 async def test_a_standby_tells_a_known_owner_from_no_decision_and_from_a_pause(
     hass: HomeAssistant,
     client: MagicMock,

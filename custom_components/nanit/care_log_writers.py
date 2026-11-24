@@ -42,7 +42,9 @@ Ownership is proved, never assumed:
   is decided. It cannot while the baby is paused because a batch sent in
   this run is unverified (``care_log_recorder``): then nothing is decided
   until Home Assistant restarts (``STATE_PAUSED_UNTIL_RESTART``).
-- The marker is saved, and read back from disk with a store of its own
+- The marker is saved (owner-only on disk, and written to a temporary file,
+  synced and moved into place, so a power loss leaves the old marker or
+  the new one), and read back from disk with a store of its own
   (Home Assistant's store logs a failed write and returns normally), before
   the owner is noted in memory and its importer starts. Any failure leaves
   everything as it was, and the next look tries again.
@@ -177,6 +179,11 @@ def _always() -> bool:
     return True
 
 
+def _marker_store(hass: HomeAssistant) -> Store[dict[str, Any]]:
+    """Return a store for the owner marker: owner-only, and replaced atomically (fsync'd)."""
+    return Store(hass, STORE_VERSION, STORE_KEY, private=True, atomic_writes=True)
+
+
 @dataclass(frozen=True, slots=True)
 class _Offer:
     owner: str
@@ -206,7 +213,7 @@ class CareLogWriterRegistry:
         self._hass = hass
         self._lock = asyncio.Lock()
         self._babies: dict[str, _Baby] = {}
-        self._store: Store[dict[str, Any]] = Store(hass, STORE_VERSION, STORE_KEY)
+        self._store: Store[dict[str, Any]] = _marker_store(hass)
         self._owners: dict[str, str] | None = None
         self._marker_unreadable = False
         # The stops in progress, by baby code: no importer starts for a baby
@@ -469,7 +476,7 @@ class CareLogWriterRegistry:
 
     def _disk_store(self) -> Store[dict[str, Any]]:
         """Return a new store for the marker: it has no copy in memory, so it reads the file."""
-        return Store(self._hass, STORE_VERSION, STORE_KEY)
+        return _marker_store(self._hass)
 
     def _start(self, baby: _Baby, entry_id: str) -> None:
         importer = baby.offers[entry_id].factory()

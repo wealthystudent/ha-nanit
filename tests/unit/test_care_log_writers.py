@@ -549,6 +549,18 @@ async def test_the_owner_marker_holds_only_one_way_codes(
     assert _no_registry_left(hass)
 
 
+async def test_the_owner_marker_is_written_owner_only_and_atomically(
+    hass: HomeAssistant, client: MagicMock, started: list[CareLogStatisticsImporter]
+) -> None:
+    entry = _entry(hass)
+    await _set_up(hass, entry)
+    registry = _registry(hass)
+    for store in (registry._store, registry._disk_store()):
+        assert store._private is True
+        assert store._atomic_writes is True
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
 async def test_one_entry_unloading_while_the_other_sets_up(
     hass: HomeAssistant,
     client: MagicMock,

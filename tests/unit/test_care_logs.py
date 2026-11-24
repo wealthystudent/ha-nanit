@@ -275,7 +275,10 @@ def test_summary_keeps_the_whole_fetch_with_sleep_once_per_uid_oldest_first() ->
 def test_whole_fetch_checks_the_range_before_choosing_one_copy_per_uid(
     kind: str, later: bool, reverse: bool
 ) -> None:
-    """A copy dated outside the range asked for, of any kind, is dropped and displaces nothing."""
+    """A copy dated outside the range asked for, of any kind, is left out and displaces nothing.
+
+    Only one of a counted kind is counted as outside.
+    """
     coverage = CareLogRequestCoverage(
         start=int(SEED_START), end=int(MIDNIGHT + 3600), read_at=DAY_START, dropped=2
     )
@@ -293,7 +296,11 @@ def test_whole_fetch_checks_the_range_before_choosing_one_copy_per_uid(
 
     assert data.all_entries == (inside,)
     assert data.request_coverage == CareLogRequestCoverage(
-        start=coverage.start, end=coverage.end, read_at=DAY_START, dropped=2, outside=1
+        start=coverage.start,
+        end=coverage.end,
+        read_at=DAY_START,
+        dropped=2,
+        outside=0 if kind == "sleep" else 1,
     )
     # And so the importer's read of it holds the copy inside, with a drop.
     read = CareLogRead.from_logs(
@@ -305,12 +312,33 @@ def test_whole_fetch_checks_the_range_before_choosing_one_copy_per_uid(
         reader="reader",
     )
     assert read.entries["b1"].amount(CareLogSeries.BOTTLE_VOLUME) == 90.0
-    assert read.dropped == 3
+    assert read.dropped == (2 if kind == "sleep" else 3)
     # The sensors choose in the same order: the copy inside.
     assert data.entries == (inside,)
     assert data.latest == {"bottle_feed": inside}
     assert data.today == (inside,)
     assert _sensor("bottle_volume_today", data).native_value == 90.0
+
+
+def test_a_camera_sleep_session_begun_before_the_range_is_left_out_and_not_counted() -> None:
+    """Nanit returns a camera sleep session whole when it overlaps the start of the range."""
+    coverage = CareLogRequestCoverage(
+        start=int(MIDNIGHT), end=int(MIDNIGHT + 3600), read_at=DAY_START
+    )
+    session = _log("s1", "auto_sleep", -96, end_timestamp=MIDNIGHT + 1884, status="eligible")
+    bottle = _log("b1", "bottle_feed", 600, feed_amount_ml=90.0)
+
+    data = build_care_log_data(
+        [session, bottle],
+        window_start=MIDNIGHT,
+        day_start=DAY_START,
+        previous=None,
+        request_coverage=coverage,
+    )
+
+    assert data.request_coverage == coverage  # so outside stays 0
+    assert data.all_entries == (bottle,)
+    assert data.entries == (bottle,)
 
 
 def test_whole_fetch_is_only_the_last_fetch() -> None:

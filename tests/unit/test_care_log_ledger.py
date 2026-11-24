@@ -169,11 +169,12 @@ def test_a_read_leaves_out_and_counts_entries_dated_outside_its_bounds() -> None
         _bottle("b_edge", at_start),  # the bounds are inclusive
         _bottle("b_last", datetime.fromtimestamp(END, UTC)),
         _bottle("b_late", datetime.fromtimestamp(END + 0.5, UTC)),
-        _log("s_old", "sleep", DAY - timedelta(days=3), duration_s=600.0),  # any kind
+        # Left out too, but an uncounted kind is not counted.
+        _log("s_old", "sleep", DAY - timedelta(days=3), duration_s=600.0),
     ]
     read = _read(logs, at=T0, dropped=1)
     assert set(read.entries) == {"b_edge", "b_last"}
-    assert read.dropped == 1 + 4
+    assert read.dropped == 1 + 3
 
 
 def test_an_answer_with_an_entry_outside_its_bounds_never_confirms_a_removal() -> None:
@@ -202,20 +203,24 @@ def test_a_later_dated_copy_outside_the_bounds_does_not_displace_the_one_inside(
 def test_a_copy_of_another_kind_outside_the_bounds_does_not_displace_the_one_inside(
     later: bool,
 ) -> None:
-    """A sleep row with a counted entry's uid, dated outside the bounds, in either order."""
+    """A sleep row with a counted entry's uid, dated outside the bounds, in either order.
+
+    It is left out without being counted, as a sleep kind adds nothing.
+    """
     when = datetime.fromtimestamp(END + 60, UTC) if later else DAY - timedelta(days=3)
     logs = [_bottle("b1", AT_9, 60.0), _log("b1", "sleep", when, duration_s=600.0)]
     for order in (logs, logs[::-1]):
         read = _read(order, at=T0)
         assert set(read.entries) == {"b1"}
         assert read.entries["b1"].amount(S.BOTTLE_VOLUME) == 60.0
-        assert read.dropped == 1
-    # Two such answers never confirm the removal of another entry.
+        assert read.dropped == 0
+    # Two such answers confirm the removal of an entry both lack, and keep b1.
     book = _book([_bottle("b1", AT_9, 60.0), _diaper("d1", AT_10)])
     book.process(_read(logs, at=T0))
     outcome = book.process(_read(logs[::-1], at=T0 + GAP))
-    assert not outcome.confirmed
-    assert "d1" in book.ledger
+    assert outcome.confirmed
+    assert "d1" not in book.ledger
+    assert "b1" in book.ledger
     assert _amount(book, S.BOTTLE_VOLUME, AT_9) == 60.0
 
 
@@ -1181,6 +1186,39 @@ def test_dropped_rows_in_either_read_prevent_confirmation() -> None:
         assert not outcome.confirmed
         assert "b1" in book.ledger
         assert outcome.confirm is not None  # the newer read waits instead
+
+
+def test_a_camera_sleep_session_begun_before_the_bounds_does_not_stop_a_lowering() -> None:
+    """Nanit returns a camera sleep session whole when it overlaps the start of the range."""
+    at_start = datetime.fromtimestamp(START, UTC)
+    session = _log(
+        "s1",
+        "auto_sleep",
+        at_start - timedelta(minutes=2),
+        end_timestamp=(at_start + timedelta(minutes=31)).timestamp(),
+        status="eligible",
+    )
+    without = [session, _bottle("b2", AT_10)]
+    read = _read(without, at=T0)
+    assert read.dropped == 0
+    assert set(read.entries) == {"b2"}
+    book = _book([_bottle("b1", AT_9), _bottle("b2", AT_10)])
+    first = book.process(read)
+    assert first.confirm is not None
+    assert "b1" in book.ledger
+    second = book.process(_read(without, at=first.confirm.not_before))
+    assert second.confirmed
+    assert "b1" not in book.ledger
+    # Two passes whose first read holds such a session agree.
+    logs = [session, _bottle("b1", AT_9), _diaper("d1", AT_10)]
+
+    def two_reads(at: datetime) -> list[CareLogRead]:
+        return [
+            _read(logs, at=at, end=NOON - 1),
+            _read([], at=at + timedelta(seconds=1), start=NOON),
+        ]
+
+    assert CareLogBook(reader=READER, min_gap=GAP).passes_agree(two_reads(T0), two_reads(T0 + GAP))
 
 
 def test_an_amount_raised_is_safe_and_one_lowered_or_cleared_waits() -> None:

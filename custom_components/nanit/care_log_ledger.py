@@ -205,19 +205,22 @@ class CareLogRead:
         """Build a read from returned entries.
 
         Counted kinds only. Every returned row, of any kind, is checked
-        against the inclusive bounds first: a row dated outside them is left
-        out and counted in ``dropped`` (such an answer is not what was asked
-        for, so it can never confirm a removal, and a wrong old date cannot
-        stretch the statistics back by years). Only then is one copy per uid
-        kept among the rest, the later-dated one of any kind (as the sensors
-        choose), so a copy out of range, of whatever kind, never displaces
-        one in range.
+        against the inclusive bounds first, and a row dated outside them is
+        left out. Only one of a counted kind is also counted in ``dropped``
+        (such an answer is not what was asked for, so it can never confirm a
+        removal, and a wrong old date cannot stretch the statistics back by
+        years); a sleep session that began before the range, which Nanit
+        returns whole, or a row of another uncounted kind is left out
+        without being counted. Only then is one copy per uid kept among the
+        rest, the later-dated one of any kind (as the sensors choose), so a
+        copy out of range, of whatever kind, never displaces one in range.
         """
         chosen: dict[str, tuple[float, _Record | None]] = {}
         outside = 0
         for log in logs:
             if not start <= log.timestamp <= end:
-                outside += 1
+                if entry_contribution(log) is not None:
+                    outside += 1
                 continue
             current = chosen.get(log.uid)
             if current is None or log.timestamp > current[0]:

@@ -826,7 +826,7 @@ class CareLogStatisticsImporter:
             start=coverage.start,
             end=coverage.end,
             read_at=coverage.read_at,
-            # A row dated outside the range counts as one the answer dropped.
+            # A counted row dated outside the range counts as one the answer dropped.
             dropped=coverage.dropped + coverage.outside,
             reader=self._reader,
             requested_at=coverage.requested_at,

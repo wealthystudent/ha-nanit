@@ -140,6 +140,9 @@ class Truth:
         self.during_own: Callable[[int, int], Awaitable[None]] | None = None
         # Added to every answer, whatever the range asked for.
         self.extra: list[CareLog] = []
+        # When set, every answer also holds a camera sleep session that
+        # began 96 seconds before the range, as Nanit returns those whole.
+        self.sleep_before_start = False
 
     def put(self, log: CareLog) -> None:
         self.logs[log.uid] = log
@@ -153,6 +156,16 @@ class Truth:
             for log in self.logs.values()
             if start <= log.timestamp <= end and log.uid not in self.omit_next
         ) + tuple(self.extra)
+        if self.sleep_before_start:
+            session = CareLog(
+                uid=f"s{start}",
+                log_type="auto_sleep",
+                timestamp=start - 96,
+                baby_uid=UID,
+                end_timestamp=start + 1884,
+                status="eligible",
+            )
+            logs = (session, *logs)
         dropped, self.dropped_next, self.omit_next = self.dropped_next, 0, set()
         return CareLogFetch(logs=logs, start=start, end=end, dropped=dropped)
 
@@ -1766,6 +1779,49 @@ async def test_a_row_of_another_kind_outside_the_range_never_removes_the_entry_o
     assert harness.importer._book.pending_requests() == ()
     assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(B1)] == 120.0
     assert harness.coordinator.data.latest["bottle_feed"] == B1
+
+
+async def test_a_deletion_is_lowered_when_every_answer_holds_a_sleep_session_begun_before_it(
+    make: Callable[..., Harness], hass: HomeAssistant
+) -> None:
+    truth = Truth(BASE)
+    truth.sleep_before_start = True
+    harness = await _imported(make, truth)
+    truth.delete(B1.uid)
+
+    await harness.tick_and_poll(timedelta(minutes=1))
+    assert len(harness.importer._book.pending_requests()) == 1
+
+    await harness.advance(MIN_GAP)
+
+    assert harness.diag()["confirm_fetches"] == 1
+    assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(B1)] == 0.0
+    assert B1.uid not in harness.importer._book.ledger
+    assert len(harness.importer._book.pending_requests()) == 0
+
+
+async def test_a_restart_adopts_on_its_second_pass_when_every_piece_holds_an_earlier_sleep_session(
+    make: Callable[..., Harness], hass: HomeAssistant
+) -> None:
+    truth = Truth(BASE)
+    truth.sleep_before_start = True
+    first = await _imported(make, truth)
+    await first.stop()
+    truth.delete(OLD.uid)  # while stopped: a stored row would be lowered
+
+    second = make(truth)
+    second.start()
+    await second.poll()
+    assert second.diag()["state"] == "waiting_for_second_pass"
+
+    await second.advance(MIN_GAP)
+
+    assert second.diag()["state"] == "running"
+    assert second.diag()["passes_completed"] == 2
+    assert second.diag()["give_ups"] == 0
+    volume = await _stored(hass, S.BOTTLE_VOLUME)
+    assert volume[_hour(OLD)] == 0.0
+    assert volume[_hour(B1)] == 120.0
 
 
 async def test_a_reader_queue_overflow_forgets_every_waiting_change(

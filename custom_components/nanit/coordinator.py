@@ -48,6 +48,7 @@ from aionanit.models import Baby, CameraEvent, CameraState, CareLog, CloudEvent,
 from .aionanit_sl.models import SoundLightEvent, SoundLightEventKind, SoundLightFullState
 from .aionanit_sl.sound_light import NanitSoundLight
 from .baby_code import baby_code
+from .care_log_hours import entry_contribution
 from .const import (
     CARE_LOG_POLL_INTERVAL,
     CARE_LOG_SEED_DAYS,
@@ -361,9 +362,11 @@ class CareLogRequestCoverage:
     both inclusive, as Nanit matches an entry by its start. ``read_at`` is
     when the answer arrived, ``requested_at`` when the request was sent
     (taken just before it; None when not known), and ``dropped`` how many
-    of its rows were skipped as malformed. ``outside`` counts the rows, of
-    any kind, that were dated outside the range (``CareLogData`` leaves
-    them out of every field).
+    of its rows were skipped as malformed. ``outside`` counts the rows of a
+    kind the statistics count that were dated outside the range.
+    ``CareLogData`` leaves out every row dated outside, of any kind, but a
+    sleep session that began before the range (Nanit returns those whole)
+    or a row of another uncounted kind is not counted here.
     """
 
     start: int
@@ -395,8 +398,9 @@ class CareLogData:
     carries anything forward from earlier fetches. When the range is known,
     every row, of any kind, is checked against it before a copy is chosen
     per uid, for the sensors' fields and ``all_entries`` alike: one dated
-    outside it is left out and counted in ``request_coverage.outside``, so
-    it neither displaces a copy inside the range nor goes unnoticed.
+    outside it is left out, so it never displaces a copy inside the range,
+    and one of a kind the statistics count is also counted in
+    ``request_coverage.outside``, so it does not go unnoticed.
     """
 
     latest: Mapping[str, CareLog]
@@ -449,10 +453,16 @@ def build_care_log_data(
     logs = tuple(logs)
     if request_coverage is not None:
         # Every row is checked against the range asked for before one copy
-        # per uid is chosen (see ``CareLogData``).
+        # per uid is chosen, and only the counted kinds are counted (see
+        # ``CareLogData``).
         low, high = request_coverage.start, request_coverage.end
         in_range = [log for log in logs if low <= log.timestamp <= high]
-        if outside := len(logs) - len(in_range):
+        outside = sum(
+            1
+            for log in logs
+            if not low <= log.timestamp <= high and entry_contribution(log) is not None
+        )
+        if outside:
             request_coverage = replace(request_coverage, outside=outside)
         logs = tuple(in_range)
     fetched = _by_uid(logs)

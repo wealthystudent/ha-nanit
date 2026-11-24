@@ -36,7 +36,8 @@ update the ledger under one rule:
 - Newer evidence is never overridden by older: once a read has changed an
   entry, what a read taken before it says about that entry is ignored,
   so a read that arrives late cannot add back an entry a newer
-  confirmation removed, or undo a newer edit.
+  confirmation removed, or undo a newer edit. An adopted pass counts as
+  such a read for every entry it holds.
 
 Every entry's change is applied as one unit keyed by uid, so an entry that
 moves from one hour to another is never counted in both.
@@ -853,9 +854,11 @@ class CareLogBook:
     """One baby's ledger, and the reads waiting to confirm a lowering change.
 
     While running, the book remembers for each uid when the read that last
-    changed it in the ledger (added, edited, moved or removed it) was taken.
-    A read taken before that is ignored for that uid (``assess``), so
-    an older read processed late cannot undo a newer decision. A record
+    changed it in the ledger (added, edited, moved or removed it) was taken;
+    from the adoption on, also when the pass read that supplied it was
+    taken (and whatever else the caller seeds, ``adopt_candidate``). A read
+    taken before that is ignored for that uid (``assess``), so an older read
+    processed late cannot undo a newer decision. A record
     older than ``CHANGE_MEMORY`` before the newest read processed is
     forgotten, and from then on every read older than that is ignored
     whole: such a read is never processed in practice (reads reach the book
@@ -947,6 +950,15 @@ class CareLogBook:
         than one read keeps the facts from the read taken last (the later
         ``read_at``; the later read in the pass on a tie).
         """
+        return self.candidate_and_times(reads)[0]
+
+    def candidate_and_times(self, reads: Sequence[CareLogRead]) -> tuple[Ledger, dict[str, float]]:
+        """Build a ``candidate``, and map each of its uids to when its read was taken.
+
+        The times (Unix seconds) are those of the reads that supplied each
+        entry, to seed the book's per-uid memory on adoption
+        (``adopt_candidate``).
+        """
         self._check_pass(reads)
         chosen: dict[str, tuple[datetime, _Record]] = {}
         for read in reads:
@@ -954,7 +966,9 @@ class CareLogBook:
                 current = chosen.get(uid)
                 if current is None or read.read_at >= current[0]:
                     chosen[uid] = (read.read_at, record)
-        return Ledger.from_records((uid, record) for uid, (_, record) in sorted(chosen.items()))
+        ledger = Ledger.from_records((uid, record) for uid, (_, record) in sorted(chosen.items()))
+        stamps = {read.read_at: read.read_at.timestamp() for read in reads}
+        return ledger, {uid: stamps[read_at] for uid, (read_at, _) in chosen.items()}
 
     def passes_agree(
         self,
@@ -995,18 +1009,26 @@ class CareLogBook:
         return _sightings_agree(second, seen, cutoff)
 
     def adopt(self, reads: Sequence[CareLogRead]) -> None:
-        """Replace the ledger with a pass's candidate and forget every waiting change."""
-        self.adopt_candidate(self.candidate(reads))
+        """Replace the ledger with a pass's candidate and forget every waiting change.
 
-    def adopt_candidate(self, ledger: Ledger) -> None:
+        The per-uid memory starts from the pass: each entry's read is newer
+        evidence of it than any read taken before.
+        """
+        self.adopt_candidate(*self.candidate_and_times(reads))
+
+    def adopt_candidate(self, ledger: Ledger, changed_at: dict[str, float] | None = None) -> None:
         """Replace the ledger with one ``candidate`` built, and forget every waiting change.
 
+        ``changed_at`` (taken over, not copied) seeds the per-uid memory:
+        uid to when the read that last spoke about it was taken (Unix
+        seconds), as ``candidate_and_times`` gives it for the pass's own
+        entries. What a read taken before that says about a uid is ignored.
         Quick, so it can run on the event loop after the candidate was built
         off it.
         """
         self._ledger = ledger
         self._pending.clear()
-        self._changed_at.clear()
+        self._changed_at = {} if changed_at is None else changed_at
         self._established = True
 
     # -- running ------------------------------------------------------------

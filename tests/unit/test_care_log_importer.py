@@ -25,9 +25,11 @@ from custom_components.nanit.care_log_importer import (
     HISTORY_FLOOR,
     HISTORY_PIECE,
     CareLogStatisticsImporter,
+    _superseded,
     care_log_history_pieces,
     care_log_history_start,
 )
+from custom_components.nanit.care_log_ledger import CareLogRead
 from custom_components.nanit.const import CARE_LOG_POLL_INTERVAL, DOMAIN
 from custom_components.nanit.coordinator import NanitCareLogCoordinator
 
@@ -153,6 +155,34 @@ def test_pieces_of_a_real_history_keep_their_bounds_from_day_to_day() -> None:
     _check_pieces(today, start, int(NOW.timestamp()) - DAY)
     assert len(today) >= 3
     assert tomorrow[: len(today) - 1] == today[:-1]
+
+
+# ---------------------------------------------------------------------------
+# Which kept reads an adopted pass supersedes
+# ---------------------------------------------------------------------------
+
+
+def _bounds_read(start: int, end: int, minute: int) -> CareLogRead:
+    return CareLogRead(
+        start=start, end=end, read_at=NOW + timedelta(minutes=minute), dropped=0, reader="r"
+    )
+
+
+def test_a_kept_read_is_superseded_only_by_newer_pass_reads_covering_all_its_bounds() -> None:
+    kept = _bounds_read(1000, 5000, 10)
+    # Newer pieces sharing their boundary second cover it whole.
+    assert _superseded(kept, [_bounds_read(0, 3000, 11), _bounds_read(3000, 9000, 12)])
+    # A read taken at the same moment counts as newer; one taken before does not.
+    assert _superseded(kept, [_bounds_read(0, 9000, 10)])
+    assert not _superseded(kept, [_bounds_read(0, 9000, 9)])
+    # Every second: a pass that stops short, starts late or has a gap leaves it.
+    assert not _superseded(kept, [_bounds_read(0, 4999, 11)])
+    assert not _superseded(kept, [_bounds_read(1001, 9000, 11)])
+    assert not _superseded(kept, [_bounds_read(0, 3000, 11), _bounds_read(3001, 9000, 11)])
+    # Disjoint: a recent poll and a newer piece of an older period.
+    assert not _superseded(kept, [_bounds_read(0, 999, 11), _bounds_read(999, 1000, 9)])
+    # Only the newer reads count, wherever the older ones are.
+    assert not _superseded(kept, [_bounds_read(0, 3000, 11), _bounds_read(3000, 9000, 9)])
 
 
 # ---------------------------------------------------------------------------

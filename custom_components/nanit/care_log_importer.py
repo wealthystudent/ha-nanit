@@ -50,9 +50,16 @@ the reader's reads are kept. A second pass is adopted only when none of
 the reads kept since its round's first pass began returns, in an hour that
 was finished when that pass began and inside the pass's bounds, an entry
 the second pass lacks or holds otherwise. Older evidence never overrides
-newer: once a pass is adopted, every kept read taken no later than the
-pass's latest read is discarded unprocessed, and only the reads taken
-after it go to the book. When more than ``READER_QUEUE`` reads wait, the
+newer: once a pass is adopted, a kept read is discarded unprocessed when
+pass reads taken at or after it cover every second of its bounds; any
+other goes to the book, in order. The book's per-uid memory starts from
+the pass: an entry the pass holds counts as changed when its pass read
+was taken, and one a kept read returns but the pass lacks, although a
+pass read taken after the kept one covers its time, counts as changed
+then; what a read taken before says about either is ignored. So a recent
+read is not lost because a piece of an older period finished after it,
+and an old sighting or omission does not undo what the pass found. When
+more than ``READER_QUEUE`` reads wait, the
 oldest is lost: a start-up round in progress or waiting starts over (it is
 checked after every wait of the round, up to the adoption), and every
 change waiting for a confirming read is forgotten, so nothing is confirmed
@@ -289,6 +296,56 @@ def _pass_watermark(reads: Sequence[CareLogRead]) -> int:
     for read in reads:
         watermark = _extend(watermark, read.start, _reach(read))
     return watermark
+
+
+def _superseded(kept: CareLogRead, reads: Sequence[CareLogRead]) -> bool:
+    """Whether pass reads taken at or after a kept read cover every second of its bounds.
+
+    The bounds are inclusive and entries are dated to a fraction of a
+    second, so two reads join only where they share a second.
+    """
+    spans = sorted((read.start, read.end) for read in reads if read.read_at >= kept.read_at)
+    covered = False
+    point = kept.start
+    for start, end in spans:
+        if end < point or (covered and end == point):
+            continue
+        if start > point:
+            return False
+        covered = True
+        point = end
+        if point >= kept.end:
+            return True
+    return False
+
+
+def _seed_absences(
+    changed_at: dict[str, float],
+    kept: CareLogRead,
+    reads: Sequence[CareLogRead],
+    candidate: Ledger,
+) -> None:
+    """Note, for the per-uid memory, the newer pass reads that lack what a kept read returns.
+
+    A uid the kept read returns, which the pass does not hold although a
+    pass read taken after the kept one covers its time, was deleted or
+    moved since: that pass read's time is recorded for it, so the book
+    ignores the kept read's sighting.
+    """
+    for uid, record in kept.records.items():
+        if uid in candidate:
+            continue
+        when = record[0]
+        newest = max(
+            (
+                read.read_at.timestamp()
+                for read in reads
+                if read.read_at > kept.read_at and read.start <= when <= read.end
+            ),
+            default=None,
+        )
+        if newest is not None and newest > changed_at.get(uid, -math.inf):
+            changed_at[uid] = newest
 
 
 def _taken_at(data: CareLogData) -> datetime:
@@ -767,18 +824,20 @@ class CareLogStatisticsImporter:
         self._passes_completed += 1
         self._passes = 1
 
-        candidate: Ledger = await self._hass.async_add_executor_job(self._book.candidate, reads)
+        candidate: tuple[Ledger, dict[str, float]] = await self._hass.async_add_executor_job(
+            self._book.candidate_and_times, reads
+        )
         self._check_round(generation)
         comparison = await async_compare_care_log_statistics(
             self._hass,
             code=self._code,
-            ledger=candidate,
+            ledger=candidate[0],
             end_hour=self._end_hour(_pass_watermark(reads)),
             coverage_start=reads[0].start,
         )
         self._check_round(generation)
         if comparison.lowering_cells == 0:
-            self._adopt(reads, candidate)
+            self._adopt(reads, *candidate)
             # The pass is not needed any more: let it go before the first sync,
             # which can take minutes, so the collector does not keep visiting it.
             del reads, reader_read, candidate
@@ -813,9 +872,11 @@ class CareLogStatisticsImporter:
         )
         self._check_round(generation)
         if agree:
-            candidate: Ledger = await self._hass.async_add_executor_job(self._book.candidate, reads)
+            candidate: tuple[Ledger, dict[str, float]] = await self._hass.async_add_executor_job(
+                self._book.candidate_and_times, reads
+            )
             self._check_round(generation)
-            self._adopt(reads, candidate)
+            self._adopt(reads, *candidate)
             # Both passes are let go before the sync (see the first pass).
             del first, reads, read, seen, candidate
             await self._async_sync()
@@ -863,20 +924,35 @@ class CareLogStatisticsImporter:
         self._startup_due = None
         self._wake()
 
-    def _adopt(self, reads: Sequence[CareLogRead], candidate: Ledger) -> None:
+    def _adopt(
+        self, reads: Sequence[CareLogRead], candidate: Ledger, changed_at: dict[str, float]
+    ) -> None:
         """Adopt a pass whose candidate was built; the caller syncs next.
 
         Without a wait, so nothing can arrive between the round's last check
-        and the book's change.
+        and the book's change. ``changed_at`` is, per uid of the candidate,
+        when the read that supplied it was taken (``candidate_and_times``).
+
+        Older evidence never overrides newer. A kept reader read is
+        discarded when pass reads taken at or after it cover every second of
+        its bounds. Any other is processed after the adoption, in order; the
+        book then ignores what it says about an entry the pass holds from a
+        read taken after it, and, by ``changed_at`` as seeded here, about an
+        entry it returns that the pass lacks although a pass read taken
+        after it covers its time.
         """
-        self._book.adopt_candidate(candidate)
+        kept: deque[CareLogData] = deque()
+        for data in self._reader_queue:
+            read = self._read_from_reader(data)
+            if _superseded(read, reads):
+                continue
+            kept.append(data)
+            _seed_absences(changed_at, read, reads, candidate)
+        self._book.adopt_candidate(candidate, changed_at)
+        self._reader_queue = kept
         self._watermark = _pass_watermark(reads)
         # The pass's last read is the reader's (or its re-read).
         self._reader_span = (reads[-1].start, _reach(reads[-1]))
-        # Older evidence never overrides newer: a kept read taken no later
-        # than the pass's latest read is discarded, whatever it holds.
-        latest = max(read.read_at for read in reads)
-        self._reader_queue = deque(data for data in self._reader_queue if _taken_at(data) > latest)
         now = dt_util.utcnow()
         self._first_pass = None
         self._first_pass_began = None
@@ -892,7 +968,7 @@ class CareLogStatisticsImporter:
         self._last_history_at = now
         self._history_due = now + HISTORY_INTERVAL
         self._state = STATE_RUNNING
-        # The reader reads kept since the pass's latest read, in order.
+        # The reader reads kept and not superseded, in order.
         self._process_reads()
 
     # -- running ------------------------------------------------------------------

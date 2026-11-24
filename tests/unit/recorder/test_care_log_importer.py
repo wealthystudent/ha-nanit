@@ -1625,6 +1625,40 @@ async def test_a_removal_confirmed_by_passes_two_and_three_is_not_undone_by_an_o
     assert (await _stored(hass, S.DIAPER_PEE))[_hour(D2)] == 0.0
 
 
+async def test_a_recent_poll_still_counts_when_a_piece_of_an_older_period_finishes_after_it(
+    make: Callable[..., Harness], hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """A poll sees a newly backdated bottle; the pass's last piece is answered after it."""
+    # Near the start of a 24 hour window: the poll after it no longer reaches it.
+    backdated = _bottle("b_backdated", NOW - timedelta(hours=23, minutes=58), 65.0)
+    truth = Truth(BASE)
+    harness = make(truth)
+    pieces = list(_expected_pieces(_first_poll_start()))
+
+    async def poll_during_the_last_piece(start: int, end: int) -> None:
+        if (start, end) != pieces[-1]:
+            return
+        truth.during_own = None
+        truth.put(backdated)
+        freezer.tick(timedelta(seconds=1))
+        await harness.coordinator.async_refresh()  # 24 hours: it returns the bottle
+        freezer.tick(timedelta(seconds=1))  # the piece, months earlier, comes after
+
+    truth.during_own = poll_during_the_last_piece
+    harness.start()
+    await harness.poll()  # 18:10, the first pass; nothing stored, so adopted at once
+
+    assert harness.diag()["state"] == "running"
+    assert truth.reader[-1][0] < backdated.timestamp
+    assert backdated.uid in harness.importer._book.ledger
+    assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(backdated)] == 65.0
+
+    await harness.tick_and_poll(timedelta(minutes=5))
+    assert truth.reader[-1][0] > backdated.timestamp
+    assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(backdated)] == 65.0
+    assert harness.diag()["passes_completed"] == 1
+
+
 async def test_a_reader_read_lost_while_the_adoption_waits_starts_the_round_over(
     make: Callable[..., Harness], hass: HomeAssistant, freezer: FrozenDateTimeFactory
 ) -> None:
@@ -1639,7 +1673,8 @@ async def test_a_reader_read_lost_while_the_adoption_waits_starts_the_round_over
 
     def job(target: Any, *args: Any) -> Any:
         name = getattr(target, "__name__", "")
-        if importer._passes >= 2 and name in {"adopt", "candidate"} and not injected:
+        candidates = {"adopt", "candidate", "candidate_and_times"}
+        if importer._passes >= 2 and name in candidates and not injected:
             injected.append(name)
 
             async def polls_meanwhile() -> Any:

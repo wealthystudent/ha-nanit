@@ -609,6 +609,51 @@ async def test_a_reader_refusal_holds_the_calendar_back(
     assert await hass.config_entries.async_unload(entry.entry_id)
 
 
+async def test_a_refusal_shows_on_the_care_sensors_at_once_and_is_told_once(
+    hass: HomeAssistant,
+    client: Any,
+    freezer: FrozenDateTimeFactory,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The calendar is refused: the care sensors say so before the reader polls again.
+
+    Their listeners are told once, then not again by the reader's held poll;
+    a refusal of the reader's own poll is told once too.
+    """
+    freezer.move_to(NOW)
+    fake = FakeNanit()
+    _day_of_entries(fake)
+    entry, calendar = await _one_calendar(hass, client, fake)
+    reader = calendar.coordinator
+    assert STATE_UNAVAILABLE not in _care_sensor_states(hass, entry).values()
+    told: list[bool] = []
+    unsub = reader.async_add_listener(lambda: told.append(reader.last_update_success))
+    caplog.clear()
+
+    fake.error = NanitRequestRefused("Calendar fetch", 403)
+    with pytest.raises(HomeAssistantError):
+        await _events(hass, calendar, RANGE_START, RANGE_END)
+    await hass.async_block_till_done()
+    assert told == [False]
+    assert set(_care_sensor_states(hass, entry).values()) == {STATE_UNAVAILABLE}
+    await reader.async_refresh()
+    assert told == [False]
+    errors = [record for record in caplog.records if record.levelno >= logging.ERROR]
+    assert len(errors) == 1
+    assert BABY_MARKER not in caplog.text
+
+    # After the hold, the reader reads; then its own poll is refused.
+    fake.error = None
+    freezer.tick(care_log_hold(NanitRequestRefused("Calendar fetch", 403)))
+    await reader.async_refresh()
+    assert told == [False, True]
+    fake.error = NanitRequestRefused("Calendar fetch", 403)
+    await reader.async_refresh()
+    assert told == [False, True, False]
+    unsub()
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
 @pytest.mark.parametrize(
     "error",
     [NanitRequestRefused("Calendar fetch", 403), NanitRateLimited("Calendar fetch", 7200)],

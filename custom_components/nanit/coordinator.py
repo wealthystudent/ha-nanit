@@ -549,6 +549,8 @@ class NanitCareLogCoordinator(DataUpdateCoordinator[CareLogData]):
         self._refusals = 0
         # A refusal (403) that no request sent after it has answered yet.
         self._refused = False
+        # Whether the reader's own poll is under way.
+        self._polling = False
 
     @property
     def requests_held(self) -> bool:
@@ -619,6 +621,16 @@ class NanitCareLogCoordinator(DataUpdateCoordinator[CareLogData]):
         if not isinstance(err, NanitRateLimited):
             self._refusals += 1
             self._refused = True
+            if not self._polling:
+                # Another caller was refused: the care sensors say so now,
+                # not at the next poll (a poll under way reports it itself).
+                self.async_set_update_error(
+                    UpdateFailed(
+                        translation_domain=DOMAIN,
+                        translation_key="care_log_fetch_failed",
+                        translation_placeholders={"error": "Calendar fetch failed with HTTP 403"},
+                    )
+                )
 
     def _held_poll_interval(self) -> timedelta:
         """Return when the reader polls next while requests are held."""
@@ -645,6 +657,7 @@ class NanitCareLogCoordinator(DataUpdateCoordinator[CareLogData]):
         # Just before the request (and its retries): an hour that had not
         # finished by then may gain entries the answer lacks.
         requested_at = dt_util.utcnow()
+        self._polling = True
         try:
             client = self._hub.client
             fetch = await _async_fetch_with_retries(
@@ -681,6 +694,8 @@ class NanitCareLogCoordinator(DataUpdateCoordinator[CareLogData]):
                 translation_key="care_log_fetch_failed",
                 translation_placeholders={"error": str(err)},
             ) from err
+        finally:
+            self._polling = False
 
         self.update_interval = timedelta(seconds=CARE_LOG_POLL_INTERVAL)
         self._last_fetch = now

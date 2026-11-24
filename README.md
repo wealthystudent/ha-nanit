@@ -132,7 +132,7 @@ When entries count:
 
 - An entry counts in the hour it is dated. A nursing or pumping session's whole time counts in the hour it started.
 - Only finished hours are written, at the first read asked for after the hour ends, so a few minutes after the hour.
-- An hour is written only once a read has covered it and every hour before it, back to the start of the history. If the integration couldn't read Nanit for longer than a day, the next read looks back only 7 days, so nothing after the last hour read is written until the whole history is read again, which then happens within the hour.
+- An hour is written only once a read has covered it and every hour before it, back to the start of the history. A read looks back a day, or 7 days after a break of more than a day. If that doesn't reach the last hour already read (after a break of just under a day, or of more than 7 days), nothing later is written until the whole history is read again, which then happens within the hour.
 - The rows are on UTC hours. In a time zone offset from UTC by 30 or 45 minutes, a day starts in the middle of a row, so a daily bar can include a slice of the neighbouring day, and a daily chart can differ slightly from the matching "today" sensor.
 
 Corrections:

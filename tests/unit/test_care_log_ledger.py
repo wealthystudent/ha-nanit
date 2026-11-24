@@ -828,6 +828,41 @@ def test_a_pass_may_share_boundary_seconds_and_keeps_an_entry_in_both_once() -> 
     assert book.passes_agree(reads, second)
 
 
+def test_passes_whose_reads_agree_pair_by_pair_but_whose_candidates_differ_disagree() -> None:
+    """A bottle at the boundary second: the history says 100 mL, the recent read 30 mL.
+
+    The first pass took its recent read before the history (as start-up
+    does: the reader's answer comes first), the second re-read them in
+    order, so each keeps the other value.
+    """
+    book = CareLogBook(reader=READER, min_gap=GAP)
+    at_boundary = datetime.fromtimestamp(NOON, UTC)
+    history = [_bottle("b5", at_boundary, 100.0)]
+    recent = [_bottle("b5", at_boundary, 30.0)]
+    first = [
+        _read(history, at=T0 + timedelta(seconds=5), start=START, end=NOON),
+        _read(recent, at=T0, start=NOON, end=END),
+    ]
+    later = T0 + GAP + timedelta(seconds=10)
+    second = [
+        _read(history, at=later, start=START, end=NOON),
+        _read(recent, at=later + timedelta(seconds=5), start=NOON, end=END),
+    ]
+    # Each read agrees with its pair...
+    for a, b in zip(first, second, strict=True):
+        assert book.passes_agree([a], [b])
+    # ...but the candidates hold 100 and 30 mL.
+    assert book.candidate(first).get("b5") == _facts(history[0])
+    assert book.candidate(second).get("b5") == _facts(recent[0])
+    assert not book.passes_agree(first, second)
+    # The same order in both passes: the same candidate, so they agree.
+    again = [
+        _read(history, at=later + timedelta(seconds=5), start=START, end=NOON),
+        _read(recent, at=later, start=NOON, end=END),
+    ]
+    assert book.passes_agree(first, again)
+
+
 def test_two_passes_agree() -> None:
     book = CareLogBook(reader=READER, min_gap=GAP)
     logs = [_bottle("b1", AT_9), _diaper("d1", AT_10)]

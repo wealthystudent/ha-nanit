@@ -735,6 +735,24 @@ def _agree(first: CareLogRead, second: CareLogRead, cutoff: int) -> bool:
     return a == b
 
 
+def _held(reads: Sequence[CareLogRead]) -> dict[str, tuple[datetime, _Record]]:
+    """Return what a pass holds per uid: the record of its latest read, as a candidate keeps."""
+    held: dict[str, tuple[datetime, _Record]] = {}
+    for read in reads:
+        for uid, record in read.records.items():
+            current = held.get(uid)
+            if current is None or read.read_at >= current[0]:
+                held[uid] = (read.read_at, record)
+    return held
+
+
+def _finished(
+    held: Mapping[str, tuple[datetime, _Record]], cutoff: int
+) -> dict[str, tuple[float, ...]]:
+    """Return the chart facts (a record without its time) held for hours before ``cutoff``."""
+    return {uid: record[1:] for uid, (_, record) in held.items() if record[1] < cutoff}
+
+
 def _sightings_agree(
     reads: Sequence[CareLogRead], seen: Iterable[CareLogRead], cutoff: int
 ) -> bool:
@@ -744,12 +762,7 @@ def _sightings_agree(
     candidate.
     """
     low, high = reads[0].start, reads[-1].end
-    held: dict[str, tuple[datetime, _Record]] = {}
-    for read in reads:
-        for uid, record in read.records.items():
-            current = held.get(uid)
-            if current is None or read.read_at >= current[0]:
-                held[uid] = (read.read_at, record)
+    held = _held(reads)
     for read in seen:
         for uid, record in read.records.items():
             if record[1] >= cutoff or not low <= record[0] <= high:
@@ -984,7 +997,12 @@ class CareLogBook:
         Same bounds pairwise, this reader throughout, nothing dropped, each
         read of the second at least ``min_gap`` after its pair in the first,
         and the same entries, read by read, in every hour that was finished
-        when the first pass began.
+        when the first pass began. The candidates the two passes build must
+        hold the same entries in those hours too: an entry returned by two
+        reads of a pass (at the second they share) is the one its latest read
+        returned, and the reads of the two passes need not be taken in the
+        same order, so pairs that agree can still give two candidates that
+        differ.
 
         ``seen`` are other reads taken since the first pass began. None of
         them may return, in an hour that was finished when the first pass
@@ -1009,6 +1027,8 @@ class CareLogBook:
                 return False
             if not _agree(a, b, cutoff):
                 return False
+        if _finished(_held(first), cutoff) != _finished(_held(second), cutoff):
+            return False
         return _sightings_agree(second, seen, cutoff)
 
     def adopt(self, reads: Sequence[CareLogRead]) -> None:

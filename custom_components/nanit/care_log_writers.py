@@ -29,8 +29,9 @@ Ownership is proved, never assumed:
   deleted them, so the marker is void). Then the offering entry whose
   ``entry_id`` sorts first among those with polling enabled (an entry with
   polling disabled could never import) and whose care log reader has read
-  the baby (it holds a read and its last update succeeded: a sign-in Nanit
-  refuses would hold the baby and never import) takes ownership. An entry
+  the baby (it holds a read, its last update succeeded, and Nanit has not
+  refused a request of it for the baby since: a sign-in Nanit refuses
+  would hold the baby and never import) takes ownership. An entry
   whose reader has not read yet listens to it, which keeps it polling, and
   has the registry look again as soon as it has read. Taking ownership
   waits until Home Assistant has started, so every entry that loads at
@@ -629,8 +630,15 @@ def _importer_factory(
 
 
 def _has_read(coordinator: NanitCareLogCoordinator) -> bool:
-    """Whether a reader holds a read of the baby's care logs and its last update succeeded."""
-    return coordinator.last_update_success and coordinator.data is not None
+    """Whether a reader holds a read of the baby's care logs that still stands.
+
+    Its last update succeeded, and no request of the sign-in for the baby
+    (the reader's, the calendar's or an importer's) was refused (HTTP 403)
+    without a later one succeeding since.
+    """
+    return (
+        coordinator.last_update_success and coordinator.data is not None and not coordinator.refused
+    )
 
 
 class EntryCareLogWriters:

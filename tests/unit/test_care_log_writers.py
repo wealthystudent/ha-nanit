@@ -32,9 +32,14 @@ from pytest_homeassistant_custom_component.common import (
 # Camera imports pull in turbojpeg; stub it like test_read_only.py does.
 _ = sys.modules.setdefault("turbojpeg", MagicMock(TurboJPEG=MagicMock()))
 
-from aionanit.models import Baby
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.entity_platform import async_get_platforms
+
+from aionanit.exceptions import NanitRequestRefused
+from aionanit.models import Baby, CareLogFetch
 from custom_components.nanit import care_log_writers
 from custom_components.nanit.baby_code import baby_code
+from custom_components.nanit.calendar import NanitCareLogCalendar
 from custom_components.nanit.care_log_importer import CareLogStatisticsImporter
 from custom_components.nanit.care_log_writers import (
     WRITERS_KEY,
@@ -48,6 +53,7 @@ from custom_components.nanit.const import (
     CONF_SHOW_CARE_LOG_NOTES,
     DOMAIN,
 )
+from custom_components.nanit.coordinator import NanitCareLogCoordinator
 from custom_components.nanit.diagnostics import async_get_config_entry_diagnostics
 
 from .conftest import MOCK_BABY_1, mock_entry_data_v2
@@ -839,6 +845,55 @@ async def test_a_sign_in_whose_reader_has_not_read_takes_no_first_ownership(
         call.args[0]()
     await _check_owners(hass)
     assert started == [importer]
+    assert _writer(hass) == (working.entry_id, importer)
+    for entry in (refused, working):
+        assert await hass.config_entries.async_unload(entry.entry_id)
+    assert _no_registry_left(hass)
+
+
+async def test_a_sign_in_refused_after_it_read_takes_no_first_ownership(
+    hass: HomeAssistant,
+    client: MagicMock,
+    started: list[CareLogStatisticsImporter],
+) -> None:
+    """It sorts first and its reader read the baby; then Nanit refuses its calendar.
+
+    Real readers: the refusal (HTTP 403) reaches the first sign-in's through
+    its calendar, and the sign-in that still reads takes the baby.
+    """
+
+    async def answer(_baby_uid: str, start: int, end: int) -> CareLogFetch:
+        return CareLogFetch(logs=(), start=start, end=end, dropped=0)
+
+    client.async_get_calendar_result = AsyncMock(side_effect=answer)
+    client.async_get_calendar_details = AsyncMock(
+        side_effect=NanitRequestRefused("Calendar fetch", 403)
+    )
+    hass.set_state(CoreState.starting)
+    with patch("custom_components.nanit.hub.NanitCareLogCoordinator", NanitCareLogCoordinator):
+        refused = _entry(hass, **{CONF_SHOW_CARE_LOG_NOTES: True})
+        await _set_up(hass, refused)
+        working = _second(hass)
+        await _set_up(hass, working)
+    reader = refused.runtime_data.hub.care_log_coordinators[MOCK_BABY_1.uid]
+    assert reader.last_update_success
+    assert reader.data is not None
+    (calendar,) = [
+        entity
+        for platform in async_get_platforms(hass, DOMAIN)
+        if platform.domain == "calendar" and platform.config_entry is refused
+        for entity in platform.entities.values()
+        if isinstance(entity, NanitCareLogCalendar)
+    ]
+    now = dt_util.utcnow()
+    with pytest.raises(HomeAssistantError):
+        await calendar.async_get_events(hass, now - timedelta(days=1), now)
+
+    hass.set_state(CoreState.running)
+    hass.bus.async_fire(EVENT_HOMEASSISTANT_STARTED)
+    await _check_owners(hass)
+
+    (importer,) = started
     assert _writer(hass) == (working.entry_id, importer)
     for entry in (refused, working):
         assert await hass.config_entries.async_unload(entry.entry_id)

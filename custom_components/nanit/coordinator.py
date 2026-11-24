@@ -332,11 +332,13 @@ _CARE_LOG_LOOKBACK = timedelta(hours=24)
 # on a reload).
 CARE_LOG_REFUSED_RECHECK = timedelta(hours=1)
 
-# After Nanit throttles a request (HTTP 429): at least the wait it asks for,
-# never less than the normal poll interval and never more than this. With no
-# wait given, CARE_LOG_THROTTLED_DEFAULT, three normal intervals.
-CARE_LOG_THROTTLED_MAX = timedelta(hours=1)
+# After Nanit throttles a request (HTTP 429): the wait it asks for, and never
+# less than the normal poll interval. With no wait given,
+# CARE_LOG_THROTTLED_DEFAULT, three normal intervals.
 CARE_LOG_THROTTLED_DEFAULT = timedelta(minutes=15)
+# The longest the reader goes between two polls while requests are held: a
+# longer wait is checked again hourly, and no request goes out before it ends.
+CARE_LOG_HELD_POLL_MAX = timedelta(hours=1)
 
 
 def care_log_hold(err: NanitRequestRefused) -> timedelta:
@@ -346,7 +348,7 @@ def care_log_hold(err: NanitRequestRefused) -> timedelta:
         return CARE_LOG_REFUSED_RECHECK
     if err.retry_after is None:
         return CARE_LOG_THROTTLED_DEFAULT
-    return min(max(timedelta(seconds=err.retry_after), normal), CARE_LOG_THROTTLED_MAX)
+    return max(timedelta(seconds=err.retry_after), normal)
 
 
 @dataclass(frozen=True)
@@ -535,30 +537,89 @@ class NanitCareLogCoordinator(DataUpdateCoordinator[CareLogData]):
         self.baby = baby
         # When the last successful fetch started.
         self._last_fetch: datetime | None = None
-        # Until when (on the loop's monotonic clock) Nanit should not be
-        # asked for this baby's Care Logs on demand, after a refusal or
-        # throttling; None when it may be.
+        # The hold every Care Log request of this sign-in for this baby goes
+        # through (``async_request``). Until when, on the loop's monotonic
+        # clock, no request may be sent; None when one may.
         self._held_until: float | None = None
+        # The newest refusal or throttling, until a request sent after it
+        # succeeds.
+        self._held_by: NanitRequestRefused | None = None
+        # Every refusal or throttling the hold saw, and every refusal (403).
+        self._holds = 0
+        self._refusals = 0
+        # A refusal (403) that no request sent after it has answered yet.
+        self._refused = False
 
     @property
     def requests_held(self) -> bool:
         """Return whether Nanit refused or throttled this baby's Care Logs a moment ago.
 
-        Set by a refusal or throttling that the reader or the calendar got,
-        for as long as ``care_log_hold`` says, and cleared by the reader's
-        next successful fetch. The calendar asks nothing meanwhile. The
-        reader's own polls are timed by its interval instead.
+        For as long as ``care_log_hold`` says after the newest refusal or
+        throttling, unless a request sent after it succeeded.
         """
         return self._held_until is not None and self.hass.loop.time() < self._held_until
 
-    @callback
-    def hold_requests(self, err: NanitRequestRefused) -> timedelta:
-        """Hold on-demand requests after a refusal or throttling, and return for how long."""
-        hold = care_log_hold(err)
-        until = self.hass.loop.time() + hold.total_seconds()
+    @property
+    def refusals(self) -> int:
+        """Return how many refusals (HTTP 403) this sign-in got for this baby so far.
+
+        A calendar compares it before and after a fetch: one that changed
+        means what it fetched or kept may no longer be shown.
+        """
+        return self._refusals
+
+    @property
+    def refused(self) -> bool:
+        """Return whether Nanit refused (HTTP 403) a request no later one has succeeded since."""
+        return self._refused
+
+    async def async_request[T](self, request: Callable[[], Awaitable[T]]) -> T:
+        """Send one Care Log request of this sign-in for this baby, unless requests are held.
+
+        Every request for them goes through here just before it is sent: the
+        reader's polls and their retries, each calendar piece and each of
+        the statistics importer's own. While requests are held it raises the
+        refusal or throttling again, asking Nanit nothing. A refusal or
+        throttling a request gets holds every request (``care_log_hold``),
+        and a success clears the hold only when no refusal or throttling
+        arrived while it was on its way: an older request finishing late
+        leaves a newer hold in place.
+        """
+        if self.requests_held and self._held_by is not None:
+            held = self._held_by
+            if isinstance(held, NanitRateLimited):
+                raise NanitRateLimited("Calendar fetch", held.retry_after)
+            raise NanitRequestRefused("Calendar fetch", held.status)
+        holds = self._holds
+        try:
+            result = await request()
+        except NanitRequestRefused as err:
+            self._hold(err)
+            raise
+        if self._holds == holds:
+            self._held_until = None
+            self._held_by = None
+            self._refused = False
+        return result
+
+    def _hold(self, err: NanitRequestRefused) -> None:
+        """Hold every request after a refusal or throttling, for as long as it asks."""
+        until = self.hass.loop.time() + care_log_hold(err).total_seconds()
         if self._held_until is None or until > self._held_until:
             self._held_until = until
-        return hold
+        self._held_by = err
+        self._holds += 1
+        if not isinstance(err, NanitRateLimited):
+            self._refusals += 1
+            self._refused = True
+
+    def _held_poll_interval(self) -> timedelta:
+        """Return when the reader polls next while requests are held."""
+        normal = timedelta(seconds=CARE_LOG_POLL_INTERVAL)
+        if self._held_until is None:
+            return normal
+        left = timedelta(seconds=self._held_until - self.hass.loop.time())
+        return min(max(left, normal), CARE_LOG_HELD_POLL_MAX)
 
     async def _async_update_data(self) -> CareLogData:
         """Fetch Care Logs from the Nanit API and summarise them."""
@@ -580,7 +641,10 @@ class NanitCareLogCoordinator(DataUpdateCoordinator[CareLogData]):
         try:
             client = self._hub.client
             fetch = await _async_fetch_with_retries(
-                self, lambda: client.async_get_calendar_result(self.baby.uid, start, end)
+                self,
+                lambda: self.async_request(
+                    lambda: client.async_get_calendar_result(self.baby.uid, start, end)
+                ),
             )
         except NanitAuthError as err:
             raise ConfigEntryAuthFailed(
@@ -589,15 +653,15 @@ class NanitCareLogCoordinator(DataUpdateCoordinator[CareLogData]):
                 translation_placeholders={"error": str(err)},
             ) from err
         except NanitRequestRefused as err:
-            # Not retried, and the next poll waits: asking again in five
-            # minutes would get the same answer. Reported like any failure.
-            hold = self.hold_requests(err)
-            self.update_interval = hold
+            # Not retried, and the next poll waits while requests are held
+            # (async_request): asking again in five minutes would get the
+            # same answer. Reported like any failure.
+            self.update_interval = self._held_poll_interval()
             _LOGGER.debug(
                 "%s: Nanit answered HTTP %s, next poll in %.0fs",
                 self.name,
                 err.status,
-                hold.total_seconds(),
+                self.update_interval.total_seconds(),
             )
             raise UpdateFailed(
                 translation_domain=DOMAIN,
@@ -611,7 +675,6 @@ class NanitCareLogCoordinator(DataUpdateCoordinator[CareLogData]):
                 translation_placeholders={"error": str(err)},
             ) from err
 
-        self._held_until = None
         self.update_interval = timedelta(seconds=CARE_LOG_POLL_INTERVAL)
         self._last_fetch = now
         coverage = CareLogRequestCoverage(

@@ -51,7 +51,7 @@ from pytest_homeassistant_custom_component.components.recorder.common import (
 )
 from pytest_homeassistant_custom_component.typing import RecorderInstanceContextManager
 
-from aionanit.exceptions import NanitAuthError, NanitConnectionError
+from aionanit.exceptions import NanitAuthError, NanitConnectionError, NanitRateLimited
 from aionanit.models import Baby, CareLog, CareLogFetch
 from custom_components.nanit import care_log_importer, care_log_recorder
 from custom_components.nanit import coordinator as coordinator_module
@@ -70,6 +70,7 @@ from custom_components.nanit.care_log_recorder import (
     async_sync_care_log_statistics,
 )
 from custom_components.nanit.care_log_statistics import statistic_id
+from custom_components.nanit.care_log_writers import _importer_factory
 from custom_components.nanit.const import DOMAIN
 from custom_components.nanit.coordinator import NanitCareLogCoordinator
 
@@ -1055,6 +1056,58 @@ async def test_after_a_ten_day_reader_outage_nothing_is_written_across_the_unrea
     assert max(volume) == _end_hour() - H
     assert volume[_end_hour() - H] == (0.0, 255.0)
     assert len(volume) == (_end_hour() - _hour(OLD)) // H
+
+
+async def test_a_held_request_waits_on_the_retry_schedule_and_keeps_its_pass(
+    make: Callable[..., Harness], hass: HomeAssistant
+) -> None:
+    """Nanit throttles the calendar for two hours just before the daily pass is due.
+
+    The importer reads through the reader's hold, as the entry builds it: the
+    pass asks nothing while it is held, fails like a failed read on the
+    usual retry schedule, and once the hold is over reads the whole range.
+    """
+    truth = Truth(BASE)
+    harness = make(truth)
+    client = MagicMock()
+
+    async def own(_baby_uid: str, start: int, end: int) -> CareLogFetch:
+        return await truth.fetch(start, end)
+
+    client.async_get_calendar_result = AsyncMock(side_effect=own)
+    harness.importer = _importer_factory(hass, harness.entry, client, harness.coordinator)()
+    harness.start()
+    await harness.poll()
+    assert harness.diag()["state"] == "running"
+    passes = harness.diag()["passes_completed"]
+    due = harness.importer._history_due
+    assert due is not None
+    await harness.advance(due - timedelta(hours=1) - dt_util.utcnow())
+
+    async def throttled() -> CareLogFetch:
+        raise NanitRateLimited("Calendar fetch", 7200)
+
+    with pytest.raises(NanitRateLimited):
+        await harness.coordinator.async_request(throttled)
+    held_until = dt_util.utcnow() + timedelta(hours=2)
+    truth.own.clear()
+
+    # Due an hour later, and tried on the retry schedule: nothing is asked.
+    while dt_util.utcnow() + timedelta(minutes=5) < held_until:
+        await harness.advance(timedelta(minutes=5))
+        assert truth.own == []
+    assert harness.importer._failures >= 2
+    assert harness.importer._history_due == due
+    assert harness.diag()["passes_completed"] == passes
+
+    # The retry after the hold reads the whole pass, each piece once.
+    for _ in range(18):
+        await harness.advance(timedelta(minutes=5))
+    assert harness.diag()["passes_completed"] == passes + 1
+    assert truth.own
+    assert len(truth.own) == len(set(truth.own))
+    assert truth.own[0][0] == care_log_history_start(BABY, dt_util.utcnow())
+    assert harness.importer._failures == 0
 
 
 @pytest.mark.usefixtures("reader_fails_at_once")

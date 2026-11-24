@@ -31,7 +31,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
 from homeassistant.util.unit_conversion import VolumeConverter
 
-from aionanit.exceptions import NanitError, NanitRequestRefused
+from aionanit.exceptions import NanitError
 from aionanit.models import CareLog, CareLogDetail
 
 from . import NanitConfigEntry
@@ -521,6 +521,8 @@ class NanitCareLogCalendar(CoordinatorEntity[NanitCareLogCoordinator], CalendarE
         # How many callers wait for each fetch in flight.
         self._waiting: dict[_CacheKey, int] = {}
         self._requests = asyncio.Semaphore(CARE_LOG_MAX_IN_FLIGHT)
+        # The reader's refusal count when the answers kept were fetched.
+        self._kept_refusals = coordinator.refusals
         self._removed = False
         self._cancel_expiry: CALLBACK_TYPE | None = None
 
@@ -582,6 +584,7 @@ class NanitCareLogCalendar(CoordinatorEntity[NanitCareLogCoordinator], CalendarE
             reach_back = dt_util.as_utc(start_date) - CARE_LOG_REACH_BACK
             fetch_start = max(math.floor(reach_back.timestamp()), earliest)
         fetch_end = min(fetch_end, latest)
+        refusals = self.coordinator.refusals
         rows = await self._async_rows((fetch_start, max(fetch_start, fetch_end), show_notes))
         texts = await _async_texts(hass)
 
@@ -611,26 +614,33 @@ class NanitCareLogCalendar(CoordinatorEntity[NanitCareLogCoordinator], CalendarE
             # shortened across the clocks going back can fall outside the range.
             if _overlaps(start, shown_end, shown_as_moment, start_date, end_date):
                 found.append((start, row.log.uid, event))
-        # The option may have changed, or the calendar gone, while the answer
-        # was on its way or being built. Checked after the last await, so
-        # nothing can change between this and the answer being returned.
-        if self._removed or is_show_care_log_notes(entry) != show_notes:
+        # The option may have changed, the calendar gone, or Nanit refused
+        # this baby's care logs, while the answer was on its way or being
+        # built. Checked after the last await, so nothing can change between
+        # this and the answer being returned.
+        if (
+            self._removed
+            or is_show_care_log_notes(entry) != show_notes
+            or self.coordinator.refusals != refusals
+        ):
             raise _unavailable()
         found.sort(key=lambda item: (item[0], item[1]))
         return [event for _start, _uid, event in found]
 
     async def _async_rows(self, key: _CacheKey) -> tuple[_Row, ...]:
         """Return a fetched range from memory, a fetch already running, or a new fetch."""
+        if self._kept_refusals != self.coordinator.refusals:
+            # Nanit refused this baby's care logs since these were kept: none
+            # of them is shown again. Throttling keeps them (they stay their
+            # five minutes).
+            self._cache.clear()
+            self._stop_expiry()
+            self._kept_refusals = self.coordinator.refusals
         cached = self._cache.get(key)
         if cached is not None and self._age(cached) < _CACHE_TTL_SECONDS:
             return cached.rows
         task = self._in_flight.get(key)
         if task is None:
-            if self.coordinator.requests_held:
-                # Nanit refused or throttled this baby's Care Logs a moment
-                # ago: asking again now would get the same answer.
-                _LOGGER.debug("Care log calendar fetch skipped while Nanit refuses or throttles")
-                raise _unavailable()
             if len(self._in_flight) >= CARE_LOG_MAX_RANGES_IN_FLIGHT:
                 raise _unavailable()
             task = self.coordinator.config_entry.async_create_background_task(
@@ -683,8 +693,15 @@ class NanitCareLogCalendar(CoordinatorEntity[NanitCareLogCoordinator], CalendarE
             task.exception()
 
     async def _async_fetch_and_keep(self, key: _CacheKey) -> tuple[_Row, ...]:
-        """Fetch a range and keep it in memory, unless the calendar is gone."""
+        """Fetch a range and keep it in memory, unless the calendar is gone.
+
+        A fetch during which Nanit refused this baby's care logs (to this or
+        another request) fails: what it got is neither kept nor returned.
+        """
+        refusals = self.coordinator.refusals
         rows = await self._async_fetch(*key)
+        if self.coordinator.refusals != refusals:
+            raise _unavailable()
         if not self._removed and len(rows) <= CARE_LOG_CACHE_MAX_ROWS:
             self._cache[key] = _Cached(rows, self.hass.loop.time())
             # Oldest first, until both the ranges and their rows fit.
@@ -733,16 +750,23 @@ class NanitCareLogCalendar(CoordinatorEntity[NanitCareLogCoordinator], CalendarE
 
     async def _async_fetch(self, start: int, end: int, show_notes: bool) -> tuple[_Row, ...]:
         """Fetch an inclusive range from Nanit, in pieces."""
-        client = self.coordinator.config_entry.runtime_data.hub.client
-        baby_uid = self.coordinator.baby.uid
+        coordinator = self.coordinator
+        client = coordinator.config_entry.runtime_data.hub.client
+        baby_uid = coordinator.baby.uid
 
         async def piece(low: int, high: int) -> list[_Row]:
+            # Through the reader's hold once a permit is had, just before the
+            # request: a piece that waited is held back by a refusal meanwhile.
             async with self._requests:
                 if show_notes:
-                    detail_fetch = await client.async_get_calendar_details(baby_uid, low, high)
+                    detail_fetch = await coordinator.async_request(
+                        lambda: client.async_get_calendar_details(baby_uid, low, high)
+                    )
                     fetched = [_Row(_stripped(e.log), e.detail) for e in detail_fetch.entries]
                 else:
-                    fetch = await client.async_get_calendar_result(baby_uid, low, high)
+                    fetch = await coordinator.async_request(
+                        lambda: client.async_get_calendar_result(baby_uid, low, high)
+                    )
                     fetched = [_Row(_stripped(log), None) for log in fetch.logs]
             # Checked here, against this piece's own bounds, before a copy
             # is chosen per uid across the pieces.
@@ -762,12 +786,9 @@ class NanitCareLogCalendar(CoordinatorEntity[NanitCareLogCoordinator], CalendarE
                 for _ in range(CARE_LOG_MAX_IN_FLIGHT):
                     group.create_task(worker())
         except* NanitError as errors:
+            # The first error stops every piece still to come; a refusal or
+            # throttling also holds every request back (async_request).
             failure = type(errors.exceptions[0]).__name__
-            # The first error stops every piece still to come, and a refusal
-            # also holds the next fetches back (see requests_held).
-            for error in errors.exceptions:
-                if isinstance(error, NanitRequestRefused):
-                    self.coordinator.hold_requests(error)
         if failure is not None:
             # Only the error's type: the library's text is fixed, but nothing
             # here needs more, and the baby's uid never goes in a log line.

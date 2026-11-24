@@ -1296,17 +1296,20 @@ async def test_a_refusal_is_not_retried_and_is_asked_again_hourly(
 
 @pytest.mark.parametrize(
     ("retry_after", "quiet_polls"),
-    [(1200, 3), (None, 2), (30, 0), (99999, 11)],
-    ids=["twenty_minutes", "no_wait_given", "less_than_a_poll", "more_than_an_hour"],
+    [(1200, 3), (None, 2), (30, 0), (7200, 23)],
+    ids=["twenty_minutes", "no_wait_given", "less_than_a_poll", "two_hours"],
 )
-async def test_throttling_waits_as_asked_between_a_poll_and_an_hour(
+async def test_throttling_waits_as_asked_and_at_least_a_poll(
     hass: HomeAssistant,
     mock_nanit_client,
     freezer: FrozenDateTimeFactory,
     retry_after: int | None,
     quiet_polls: int,
 ) -> None:
-    """``quiet_polls`` normal polls pass without a request before the next one is made."""
+    """``quiet_polls`` normal polls pass without a request before the next one is made.
+
+    A wait of more than an hour is checked hourly, and nothing is asked before it ends.
+    """
     freezer.move_to("2026-11-20T18:00:00+00:00")
     bounded = NanitRateLimited("Calendar fetch", retry_after)
     answers: list[Any] = [[_diaper("baby_1")], bounded, []]
@@ -1339,7 +1342,7 @@ async def test_care_log_hold_bounds() -> None:
     assert care_log_hold(NanitRateLimited("x", None)) == timedelta(minutes=15)
     assert care_log_hold(NanitRateLimited("x", 0)) == poll
     assert care_log_hold(NanitRateLimited("x", 1200)) == timedelta(minutes=20)
-    assert care_log_hold(NanitRateLimited("x", 86400)) == timedelta(hours=1)
+    assert care_log_hold(NanitRateLimited("x", 86400)) == timedelta(days=1)
 
 
 def _care_registry_entries(

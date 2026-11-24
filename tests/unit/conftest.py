@@ -190,11 +190,18 @@ def mock_nanit_client():
         # coordinator belongs to the baby it was created for, as the real one
         # does, so its sensors land on that baby's camera device. Its data is
         # what a successful fetch with no entries publishes.
+        async def through_the_hold(request):
+            # Never held: Nanit has refused nothing.
+            return await request()
+
         def care_log_coordinator(_hass, _entry, _hub, baby):
             now = dt_util.utcnow()
             return MagicMock(
                 async_config_entry_first_refresh=AsyncMock(),
                 async_shutdown=AsyncMock(),
+                async_request=through_the_hold,
+                refusals=0,
+                refused=False,
                 baby=baby,
                 data=CareLogData(
                     latest={},

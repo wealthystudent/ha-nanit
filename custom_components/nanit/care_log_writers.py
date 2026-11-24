@@ -615,7 +615,10 @@ def _importer_factory(
     uid = baby.uid
 
     async def fetch(start: int, end: int) -> CareLogFetch:
-        return await client.async_get_calendar_result(uid, start, end)
+        # Through the reader's hold, like every request for this baby's care logs.
+        return await coordinator.async_request(
+            lambda: client.async_get_calendar_result(uid, start, end)
+        )
 
     def make() -> CareLogStatisticsImporter:
         return CareLogStatisticsImporter(

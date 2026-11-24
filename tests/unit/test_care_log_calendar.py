@@ -48,6 +48,7 @@ from aionanit.models import (
 )
 from custom_components.nanit import calendar as calendar_module
 from custom_components.nanit import config_flow  # noqa: F401  (imported unpatched, see below)
+from custom_components.nanit import coordinator as coordinator_module
 from custom_components.nanit.baby_code import baby_code
 from custom_components.nanit.calendar import (
     CARE_LOG_CACHE_SIZE,
@@ -55,6 +56,7 @@ from custom_components.nanit.calendar import (
     CARE_LOG_MAX_PIECE,
     NanitCareLogCalendar,
 )
+from custom_components.nanit.care_log_writers import _importer_factory
 from custom_components.nanit.const import (
     CONF_IMPORT_CARE_LOG_STATISTICS,
     CONF_READ_ONLY,
@@ -62,7 +64,7 @@ from custom_components.nanit.const import (
     DOMAIN,
     is_show_care_log_notes,
 )
-from custom_components.nanit.coordinator import NanitCareLogCoordinator
+from custom_components.nanit.coordinator import NanitCareLogCoordinator, care_log_hold
 from custom_components.nanit.diagnostics import async_get_config_entry_diagnostics
 
 from .conftest import MOCK_EMAIL, mock_entry_data_v2
@@ -545,7 +547,7 @@ async def test_privacy_markers_on_a_failed_fetch(
     [NanitRequestRefused("Calendar fetch", 403), NanitRateLimited("Calendar fetch", 600)],
     ids=["refused", "throttled"],
 )
-async def test_a_refused_calendar_fetch_asks_nothing_more_until_the_reader_reads(
+async def test_a_refused_calendar_fetch_asks_nothing_more_until_the_hold_ends(
     hass: HomeAssistant,
     client: Any,
     freezer: FrozenDateTimeFactory,
@@ -571,7 +573,13 @@ async def test_a_refused_calendar_fetch_asks_nothing_more_until_the_reader_reads
             await _events(hass, calendar, start, end)
     assert len(fake.calls) == asked
 
-    # The reader's next successful read lets the calendar ask again.
+    # Nor does a refresh of the reader, until the hold is over.
+    await calendar.coordinator.async_refresh()
+    assert not calendar.coordinator.last_update_success
+    assert len(fake.calls) == asked
+    freezer.tick(care_log_hold(error))
+
+    # Then the reader reads, and the calendar asks again.
     await calendar.coordinator.async_refresh()
     assert calendar.coordinator.last_update_success
     fake.forget_calls()
@@ -598,6 +606,247 @@ async def test_a_reader_refusal_holds_the_calendar_back(
     with pytest.raises(HomeAssistantError):
         await _events(hass, calendar, RANGE_START, RANGE_END)
     assert fake.calls == []
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [NanitRequestRefused("Calendar fetch", 403), NanitRateLimited("Calendar fetch", 7200)],
+    ids=["refused", "throttled_two_hours"],
+)
+async def test_a_hold_stops_every_caller_until_it_ends(
+    hass: HomeAssistant,
+    client: Any,
+    freezer: FrozenDateTimeFactory,
+    error: NanitRequestRefused,
+) -> None:
+    """The statistics importer is refused; nobody asks Nanit until the hold is over.
+
+    Not the calendar, a refresh of the reader, its scheduled polls (hourly at
+    most, even through a two-hour wait) or the importer itself.
+    """
+    freezer.move_to(NOW)
+    fake = FakeNanit()
+    _day_of_entries(fake)
+    entry, calendar = await _one_calendar(hass, client, fake)
+    reader = calendar.coordinator
+    importer_fetch = _importer_factory(hass, entry, client, reader)()._fetch
+    day = (int(_ts(RANGE_START)), int(_ts(RANGE_END)))
+    fake.error = error
+    with pytest.raises(NanitRequestRefused):
+        await importer_fetch(*day)
+    assert len(fake.calls) == 1
+    fake.error = None
+
+    with pytest.raises(HomeAssistantError):
+        await _events(hass, calendar, RANGE_START, RANGE_END)
+    await reader.async_refresh()
+    assert not reader.last_update_success
+    with pytest.raises(NanitRequestRefused):
+        await importer_fetch(*day)
+    assert len(fake.calls) == 1
+
+    hold = care_log_hold(error)
+    waited = timedelta()
+    while waited + reader.update_interval < hold:
+        assert reader.update_interval <= timedelta(hours=1)
+        waited += reader.update_interval
+        freezer.tick(reader.update_interval)
+        async_fire_time_changed(hass)
+        await hass.async_block_till_done()
+        assert len(fake.calls) == 1
+    assert not reader.last_update_success
+
+    # The first poll after the hold asks Nanit; then everybody may again.
+    freezer.tick(hold - waited)
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert len(fake.calls) == 2
+    assert reader.last_update_success
+    assert len(await _events(hass, calendar, RANGE_START, RANGE_END)) == 4
+    await importer_fetch(*day)
+    assert len(fake.calls) == 4
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_a_poll_retry_waiting_when_a_refusal_comes_asks_nothing(
+    hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory
+) -> None:
+    """The reader's poll failed once and waits to retry; the importer is refused meanwhile."""
+    freezer.move_to(NOW)
+    fake = FakeNanit()
+    _day_of_entries(fake)
+    entry, calendar = await _one_calendar(hass, client, fake)
+    reader = calendar.coordinator
+    importer_fetch = _importer_factory(hass, entry, client, reader)()._fetch
+    waiting = asyncio.Event()
+    go_on = asyncio.Event()
+
+    async def retry_wait(_delay: float) -> None:
+        waiting.set()
+        await go_on.wait()
+
+    fake.error = NanitConnectionError("Calendar fetch failed with HTTP 503")
+    with patch.object(coordinator_module.asyncio, "sleep", retry_wait):
+        poll = hass.async_create_task(reader.async_refresh())
+        await waiting.wait()
+        assert len(fake.calls) == 1
+        fake.error = NanitRequestRefused("Calendar fetch", 403)
+        with pytest.raises(NanitRequestRefused):
+            await importer_fetch(int(_ts(RANGE_START)), int(_ts(RANGE_END)))
+        fake.error = None
+        go_on.set()
+        await poll
+
+    # The poll's retries asked nothing.
+    assert len(fake.calls) == 2
+    assert not reader.last_update_success
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_a_piece_waiting_for_its_turn_asks_nothing_after_a_refusal(
+    hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory
+) -> None:
+    """Two ranges at once: one's pieces hold both turns; a refusal comes for one of them."""
+    freezer.move_to(NOW)
+    fake = FakeNanit()
+    _day_of_entries(fake)
+    entry, calendar = await _one_calendar(hass, client, fake)
+    fake.gate = asyncio.Event()
+
+    year = hass.async_create_task(
+        _events(hass, calendar, RANGE_END - timedelta(days=365), RANGE_END)
+    )
+    await _until(lambda: fake.in_flight == 2)
+    day = hass.async_create_task(_events(hass, calendar, RANGE_START, RANGE_END))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    # The day's only piece waits for a turn.
+    assert len(fake.calendar_calls()) == 2
+    fake.error = NanitRequestRefused("Calendar fetch", 403)
+    fake.gate.set()
+
+    for task in (year, day):
+        with pytest.raises(HomeAssistantError):
+            await task
+    assert len(fake.calendar_calls()) == 2
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_an_older_request_succeeding_late_leaves_a_newer_refusal_in_place(
+    hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory
+) -> None:
+    """The reader's poll is on its way when the calendar is refused; the poll then succeeds."""
+    freezer.move_to(NOW)
+    fake = FakeNanit()
+    _day_of_entries(fake)
+    entry, calendar = await _one_calendar(hass, client, fake, notes=True)
+    reader = calendar.coordinator
+    poll_may_answer = asyncio.Event()
+    answer_poll = fake.result
+
+    async def slow_result(baby_uid: str, start: int, end: int) -> CareLogFetch:
+        await poll_may_answer.wait()
+        return await answer_poll(baby_uid, start, end)
+
+    client.async_get_calendar_result.side_effect = slow_result
+    client.async_get_calendar_details.side_effect = NanitRequestRefused("Calendar fetch", 403)
+    poll = hass.async_create_task(reader.async_refresh())
+    await asyncio.sleep(0)
+    with pytest.raises(HomeAssistantError):
+        await _events(hass, calendar, RANGE_START, RANGE_END)
+    poll_may_answer.set()
+    await poll
+    assert reader.last_update_success
+
+    # The refusal still holds: the calendar asks nothing, and the reader's
+    # next poll is held too.
+    client.async_get_calendar_details.side_effect = fake.details
+    asked = len(fake.calls)
+    with pytest.raises(HomeAssistantError):
+        await _events(hass, calendar, RANGE_START, RANGE_END)
+    await reader.async_refresh()
+    assert not reader.last_update_success
+    assert reader.refused
+    assert len(fake.calls) == asked
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+@pytest.mark.parametrize(
+    ("error", "warm_shown"),
+    [
+        (NanitRequestRefused("Calendar fetch", 403), False),
+        (NanitRateLimited("Calendar fetch", 600), True),
+    ],
+    ids=["refused", "throttled"],
+)
+async def test_a_refusal_drops_kept_and_in_flight_answers(
+    hass: HomeAssistant,
+    client: Any,
+    freezer: FrozenDateTimeFactory,
+    error: NanitRequestRefused,
+    warm_shown: bool,
+) -> None:
+    """A range kept, a range on its way, then a third range is refused.
+
+    After a refusal neither the kept range nor the one that was on its way
+    is shown, notes or not, and neither is kept. While Nanit throttles, the
+    kept range is still shown until its five minutes are up.
+    """
+    freezer.move_to(NOW)
+    fake = FakeNanit()
+    # The same four entries on each of the three days.
+    for offset in range(3):
+        _day_of_entries(fake)
+        fake.entries[-4:] = [
+            dataclasses.replace(
+                item,
+                log=dataclasses.replace(
+                    item.log,
+                    uid=f"{item.log.uid}-{offset}",
+                    timestamp=item.log.timestamp - offset * 86400,
+                ),
+            )
+            for item in fake.entries[-4:]
+        ]
+    entry, calendar = await _one_calendar(hass, client, fake, notes=True)
+    warm = (RANGE_START, RANGE_END)
+    on_its_way = (RANGE_START - timedelta(days=1), RANGE_START)
+    refused = (RANGE_START - timedelta(days=2), RANGE_START - timedelta(days=1))
+    assert len(await _events(hass, calendar, *warm)) == 4
+
+    way_may_answer = asyncio.Event()
+    answer = fake.details
+    sent: list[int] = []
+
+    async def details(baby_uid: str, start: int, end: int) -> CareLogDetailFetch:
+        sent.append(end)
+        if end == int(_ts(on_its_way[1])):
+            await way_may_answer.wait()
+        if end == int(_ts(refused[1])):
+            raise error
+        return await answer(baby_uid, start, end)
+
+    client.async_get_calendar_details.side_effect = details
+    way = hass.async_create_task(_events(hass, calendar, *on_its_way))
+    await _until(lambda: len(sent) == 1)
+    with pytest.raises(HomeAssistantError):
+        await _events(hass, calendar, *refused)
+    assert len(sent) == 2
+    way_may_answer.set()
+
+    if warm_shown:
+        events = await _events(hass, calendar, *warm)
+        assert any(NOTE_MARKER in _event_fields(event) for event in events)
+        assert len(await way) == 4
+    else:
+        with pytest.raises(HomeAssistantError):
+            await _events(hass, calendar, *warm)
+        with pytest.raises(HomeAssistantError):
+            await way
+        assert calendar._cache == {}
+    # Nothing more was asked of Nanit meanwhile.
+    assert len(sent) == 2
     assert await hass.config_entries.async_unload(entry.entry_id)
 
 

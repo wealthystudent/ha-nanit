@@ -30,6 +30,7 @@ from aionanit.models import CameraState, CareLog, NetworkInfo
 
 from . import NanitConfigEntry
 from .aionanit_sl.models import SoundLightFullState
+from .baby_code import baby_code, baby_display_name
 from .coordinator import (
     CARE_LOG_BOTTLE,
     CARE_LOG_DIAPER,
@@ -335,11 +336,21 @@ async def async_setup_entry(
             for net_description in NETWORK_SENSORS:
                 entities.append(NanitNetworkSensor(net_coordinator, net_description))
 
-        # Care Log sensors (optional)
-        care_coordinator = cam_data.care_log_coordinator
-        if care_coordinator is not None:
-            for care_description in CARE_LOG_SENSORS:
-                entities.append(NanitCareLogSensor(care_coordinator, care_description))
+    # Care Log sensors: one set per baby care log reader, like the calendar.
+    # On the camera's device only when that camera was set up; a baby
+    # without one, or whose camera failed, gets sensors of their own.
+    cameras = entry.runtime_data.cameras
+    for care_coordinator in entry.runtime_data.hub.care_log_coordinators.values():
+        camera_uid = care_coordinator.baby.camera_uid
+        for care_description in CARE_LOG_SENSORS:
+            entities.append(
+                NanitCareLogSensor(
+                    care_coordinator,
+                    care_description,
+                    entry_id=entry.entry_id,
+                    camera_uid=camera_uid if camera_uid and camera_uid in cameras else None,
+                )
+            )
 
     # Sound & Light Machine sensors
     for speaker_data in entry.runtime_data.speakers.values():
@@ -501,11 +512,25 @@ class NanitCareLogSensor(NanitCareLogEntity, SensorEntity):
         self,
         coordinator: NanitCareLogCoordinator,
         description: NanitCareLogSensorDescription,
+        *,
+        entry_id: str,
+        camera_uid: str | None,
     ) -> None:
-        """Initialize."""
-        super().__init__(coordinator)
+        """Initialize for the reader's baby, on its camera's device if camera_uid."""
+        super().__init__(coordinator, camera_uid=camera_uid)
         self.entity_description = description
-        self._attr_unique_id = f"{coordinator.baby.camera_uid}_{description.key}"
+        baby = coordinator.baby
+        # Per config entry and baby, like the calendar: a camera moved to
+        # another baby can't carry this baby's history over, and two sign-ins
+        # that see the same baby each get their own set. The baby is named
+        # by its code, so the raw uid never reaches the entity registry.
+        self._attr_unique_id = f"{entry_id}_{baby_code(baby.uid)}_{description.key}"
+        if not camera_uid:
+            # No device to carry the baby's name, so the entity name does.
+            self._attr_translation_key = f"{description.key}_baby"
+            self._attr_translation_placeholders = {
+                "baby_name": baby_display_name(baby.name, baby.uid)
+            }
         # Not every family uses Care Logs. An account with no entries
         # in the first fetch's lookback gets these registered disabled, so
         # it isn't handed a set of sensors that never change. No data at all

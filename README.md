@@ -74,7 +74,7 @@ Some entities are disabled by default. Enable them in **Settings → Devices & S
 
 ## Care Logs
 
-The diaper changes, bottles, nursing and pumping sessions you log in the Nanit app's Care Logs show up as sensors on the camera's device. Care Logs don't need an Insights plan; Nanit offers them to Owner and Admin accounts. Naps, solids and medications aren't exposed yet.
+The diaper changes, bottles, nursing and pumping sessions you log in the Nanit app's Care Logs show up as sensors for each baby: on the baby's camera device when that camera is set up, and otherwise on their own, named after the baby (such as "Spare room last diaper change"). A baby without a camera gets them too. The sensors belong to the baby and to the sign-in: two sign-ins that see the same baby each get their own set, and a camera moved to another baby doesn't carry the first baby's sensors over. Care Logs don't need an Insights plan; Nanit offers them to Owner and Admin accounts. Naps, solids and medications aren't exposed yet.
 
 | Sensor | Shows |
 |---|---|

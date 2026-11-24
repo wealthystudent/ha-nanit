@@ -357,6 +357,89 @@
       },
       "pumped_volume_today": {
         "name": "Pumped volume today"
+      },
+      "last_diaper_change_baby": {
+        "name": "{baby_name} last diaper change",
+        "state_attributes": {
+          "change_type": {
+            "name": "Type",
+            "state": {
+              "pee": "Pee",
+              "poo": "Poo",
+              "mixed": "Mixed",
+              "dry": "Dry"
+            }
+          }
+        }
+      },
+      "last_feeding_baby": {
+        "name": "{baby_name} last feeding",
+        "state_attributes": {
+          "feeding_type": {
+            "name": "Type",
+            "state": {
+              "bottle": "Bottle",
+              "nursing": "Nursing"
+            }
+          },
+          "amount_ml": {
+            "name": "Amount (mL)"
+          },
+          "left_minutes": {
+            "name": "Left side (minutes)"
+          },
+          "right_minutes": {
+            "name": "Right side (minutes)"
+          }
+        }
+      },
+      "last_pumping_baby": {
+        "name": "{baby_name} last pumping",
+        "state_attributes": {
+          "amount_ml": {
+            "name": "Amount (mL)"
+          },
+          "duration_minutes": {
+            "name": "Duration (minutes)"
+          }
+        }
+      },
+      "diaper_changes_today_baby": {
+        "name": "{baby_name} diaper changes today",
+        "state_attributes": {
+          "pee": {
+            "name": "Pee"
+          },
+          "poo": {
+            "name": "Poo"
+          },
+          "mixed": {
+            "name": "Mixed"
+          },
+          "dry": {
+            "name": "Dry"
+          }
+        }
+      },
+      "feedings_today_baby": {
+        "name": "{baby_name} feedings today",
+        "state_attributes": {
+          "bottle": {
+            "name": "Bottle"
+          },
+          "nursing": {
+            "name": "Nursing"
+          }
+        }
+      },
+      "bottle_volume_today_baby": {
+        "name": "{baby_name} bottle volume today"
+      },
+      "nursing_time_today_baby": {
+        "name": "{baby_name} nursing time today"
+      },
+      "pumped_volume_today_baby": {
+        "name": "{baby_name} pumped volume today"
       }
     },
     "binary_sensor": {

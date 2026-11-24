@@ -396,6 +396,13 @@ async def test_privacy_markers(
     calendar = _calendar(hass, entry)
 
     surfaces = await _surfaces(hass, hass_client, entry, calendar)
+    # No registry entry of the sign-in (care sensors and calendar among them)
+    # holds the baby's uid in its unique id, entity id or name.
+    registered = er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)
+    assert any(reg.unique_id.endswith("_last_diaper_change") for reg in registered)
+    for reg in registered:
+        for text in (reg.unique_id, reg.entity_id, reg.name or "", reg.original_name or ""):
+            assert BABY_MARKER not in text, text
     statistics = (await async_get_config_entry_diagnostics(hass, entry))["care_log_statistics"]
     assert statistics["enabled"] is True
     assert statistics["babies"]["baby_0"]["writer"] is True

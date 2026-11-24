@@ -30,6 +30,7 @@ from aionanit.exceptions import (
     NanitResponseTooLarge,
 )
 from aionanit.models import Baby, CareLog, CareLogFetch
+from custom_components.nanit.baby_code import baby_code
 from custom_components.nanit.care_log_hours import CareLogSeries
 from custom_components.nanit.care_log_ledger import CareLogRead
 from custom_components.nanit.const import CARE_LOG_POLL_INTERVAL, CARE_LOG_SEED_DAYS, DOMAIN
@@ -637,7 +638,7 @@ def _sensor(key: str, data: CareLogData | None) -> NanitCareLogSensor:
     coordinator.data = data
     coordinator.baby = Baby(uid="baby_1", name="Nursery", camera_uid="cam_1")
     description = next(d for d in CARE_LOG_SENSORS if d.key == key)
-    return NanitCareLogSensor(coordinator, description)
+    return NanitCareLogSensor(coordinator, description, entry_id="entry_1", camera_uid="cam_1")
 
 
 DAY = _summary(
@@ -663,7 +664,7 @@ def test_last_diaper_change() -> None:
     assert sensor.extra_state_attributes == {"change_type": "pee"}
     assert sensor.entity_description.device_class == SensorDeviceClass.TIMESTAMP
     assert sensor.last_reset is None
-    assert sensor.unique_id == "cam_1_last_diaper_change"
+    assert sensor.unique_id == f"entry_1_{baby_code('baby_1')}_last_diaper_change"
 
 
 def test_last_diaper_change_hides_an_unknown_type() -> None:
@@ -748,9 +749,16 @@ async def test_daily_totals_reset_at_local_midnight(
     logs = [evening]
     coordinator = _coordinator(hass, _calendar(logs))
     await coordinator.async_refresh()
-    daily = {d.key: NanitCareLogSensor(coordinator, d) for d in CARE_LOG_SENSORS if d.key in TODAY}
+    daily = {
+        d.key: NanitCareLogSensor(coordinator, d, entry_id="entry_1", camera_uid="cam_1")
+        for d in CARE_LOG_SENSORS
+        if d.key in TODAY
+    }
     last_feeding = NanitCareLogSensor(
-        coordinator, next(d for d in CARE_LOG_SENSORS if d.key == "last_feeding")
+        coordinator,
+        next(d for d in CARE_LOG_SENSORS if d.key == "last_feeding"),
+        entry_id="entry_1",
+        camera_uid="cam_1",
     )
 
     assert len(daily) == 5
@@ -1059,9 +1067,16 @@ async def _set_up(
     return result
 
 
-def _care_entity_id(hass: HomeAssistant, camera_uid: str, key: str) -> str:
-    entity_id = er.async_get(hass).async_get_entity_id("sensor", DOMAIN, f"{camera_uid}_{key}")
-    assert entity_id is not None, key
+def _care_entity_id(hass: HomeAssistant, baby_uid: str, key: str) -> str:
+    """The entity id of a baby's care log sensor, on the only entry that has one."""
+    suffix = f"_{baby_code(baby_uid)}_{key}"
+    (entity_id,) = (
+        entry.entity_id
+        for entry in er.async_get(hass).entities.values()
+        if entry.platform == DOMAIN
+        and entry.domain == "sensor"
+        and entry.unique_id.endswith(suffix)
+    )
     return entity_id
 
 
@@ -1094,7 +1109,7 @@ async def test_failed_first_fetch_shows_unavailable_sensors_until_a_poll_succeed
     assert entry.state is ConfigEntryState.LOADED
     registry = er.async_get(hass)
     for description in CARE_LOG_SENSORS:
-        entity_id = _care_entity_id(hass, "cam_1", description.key)
+        entity_id = _care_entity_id(hass, "baby_1", description.key)
         registry_entry = registry.async_get(entity_id)
         assert registry_entry is not None
         assert registry_entry.disabled_by is None, description.key
@@ -1102,17 +1117,17 @@ async def test_failed_first_fetch_shows_unavailable_sensors_until_a_poll_succeed
 
     await _next_poll(hass, freezer)
 
-    last_diaper = hass.states.get(_care_entity_id(hass, "cam_1", "last_diaper_change"))
+    last_diaper = hass.states.get(_care_entity_id(hass, "baby_1", "last_diaper_change"))
     assert last_diaper.state == dt_util.utc_from_timestamp(diaper.timestamp).isoformat()
     assert last_diaper.attributes["change_type"] == "pee"
-    diapers_today = hass.states.get(_care_entity_id(hass, "cam_1", "diaper_changes_today"))
+    diapers_today = hass.states.get(_care_entity_id(hass, "baby_1", "diaper_changes_today"))
     assert diapers_today.state == "1"
     assert diapers_today.attributes["pee"] == 1
     for key in TODAY:
-        attributes = hass.states.get(_care_entity_id(hass, "cam_1", key)).attributes
+        attributes = hass.states.get(_care_entity_id(hass, "baby_1", key)).attributes
         assert "state_class" not in attributes, key
         assert "last_reset" not in attributes, key
-    feedings = hass.states.get(_care_entity_id(hass, "cam_1", "feedings_today"))
+    feedings = hass.states.get(_care_entity_id(hass, "baby_1", "feedings_today"))
     assert feedings.state == "0"
     assert calendar.await_count == 2
     assert await hass.config_entries.async_unload(entry.entry_id)
@@ -1128,7 +1143,7 @@ async def test_sensors_without_care_logs_still_register_disabled(
 
     registry = er.async_get(hass)
     for description in CARE_LOG_SENSORS:
-        registry_entry = registry.async_get(_care_entity_id(hass, "cam_1", description.key))
+        registry_entry = registry.async_get(_care_entity_id(hass, "baby_1", description.key))
         assert registry_entry is not None
         assert registry_entry.disabled_by is er.RegistryEntryDisabler.INTEGRATION
     assert await hass.config_entries.async_unload(entry.entry_id)
@@ -1143,7 +1158,7 @@ async def test_a_sensor_the_user_disabled_stays_disabled_after_a_failed_fetch(
     registry.async_get_or_create(
         "sensor",
         DOMAIN,
-        "cam_1_last_feeding",
+        f"{entry.entry_id}_{baby_code('baby_1')}_last_feeding",
         config_entry=entry,
         disabled_by=er.RegistryEntryDisabler.USER,
     )
@@ -1151,10 +1166,10 @@ async def test_a_sensor_the_user_disabled_stays_disabled_after_a_failed_fetch(
 
     assert await _set_up(hass, entry, mock_nanit_client, calendar)
 
-    disabled = registry.async_get(_care_entity_id(hass, "cam_1", "last_feeding"))
+    disabled = registry.async_get(_care_entity_id(hass, "baby_1", "last_feeding"))
     assert disabled is not None
     assert disabled.disabled_by is er.RegistryEntryDisabler.USER
-    other = registry.async_get(_care_entity_id(hass, "cam_1", "last_pumping"))
+    other = registry.async_get(_care_entity_id(hass, "baby_1", "last_pumping"))
     assert other is not None
     assert other.disabled_by is None
     assert await hass.config_entries.async_unload(entry.entry_id)
@@ -1192,8 +1207,8 @@ async def test_two_babies_one_failing_one_healthy(
 
     assert entry.state is ConfigEntryState.LOADED
     assert set(entry.runtime_data.hub.care_log_coordinators) == {"baby_1", "baby_2"}
-    failing = hass.states.get(_care_entity_id(hass, "cam_1", "last_diaper_change"))
-    healthy = hass.states.get(_care_entity_id(hass, "cam_2", "last_diaper_change"))
+    failing = hass.states.get(_care_entity_id(hass, "baby_1", "last_diaper_change"))
+    healthy = hass.states.get(_care_entity_id(hass, "baby_2", "last_diaper_change"))
     assert failing.state == STATE_UNAVAILABLE
     assert healthy.state == dt_util.utc_from_timestamp(diaper.timestamp).isoformat()
 
@@ -1245,7 +1260,7 @@ async def test_a_refusal_is_not_retried_and_is_asked_again_hourly(
     entry = _hub_entry(hass)
     assert await _set_up(hass, entry, mock_nanit_client, calendar)
     reader = entry.runtime_data.hub.care_log_coordinators["baby_1"]
-    entity_id = _care_entity_id(hass, "cam_1", "last_diaper_change")
+    entity_id = _care_entity_id(hass, "baby_1", "last_diaper_change")
     base = 0
     if not at_setup:
         assert calendar.await_count == 1
@@ -1303,7 +1318,7 @@ async def test_throttling_waits_as_asked_between_a_poll_and_an_hour(
     await _next_poll(hass, freezer)
     assert calendar.await_count == 2
     assert reader.last_update_success is False
-    assert hass.states.get(_care_entity_id(hass, "cam_1", "last_diaper_change")).state == (
+    assert hass.states.get(_care_entity_id(hass, "baby_1", "last_diaper_change")).state == (
         STATE_UNAVAILABLE
     )
 
@@ -1325,6 +1340,155 @@ async def test_care_log_hold_bounds() -> None:
     assert care_log_hold(NanitRateLimited("x", 0)) == poll
     assert care_log_hold(NanitRateLimited("x", 1200)) == timedelta(minutes=20)
     assert care_log_hold(NanitRateLimited("x", 86400)) == timedelta(hours=1)
+
+
+def _care_registry_entries(
+    hass: HomeAssistant, entry: MockConfigEntry, baby_uid: str
+) -> dict[str, er.RegistryEntry]:
+    """The care log sensors registered for a baby on an entry, by unique id."""
+    code = baby_code(baby_uid)
+    return {
+        registered.unique_id: registered
+        for registered in er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)
+        if registered.domain == "sensor" and code in registered.unique_id
+    }
+
+
+async def test_a_camera_moved_to_another_baby_does_not_continue_the_first_babys_sensors(
+    hass: HomeAssistant, mock_nanit_client, freezer: FrozenDateTimeFactory
+) -> None:
+    freezer.move_to("2026-11-20T18:00:00+00:00")
+    entry = _hub_entry(hass)
+    calendar = _answers({"baby_1": [[_diaper("baby_1")]], "baby_9": [[_diaper("baby_9")]]})
+    assert await _set_up(hass, entry, mock_nanit_client, calendar)
+    first = {
+        uid: reg.entity_id for uid, reg in _care_registry_entries(hass, entry, "baby_1").items()
+    }
+    assert len(first) == len(CARE_LOG_SENSORS)
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+    # The same camera, now under a sibling.
+    mock_nanit_client.async_get_babies.return_value = [
+        Baby(uid="baby_9", name="Nursery", camera_uid="cam_1")
+    ]
+    assert await _set_up(hass, entry, mock_nanit_client, calendar)
+
+    second = _care_registry_entries(hass, entry, "baby_9")
+    assert len(second) == len(CARE_LOG_SENSORS)
+    assert not set(first) & set(second)
+    assert not set(first.values()) & {reg.entity_id for reg in second.values()}
+    # The first baby's registry entries are left as they were, not reused.
+    registry = er.async_get(hass)
+    for unique_id, entity_id in first.items():
+        assert registry.async_get_entity_id("sensor", DOMAIN, unique_id) == entity_id
+    # The sibling's sensors are on the camera's device and show the sibling's entry.
+    last = second[next(uid for uid in second if uid.endswith("_last_diaper_change"))]
+    assert last.device_id is not None
+    assert hass.states.get(last.entity_id).state != STATE_UNAVAILABLE
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_a_baby_without_a_camera_gets_sensors_that_update(
+    hass: HomeAssistant, mock_nanit_client, freezer: FrozenDateTimeFactory
+) -> None:
+    """On an account whose other baby's camera works; named after the baby, on no device."""
+    freezer.move_to("2026-11-20T18:00:00+00:00")
+    no_camera = Baby(uid="baby_4", name="Spare room", camera_uid="")
+    mock_nanit_client.async_get_babies.return_value = [MOCK_BABY_1, no_camera]
+    diaper = _diaper("baby_4", uid="d4")
+    answers: dict[str, list[Any]] = {"baby_1": [[]], "baby_4": [[diaper]]}
+    entry = _hub_entry(hass)
+    assert await _set_up(hass, entry, mock_nanit_client, _answers(answers))
+
+    registered = _care_registry_entries(hass, entry, "baby_4")
+    assert len(registered) == len(CARE_LOG_SENSORS)
+    assert all(reg.device_id is None for reg in registered.values())
+    entity_id = _care_entity_id(hass, "baby_4", "last_diaper_change")
+    assert entity_id == "sensor.spare_room_last_diaper_change"
+    state = hass.states.get(entity_id)
+    assert state.name == "Spare room last diaper change"
+    assert state.state == dt_util.utc_from_timestamp(diaper.timestamp).isoformat()
+    assert hass.states.get(_care_entity_id(hass, "baby_4", "diaper_changes_today")).state == "1"
+
+    newer = dataclasses.replace(diaper, uid="d5", timestamp=diaper.timestamp + 30)
+    answers["baby_4"] = [[diaper, newer]]
+    await _next_poll(hass, freezer)
+    assert hass.states.get(entity_id).state == (
+        dt_util.utc_from_timestamp(newer.timestamp).isoformat()
+    )
+    assert hass.states.get(_care_entity_id(hass, "baby_4", "diaper_changes_today")).state == "2"
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_two_sign_ins_seeing_one_baby_each_keep_working_sensors(
+    hass: HomeAssistant, mock_nanit_client, freezer: FrozenDateTimeFactory
+) -> None:
+    freezer.move_to("2026-11-20T18:00:00+00:00")
+    diaper = _diaper("baby_1")
+    answers: dict[str, list[Any]] = {"baby_1": [[diaper]]}
+    calendar = _answers(answers)
+    first = _hub_entry(hass)
+    second = MockConfigEntry(
+        domain=DOMAIN,
+        data={**mock_entry_data_v2(), "email": "other@example.com"},
+        version=2,
+        unique_id="other@example.com",
+    )
+    second.add_to_hass(hass)
+    # Setting the integration up loads both entries.
+    assert await _set_up(hass, first, mock_nanit_client, calendar)
+    assert first.state is second.state is ConfigEntryState.LOADED
+
+    ones = _care_registry_entries(hass, first, "baby_1")
+    twos = _care_registry_entries(hass, second, "baby_1")
+    assert len(ones) == len(twos) == len(CARE_LOG_SENSORS)
+    assert not set(ones) & set(twos)
+    (last_two,) = (reg for uid, reg in twos.items() if uid.endswith("_last_diaper_change"))
+    for registered in (*ones.values(), *twos.values()):
+        assert hass.states.get(registered.entity_id).state != STATE_UNAVAILABLE
+
+    assert await hass.config_entries.async_unload(first.entry_id)
+    newer = dataclasses.replace(diaper, uid="d9", timestamp=diaper.timestamp + 30)
+    answers["baby_1"] = [[diaper, newer]]
+    await _next_poll(hass, freezer)
+
+    assert hass.states.get(last_two.entity_id).state == (
+        dt_util.utc_from_timestamp(newer.timestamp).isoformat()
+    )
+    assert await hass.config_entries.async_unload(second.entry_id)
+
+
+async def test_no_care_sensor_id_or_name_holds_the_baby_uid(
+    hass: HomeAssistant, mock_nanit_client, freezer: FrozenDateTimeFactory
+) -> None:
+    """Planted uids, one with a camera and one unnamed without: not even 8 characters of either."""
+    freezer.move_to("2026-11-20T18:00:00+00:00")
+    with_camera = Baby(uid="zqcamerababy5521", name="Nursery", camera_uid="cam_1")
+    unnamed = Baby(uid="zqunnamedbaby8834", name="", camera_uid="")
+    mock_nanit_client.async_get_babies.return_value = [with_camera, unnamed]
+    calendar = _answers(
+        {
+            with_camera.uid: [[_diaper(with_camera.uid)]],
+            unnamed.uid: [[_diaper(unnamed.uid, uid="d2")]],
+        }
+    )
+    entry = _hub_entry(hass)
+    assert await _set_up(hass, entry, mock_nanit_client, calendar)
+
+    shown: list[str] = []
+    for baby in (with_camera, unnamed):
+        registered = _care_registry_entries(hass, entry, baby.uid)
+        assert len(registered) == len(CARE_LOG_SENSORS)
+        for reg in registered.values():
+            state = hass.states.get(reg.entity_id)
+            shown += [reg.unique_id, reg.entity_id, reg.name or "", reg.original_name or ""]
+            shown += [state.name, str(state.attributes.get("friendly_name"))]
+    text = " ".join(shown)
+    for uid in (with_camera.uid, unnamed.uid):
+        for i in range(len(uid) - 7):
+            assert uid[i : i + 8] not in text, uid[i : i + 8]
+    assert f"Baby {baby_code(unnamed.uid)[:8]} last diaper change" in text
+    assert await hass.config_entries.async_unload(entry.entry_id)
 
 
 async def test_unload_stops_every_reader(

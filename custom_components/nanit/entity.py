@@ -155,15 +155,27 @@ class NanitNetworkEntity(CoordinatorEntity[NanitNetworkCoordinator]):
 
 
 class NanitCareLogEntity(CoordinatorEntity[NanitCareLogCoordinator]):
-    """Base entity for Care Log sensors — backed by the care log coordinator."""
+    """Base entity for Care Log sensors — backed by the baby's care log reader.
+
+    Care logs belong to the baby, so the entity does too: it is on the
+    baby's camera device only when that camera registered one this run
+    (``camera_uid``), and has no device otherwise.
+    """
 
     _attr_has_entity_name = True
 
+    def __init__(self, coordinator: NanitCareLogCoordinator, *, camera_uid: str | None) -> None:
+        """Initialize, on the camera's device when ``camera_uid`` is given."""
+        super().__init__(coordinator)
+        self._camera_uid = camera_uid
+
     @property
-    def device_info(self) -> DeviceInfo:
-        """Return device info."""
+    def device_info(self) -> DeviceInfo | None:
+        """Return the camera's device when the baby has a camera that was set up."""
+        if not self._camera_uid:
+            return None
         return DeviceInfo(
-            identifiers={(DOMAIN, self.coordinator.baby.camera_uid)},
+            identifiers={(DOMAIN, self._camera_uid)},
             name=display_name(self.coordinator.baby.name, self.coordinator.baby.uid),
             manufacturer="Nanit",
         )

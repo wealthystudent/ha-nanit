@@ -28,8 +28,9 @@ from custom_components.nanit.care_log_statistics import (
     statistic_baby_name,
     statistic_id,
     statistic_metadata,
-    statistic_rows,
 )
+
+from ..care_log_rows import statistic_rows
 
 S = CareLogSeries
 UID = "baby_test_format"

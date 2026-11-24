@@ -56,8 +56,9 @@ from custom_components.nanit.care_log_statistics import (
     statistic_id,
     statistic_metadata,
     statistic_names,
-    statistic_rows,
 )
+
+from ..care_log_rows import statistic_rows
 
 S = CareLogSeries
 H = 3600

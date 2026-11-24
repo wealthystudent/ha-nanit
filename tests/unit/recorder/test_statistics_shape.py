@@ -45,8 +45,9 @@ from custom_components.nanit.care_log_hours import CareLogSeries
 from custom_components.nanit.care_log_statistics import (
     statistic_id,
     statistic_metadata,
-    statistic_rows,
 )
+
+from ..care_log_rows import statistic_rows
 
 # Synthetic dates, safely in the past: Monday 9 to Wednesday 11 November 2026.
 MONDAY = datetime(2026, 11, 9, tzinfo=UTC)

@@ -19,13 +19,13 @@ from custom_components.nanit.care_log_hours import CareLogSeries
 from custom_components.nanit.care_log_statistics import (
     async_statistic_names,
     fallback_name,
-    series_amounts,
     statistic_baby_name,
     statistic_id,
     statistic_metadata,
     statistic_names,
-    statistic_rows,
 )
+
+from .care_log_rows import statistic_rows
 
 S = CareLogSeries
 UID = "baby_test_0001"
@@ -198,16 +198,6 @@ async def test_names_fall_back_to_the_series_key_when_translations_fail(
 # ---------------------------------------------------------------------------
 # Rows
 # ---------------------------------------------------------------------------
-
-
-def test_series_amounts_picks_one_series() -> None:
-    amounts = {
-        H0: {S.BOTTLE_FEEDS: 1.0, S.BOTTLE_VOLUME: 30.0},
-        H0 + HOUR: {S.BOTTLE_FEEDS: 2.0},
-    }
-    assert series_amounts(amounts, S.BOTTLE_VOLUME) == {H0: 30.0}
-    assert series_amounts(amounts, S.BOTTLE_FEEDS) == {H0: 1.0, H0 + HOUR: 2.0}
-    assert series_amounts(amounts, S.PUMPING_TIME) == {}
 
 
 def test_every_hour_gets_a_row_with_its_amount_and_the_running_total() -> None:

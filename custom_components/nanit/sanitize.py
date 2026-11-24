@@ -9,18 +9,33 @@ import html
 import re
 
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
+# A "<" that a browser would read as the start of a tag, comment or end tag.
+_TAG_OPENER_RE = re.compile(r"<(?=[A-Za-z/!?])")
 
 
 def sanitize_name(value: str | None) -> str:
-    """Strip HTML tags and escape entities from an API-provided name.
+    """Strip HTML tags from an API-provided or typed name, leaving plain text.
 
     Prevents stored XSS via baby/camera names controlled by the Nanit API.
+    The result is plain text, not HTML: Home Assistant and the card render
+    names as text, and markdown surfaces (repairs, flow text) get no tags
+    because they are stripped here. Entities are decoded first, so an
+    encoded tag such as ``&lt;script&gt;`` is stripped too. A ``<`` left
+    over that could still open a tag (an unclosed ``<img src=x ...``) gets
+    a space after it, so it stays text even if a name is later dropped
+    into HTML. ``Baby <3`` is left alone.
     """
     if not value:
         return ""
-    cleaned = _HTML_TAG_RE.sub("", value)
-    # Unescape pre-encoded entities, then re-escape for safe display.
-    cleaned = html.escape(html.unescape(cleaned))
+    cleaned = value
+    # Decode nested encodings (e.g. "&amp;lt;") before stripping tags.
+    for _ in range(3):
+        decoded = html.unescape(cleaned)
+        if decoded == cleaned:
+            break
+        cleaned = decoded
+    cleaned = _HTML_TAG_RE.sub("", cleaned)
+    cleaned = _TAG_OPENER_RE.sub("< ", cleaned)
     return re.sub(r"\s+", " ", cleaned).strip()
 
 

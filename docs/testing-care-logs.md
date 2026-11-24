@@ -39,7 +39,7 @@ Open http://localhost:8123, then:
 
 ## Part 3 — Sensors
 
-Open the baby's camera device (a baby without a camera has a device of its own, named after the baby).
+Open the baby's camera device. A baby without a camera has no device: find its sensors under **Settings → Devices & Services → Entities** by the baby's name.
 
 - [ ] Eight care log sensors: Last diaper change, Last feeding, Last pumping, Diaper changes today, Feedings today, Bottle volume today, Nursing time today, Pumped volume today
 - [ ] Each "last" sensor shows the newest entry of its kind in the Nanit app, with its type, amount or minutes as attributes
@@ -70,7 +70,7 @@ The first import reads the whole history in the background; a year of history ta
 
 ## Part 6 — A new entry and a deleted one
 
-1. In the Nanit app, log a diaper change dated two hours ago (an hour that has finished, since only finished hours are written)
+1. In the Nanit app, log a diaper change dated earlier today, in an hour that has already ended, such as two hours ago (only finished hours are written; before 2 a.m., use a time just after midnight once that hour has ended)
 
 - [ ] Within about 5 minutes: **Diaper changes today** goes up by one, the calendar shows the entry, and today's bar for "<baby name> Diaper changes" goes up by one
 

@@ -54,22 +54,22 @@ STATISTIC_NAME_MAX = 255
 
 _CODE_RE = re.compile(r"[0-9a-f]{32}")
 
-# The series names live in the translation files next to the care log
-# calendar's event text: under that entity's state attributes, the one
+# The series labels live in the translation files next to the care log
+# calendar's event labels: under that entity's state attributes, the one
 # place in an entity's translations that holds free text keyed by short
-# tokens and is valid for hassfest on every supported version.
+# tokens. hassfest allows no placeholder there, so each is a plain label
+# and the baby's name is put before it here (see ``statistic_names``).
 _NAME_PREFIX = f"component.{DOMAIN}.entity.calendar.care_log.state_attributes.statistic_name.state"
-_PLACEHOLDER_RE = re.compile(r"\{([a-z_]+)\}")
 
 
 # Home Assistant fills every key a language lacks from the English
-# translation, so a series' name is missing, or holds another placeholder,
-# only when the translation files themselves are broken (or the lookup
-# raised). Then the name is made from the series key: no English text is
-# kept here (it lives in the translation files alone).
-def fallback_name(series: CareLogSeries) -> str:
-    """Return the name template used when no translation can be: the series key."""
-    return f"{{baby_name}} {series.value}"
+# translation, so a series' label is missing only when the translation
+# files themselves are broken (or the lookup raised). Then the series key
+# stands in: no English text is kept here (it lives in the translation
+# files alone).
+def fallback_label(series: CareLogSeries) -> str:
+    """Return the label used when no translation can be: the series key."""
+    return series.value
 
 
 def statistic_id(code: str, series: CareLogSeries) -> str:
@@ -89,24 +89,26 @@ def statistic_baby_name(name: str | None, code: str) -> str:
 
 
 def statistic_names(strings: Mapping[str, str], baby_name: str) -> dict[CareLogSeries, str]:
-    """Return each series' name from translations, falling back to the series key.
+    """Return each series' name: the baby name, then the series' translated label.
 
-    A translation is used only when its only placeholder is ``{baby_name}``.
-    The name is substituted plainly, so it is never read as a template. A
-    name longer than the recorder's metadata column
-    (``STATISTIC_NAME_MAX``) has the baby name cut short, so the series part
-    stays whole.
+    A label that is missing or empty falls back to the series key. The two
+    are joined as they are, so neither is read as a template. A name longer
+    than the recorder's metadata column (``STATISTIC_NAME_MAX``) has the baby
+    name cut short, so the series part stays whole.
     """
     names: dict[CareLogSeries, str] = {}
     for series in CareLogSeries:
-        template = strings.get(f"{_NAME_PREFIX}.{series.value}")
-        if not isinstance(template, str) or set(_PLACEHOLDER_RE.findall(template)) != {"baby_name"}:
-            template = fallback_name(series)
-        room = STATISTIC_NAME_MAX - (len(template) - len("{baby_name}"))
-        names[series] = template.replace("{baby_name}", _shortened(baby_name, room))[
-            :STATISTIC_NAME_MAX
-        ]
+        label = strings.get(f"{_NAME_PREFIX}.{series.value}")
+        if not isinstance(label, str) or not label:
+            label = fallback_label(series)
+        room = STATISTIC_NAME_MAX - len(_named("", label))
+        names[series] = _named(_shortened(baby_name, room), label)[:STATISTIC_NAME_MAX]
     return names
+
+
+def _named(baby_name: str, label: str) -> str:
+    """Return a series' name from the baby's name and the series' label."""
+    return f"{baby_name} {label}"
 
 
 def _shortened(baby_name: str, room: int) -> str:

@@ -512,28 +512,20 @@
             "name": "Event title",
             "state": {
               "diaper_change": "Diaper",
-              "diaper_change_type": "Diaper, {change_type}",
               "bottle_feed": "Bottle",
-              "bottle_feed_amount": "Bottle, {amount}",
               "nursing": "Nursing",
-              "nursing_duration": "Nursing, {duration}",
-              "pumping": "Pumping",
-              "pumping_amount": "Pumping, {amount}",
-              "other": "{kind}"
+              "pumping": "Pumping"
             }
           },
           "event_detail": {
             "name": "Event description",
             "state": {
-              "left_duration": "Left side: {duration}",
-              "right_duration": "Right side: {duration}",
-              "left_amount": "Left side: {amount}",
-              "right_amount": "Right side: {amount}",
-              "duration": "Duration: {duration}",
-              "logged_at": "Logged at {time}",
-              "note": "Note: {note}",
-              "logged_by": "Logged by {name}",
-              "logged_by_relation": "Logged by {name} ({relation})"
+              "left_side": "Left side",
+              "right_side": "Right side",
+              "duration": "Duration",
+              "logged_at": "Logged at",
+              "note": "Note",
+              "logged_by": "Logged by"
             }
           },
           "diaper_type": {
@@ -548,30 +540,30 @@
           "measurement": {
             "name": "Measurement",
             "state": {
-              "milliliters": "{value} mL",
-              "fluid_ounces": "{value} fl oz",
-              "minutes": "{value} min"
+              "milliliters": "mL",
+              "fluid_ounces": "fl oz",
+              "minutes": "min"
             }
           },
           "statistic_name": {
             "name": "Statistic name",
             "state": {
-              "diaper_changes": "{baby_name} diaper changes",
-              "diaper_pee": "{baby_name} pee diapers",
-              "diaper_poo": "{baby_name} poo diapers",
-              "diaper_mixed": "{baby_name} mixed diapers",
-              "diaper_dry": "{baby_name} dry diapers",
-              "bottle_feeds": "{baby_name} bottle feeds",
-              "bottle_volume": "{baby_name} bottle volume",
-              "nursing_sessions": "{baby_name} nursing sessions",
-              "nursing_time": "{baby_name} nursing time",
-              "nursing_time_left": "{baby_name} nursing time, left",
-              "nursing_time_right": "{baby_name} nursing time, right",
-              "pumping_sessions": "{baby_name} pumping sessions",
-              "pumped_volume": "{baby_name} pumped volume",
-              "pumped_volume_left": "{baby_name} pumped volume, left",
-              "pumped_volume_right": "{baby_name} pumped volume, right",
-              "pumping_time": "{baby_name} pumping time"
+              "diaper_changes": "diaper changes",
+              "diaper_pee": "pee diapers",
+              "diaper_poo": "poo diapers",
+              "diaper_mixed": "mixed diapers",
+              "diaper_dry": "dry diapers",
+              "bottle_feeds": "bottle feeds",
+              "bottle_volume": "bottle volume",
+              "nursing_sessions": "nursing sessions",
+              "nursing_time": "nursing time",
+              "nursing_time_left": "nursing time, left",
+              "nursing_time_right": "nursing time, right",
+              "pumping_sessions": "pumping sessions",
+              "pumped_volume": "pumped volume",
+              "pumped_volume_left": "pumped volume, left",
+              "pumped_volume_right": "pumped volume, right",
+              "pumping_time": "pumping time"
             }
           }
         }

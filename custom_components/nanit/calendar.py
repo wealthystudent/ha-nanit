@@ -14,7 +14,6 @@ import asyncio
 import dataclasses
 import logging
 import math
-import re
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -109,13 +108,12 @@ _MAX_LENGTH = CARE_LOG_REACH_BACK
 
 _DIAPER_TYPES = ("pee", "poo", "mixed", "dry")
 
-# Where the event text lives in the translation files: under the calendar
-# entity's own translation key, as state attributes, the one place in an
-# entity's translations that holds free text keyed by short tokens and is
-# valid for hassfest on every supported Home Assistant version.
+# Where the event text's labels live in the translation files: under the
+# calendar entity's own translation key, as state attributes, the one place
+# in an entity's translations that holds free text keyed by short tokens.
+# hassfest allows no placeholder in a state or state attribute value, so
+# these are plain labels, and the text is put together here (see _Formatter).
 _TRANSLATION_PREFIX = f"component.{DOMAIN}.entity.calendar.care_log.state_attributes"
-
-_PLACEHOLDER_RE = re.compile(r"\{([a-z_]+)\}")
 
 
 async def async_setup_entry(
@@ -165,49 +163,50 @@ class _Cached:
 type _CacheKey = tuple[int, int, bool]
 
 
-def fallback_text(key: str, values: Mapping[str, str]) -> str:
-    """Return the text used when no usable translation is found: the key, then the values.
-
-    Home Assistant adds English for any key a language lacks, and drops a
-    translation whose placeholders differ from the English one, so this is
-    reached only when the integration's own English translation file can't
-    be read, or the lookup fails. It holds no sentence of its own, only the
-    string's key and the values that would have filled it in.
-    """
-    return ", ".join([key, *values.values()])
-
-
 class _Texts:
-    """Event text in the configured language (Home Assistant fills gaps with English)."""
+    """Event labels in the configured language (Home Assistant fills gaps with English)."""
 
     def __init__(self, strings: Mapping[str, str]) -> None:
         self._strings = strings
 
-    def get(self, group: str, key: str, **values: str) -> str:
-        """Return one string with its placeholders filled in."""
-        template = self._strings.get(f"{_TRANSLATION_PREFIX}.{group}.state.{key}")
-        if isinstance(template, str) and (text := _fill(template, values)) is not None:
-            return text
-        return fallback_text(key, values)
+    def get(self, group: str, key: str) -> str:
+        """Return one label, or its key when no usable translation is found.
+
+        Home Assistant adds English for any key a language lacks, so the key
+        is used only when the integration's own English translation file
+        can't be read, or the lookup fails. It holds no text of its own.
+        """
+        label = self._strings.get(f"{_TRANSLATION_PREFIX}.{group}.state.{key}")
+        return label if isinstance(label, str) and label else key
 
 
-def _fill(template: str, values: Mapping[str, str]) -> str | None:
-    """Replace each {name} in template, or None when one has no value.
+# How the labels and values are put together, one pattern each. Values are
+# joined as they are, so text from Nanit is never read as a template.
 
-    A plain substitution, so text from Nanit is never read as a template.
-    """
-    missing = False
 
-    def replace(match: re.Match[str]) -> str:
-        nonlocal missing
-        value = values.get(match.group(1))
-        if value is None:
-            missing = True
-            return ""
-        return value
+def _with_detail(label: str, value: str) -> str:
+    """Return an event title with its detail: "Bottle, 120 mL"."""
+    return f"{label}, {value}"
 
-    text = _PLACEHOLDER_RE.sub(replace, template)
-    return None if missing else text
+
+def _field(label: str, value: str) -> str:
+    """Return one line of an event's description: "Left side: 5 min"."""
+    return f"{label}: {value}"
+
+
+def _phrase(label: str, value: str) -> str:
+    """Return a label followed by its value: "Logged at ...", "Logged by Sam"."""
+    return f"{label} {value}"
+
+
+def _measured(value: str, unit: str) -> str:
+    """Return a number with its unit: "120 mL"."""
+    return f"{value} {unit}"
+
+
+def _with_relation(name: str, relation: str) -> str:
+    """Return a person's name with their relation to the baby: "Sam (dad)"."""
+    return f"{name} ({relation})"
 
 
 def _number(value: float, decimals: int = 1) -> str:
@@ -266,36 +265,34 @@ class _Formatter:
                 milliliters, UnitOfVolume.MILLILITERS, UnitOfVolume.FLUID_OUNCES
             )
             # Two decimals: parents log quarter ounces, which one decimal mangles.
-            return self._texts.get("measurement", "fluid_ounces", value=_number(ounces, 2))
-        return self._texts.get("measurement", "milliliters", value=_number(milliliters))
+            return _measured(_number(ounces, 2), self._texts.get("measurement", "fluid_ounces"))
+        return _measured(_number(milliliters), self._texts.get("measurement", "milliliters"))
 
     def duration(self, seconds: float) -> str:
-        return self._texts.get("measurement", "minutes", value=_number(seconds / 60))
+        return _measured(_number(seconds / 60), self._texts.get("measurement", "minutes"))
 
     def summary(self, log: CareLog) -> str:
-        texts = self._texts
         kind = log.log_type
+        if kind not in (CARE_LOG_DIAPER, CARE_LOG_BOTTLE, CARE_LOG_NURSING, CARE_LOG_PUMPING):
+            # The kind is a short lowercase token (the library guarantees it).
+            return kind.replace("_", " ").capitalize()
+        label = self._texts.get("event_title", kind)
+        detail: str | None = None
         if kind == CARE_LOG_DIAPER:
             if log.change_type in _DIAPER_TYPES:
-                change_type = texts.get("diaper_type", log.change_type)
-                return texts.get("event_title", "diaper_change_type", change_type=change_type)
-            return texts.get("event_title", "diaper_change")
-        if kind == CARE_LOG_BOTTLE:
+                detail = self._texts.get("diaper_type", log.change_type)
+        elif kind == CARE_LOG_BOTTLE:
             if (amount := _valid(log, "feed_amount_ml")) is not None:
-                return texts.get("event_title", "bottle_feed_amount", amount=self.amount(amount))
-            return texts.get("event_title", "bottle_feed")
-        if kind == CARE_LOG_NURSING:
+                detail = self.amount(amount)
+        elif kind == CARE_LOG_NURSING:
             seconds = _total(_valid(log, "left_duration_s"), _valid(log, "right_duration_s"))
             if seconds is not None:
-                return texts.get("event_title", "nursing_duration", duration=self.duration(seconds))
-            return texts.get("event_title", "nursing")
-        if kind == CARE_LOG_PUMPING:
+                detail = self.duration(seconds)
+        else:
             amount = _total(_valid(log, "left_amount_ml"), _valid(log, "right_amount_ml"))
             if amount is not None:
-                return texts.get("event_title", "pumping_amount", amount=self.amount(amount))
-            return texts.get("event_title", "pumping")
-        # The kind is a short lowercase token (the library guarantees it).
-        return texts.get("event_title", "other", kind=kind.replace("_", " ").capitalize())
+                detail = self.amount(amount)
+        return label if detail is None else _with_detail(label, detail)
 
     def description(self, row: _Row, show_notes: bool) -> str | None:
         texts = self._texts
@@ -305,41 +302,33 @@ class _Formatter:
             for side in ("left", "right"):
                 if (seconds := _valid(log, f"{side}_duration_s")) is not None:
                     lines.append(
-                        texts.get(
-                            "event_detail", f"{side}_duration", duration=self.duration(seconds)
-                        )
+                        _field(texts.get("event_detail", f"{side}_side"), self.duration(seconds))
                     )
         elif log.log_type == CARE_LOG_PUMPING:
             for side in ("left", "right"):
                 if (amount := _valid(log, f"{side}_amount_ml")) is not None:
                     lines.append(
-                        texts.get("event_detail", f"{side}_amount", amount=self.amount(amount))
+                        _field(texts.get("event_detail", f"{side}_side"), self.amount(amount))
                     )
             if (seconds := _valid(log, "duration_s")) is not None:
-                lines.append(texts.get("event_detail", "duration", duration=self.duration(seconds)))
+                lines.append(_field(texts.get("event_detail", "duration"), self.duration(seconds)))
         elif (
             log.log_type not in (CARE_LOG_DIAPER, CARE_LOG_BOTTLE)
             and (seconds := _valid(log, "duration_s")) is not None
         ):
-            lines.append(texts.get("event_detail", "duration", duration=self.duration(seconds)))
+            lines.append(_field(texts.get("event_detail", "duration"), self.duration(seconds)))
         if (logged_at := _moment(log.logged_at)) is not None:
             time = dt_util.as_local(logged_at).strftime("%Y-%m-%d %H:%M")
-            lines.append(texts.get("event_detail", "logged_at", time=time))
+            lines.append(_phrase(texts.get("event_detail", "logged_at"), time))
         detail = row.detail
         if show_notes and detail is not None:
             if detail.comment:
-                lines.append(texts.get("event_detail", "note", note=detail.comment))
-            if detail.user_name and detail.user_relation:
-                lines.append(
-                    texts.get(
-                        "event_detail",
-                        "logged_by_relation",
-                        name=detail.user_name,
-                        relation=detail.user_relation,
-                    )
-                )
-            elif detail.user_name:
-                lines.append(texts.get("event_detail", "logged_by", name=detail.user_name))
+                lines.append(_field(texts.get("event_detail", "note"), detail.comment))
+            if detail.user_name:
+                name = detail.user_name
+                if detail.user_relation:
+                    name = _with_relation(name, detail.user_relation)
+                lines.append(_phrase(texts.get("event_detail", "logged_by"), name))
         return "\n".join(lines) if lines else None
 
 

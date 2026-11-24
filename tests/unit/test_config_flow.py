@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from collections.abc import Iterator
 from pathlib import Path
@@ -1119,3 +1120,30 @@ def test_translations_match_strings_byte_for_byte() -> None:
     """translations/en.json is a copy of strings.json and must not drift."""
     base = Path(nanit_config_flow.__file__).parent
     assert (base / "translations" / "en.json").read_bytes() == (base / "strings.json").read_bytes()
+
+
+def _texts_in(value: Any) -> Iterator[str]:
+    """Every string in a block of a translation file."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _texts_in(item)
+
+
+def test_no_entity_state_text_holds_a_placeholder() -> None:
+    """hassfest refuses a {placeholder} in an entity's state or state attribute texts.
+
+    Placeholders are allowed in an entity's name only.
+    """
+    base = Path(nanit_config_flow.__file__).parent
+    entities = json.loads((base / "strings.json").read_text(encoding="utf-8"))["entity"]
+    found = [
+        (platform, key, block, text)
+        for platform, keys in entities.items()
+        for key, entity in keys.items()
+        for block in ("state", "state_attributes")
+        for text in _texts_in(entity.get(block, {}))
+        if re.search(r"\{[^{}]*\}", text)
+    ]
+    assert found == []

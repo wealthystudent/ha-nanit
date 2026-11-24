@@ -6,7 +6,6 @@ import asyncio
 import dataclasses
 import json
 import logging
-import re
 import sys
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -1685,19 +1684,101 @@ def _english_strings() -> dict[str, str]:
     }
 
 
+def _labels(name: str) -> dict[str, dict[str, str]]:
+    """The calendar's label groups in one translation file."""
+    folder = Path(calendar_module.__file__).parent
+    path = folder / name if name == "strings.json" else folder / "translations" / name
+    strings = json.loads(path.read_text(encoding="utf-8"))
+    attributes = strings["entity"]["calendar"]["care_log"]["state_attributes"]
+    return {group: value["state"] for group, value in attributes.items()}
+
+
+def test_the_labels_are_plain_text_and_the_same_in_both_files() -> None:
+    labels = _labels("strings.json")
+    assert _labels("en.json") == labels
+    assert {group: set(keys) for group, keys in labels.items() if group != "statistic_name"} == {
+        "event_title": {"diaper_change", "bottle_feed", "nursing", "pumping"},
+        "event_detail": {"left_side", "right_side", "duration", "logged_at", "note", "logged_by"},
+        "diaper_type": {"pee", "poo", "mixed", "dry"},
+        "measurement": {"milliliters", "fluid_ounces", "minutes"},
+    }
+    for group, keys in labels.items():
+        for key, label in keys.items():
+            assert label, (group, key)
+            assert label == label.strip(), (group, key)
+            assert "{" not in label, (group, key)
+            assert "}" not in label, (group, key)
+
+
+async def test_the_english_text_is_put_together_from_the_labels(hass: HomeAssistant) -> None:
+    """The exact English a user sees, for every pattern."""
+    await hass.config.async_set_time_zone("UTC")
+    hass.config.units = METRIC_SYSTEM
+    metric = calendar_module._Formatter(hass, calendar_module._Texts(_english_strings()))
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    customary = calendar_module._Formatter(hass, calendar_module._Texts(_english_strings()))
+    at = datetime(2026, 11, 20, 15, 5, tzinfo=UTC)
+
+    def entry(kind: str, **fields: Any) -> CareLog:
+        return _log("e1", kind, at, **fields)
+
+    assert [
+        metric.summary(entry("diaper_change")),
+        metric.summary(entry("diaper_change", change_type="pee")),
+        metric.summary(entry("diaper_change", change_type="unknown")),
+        metric.summary(entry("bottle_feed")),
+        metric.summary(entry("bottle_feed", feed_amount_ml=120.0)),
+        customary.summary(entry("bottle_feed", feed_amount_ml=125.6862)),
+        metric.summary(entry("nursing")),
+        metric.summary(entry("nursing", left_duration_s=420.0, right_duration_s=300.0)),
+        metric.summary(entry("pumping")),
+        metric.summary(entry("pumping", left_amount_ml=60.0, right_amount_ml=30.0)),
+        metric.summary(entry("solid_food")),
+    ] == [
+        "Diaper",
+        "Diaper, pee",
+        "Diaper",
+        "Bottle",
+        "Bottle, 120 mL",
+        "Bottle, 4.25 fl oz",
+        "Nursing",
+        "Nursing, 12 min",
+        "Pumping",
+        "Pumping, 90 mL",
+        "Solid food",
+    ]
+    assert metric.amount(120.0) == "120 mL"
+    assert customary.amount(125.6862) == "4.25 fl oz"
+    assert metric.duration(720.0) == "12 min"
+
+    nursed = calendar_module._Row(
+        entry("nursing", left_duration_s=300.0, right_duration_s=720.0, logged_at=_ts(at)),
+        CareLogDetail(comment="Sleepy", user_name="Sam", user_relation="dad"),
+    )
+    assert metric.description(nursed, show_notes=True) == (
+        "Left side: 5 min\nRight side: 12 min\nLogged at 2026-11-20 15:05\n"
+        "Note: Sleepy\nLogged by Sam (dad)"
+    )
+    assert metric.description(nursed, show_notes=False) == (
+        "Left side: 5 min\nRight side: 12 min\nLogged at 2026-11-20 15:05"
+    )
+    pumped = calendar_module._Row(
+        entry("pumping", right_amount_ml=30.0, duration_s=720.0),
+        CareLogDetail(user_name="Sam"),
+    )
+    assert metric.description(pumped, show_notes=True) == (
+        "Right side: 30 mL\nDuration: 12 min\nLogged by Sam"
+    )
+
+
 def test_the_fallback_holds_no_english_text() -> None:
-    """Only the string's key and its values: no sentence of strings.json comes back."""
-    english = _english_strings()
+    """Only each label's key: no text of strings.json comes back."""
     texts = calendar_module._Texts({})
-    for name, template in english.items():
-        if ".statistic_name." in name:
+    for group, keys in _labels("strings.json").items():
+        if group == "statistic_name":
             continue  # The statistics' names share the block; not the calendar's.
-        group, key = name.split(".state_attributes.")[1].split(".state.")
-        values = dict.fromkeys(re.findall(r"\{([a-z_]+)\}", template), "V")
-        text = texts.get(group, key, **values)
-        assert text == ", ".join([key, *values.values()]), name
-        words = set(re.findall(r"[A-Za-z]{3,}", template))
-        assert not words & set(re.findall(r"[A-Za-z]{3,}", text.replace(key, ""))), name
+        for key in keys:
+            assert texts.get(group, key) == key, (group, key)
 
 
 async def test_text_shows_keys_and_values_when_translations_fail(
@@ -1714,10 +1795,10 @@ async def test_text_shows_keys_and_values_when_translations_fail(
         events = await _events(hass, calendar, RANGE_START, RANGE_END)
 
     assert _summaries(events) == [
-        "diaper_change_type, mixed",
-        "bottle_feed_amount, milliliters, 30",
-        "nursing_duration, minutes, 15",
-        "pumping_amount, milliliters, 30",
+        "diaper_change, mixed",
+        "bottle_feed, 30 milliliters",
+        "nursing, 15 minutes",
+        "pumping, 30 milliliters",
     ]
     assert await hass.config_entries.async_unload(entry.entry_id)
 
@@ -1733,11 +1814,11 @@ async def test_text_comes_from_the_translation_files(
     # As Home Assistant returns a language: English for every key it lacks.
     translated = {
         **_english_strings(),
-        f"{prefix}.event_title.state.bottle_feed_amount": "Biberon, {amount}",
-        f"{prefix}.measurement.state.milliliters": "{value} ml",
-        # Unknown placeholder: Home Assistant drops these, so it can only be
-        # a broken file; the key and values show instead.
-        f"{prefix}.event_title.state.nursing_duration": "Stillen, {dauer}",
+        f"{prefix}.event_title.state.bottle_feed": "Biberon",
+        f"{prefix}.measurement.state.milliliters": "ml",
+        # Empty: Home Assistant would have filled in English, so it can only
+        # be a broken file; the key shows instead.
+        f"{prefix}.event_title.state.nursing": "",
     }
 
     with patch.object(
@@ -1748,7 +1829,7 @@ async def test_text_comes_from_the_translation_files(
     assert _summaries(events) == [
         "Diaper, mixed",
         "Biberon, 30 ml",
-        "nursing_duration, 15 min",
+        "nursing, 15 min",
         "Pumping, 30 ml",
     ]
     assert await hass.config_entries.async_unload(entry.entry_id)

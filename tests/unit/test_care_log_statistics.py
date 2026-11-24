@@ -18,7 +18,7 @@ from custom_components.nanit.baby_code import baby_code
 from custom_components.nanit.care_log_hours import CareLogSeries
 from custom_components.nanit.care_log_statistics import (
     async_statistic_names,
-    fallback_name,
+    fallback_label,
     statistic_baby_name,
     statistic_id,
     statistic_metadata,
@@ -111,15 +111,39 @@ def _translations(name: str) -> dict[str, str]:
 ENGLISH = _translations("en.json")
 
 
-def test_the_translation_files_name_every_series_with_only_the_baby_name() -> None:
+def test_the_translation_files_label_every_series_with_plain_text() -> None:
     assert _translations("strings.json") == ENGLISH
     assert set(ENGLISH) == {f"{_PREFIX}.{series.value}" for series in CareLogSeries}
-    for template in ENGLISH.values():
-        assert template.count("{baby_name}") == 1
-        assert template.replace("{baby_name}", "").count("{") == 0
+    for label in ENGLISH.values():
+        assert label
+        assert label == label.strip()
+        assert "{" not in label
+        assert "}" not in label
     # So every name comes from them, none from the fallback.
     names = statistic_names(ENGLISH, "Ada")
-    assert all(names[series] != fallback_name(series).replace("{baby_name}", "Ada") for series in S)
+    assert all(names[series] != f"Ada {fallback_label(series)}" for series in S)
+
+
+def test_the_english_names_are_the_baby_name_then_the_series() -> None:
+    names = statistic_names(ENGLISH, "Ada")
+    assert names == {
+        S.DIAPER_CHANGES: "Ada diaper changes",
+        S.DIAPER_PEE: "Ada pee diapers",
+        S.DIAPER_POO: "Ada poo diapers",
+        S.DIAPER_MIXED: "Ada mixed diapers",
+        S.DIAPER_DRY: "Ada dry diapers",
+        S.BOTTLE_FEEDS: "Ada bottle feeds",
+        S.BOTTLE_VOLUME: "Ada bottle volume",
+        S.NURSING_SESSIONS: "Ada nursing sessions",
+        S.NURSING_TIME: "Ada nursing time",
+        S.NURSING_TIME_LEFT: "Ada nursing time, left",
+        S.NURSING_TIME_RIGHT: "Ada nursing time, right",
+        S.PUMPING_SESSIONS: "Ada pumping sessions",
+        S.PUMPED_VOLUME: "Ada pumped volume",
+        S.PUMPED_VOLUME_LEFT: "Ada pumped volume, left",
+        S.PUMPED_VOLUME_RIGHT: "Ada pumped volume, right",
+        S.PUMPING_TIME: "Ada pumping time",
+    }
 
 
 def test_names_carry_the_baby_name_and_no_raw_id() -> None:
@@ -144,7 +168,7 @@ def test_a_long_baby_name_is_cut_so_the_name_fits_the_recorder_and_keeps_its_ser
     names = statistic_names(ENGLISH, baby)
     for series, name in names.items():
         assert len(name) <= 255
-        assert name.endswith(ENGLISH[f"{_PREFIX}.{series.value}"].replace("{baby_name}", ""))
+        assert name.endswith(" " + ENGLISH[f"{_PREFIX}.{series.value}"])
         assert name.startswith("Ada &amp; Ada")
         # Never cut inside an escaped character.
         head = name[: name.rindex(" ")]
@@ -159,15 +183,14 @@ def test_the_baby_name_is_sanitized() -> None:
     assert statistic_baby_name("<b>Ada</b>  & co", CODE) == "Ada &amp; co"
 
 
-def test_a_translation_is_used_when_it_has_only_the_baby_name() -> None:
+def test_a_translated_label_is_used_and_a_missing_one_falls_back_to_the_key() -> None:
     prefix = "component.nanit.entity.calendar.care_log.state_attributes.statistic_name.state"
     strings = {
-        f"{prefix}.diaper_changes": "Windeln {baby_name}",
-        f"{prefix}.diaper_pee": "Nass {baby_name} {other}",
-        f"{prefix}.diaper_poo": "No placeholder",
+        f"{prefix}.diaper_changes": "Windeln",
+        f"{prefix}.diaper_pee": "",
     }
     names = statistic_names(strings, "Ada")
-    assert names[S.DIAPER_CHANGES] == "Windeln Ada"
+    assert names[S.DIAPER_CHANGES] == "Ada Windeln"
     assert names[S.DIAPER_PEE] == "Ada diaper_pee"
     assert names[S.DIAPER_POO] == "Ada diaper_poo"
 
@@ -180,7 +203,7 @@ def test_a_name_with_braces_is_not_read_as_a_template() -> None:
 async def test_names_come_from_the_translation_files(hass: HomeAssistant) -> None:
     strings = await async_get_translations(hass, "en", "entity", {"nanit"})
     prefix = "component.nanit.entity.calendar.care_log.state_attributes.statistic_name.state"
-    assert strings[f"{prefix}.diaper_changes"] == "{baby_name} diaper changes"
+    assert strings[f"{prefix}.diaper_changes"] == "diaper changes"
     names = await async_statistic_names(hass, "Nursery")
     assert names == statistic_names(ENGLISH, "Nursery")
 

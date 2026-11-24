@@ -484,8 +484,21 @@ def _pieces(start: int, end: int) -> Iterator[tuple[int, int]]:
         low = high
 
 
+def _asked(rows: Iterable[_Row], low: int, high: int) -> list[_Row]:
+    """Keep the rows of one request that are dated inside its inclusive bounds.
+
+    Every kind: a row dated outside is not what was asked for.
+    """
+    return [row for row in rows if low <= row.log.timestamp <= high]
+
+
 def _unique(rows: Iterable[_Row]) -> tuple[_Row, ...]:
-    """Keep one row per entry uid, sleep kinds left out."""
+    """Keep one row per entry uid, sleep kinds left out.
+
+    Each piece's rows are first checked against its bounds (see _asked), so
+    a copy dated outside the request that returned it never displaces one
+    inside.
+    """
     unique: dict[str, _Row] = {}
     for row in rows:
         if row.log.log_type in CARE_LOG_SLEEP_KINDS:
@@ -711,9 +724,13 @@ class NanitCareLogCalendar(CoordinatorEntity[NanitCareLogCoordinator], CalendarE
             async with self._requests:
                 if show_notes:
                     detail_fetch = await client.async_get_calendar_details(baby_uid, low, high)
-                    return [_Row(_stripped(e.log), e.detail) for e in detail_fetch.entries]
-                fetch = await client.async_get_calendar_result(baby_uid, low, high)
-                return [_Row(_stripped(log), None) for log in fetch.logs]
+                    fetched = [_Row(_stripped(e.log), e.detail) for e in detail_fetch.entries]
+                else:
+                    fetch = await client.async_get_calendar_result(baby_uid, low, high)
+                    fetched = [_Row(_stripped(log), None) for log in fetch.logs]
+            # Checked here, against this piece's own bounds, before a copy
+            # is chosen per uid across the pieces.
+            return _asked(fetched, low, high)
 
         pieces = _pieces(start, end)
         rows: list[_Row] = []

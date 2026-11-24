@@ -121,6 +121,10 @@ class FakeNanit:
     most_in_flight: int = 0
     # Ranges the reader itself asks for are answered but not recorded.
     reader_calls: int = 0
+    # Rows Nanit wrongly returns with every answer whose range they lie
+    # outside, after the rows that belong in it or, if strays_first, before.
+    strays: list[CareLogEntry] = field(default_factory=list)
+    strays_first: bool = False
 
     def add(
         self,
@@ -132,6 +136,13 @@ class FakeNanit:
         detail = CareLogDetail(comment=note, user_name=name, user_relation=relation)
         self.entries.append(CareLogEntry(log=log, detail=detail))
 
+    def add_stray(self, log: CareLog) -> None:
+        """Return log, wrongly, with every answer whose range it lies outside."""
+        detail = CareLogDetail(
+            comment=NOTE_MARKER, user_name=NAME_MARKER, user_relation=RELATION_MARKER
+        )
+        self.strays.append(CareLogEntry(log=log, detail=detail))
+
     async def _answer(self, method: str, start: int, end: int) -> list[CareLogEntry]:
         self.calls.append((method, "", start, end))
         self.in_flight += 1
@@ -141,7 +152,9 @@ class FakeNanit:
                 await self.gate.wait()
             if self.error is not None:
                 raise self.error
-            return [e for e in self.entries if start <= e.log.timestamp <= end]
+            inside = [e for e in self.entries if start <= e.log.timestamp <= end]
+            strays = [e for e in self.strays if not start <= e.log.timestamp <= end]
+            return strays + inside if self.strays_first else inside + strays
         finally:
             self.in_flight -= 1
 
@@ -580,6 +593,71 @@ async def test_repeats_are_removed_and_events_sorted_by_start_then_uid(
     events = await _events(hass, calendar, RANGE_START, RANGE_END)
 
     assert _summaries(events) == ["Pumping", "Diaper, pee", "Bottle, 10 mL"]
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+# A copy of the bottle b1 that Nanit returns dated outside the range asked
+# for: its kind, and how far from the bottle it is dated.
+STRAY_COPIES = {
+    "later": ("bottle_feed", timedelta(days=5)),
+    "earlier": ("bottle_feed", -timedelta(days=5)),
+    "other_kind_later": ("diaper_change", timedelta(days=5)),
+    "other_kind_earlier": ("diaper_change", -timedelta(days=5)),
+    "sleep_later": ("sleep", timedelta(days=5)),
+}
+
+
+@pytest.mark.parametrize("strays_first", [False, True], ids=["stray_last", "stray_first"])
+@pytest.mark.parametrize("copy", list(STRAY_COPIES), ids=list(STRAY_COPIES))
+async def test_a_copy_dated_outside_its_request_never_hides_the_entry_inside(
+    hass: HomeAssistant,
+    client: Any,
+    freezer: FrozenDateTimeFactory,
+    copy: str,
+    strays_first: bool,
+) -> None:
+    """Each row is checked against its request's bounds before one copy per uid is kept.
+
+    Whichever copy is dated later, whatever its kind, and whichever comes first.
+    """
+    freezer.move_to(NOW)
+    fake = FakeNanit()
+    at = _local("2026-11-20T08:00:00")
+    fake.add(_log("b1", "bottle_feed", at, feed_amount_ml=30.0))
+    entry, calendar = await _one_calendar(hass, client, fake)
+    kind, offset = STRAY_COPIES[copy]
+    fake.add_stray(_log("b1", kind, at + offset, feed_amount_ml=90.0))
+    fake.strays_first = strays_first
+
+    events = await _events(hass, calendar, RANGE_START, RANGE_END)
+
+    assert [(e.summary, e.start) for e in events] == [("Bottle, 30 mL", at)]
+    ((_method, low, high),) = fake.calendar_calls()
+    assert not low <= _ts(at + offset) <= high
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+@pytest.mark.parametrize("notes", [False, True], ids=["notes_off", "notes_on"])
+async def test_each_piece_of_a_range_is_checked_against_its_own_bounds(
+    hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory, notes: bool
+) -> None:
+    """A copy dated inside the range, but outside each piece that returned it, is left out."""
+    freezer.move_to(NOW)
+    fake = FakeNanit()
+    start = RANGE_START - timedelta(days=199)
+    early = start + timedelta(days=10)
+    fake.add(_log("b1", "bottle_feed", early, feed_amount_ml=30.0))
+    entry, calendar = await _one_calendar(hass, client, fake, notes=notes)
+    # Dated in the middle piece, so returned only by the first and the last.
+    stray = start + timedelta(days=150)
+    fake.add_stray(_log("b1", "bottle_feed", stray, feed_amount_ml=90.0))
+
+    events = await _events(hass, calendar, start, RANGE_END)
+
+    assert [(e.summary, e.start) for e in events] == [("Bottle, 30 mL", early)]
+    bounds = sorted((low, high) for _m, low, high in fake.calendar_calls())
+    assert len(bounds) == 3
+    assert [low <= _ts(stray) <= high for low, high in bounds] == [False, True, False]
     assert await hass.config_entries.async_unload(entry.entry_id)
 
 

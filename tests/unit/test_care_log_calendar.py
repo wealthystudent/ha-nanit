@@ -6,6 +6,7 @@ import asyncio
 import dataclasses
 import json
 import logging
+import re
 import sys
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -53,7 +54,6 @@ from custom_components.nanit.calendar import (
     CARE_LOG_CACHE_SIZE,
     CARE_LOG_CACHE_TTL,
     CARE_LOG_MAX_PIECE,
-    FALLBACK_TEXT,
     NanitCareLogCalendar,
 )
 from custom_components.nanit.const import (
@@ -1646,17 +1646,38 @@ async def test_an_event_the_validator_rejects_outright_is_skipped(
     assert await hass.config_entries.async_unload(entry.entry_id)
 
 
-def test_the_english_fallback_matches_strings_json() -> None:
-    strings = json.loads(
-        (Path(calendar_module.__file__).parent / "strings.json").read_text(encoding="utf-8")
+def _english_strings() -> dict[str, str]:
+    """The calendar's English text as Home Assistant's translation lookup returns it."""
+    english = json.loads(
+        (Path(calendar_module.__file__).parent / "translations" / "en.json").read_text(
+            encoding="utf-8"
+        )
     )
-    attributes = strings["entity"]["calendar"]["care_log"]["state_attributes"]
-    # The statistics' names share the block; care_log_statistics checks those.
-    calendar_groups = {g: v["state"] for g, v in attributes.items() if g != "statistic_name"}
-    assert calendar_groups == FALLBACK_TEXT
+    attributes = english["entity"]["calendar"]["care_log"]["state_attributes"]
+    prefix = "component.nanit.entity.calendar.care_log.state_attributes"
+    return {
+        f"{prefix}.{group}.state.{key}": text
+        for group, value in attributes.items()
+        for key, text in value["state"].items()
+    }
 
 
-async def test_text_falls_back_to_english_when_translations_fail(
+def test_the_fallback_holds_no_english_text() -> None:
+    """Only the string's key and its values: no sentence of strings.json comes back."""
+    english = _english_strings()
+    texts = calendar_module._Texts({})
+    for name, template in english.items():
+        if ".statistic_name." in name:
+            continue  # The statistics' names share the block; not the calendar's.
+        group, key = name.split(".state_attributes.")[1].split(".state.")
+        values = dict.fromkeys(re.findall(r"\{([a-z_]+)\}", template), "V")
+        text = texts.get(group, key, **values)
+        assert text == ", ".join([key, *values.values()]), name
+        words = set(re.findall(r"[A-Za-z]{3,}", template))
+        assert not words & set(re.findall(r"[A-Za-z]{3,}", text.replace(key, ""))), name
+
+
+async def test_text_shows_keys_and_values_when_translations_fail(
     hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory
 ) -> None:
     freezer.move_to(NOW)
@@ -1670,10 +1691,10 @@ async def test_text_falls_back_to_english_when_translations_fail(
         events = await _events(hass, calendar, RANGE_START, RANGE_END)
 
     assert _summaries(events) == [
-        "Diaper, mixed",
-        "Bottle, 30 mL",
-        "Nursing, 15 min",
-        "Pumping, 30 mL",
+        "diaper_change_type, mixed",
+        "bottle_feed_amount, milliliters, 30",
+        "nursing_duration, minutes, 15",
+        "pumping_amount, milliliters, 30",
     ]
     assert await hass.config_entries.async_unload(entry.entry_id)
 
@@ -1686,10 +1707,13 @@ async def test_text_comes_from_the_translation_files(
     _day_of_entries(fake)
     entry, calendar = await _one_calendar(hass, client, fake)
     prefix = "component.nanit.entity.calendar.care_log.state_attributes"
+    # As Home Assistant returns a language: English for every key it lacks.
     translated = {
+        **_english_strings(),
         f"{prefix}.event_title.state.bottle_feed_amount": "Biberon, {amount}",
         f"{prefix}.measurement.state.milliliters": "{value} ml",
-        # A broken translation (unknown placeholder) falls back to English.
+        # Unknown placeholder: Home Assistant drops these, so it can only be
+        # a broken file; the key and values show instead.
         f"{prefix}.event_title.state.nursing_duration": "Stillen, {dauer}",
     }
 
@@ -1701,7 +1725,7 @@ async def test_text_comes_from_the_translation_files(
     assert _summaries(events) == [
         "Diaper, mixed",
         "Biberon, 30 ml",
-        "Nursing, 15 min",
+        "nursing_duration, 15 min",
         "Pumping, 30 ml",
     ]
     assert await hass.config_entries.async_unload(entry.entry_id)

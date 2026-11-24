@@ -115,44 +115,6 @@ _DIAPER_TYPES = ("pee", "poo", "mixed", "dry")
 # valid for hassfest on every supported Home Assistant version.
 _TRANSLATION_PREFIX = f"component.{DOMAIN}.entity.calendar.care_log.state_attributes"
 
-# English text, used when a translation can't be read. Kept identical to
-# strings.json by a test.
-FALLBACK_TEXT: Mapping[str, Mapping[str, str]] = {
-    "event_title": {
-        "diaper_change": "Diaper",
-        "diaper_change_type": "Diaper, {change_type}",
-        "bottle_feed": "Bottle",
-        "bottle_feed_amount": "Bottle, {amount}",
-        "nursing": "Nursing",
-        "nursing_duration": "Nursing, {duration}",
-        "pumping": "Pumping",
-        "pumping_amount": "Pumping, {amount}",
-        "other": "{kind}",
-    },
-    "event_detail": {
-        "left_duration": "Left side: {duration}",
-        "right_duration": "Right side: {duration}",
-        "left_amount": "Left side: {amount}",
-        "right_amount": "Right side: {amount}",
-        "duration": "Duration: {duration}",
-        "logged_at": "Logged at {time}",
-        "note": "Note: {note}",
-        "logged_by": "Logged by {name}",
-        "logged_by_relation": "Logged by {name} ({relation})",
-    },
-    "diaper_type": {
-        "pee": "pee",
-        "poo": "poo",
-        "mixed": "mixed",
-        "dry": "dry",
-    },
-    "measurement": {
-        "milliliters": "{value} mL",
-        "fluid_ounces": "{value} fl oz",
-        "minutes": "{value} min",
-    },
-}
-
 _PLACEHOLDER_RE = re.compile(r"\{([a-z_]+)\}")
 
 
@@ -203,8 +165,20 @@ class _Cached:
 type _CacheKey = tuple[int, int, bool]
 
 
+def fallback_text(key: str, values: Mapping[str, str]) -> str:
+    """Return the text used when no usable translation is found: the key, then the values.
+
+    Home Assistant adds English for any key a language lacks, and drops a
+    translation whose placeholders differ from the English one, so this is
+    reached only when the integration's own English translation file can't
+    be read, or the lookup fails. It holds no sentence of its own, only the
+    string's key and the values that would have filled it in.
+    """
+    return ", ".join([key, *values.values()])
+
+
 class _Texts:
-    """Event text in the configured language, falling back to English."""
+    """Event text in the configured language (Home Assistant fills gaps with English)."""
 
     def __init__(self, strings: Mapping[str, str]) -> None:
         self._strings = strings
@@ -214,7 +188,7 @@ class _Texts:
         template = self._strings.get(f"{_TRANSLATION_PREFIX}.{group}.state.{key}")
         if isinstance(template, str) and (text := _fill(template, values)) is not None:
             return text
-        return _fill(FALLBACK_TEXT[group][key], values) or ""
+        return fallback_text(key, values)
 
 
 def _fill(template: str, values: Mapping[str, str]) -> str | None:
@@ -825,10 +799,10 @@ def _unavailable() -> HomeAssistantError:
 
 
 async def _async_texts(hass: HomeAssistant) -> _Texts:
-    """Return the event text in Home Assistant's language, or English."""
+    """Return the event text in Home Assistant's language, English where it has none."""
     try:
         strings = await async_get_translations(hass, hass.config.language, "entity", {DOMAIN})
     except Exception:  # noqa: BLE001
-        _LOGGER.debug("Care log calendar text could not be loaded; using English")
+        _LOGGER.debug("Care log calendar text could not be loaded; using its keys")
         strings = {}
     return _Texts(strings)

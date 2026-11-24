@@ -1057,6 +1057,46 @@ async def test_after_a_ten_day_reader_outage_nothing_is_written_across_the_unrea
     assert len(volume) == (_end_hour() - _hour(OLD)) // H
 
 
+@pytest.mark.usefixtures("reader_fails_at_once")
+async def test_a_reader_poll_during_the_pass_that_fills_an_outage_gap_does_not_hold_rows_back(
+    make: Callable[..., Harness], hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """The seven day read leaves a gap; a 24 hour poll arrives while the pass fills it."""
+    truth = Truth(BASE)
+    harness = await _imported(make, truth)  # 20 November 18:10
+    truth.reader_down = True
+    # Before the seven day read: only the history pass reads it.
+    unread = _bottle("b_unread", NOW + timedelta(days=2, hours=4), 45.0)
+    # Inside the seven day read, before the 24 hour poll.
+    recent = _bottle("b_recent", NOW + timedelta(days=8), 35.0)
+    truth.put(unread)
+    truth.put(recent)
+    for _ in range(10):  # the daily passes go on; the reader keeps failing
+        await harness.advance(timedelta(days=1))
+    truth.reader_down = False
+    truth.own.clear()
+
+    async def poll_during_the_pass(_start: int, _end: int) -> None:
+        truth.during_own = None
+        freezer.tick(timedelta(seconds=30))
+        await harness.coordinator.async_refresh()  # an ordinary 24 hour poll
+
+    truth.during_own = poll_during_the_pass
+    await harness.poll()  # 30 November 18:10: seven days, and the pass brought forward
+
+    seven_days, one_day = truth.reader[-2:]
+    assert seven_days[0] == _first_poll_start(NOW + timedelta(days=10))
+    assert seven_days[0] > unread.timestamp
+    assert seven_days[0] < recent.timestamp < one_day[0]
+    # That one pass caught up, through both reader reads.
+    assert truth.own == list(_expected_pieces(seven_days[0]))
+    volume = await _rows(hass, S.BOTTLE_VOLUME)
+    assert max(volume) == _end_hour() - H
+    assert volume[_hour(unread)] == (45.0, 255.0)
+    assert volume[_hour(recent)] == (35.0, 290.0)
+    assert volume[_end_hour() - H] == (0.0, 290.0)
+
+
 async def test_an_answer_arriving_after_the_hour_turned_does_not_certify_the_hour_it_was_asked_in(
     make: Callable[..., Harness], hass: HomeAssistant, freezer: FrozenDateTimeFactory
 ) -> None:

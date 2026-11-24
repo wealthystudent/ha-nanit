@@ -35,8 +35,9 @@ hours since its last read. When a reader read starts after the watermark
 (it failed for longer than its look-back), the history pass is brought
 forward, at most once an hour (``EARLY_HISTORY_INTERVAL``): it reads up to
 the reader's start, and once it completes the watermark moves on through
-the reader's newest read. Until a pass has covered the gap, nothing is
-written past it.
+the hours that read and every read since certified, where they connect
+(the spans are kept, not replaced by the newest read). Until a pass has
+covered the gap, nothing is written past it.
 
 Running, each reader read goes through ``CareLogBook.process`` and an
 incremental sync follows. A change that lowers a chart waits for the book's
@@ -184,6 +185,9 @@ READER_QUEUE: Final = 64
 # An own answer with more entries than this is turned into a read off the
 # event loop.
 LARGE_READ: Final = 500
+# The most spans of certified hours kept apart from the watermark, waiting
+# for a read to connect them to it (see ``_note_coverage``).
+MAX_SPANS: Final = 16
 
 _PIECE_SECONDS: Final = int(HISTORY_PIECE.total_seconds())
 
@@ -290,6 +294,22 @@ def _reach(read: CareLogRead) -> int:
 def _extend(watermark: int, start: int, reach: int) -> int:
     """Return the watermark moved on through a read's reach, when the read leaves no gap."""
     return max(watermark, reach) if start <= watermark else watermark
+
+
+def _add_span(spans: list[tuple[int, int]], span: tuple[int, int]) -> list[tuple[int, int]]:
+    """Return ``spans`` with ``span`` added: sorted, joined where they connect, at most ``MAX_SPANS``.
+
+    Two spans connect when one starts at or before the other's reach, as a
+    read moves the watermark on. Past the limit the earliest is dropped:
+    what it certified only waits for a later read.
+    """
+    merged: list[tuple[int, int]] = []
+    for start, reach in sorted([*spans, span]):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], reach))
+        else:
+            merged.append((start, reach))
+    return merged[-MAX_SPANS:]
 
 
 def _pass_watermark(reads: Sequence[CareLogRead]) -> int:
@@ -425,9 +445,10 @@ class CareLogStatisticsImporter:
         self._coverage_start: int | None = None
         # Unix seconds: the end of the contiguous span, from the coverage
         # start, that the reads the book took certify (see the module
-        # docstring); and the start and reach of the newest reader read.
+        # docstring); and the spans (start, reach) certified after a gap,
+        # joined where they connect, kept until a read connects them to it.
         self._watermark: int | None = None
-        self._reader_span: tuple[int, int] | None = None
+        self._spans: list[tuple[int, int]] = []
         self._piece_bounds: set[Bounds] = set()
         self._dirty: dict[CareLogSeries, int] = {}
         self._need_full = False
@@ -632,18 +653,41 @@ class CareLogStatisticsImporter:
         return min(hour_start(dt_util.utcnow().timestamp()), hour_start(mark))
 
     def _note_coverage(self, read: CareLogRead, *, from_reader: bool) -> None:
-        """Move the watermark on through a read the book took (see the module docstring)."""
+        """Move the watermark on through a read the book took (see the module docstring).
+
+        A read that starts after the watermark certifies its hours all the
+        same: they are kept, joined with others where they connect, and
+        count once a later read (a history pass that filled the gap) connects
+        them to the watermark. So a newer, shorter reader read that arrives
+        while a pass fills a gap does not undo what an earlier, longer one
+        certified.
+        """
         watermark = self._watermark
         assert watermark is not None
         reach = _reach(read)
         if from_reader:
             self._reader_start = read.start
-            self._reader_span = (read.start, reach)
         if read.start <= watermark:
             self._watermark = max(watermark, reach)
-        elif from_reader and reach > watermark:
-            # A gap: nothing is written past it until a history pass reads it.
-            self._bring_history_forward()
+        elif reach > read.start:
+            self._spans = _add_span(self._spans, (read.start, reach))
+            if from_reader:
+                # A gap: nothing is written past it until a history pass reads it.
+                self._bring_history_forward()
+        self._join_spans()
+
+    def _join_spans(self) -> None:
+        """Move the watermark on through the kept spans it now reaches, and drop them."""
+        watermark = self._watermark
+        assert watermark is not None
+        kept: list[tuple[int, int]] = []
+        for start, reach in self._spans:  # sorted by start
+            if start <= watermark:
+                watermark = max(watermark, reach)
+            elif reach > watermark:
+                kept.append((start, reach))
+        self._watermark = watermark
+        self._spans = kept
 
     # -- timers ---------------------------------------------------------------
 
@@ -959,8 +1003,7 @@ class CareLogStatisticsImporter:
         self._book.adopt_candidate(candidate, changed_at)
         self._reader_queue = kept
         self._watermark = _pass_watermark(reads)
-        # The pass's last read is the reader's (or its re-read).
-        self._reader_span = (reads[-1].start, _reach(reads[-1]))
+        self._spans = []
         now = dt_util.utcnow()
         self._first_pass = None
         self._first_pass_began = None
@@ -1111,19 +1154,19 @@ class CareLogStatisticsImporter:
     def _extend_after_pass(self, coverage: int, spans: Sequence[tuple[int, int]]) -> None:
         """Move the watermark on after a completed history pass.
 
-        Its pieces end where the reader's newest read started (when that
-        is still the newest), so once they have filled a gap, the watermark
-        goes on through that read. When the history now starts after the
-        watermark, only the pass counts.
+        Its pieces end where the reader's newest read started when the pass
+        began, so once they have filled a gap, the watermark goes on through
+        the spans kept since (that read's, and those of the reader reads that
+        arrived during the pass, joined where they connect). When the
+        history now starts after the watermark, only the pass counts.
         """
         watermark = self._watermark
         assert watermark is not None
         watermark = max(watermark, coverage)
         for start, reach in spans:
             watermark = _extend(watermark, start, reach)
-        if self._reader_span is not None:
-            watermark = _extend(watermark, *self._reader_span)
         self._watermark = watermark
+        self._join_spans()
 
     # -- syncing -----------------------------------------------------------------
 

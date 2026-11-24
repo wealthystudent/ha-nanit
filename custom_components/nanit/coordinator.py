@@ -541,9 +541,11 @@ class NanitCareLogCoordinator(DataUpdateCoordinator[CareLogData]):
         # through (``async_request``). Until when, on the loop's monotonic
         # clock, no request may be sent; None when one may.
         self._held_until: float | None = None
-        # The newest refusal or throttling, until a request sent after it
-        # succeeds.
-        self._held_by: NanitRequestRefused | None = None
+        # The status of the newest refusal or throttling, and the wait a
+        # throttling asked for, until a request sent after it succeeds. Only
+        # these: the error itself, with its traceback, is not kept.
+        self._held_status: int | None = None
+        self._held_retry_after: int | None = None
         # Every refusal or throttling the hold saw, and every refusal (403).
         self._holds = 0
         self._refusals = 0
@@ -588,11 +590,10 @@ class NanitCareLogCoordinator(DataUpdateCoordinator[CareLogData]):
         leaves a newer hold in place. One that a refusal (not a throttling)
         arrived during raises that refusal instead of returning its answer.
         """
-        if self.requests_held and self._held_by is not None:
-            held = self._held_by
-            if isinstance(held, NanitRateLimited):
-                raise NanitRateLimited("Calendar fetch", held.retry_after)
-            raise NanitRequestRefused("Calendar fetch", held.status)
+        if self.requests_held and self._held_status is not None:
+            if self._held_status == 429:
+                raise NanitRateLimited("Calendar fetch", self._held_retry_after)
+            raise NanitRequestRefused("Calendar fetch", self._held_status)
         holds = self._holds
         refusals = self._refusals
         try:
@@ -607,7 +608,7 @@ class NanitCareLogCoordinator(DataUpdateCoordinator[CareLogData]):
             raise NanitRequestRefused("Calendar fetch", 403)
         if self._holds == holds:
             self._held_until = None
-            self._held_by = None
+            self._held_status = None
             self._refused = False
         return result
 
@@ -616,7 +617,8 @@ class NanitCareLogCoordinator(DataUpdateCoordinator[CareLogData]):
         until = self.hass.loop.time() + care_log_hold(err).total_seconds()
         if self._held_until is None or until > self._held_until:
             self._held_until = until
-        self._held_by = err
+        self._held_status = err.status
+        self._held_retry_after = err.retry_after if isinstance(err, NanitRateLimited) else None
         self._holds += 1
         if not isinstance(err, NanitRateLimited):
             self._refusals += 1

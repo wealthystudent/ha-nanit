@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import gc
 import json
 import logging
 import sys
+import weakref
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta, timezone
@@ -606,6 +608,40 @@ async def test_a_reader_refusal_holds_the_calendar_back(
     with pytest.raises(HomeAssistantError):
         await _events(hass, calendar, RANGE_START, RANGE_END)
     assert fake.calls == []
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+@pytest.mark.parametrize("throttled", [False, True], ids=["refused", "throttled"])
+async def test_a_hold_keeps_its_status_and_not_the_error_it_got(
+    hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory, throttled: bool
+) -> None:
+    """The error itself, and the traceback it carries, is let go; the hold is not."""
+    freezer.move_to(NOW)
+    fake = FakeNanit()
+    _day_of_entries(fake)
+    entry, calendar = await _one_calendar(hass, client, fake)
+    importer_fetch = _importer_factory(hass, entry, client, calendar.coordinator)()._fetch
+    day = (int(_ts(RANGE_START)), int(_ts(RANGE_END)))
+    fake.error = (
+        NanitRateLimited("Calendar fetch", 600)
+        if throttled
+        else NanitRequestRefused("Calendar fetch", 403)
+    )
+    got = weakref.ref(fake.error)
+    with pytest.raises(NanitRequestRefused):
+        await importer_fetch(*day)
+    fake.error = None
+    gc.collect()
+    assert got() is None
+
+    # Still held, with the same status and wait, asking Nanit nothing.
+    with pytest.raises(NanitRequestRefused) as held:
+        await importer_fetch(*day)
+    assert len(fake.calls) == 1
+    assert held.value.status == (429 if throttled else 403)
+    assert isinstance(held.value, NanitRateLimited) is throttled
+    if isinstance(held.value, NanitRateLimited):
+        assert held.value.retry_after == 600
     assert await hass.config_entries.async_unload(entry.entry_id)
 
 

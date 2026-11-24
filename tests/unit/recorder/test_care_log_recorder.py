@@ -42,12 +42,14 @@ from custom_components.nanit.baby_code import baby_code
 from custom_components.nanit.care_log_hours import CareLogSeries, hour_start
 from custom_components.nanit.care_log_ledger import CareLogBook, CareLogRead, Ledger
 from custom_components.nanit.care_log_recorder import (
+    CareLogPausedError,
     CareLogRecorderUnavailableError,
     CareLogSyncError,
     Comparison,
     SyncReport,
     async_compare_care_log_statistics,
     async_sync_care_log_statistics,
+    care_log_paused,
     care_log_recorder_ready,
 )
 from custom_components.nanit.care_log_statistics import (
@@ -792,6 +794,11 @@ def _dropping(drop: Callable[[int, str], bool], calls: list[str]) -> Callable[..
     return add
 
 
+def _restart(hass: HomeAssistant) -> None:
+    """Forget what a Home Assistant restart forgets of the pauses."""
+    hass.data.pop(care_log_recorder.PAUSED_KEY, None)
+
+
 async def test_a_dropped_batch_stops_the_sync_and_the_next_one_converges(
     recorder_mock: Recorder, hass: HomeAssistant
 ) -> None:
@@ -809,6 +816,11 @@ async def test_a_dropped_batch_stops_the_sync_and_the_next_one_converges(
         await _sync(hass, book.ledger)
     assert len(calls) == 3  # nothing sent after the dropped batch
 
+    # Sent and never verified: nothing more for the baby until a restart.
+    assert care_log_paused(hass, CODE)
+    with pytest.raises(CareLogPausedError):
+        await _sync(hass, book.ledger)
+    _restart(hass)
     await _sync(hass, book.ledger)
     await _assert_matches(hass, book.ledger, STARTS)
 
@@ -831,6 +843,9 @@ async def test_a_lost_final_batch_is_reported_and_written_next_time(
     assert calls[-1] == last
     assert len(calls) == len(STARTS)
 
+    with pytest.raises(CareLogPausedError):
+        await _sync(hass, book.ledger)
+    _restart(hass)
     await _sync(hass, book.ledger)
     assert _sent_series(sent) == {last}
     await _assert_matches(hass, book.ledger, STARTS)
@@ -848,6 +863,10 @@ async def test_a_write_that_always_fails_is_never_reported_done(
         for _ in range(2):
             with pytest.raises(CareLogSyncError):
                 await _sync(hass, book.ledger)
+            # Sent and not verified: paused until a restart.
+            with pytest.raises(CareLogPausedError):
+                await _sync(hass, book.ledger)
+            _restart(hass)
     assert await _metadata_ids(hass) == set()
 
     def refuse(*_args: Any) -> None:
@@ -858,6 +877,8 @@ async def test_a_write_that_always_fails_is_never_reported_done(
         pytest.raises(CareLogSyncError),
     ):
         await _sync(hass, book.ledger)
+    # Refused, so never sent: nothing is paused.
+    assert not care_log_paused(hass, CODE)
 
 
 async def test_a_write_the_recorder_retries_is_verified_after_a_retry(
@@ -871,13 +892,20 @@ async def test_a_write_the_recorder_retries_is_verified_after_a_retry(
     reads: list[int] = []
     real_read = care_log_recorder._read_rows
 
-    def flaky(*args: Any) -> bool:
+    def flaky(instance: Recorder, *args: Any) -> bool:
         calls.append(1)
         if len(calls) == 1:
-            return False  # not finished: the task queues itself again
+            # Not finished: the task queues itself again, behind the wait the
+            # first read-back queued meanwhile.
+            for _ in range(500):
+                if instance._queue.qsize():
+                    break
+                time.sleep(0.01)
+            return False
         if len(calls) == 2:
             time.sleep(0.3)  # the retry runs after the first wait has returned
-        return real_import(*args)
+        result: bool = real_import(instance, *args)
+        return result
 
     def read(hass: HomeAssistant, sid: str, start: int, end: int) -> Any:
         reads.append(1)
@@ -1122,6 +1150,7 @@ async def test_no_uid_baby_id_name_or_code_in_logs_errors_or_reports(
         hass, code=code, names=names, ledger=book.ledger, end_hour=END, coverage_start=READ_START
     )
     late = book.update([_bottle(uid, _at(MON, 6), 70.0), D1, _bottle("x2", _at(MON, 8), 1.0)])
+    comparison = await _compare_code(hass, code, book.ledger)
     calls: list[str] = []
     with (
         patch.object(
@@ -1141,6 +1170,10 @@ async def test_no_uid_baby_id_name_or_code_in_logs_errors_or_reports(
             changed_from=late,
         )
 
+    # The batch was sent and not verified: the baby is paused.
+    with pytest.raises(CareLogPausedError) as paused:
+        await _compare_code(hass, code, book.ledger)
+
     ours = [r for r in caplog.records if r.name.startswith("custom_components.nanit")]
     assert any(r.levelno == logging.DEBUG for r in ours)
     assert any(r.levelno == logging.WARNING for r in ours)
@@ -1148,8 +1181,10 @@ async def test_no_uid_baby_id_name_or_code_in_logs_errors_or_reports(
         *(r.getMessage() for r in ours),
         str(failure.value),
         repr(failure.value),
+        str(paused.value),
+        repr(paused.value),
         repr(report),
-        repr(await _compare_code(hass, code, book.ledger)),
+        repr(comparison),
     ]
     for text in texts:
         for marker in (raw_id, uid, name, code, "MARKER"):

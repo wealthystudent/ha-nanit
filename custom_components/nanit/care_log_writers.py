@@ -35,7 +35,9 @@ Ownership is proved, never assumed:
 - When the marker names no owner but the baby has stored rows, nobody
   writes: the baby is unowned (``STATE_UNOWNED`` in diagnostics, and one
   warning per Home Assistant run). When the database cannot tell, nothing
-  is decided.
+  is decided. It cannot while the baby is paused because a batch sent in
+  this run is unverified (``care_log_recorder``): then nothing is decided
+  until Home Assistant restarts (``STATE_PAUSED_UNTIL_RESTART``).
 - The marker is saved, and read back from disk with a store of its own
   (Home Assistant's store logs a failed write and returns normally), before
   the owner is noted in memory and its importer starts. Any failure leaves
@@ -84,8 +86,8 @@ from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.storage import Store
 
 from .baby_code import baby_code, one_way_code
-from .care_log_importer import CareLogStatisticsImporter
-from .care_log_recorder import async_has_care_log_statistics
+from .care_log_importer import STATE_PAUSED_UNTIL_RESTART, CareLogStatisticsImporter
+from .care_log_recorder import async_has_care_log_statistics, care_log_paused
 from .const import DOMAIN, is_import_care_log_statistics
 
 if TYPE_CHECKING:
@@ -115,7 +117,9 @@ OWNER_CHECK_INTERVAL: Final = timedelta(minutes=15)
 
 # The states an entry that does not write reports in diagnostics: another
 # sign-in owns the statistics (or nothing is decided yet); statistics exist
-# that no sign-in is known to own; the marker cannot be read.
+# that no sign-in is known to own; the marker cannot be read. Nobody writes
+# and nothing can be decided while the baby is paused
+# (``STATE_PAUSED_UNTIL_RESTART``, from the importer).
 STATE_NOT_OWNER: Final = "not_owner"
 STATE_UNOWNED: Final = "unowned"
 STATE_OWNER_UNKNOWN: Final = "owner_unknown"
@@ -223,6 +227,8 @@ class CareLogWriterRegistry:
         baby = self._babies.get(code)
         if baby is not None and baby.unowned:
             return STATE_UNOWNED
+        if (baby is None or baby.writer is None) and care_log_paused(self._hass, code):
+            return STATE_PAUSED_UNTIL_RESTART
         return STATE_NOT_OWNER
 
     async def async_register(

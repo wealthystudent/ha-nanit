@@ -18,7 +18,7 @@ import logging
 import threading
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from itertools import pairwise
@@ -32,7 +32,11 @@ from homeassistant.components.recorder.statistics import (
     async_add_external_statistics as real_add,
 )
 from homeassistant.components.recorder.statistics import statistics_during_period
-from homeassistant.components.recorder.tasks import RecorderTask
+from homeassistant.components.recorder.tasks import (
+    ImportStatisticsTask,
+    RecorderTask,
+    SynchronizeTask,
+)
 from homeassistant.components.recorder.util import get_instance
 from homeassistant.config_entries import SOURCE_REAUTH
 from homeassistant.core import HomeAssistant
@@ -40,10 +44,12 @@ from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
     async_fire_time_changed_exact,
+    async_test_home_assistant,
 )
 from pytest_homeassistant_custom_component.components.recorder.common import (
     async_wait_recording_done,
 )
+from pytest_homeassistant_custom_component.typing import RecorderInstanceContextManager
 
 from aionanit.exceptions import NanitAuthError, NanitConnectionError
 from aionanit.models import Baby, CareLog, CareLogFetch
@@ -1738,6 +1744,118 @@ def _counting_compares() -> Iterator[list[int]]:
         yield calls
 
 
+@contextmanager
+def _counting_syncs() -> Iterator[list[int]]:
+    calls: list[int] = []
+    real_sync = care_log_importer.async_sync_care_log_statistics
+
+    async def sync(*args: Any, **kwargs: Any) -> Any:
+        calls.append(1)
+        return await real_sync(*args, **kwargs)
+
+    with patch.object(care_log_importer, "async_sync_care_log_statistics", sync):
+        yield calls
+
+
+def _entry_on(hass: HomeAssistant) -> MockConfigEntry:
+    entry = MockConfigEntry(
+        domain=DOMAIN, data=mock_entry_data_v2(), version=2, unique_id=MOCK_EMAIL
+    )
+    entry.add_to_hass(hass)
+    return entry
+
+
+@asynccontextmanager
+async def _restarted(
+    hass: HomeAssistant,
+    freezer: FrozenDateTimeFactory,
+    truth: Truth,
+    async_test_recorder: RecorderInstanceContextManager,
+) -> AsyncIterator[Harness]:
+    """Stop this Home Assistant's recorder; yield a new harness on a fresh one, same database."""
+    await async_wait_recording_done(hass)
+    await get_instance(hass)._async_shutdown(None)
+    async with async_test_home_assistant() as fresh, async_test_recorder(fresh):
+        await fresh.config.async_set_time_zone("UTC")
+        harness = Harness(fresh, freezer, truth, _entry_on(fresh))
+        try:
+            yield harness
+        finally:
+            await harness.importer.async_stop()
+            await fresh.async_stop(force=True)
+
+
+# Nanit's bottle raised, the batch of which is the one whose outcome is unknown.
+RAISED = _bottle(B1.uid, NOW - timedelta(hours=3, minutes=40), 200.0)
+
+
+async def _stays_paused(
+    harness: Harness, make: Callable[..., Harness], truth: Truth, sent: Sent
+) -> Harness:
+    """Nanit is back at 120: neither the importer nor the next one compares, syncs or asks.
+
+    Return the next one, started as after a reload.
+    """
+    written = len(sent)
+    own = len(truth.own)
+    truth.put(B1)
+    with _counting_compares() as compares, _counting_syncs() as syncs:
+        await harness.tick_and_poll(timedelta(minutes=1))
+        await harness.advance(MIN_GAP)  # a confirm fetch would be due
+        await harness.tick_and_poll(timedelta(minutes=15))  # and a sync retry
+        assert harness.diag()["state"] == "paused_until_restart"
+        assert harness.importer._unsub_timer is None
+        await harness.stop()
+        again = make(truth)  # as after a reload
+        again.start()
+        await again.poll()
+        await again.tick_and_poll(timedelta(minutes=5))
+        assert compares == []
+        assert syncs == []
+    assert again.diag()["state"] == "paused_until_restart"
+    assert again.importer._unsub_timer is None
+    assert len(truth.own) == own
+    assert len(sent) == written
+    return again
+
+
+async def _ends_correct_after_a_restart(
+    hass: HomeAssistant,
+    freezer: FrozenDateTimeFactory,
+    truth: Truth,
+    async_test_recorder: RecorderInstanceContextManager,
+) -> None:
+    """After a restart the stored 200 is compared as stored, then lowered to Nanit's 120."""
+    async with _restarted(hass, freezer, truth, async_test_recorder) as after:
+        fresh = after.hass
+        assert not care_log_recorder.care_log_paused(fresh, CODE)
+        assert (await _stored(fresh, S.BOTTLE_VOLUME))[_hour(B1)] == 200.0
+        with _counting_compares() as compares:
+            after.start()
+            await after.poll()
+        assert compares == [1]
+        # It would lower a stored cell: a second pass a gap later first.
+        assert after.diag()["state"] == "waiting_for_second_pass"
+        await after.advance(MIN_GAP)
+        assert after.diag()["state"] == "running"
+        volume = await _rows(fresh, S.BOTTLE_VOLUME)
+        assert volume[_hour(B1)] == (120.0, 210.0)
+        assert volume[_end_hour() - H] == (0.0, 210.0)
+
+
+@dataclass
+class _HoldUntilQueued(RecorderTask):
+    """Holds the recorder's thread until ``count`` tasks wait in its queue (10 s at most)."""
+
+    count: int
+
+    def run(self, instance: Recorder) -> None:
+        for _ in range(1000):
+            if instance._queue.qsize() >= self.count:
+                return
+            time.sleep(0.01)
+
+
 async def test_a_read_back_that_stalls_ends_the_stop_in_time_and_the_next_importer_waits(
     make: Callable[..., Harness],
     hass: HomeAssistant,
@@ -1781,37 +1899,34 @@ async def test_a_read_back_that_stalls_ends_the_stop_in_time_and_the_next_import
     assert stopped_in_time
     assert harness.diag()["state"] == "stopped"
     assert len(sent) == 1
-    assert care_log_recorder.care_log_unsettled(hass, CODE)
+    assert care_log_recorder.care_log_paused(hass, CODE)
     assert await care_log_recorder.async_has_care_log_statistics(hass, CODE) is None
 
-    # The next importer waits for the recorder's queue before anything else.
-    gate = threading.Event()
-    try:
-        assert await hass.async_add_executor_job(_hold_recorder(hass, gate).wait, 30)
-        again = make(truth)
-        own = len(truth.own)
-        with _counting_compares() as compares:
-            again.start()
-            await again.coordinator.async_refresh()
-            await _tick_until_idle(again)
-            assert again.diag()["state"] == "waiting_for_recorder"
-            assert again.importer._unsub_timer is None
-            assert compares == []
-            assert len(truth.own) == own
-            assert len(sent) == 1
-    finally:
-        gate.set()
-
+    # The next importer in this run waits until Home Assistant restarts, even
+    # once the recorder's queue has drained.
+    await async_wait_recording_done(hass)
+    again = make(truth)
+    own = len(truth.own)
     with _counting_compares() as compares:
+        again.start()
         await again.poll()
-    assert compares == [1]
-    assert again.diag()["state"] == "running"
-    assert not care_log_recorder.care_log_unsettled(hass, CODE)
-    assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(OLD)] == 90.0
+        await again.tick_and_poll(timedelta(minutes=5))
+        assert again.diag()["state"] == "paused_until_restart"
+        assert again.importer._unsub_timer is None
+        assert compares == []
+        assert len(truth.own) == own
+        assert len(sent) == 1
+    assert care_log_recorder.care_log_paused(hass, CODE)
 
 
+@pytest.mark.parametrize("persistent_database", [True])
 async def test_a_batch_that_lands_after_its_verification_failed_is_compared_as_stored(
-    make: Callable[..., Harness], hass: HomeAssistant, sent: Sent, settle_bound: None
+    make: Callable[..., Harness],
+    hass: HomeAssistant,
+    freezer: FrozenDateTimeFactory,
+    sent: Sent,
+    settle_bound: None,
+    async_test_recorder: RecorderInstanceContextManager,
 ) -> None:
     """Every read-back of the first batch finds nothing: the recorder holds it."""
     truth = Truth(BASE)
@@ -1847,31 +1962,40 @@ async def test_a_batch_that_lands_after_its_verification_failed_is_compared_as_s
             again.start()
             await again.coordinator.async_refresh()
             await _tick_until_idle(again)
-            assert again.diag()["state"] == "waiting_for_recorder"
+            assert again.diag()["state"] == "paused_until_restart"
             assert compares == []
             assert len(truth.own) == own
             assert len(sent) == 1
-        assert care_log_recorder.care_log_unsettled(hass, CODE)
+        assert care_log_recorder.care_log_paused(hass, CODE)
     finally:
         gate.set()
 
-    # The batch lands; then the next reader update drains, compares, and imports.
+    # The batch lands; the rest of this run compares and writes nothing more.
     await async_wait_recording_done(hass)
     stored = await _rows(hass, S.DIAPER_CHANGES)
     assert [(hour, *stored[hour]) for hour, _s, _t in first_rows] == first_rows
     with _counting_compares() as compares:
         await again.poll()
-    assert compares == [1]
-    assert again.diag()["state"] == "running"
-    assert not care_log_recorder.care_log_unsettled(hass, CODE)
-    assert first_rows[0][0] not in [
-        hour for sid, rows in sent[1:] if sid == first_sid for hour, _s, _t in rows
-    ]
-    assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(OLD)] == 90.0
-    after = await _rows(hass, S.DIAPER_CHANGES)
-    assert {hour: after[hour] for hour, _s, _t in first_rows} == {
-        hour: (state, total) for hour, state, total in first_rows
-    }
+    assert compares == []
+    assert again.diag()["state"] == "paused_until_restart"
+    assert len(sent) == 1
+
+    # After a restart the comparison finds the batch stored, and imports the rest.
+    async with _restarted(hass, freezer, truth, async_test_recorder) as after:
+        fresh = after.hass
+        with _counting_compares() as compares:
+            after.start()
+            await after.poll()
+        assert compares == [1]
+        assert after.diag()["state"] == "running"
+        assert first_rows[0][0] not in [
+            hour for sid, rows in sent[1:] if sid == first_sid for hour, _s, _t in rows
+        ]
+        assert (await _stored(fresh, S.BOTTLE_VOLUME))[_hour(OLD)] == 90.0
+        rows = await _rows(fresh, S.DIAPER_CHANGES)
+        assert {hour: rows[hour] for hour, _s, _t in first_rows} == {
+            hour: (state, total) for hour, state, total in first_rows
+        }
 
 
 async def test_a_queue_that_does_not_drain_at_start_up_waits_for_the_next_reader_update(
@@ -1889,7 +2013,8 @@ async def test_a_queue_that_does_not_drain_at_start_up_waits_for_the_next_reader
             # The first pass was read; the comparison found the queue still busy.
             assert compares == [1]
         assert harness.diag()["state"] == "waiting_for_recorder"
-        assert care_log_recorder.care_log_unsettled(hass, CODE)
+        # Nothing was sent: nothing is paused.
+        assert not care_log_recorder.care_log_paused(hass, CODE)
         own = len(truth.own)
 
         with _counting_steps(harness) as steps:
@@ -1907,5 +2032,148 @@ async def test_a_queue_that_does_not_drain_at_start_up_waits_for_the_next_reader
 
     await harness.poll()
     assert harness.diag()["state"] == "running"
-    assert not care_log_recorder.care_log_unsettled(hass, CODE)
+    assert not care_log_recorder.care_log_paused(hass, CODE)
     assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(OLD)] == 90.0
+
+
+@pytest.mark.parametrize("persistent_database", [True])
+async def test_a_batch_still_running_when_the_queue_is_empty_pauses_the_baby_until_a_restart(
+    make: Callable[..., Harness],
+    hass: HomeAssistant,
+    freezer: FrozenDateTimeFactory,
+    sent: Sent,
+    settle_bound: None,
+    async_test_recorder: RecorderInstanceContextManager,
+) -> None:
+    """The recorder has taken the batch off its queue and is still inside it."""
+    from homeassistant.components.recorder import statistics
+
+    truth = Truth(BASE)
+    harness = await _imported(make, truth)
+    entered = threading.Event()
+    gate = threading.Event()
+    real_import = statistics.import_statistics
+    spy = care_log_recorder.async_add_external_statistics
+    empty: list[bool] = []
+
+    def held(instance: Recorder, *args: Any) -> bool:
+        if not entered.is_set():
+            # Home Assistant's wait for its queue returns at once from here on.
+            empty.append(instance._queue.empty())
+            entered.set()
+            gate.wait(30)
+        result: bool = real_import(instance, *args)
+        return result
+
+    def add(hass: HomeAssistant, metadata: Any, rows: Any) -> None:
+        spy(hass, metadata, rows)
+        # The recorder's thread takes the batch off its queue and runs it.
+        assert entered.wait(10)
+
+    truth.put(RAISED)
+    try:
+        with (
+            patch.object(statistics, "import_statistics", held),
+            patch.object(care_log_recorder, "async_add_external_statistics", add),
+        ):
+            freezer.tick(timedelta(minutes=1))
+            await harness.coordinator.async_refresh()
+            await _tick_until_idle(harness)
+            # The batch was the last task, taken off the queue and still running.
+            assert empty == [True]
+            assert harness.diag()["state"] == "paused_until_restart"
+            assert care_log_recorder.care_log_paused(hass, CODE)
+            assert await care_log_recorder.async_has_care_log_statistics(hass, CODE) is None
+            assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(B1)] == 120.0
+            again = await _stays_paused(harness, make, truth, sent)
+    finally:
+        gate.set()
+
+    # The batch lands late; still nothing more in this run.
+    await async_wait_recording_done(hass)
+    assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(B1)] == 200.0
+    with _counting_compares() as compares, _counting_syncs() as syncs:
+        await again.tick_and_poll(timedelta(minutes=5))
+    assert (compares, syncs) == ([], [])
+    assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(B1)] == 200.0
+    await again.stop()
+
+    await _ends_correct_after_a_restart(hass, freezer, truth, async_test_recorder)
+
+
+@pytest.mark.parametrize("persistent_database", [True])
+async def test_a_batch_retried_behind_the_wait_for_the_queue_pauses_the_baby_until_a_restart(
+    make: Callable[..., Harness],
+    hass: HomeAssistant,
+    freezer: FrozenDateTimeFactory,
+    sent: Sent,
+    settle_bound: None,
+    async_test_recorder: RecorderInstanceContextManager,
+) -> None:
+    """The import hits a retryable error and queues itself again behind the importer's wait."""
+    from homeassistant.components.recorder import statistics
+
+    truth = Truth(BASE)
+    harness = await _imported(make, truth)
+    gate = threading.Event()
+    calls: list[str] = []
+    queued: list[str] = []
+    real_import = statistics.import_statistics
+    real_queue = Recorder.queue_task
+    spy = care_log_recorder.async_add_external_statistics
+    armed = [True]
+
+    def flaky(instance: Recorder, *args: Any) -> bool:
+        if not calls:
+            # Not finished, as after a retryable database error: Home
+            # Assistant queues the task again, behind what was queued meanwhile.
+            calls.append("failed")
+            return False
+        if len(calls) == 1:
+            calls.append("retried")
+            gate.wait(30)
+        result: bool = real_import(instance, *args)
+        return result
+
+    def queue_task(self: Recorder, task: Any) -> None:
+        if not armed and isinstance(task, ImportStatisticsTask | SynchronizeTask):
+            queued.append(type(task).__name__)
+        real_queue(self, task)
+
+    def add(hass: HomeAssistant, metadata: Any, rows: Any) -> None:
+        if armed:
+            armed.clear()
+            # The batch runs only once the importer's wait is queued behind it.
+            get_instance(hass).queue_task(_HoldUntilQueued(2))
+        spy(hass, metadata, rows)
+
+    truth.put(RAISED)
+    try:
+        with (
+            patch.object(statistics, "import_statistics", flaky),
+            patch.object(care_log_recorder, "async_add_external_statistics", add),
+            patch.object(Recorder, "queue_task", queue_task),
+        ):
+            freezer.tick(timedelta(minutes=1))
+            await harness.coordinator.async_refresh()
+            await _tick_until_idle(harness)
+            assert calls == ["failed", "retried"]
+            # The retry was queued behind the importer's first wait.
+            assert queued[:3] == ["ImportStatisticsTask", "SynchronizeTask", "ImportStatisticsTask"]
+            assert harness.diag()["state"] == "paused_until_restart"
+            assert care_log_recorder.care_log_paused(hass, CODE)
+            assert await care_log_recorder.async_has_care_log_statistics(hass, CODE) is None
+            assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(B1)] == 120.0
+            again = await _stays_paused(harness, make, truth, sent)
+    finally:
+        gate.set()
+
+    # The retry lands late; still nothing more in this run.
+    await async_wait_recording_done(hass)
+    assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(B1)] == 200.0
+    with _counting_compares() as compares, _counting_syncs() as syncs:
+        await again.tick_and_poll(timedelta(minutes=5))
+    assert (compares, syncs) == ([], [])
+    await again.stop()
+
+    await _ends_correct_after_a_restart(hass, freezer, truth, async_test_recorder)

@@ -493,4 +493,4 @@ async def test_deleting_the_statistics_while_a_batch_is_unsettled_does_not_void_
     assert _writer(hass) is None
     assert hass_storage[STORE_KEY]["data"] == {"owners": {CODE: _owner_code(OWNER_EMAIL)}}
     assert await _all_rows(hass) == empty
-    assert care_log_recorder.care_log_unsettled(hass, CODE)
+    assert care_log_recorder.care_log_paused(hass, CODE)

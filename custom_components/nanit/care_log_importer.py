@@ -55,13 +55,15 @@ pass and each confirm fetch): when it is gone, the pass is abandoned
 there, not counted as a connection failure, and runs again from its
 start at a reader update once the recorder is back.
 
-When a batch's outcome is unknown (``care_log_recorder``: the baby is
-unsettled, by this importer or an earlier one), every step first waits, at
-most ``SETTLE_TIMEOUT``, for the recorder's queue to drain. Until it has,
-nothing is compared, synced or asked of Nanit, the state is
-``waiting_for_recorder``, and no timer runs: the next reader update tries
-again. Once it has, an importer still starting up compares as usual, and a
-running one makes its next sync a full one.
+When a batch was sent and its outcome is unknown, by this importer or an
+earlier one in this Home Assistant run (``care_log_recorder``: the baby is
+paused), nothing more is compared, synced or asked of Nanit for the baby
+until Home Assistant restarts: the state is ``paused_until_restart`` and no
+timer runs. After the restart the start-up pass compares what is really
+stored. When the bounded wait for the recorder's queue before a start-up
+comparison times out (nothing was sent), the state is
+``waiting_for_recorder``, no timer runs, and the next reader update waits
+for the queue again before the pass starts over.
 
 Privacy: no entry id, baby uid, baby name or baby code appears in a log
 line, an exception or ``diagnostics`` here. Unexpected errors are logged by
@@ -89,13 +91,16 @@ from .baby_code import baby_code
 from .care_log_hours import CareLogSeries, hour_start
 from .care_log_ledger import CareLogBook, CareLogRead, ConfirmRequest, Ledger, Outcome
 from .care_log_recorder import (
+    CareLogPausedError,
+    CareLogQueueBusyError,
     CareLogRecorderUnavailableError,
     CareLogSyncError,
+    CareLogWriteUnknownError,
+    async_care_log_queue_drained,
     async_compare_care_log_statistics,
-    async_settle_care_log_statistics,
     async_sync_care_log_statistics,
+    care_log_paused,
     care_log_recorder_ready,
-    care_log_unsettled,
 )
 from .care_log_statistics import async_statistic_names, statistic_baby_name
 from .const import CARE_LOG_POLL_INTERVAL
@@ -170,6 +175,7 @@ STATE_WAITING_FOR_SECOND_PASS: Final = "waiting_for_second_pass"
 STATE_WAITING_TO_RETRY: Final = "waiting_to_retry"
 STATE_GAVE_UP: Final = "gave_up"
 STATE_RUNNING: Final = "running"
+STATE_PAUSED_UNTIL_RESTART: Final = "paused_until_restart"
 STATE_STOPPED: Final = "stopped"
 
 type Bounds = tuple[int, int]
@@ -302,6 +308,9 @@ class CareLogStatisticsImporter:
         self._idle = asyncio.Event()
         self._stopping = False
         self._state = STATE_IDLE
+        # Set when the wait for the recorder's queue before a comparison
+        # timed out: the next step waits for it again before anything else.
+        self._queue_busy = False
 
         # Reader updates not yet taken by the worker, and the newest seen.
         self._last_handled_read_at: datetime | None = None
@@ -375,7 +384,7 @@ class CareLogStatisticsImporter:
             # A sync in flight sees ``should_stop`` first and sends nothing
             # more; the cancellation then ends whatever wait it is in, except
             # that a batch already sent is verified first, for at most
-            # ``SETTLE_TIMEOUT`` (unverified, it leaves the baby unsettled).
+            # ``SETTLE_TIMEOUT`` (unverified, it pauses the baby).
             task.cancel()
             await asyncio.wait([task])
         self._state = STATE_STOPPED
@@ -483,28 +492,29 @@ class CareLogStatisticsImporter:
             self._startup_due = self._retry_at
 
     async def _async_step(self) -> None:
-        if not await self._async_settled():
+        if not await self._async_may_step():
             return
         if self._book.established:
             await self._async_running_step()
         else:
             await self._async_starting_step()
 
-    async def _async_settled(self) -> bool:
-        """Return whether the stored rows can be relied on (see the module docstring)."""
-        if not care_log_unsettled(self._hass, self._code):
+    async def _async_may_step(self) -> bool:
+        """Return whether a step may run (see the module docstring)."""
+        if self._paused():
+            self._state = STATE_PAUSED_UNTIL_RESTART
+            return False
+        if not self._queue_busy:
             return True
-        if not self._recorder_ready() or not await async_settle_care_log_statistics(
-            self._hass, self._code
-        ):
+        if not self._recorder_ready() or not await async_care_log_queue_drained(self._hass):
             # Tried again at the next reader update.
             self._state = STATE_WAITING_FOR_RECORDER
             return False
-        if self._book.established:
-            # Whatever landed meanwhile is compared by a full sync.
-            self._need_full = True
-            self._sync_wanted = True
+        self._queue_busy = False
         return True
+
+    def _paused(self) -> bool:
+        return care_log_paused(self._hass, self._code)
 
     def _polling_disabled(self) -> bool:
         return self._entry.pref_disable_polling
@@ -513,6 +523,9 @@ class CareLogStatisticsImporter:
         return care_log_recorder_ready(self._hass)
 
     def _require_recorder(self) -> None:
+        """Raise unless the importer may ask Nanit or the recorder anything for this baby."""
+        if self._paused():
+            raise CareLogPausedError
         if not self._recorder_ready():
             raise CareLogRecorderUnavailableError
 
@@ -539,11 +552,12 @@ class CareLogStatisticsImporter:
     def _next_due(self) -> datetime | None:
         """Return when the worker next has something to do without a reader update.
 
-        Nothing while the recorder is not ready or the baby is unsettled:
-        every step needs it, and a deadline already passed would otherwise
-        wake the worker every second. The next reader update looks again.
+        Nothing while the recorder is not ready, its queue was found busy or
+        the baby is paused: every step needs the recorder, and a deadline
+        already passed would otherwise wake the worker every second. The
+        next reader update looks again.
         """
-        if not self._recorder_ready() or care_log_unsettled(self._hass, self._code):
+        if not self._recorder_ready() or self._queue_busy or self._paused():
             return None
         dues: list[datetime] = []
         if self._book.established:
@@ -657,6 +671,15 @@ class CareLogStatisticsImporter:
             self._startup_due = self._retry_at
             self._state = STATE_WAITING_TO_RETRY
             _LOGGER.debug("A care log history pass could not reach Nanit; trying again later")
+        except CareLogPausedError:
+            self._state = STATE_PAUSED_UNTIL_RESTART
+            self._startup_due = None
+        except CareLogQueueBusyError:
+            # Nothing was sent: the next reader update waits for the queue
+            # again before the pass starts over.
+            self._queue_busy = True
+            self._state = STATE_WAITING_FOR_RECORDER
+            self._startup_due = None
         except CareLogRecorderUnavailableError:
             # Tried again once the recorder is back, at a later reader update.
             self._state = STATE_WAITING_FOR_RECORDER
@@ -835,13 +858,13 @@ class CareLogStatisticsImporter:
             # until the recorder is back.
             return
         await self._async_sync()
-        if self._polling_disabled() or not self._recorder_ready():
+        if self._polling_disabled() or not self._recorder_ready() or self._paused():
             return
         try:
             confirm = self._confirm_due()
             if confirm is not None and confirm[1] <= dt_util.utcnow():
                 await self._async_confirm(confirm[0])
-            if not self._recorder_ready():
+            if not self._recorder_ready() or self._paused():
                 return
             if self._history_due is not None and (
                 self._own_request_time(self._history_due) <= dt_util.utcnow()
@@ -850,6 +873,8 @@ class CareLogStatisticsImporter:
         except NanitConnectionError:
             self._note_connection_failure(dt_util.utcnow())
             _LOGGER.debug("A care log read could not reach Nanit; trying again later")
+        except CareLogPausedError:
+            self._state = STATE_PAUSED_UNTIL_RESTART
         except CareLogRecorderUnavailableError:
             # Abandoned before a request of its own; a reader update once the
             # recorder is back runs it again, from its start.
@@ -973,8 +998,17 @@ class CareLogStatisticsImporter:
                 changed_from=changed_from,
                 should_stop=self._should_stop,
             )
+        except CareLogPausedError:
+            self._state = STATE_PAUSED_UNTIL_RESTART
+            return False
         except CareLogRecorderUnavailableError:
             # Tried again at a later wake-up, once the recorder is back.
+            return False
+        except CareLogWriteUnknownError:
+            # Sent and not verified: the baby is paused until Home Assistant
+            # restarts (the recorder module warns once), so no retry is due.
+            self._sync_failures += 1
+            self._state = STATE_PAUSED_UNTIL_RESTART
             return False
         except CareLogSyncError:
             self._note_sync_failure()

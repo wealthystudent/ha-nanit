@@ -733,15 +733,34 @@ async def test_a_piece_waiting_for_its_turn_asks_nothing_after_a_refusal(
     assert await hass.config_entries.async_unload(entry.entry_id)
 
 
+def _care_sensor_states(hass: HomeAssistant, entry: MockConfigEntry) -> dict[str, str]:
+    registry = er.async_get(hass)
+    return {
+        reg.entity_id: hass.states.get(reg.entity_id).state
+        for reg in er.async_entries_for_config_entry(registry, entry.entry_id)
+        if reg.domain == "sensor"
+        and reg.unique_id.endswith(
+            ("_last_feeding", "_feedings_today", "_bottle_volume_today", "_last_diaper_change")
+        )
+    }
+
+
 async def test_an_older_request_succeeding_late_leaves_a_newer_refusal_in_place(
     hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory
 ) -> None:
-    """The reader's poll is on its way when the calendar is refused; the poll then succeeds."""
+    """The reader's poll is on its way when the calendar is refused; the poll then succeeds.
+
+    Its answer, with a feeding never shown before, is dropped: the care
+    sensors report unavailable and show nothing of it.
+    """
     freezer.move_to(NOW)
     fake = FakeNanit()
     _day_of_entries(fake)
     entry, calendar = await _one_calendar(hass, client, fake, notes=True)
     reader = calendar.coordinator
+    before = _care_sensor_states(hass, entry)
+    assert len(before) == 4
+    assert STATE_UNAVAILABLE not in before.values()
     poll_may_answer = asyncio.Event()
     answer_poll = fake.result
 
@@ -755,9 +774,15 @@ async def test_an_older_request_succeeding_late_leaves_a_newer_refusal_in_place(
     await asyncio.sleep(0)
     with pytest.raises(HomeAssistantError):
         await _events(hass, calendar, RANGE_START, RANGE_END)
+    # Nanit's answer to the poll holds a feeding no sensor has shown.
+    fake.add(_log("b_new", "bottle_feed", NOW - timedelta(minutes=5), feed_amount_ml=95.0))
     poll_may_answer.set()
     await poll
-    assert reader.last_update_success
+    await hass.async_block_till_done()
+    after = _care_sensor_states(hass, entry)
+    assert set(after.values()) == {STATE_UNAVAILABLE}, after
+    assert "b_new" not in repr(reader.data)
+    assert not reader.last_update_success
 
     # The refusal still holds: the calendar asks nothing, and the reader's
     # next poll is held too.

@@ -583,7 +583,8 @@ class NanitCareLogCoordinator(DataUpdateCoordinator[CareLogData]):
         throttling a request gets holds every request (``care_log_hold``),
         and a success clears the hold only when no refusal or throttling
         arrived while it was on its way: an older request finishing late
-        leaves a newer hold in place.
+        leaves a newer hold in place. One that a refusal (not a throttling)
+        arrived during raises that refusal instead of returning its answer.
         """
         if self.requests_held and self._held_by is not None:
             held = self._held_by
@@ -591,11 +592,17 @@ class NanitCareLogCoordinator(DataUpdateCoordinator[CareLogData]):
                 raise NanitRateLimited("Calendar fetch", held.retry_after)
             raise NanitRequestRefused("Calendar fetch", held.status)
         holds = self._holds
+        refusals = self._refusals
         try:
             result = await request()
         except NanitRequestRefused as err:
             self._hold(err)
             raise
+        if self._refusals != refusals:
+            # Nanit refused another request while this one was on its way:
+            # its answer reaches nobody, as if it had been refused too.
+            del result
+            raise NanitRequestRefused("Calendar fetch", 403)
         if self._holds == holds:
             self._held_until = None
             self._held_by = None

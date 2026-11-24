@@ -55,6 +55,7 @@ from aionanit.exceptions import (
     NanitAuthError,
     NanitConnectionError,
     NanitRateLimited,
+    NanitRequestRefused,
     NanitResponseTooLarge,
 )
 from aionanit.models import Baby, CareLog, CareLogFetch
@@ -1190,6 +1191,86 @@ async def test_a_held_request_waits_on_the_retry_schedule_and_keeps_its_pass(
     assert len(truth.own) == len(set(truth.own))
     assert truth.own[0][0] == care_log_history_start(BABY, dt_util.utcnow())
     assert harness.importer._failures == 0
+
+
+async def _refused() -> CareLogFetch:
+    raise NanitRequestRefused("Calendar fetch", 403)
+
+
+async def test_a_reader_poll_a_refusal_arrived_during_imports_nothing(
+    make: Callable[..., Harness], hass: HomeAssistant, sent: Sent
+) -> None:
+    """A poll is on its way when another request is refused; then it answers a new bottle."""
+    truth = Truth(BASE)
+    harness = await _imported(make, truth)
+    new = _bottle("b_new", NOW - timedelta(minutes=30), 55.0)  # in an hour already over
+    truth.put(new)
+    asked = asyncio.Event()
+    may_answer = asyncio.Event()
+
+    async def slow(baby_uid: str, start: int, end: int) -> CareLogFetch:
+        asked.set()
+        await may_answer.wait()
+        return await truth.reader_fetch(baby_uid, start, end)
+
+    harness.coordinator._hub.client.async_get_calendar_result.side_effect = slow
+    await harness.advance(timedelta(minutes=1))
+    stored = await _stored(hass, S.BOTTLE_VOLUME)
+    written = _rows_sent(sent)
+    polls = len(truth.reader)
+    poll = hass.async_create_task(harness.coordinator.async_refresh())
+    await asyncio.wait_for(asked.wait(), 5)
+    with pytest.raises(NanitRequestRefused):
+        await harness.coordinator.async_request(_refused)
+    may_answer.set()
+    await poll
+    await harness.settle()
+
+    assert len(truth.reader) == polls + 1  # the poll was answered
+    assert await _stored(hass, S.BOTTLE_VOLUME) == stored
+    assert _rows_sent(sent) == written
+    assert len(harness.importer._book.ledger) == 4
+    assert not harness.coordinator.last_update_success
+
+
+async def test_an_own_read_a_refusal_arrived_during_imports_nothing(
+    make: Callable[..., Harness], hass: HomeAssistant, sent: Sent
+) -> None:
+    """The daily pass's read of a late entry is on its way when another request is refused."""
+    truth = Truth(BASE)
+    harness = make(truth)
+    client = MagicMock()
+
+    async def own(_baby_uid: str, start: int, end: int) -> CareLogFetch:
+        return await truth.fetch(start, end)
+
+    client.async_get_calendar_result = AsyncMock(side_effect=own)
+    harness.importer = _importer_factory(hass, harness.entry, client, harness.coordinator)()
+    harness.start()
+    await harness.poll()
+    assert harness.diag()["state"] == "running"
+    passes = harness.diag()["passes_completed"]
+    backdated = _bottle("b_back", NOW - timedelta(days=30), 70.0)
+    truth.put(backdated)
+    await harness.tick_and_poll(timedelta(hours=1))
+    crossed: list[Bounds] = []
+
+    async def refused_meanwhile(start: int, end: int) -> None:
+        if start <= backdated.timestamp <= end:
+            truth.during_own = None
+            crossed.append((start, end))
+            with pytest.raises(NanitRequestRefused):
+                await harness.coordinator.async_request(_refused)
+
+    truth.during_own = refused_meanwhile
+    await harness.advance(timedelta(hours=23))
+
+    assert crossed
+    assert crossed[0] == truth.own[-1]
+    # The reader's polls write their hours as usual; the pass writes nothing.
+    assert _hour(backdated) not in await _stored(hass, S.BOTTLE_VOLUME)
+    assert _hour(backdated) not in {hour for _sid, rows in sent for hour, _s, _t in rows}
+    assert harness.diag()["passes_completed"] == passes
 
 
 @pytest.mark.usefixtures("reader_fails_at_once")

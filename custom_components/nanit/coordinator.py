@@ -42,7 +42,6 @@ from aionanit.models import Baby, CameraEvent, CameraState, CareLog, CloudEvent,
 from .aionanit_sl.models import SoundLightEvent, SoundLightEventKind, SoundLightFullState
 from .aionanit_sl.sound_light import NanitSoundLight
 from .baby_code import baby_code
-from .care_log_hours import entry_contribution
 from .const import (
     CARE_LOG_POLL_INTERVAL,
     CARE_LOG_SEED_DAYS,
@@ -320,9 +319,9 @@ class CareLogRequestCoverage:
     both inclusive, as Nanit matches an entry by its start. ``read_at`` is
     when the answer arrived, ``requested_at`` when the request was sent
     (taken just before it; None when not known), and ``dropped`` how many
-    of its rows were skipped as malformed. ``outside`` counts the rows of a
-    kind the statistics count that were dated outside the range
-    (``CareLogData`` leaves them out of ``all_entries``).
+    of its rows were skipped as malformed. ``outside`` counts the rows, of
+    any kind, that were dated outside the range (``CareLogData`` leaves
+    them out of every field).
     """
 
     start: int
@@ -351,11 +350,11 @@ class CareLogData:
     ``CARE_LOG_TYPES``. ``all_entries`` is the whole numeric answer of the
     last fetch, every kind (sleep included), each uid once, oldest first,
     with the range that fetch asked for in ``request_coverage``. Neither
-    carries anything forward from earlier fetches. Each row of a kind the
-    statistics count is checked against that range before a copy is chosen
-    per uid: one dated outside it is left out of ``all_entries`` and counted
-    in ``request_coverage.outside``, so it neither displaces a copy inside
-    the range nor goes unnoticed.
+    carries anything forward from earlier fetches. When the range is known,
+    every row, of any kind, is checked against it before a copy is chosen
+    per uid, for the sensors' fields and ``all_entries`` alike: one dated
+    outside it is left out and counted in ``request_coverage.outside``, so
+    it neither displaces a copy inside the range nor goes unnoticed.
     """
 
     latest: Mapping[str, CareLog]
@@ -406,21 +405,16 @@ def build_care_log_data(
     longer returns was deleted in the app, so it no longer counts.
     """
     logs = tuple(logs)
-    fetched = _by_uid(logs)
-    if request_coverage is None:
-        all_entries = tuple(sorted(fetched.values(), key=_order))
-    else:
+    if request_coverage is not None:
+        # Every row is checked against the range asked for before one copy
+        # per uid is chosen (see ``CareLogData``).
         low, high = request_coverage.start, request_coverage.end
-        in_range: list[CareLog] = []
-        outside = 0
-        for log in logs:
-            if entry_contribution(log) is not None and not low <= log.timestamp <= high:
-                outside += 1
-            else:
-                in_range.append(log)
-        all_entries = tuple(sorted(_by_uid(in_range).values(), key=_order))
-        if outside:
+        in_range = [log for log in logs if low <= log.timestamp <= high]
+        if outside := len(logs) - len(in_range):
             request_coverage = replace(request_coverage, outside=outside)
+        logs = tuple(in_range)
+    fetched = _by_uid(logs)
+    all_entries = tuple(sorted(fetched.values(), key=_order))
     entries = tuple(log for log in fetched.values() if log.log_type in CARE_LOG_TYPES)
 
     before_window: dict[str, CareLog] = {}

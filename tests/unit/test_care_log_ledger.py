@@ -169,11 +169,11 @@ def test_a_read_leaves_out_and_counts_entries_dated_outside_its_bounds() -> None
         _bottle("b_edge", at_start),  # the bounds are inclusive
         _bottle("b_last", datetime.fromtimestamp(END, UTC)),
         _bottle("b_late", datetime.fromtimestamp(END + 0.5, UTC)),
-        _log("s_old", "sleep", DAY - timedelta(days=3), duration_s=600.0),  # not counted
+        _log("s_old", "sleep", DAY - timedelta(days=3), duration_s=600.0),  # any kind
     ]
     read = _read(logs, at=T0, dropped=1)
     assert set(read.entries) == {"b_edge", "b_last"}
-    assert read.dropped == 1 + 3
+    assert read.dropped == 1 + 4
 
 
 def test_an_answer_with_an_entry_outside_its_bounds_never_confirms_a_removal() -> None:
@@ -196,6 +196,27 @@ def test_a_later_dated_copy_outside_the_bounds_does_not_displace_the_one_inside(
         assert set(read.entries) == {"b1"}
         assert read.entries["b1"].amount(S.BOTTLE_VOLUME) == 60.0
         assert read.dropped == 1
+
+
+@pytest.mark.parametrize("later", [True, False], ids=["later_outside", "earlier_outside"])
+def test_a_copy_of_another_kind_outside_the_bounds_does_not_displace_the_one_inside(
+    later: bool,
+) -> None:
+    """A sleep row with a counted entry's uid, dated outside the bounds, in either order."""
+    when = datetime.fromtimestamp(END + 60, UTC) if later else DAY - timedelta(days=3)
+    logs = [_bottle("b1", AT_9, 60.0), _log("b1", "sleep", when, duration_s=600.0)]
+    for order in (logs, logs[::-1]):
+        read = _read(order, at=T0)
+        assert set(read.entries) == {"b1"}
+        assert read.entries["b1"].amount(S.BOTTLE_VOLUME) == 60.0
+        assert read.dropped == 1
+    # Two such answers never confirm the removal of another entry.
+    book = _book([_bottle("b1", AT_9, 60.0), _diaper("d1", AT_10)])
+    book.process(_read(logs, at=T0))
+    outcome = book.process(_read(logs[::-1], at=T0 + GAP))
+    assert not outcome.confirmed
+    assert "d1" in book.ledger
+    assert _amount(book, S.BOTTLE_VOLUME, AT_9) == 60.0
 
 
 def test_an_earlier_dated_copy_outside_the_bounds_is_counted_as_dropped() -> None:

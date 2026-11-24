@@ -131,6 +131,8 @@ class Truth:
         self.omit_own: set[str] = set()
         # Awaited inside an own fetch, before it is answered.
         self.during_own: Callable[[int, int], Awaitable[None]] | None = None
+        # Added to every answer, whatever the range asked for.
+        self.extra: list[CareLog] = []
 
     def put(self, log: CareLog) -> None:
         self.logs[log.uid] = log
@@ -143,7 +145,7 @@ class Truth:
             log
             for log in self.logs.values()
             if start <= log.timestamp <= end and log.uid not in self.omit_next
-        )
+        ) + tuple(self.extra)
         dropped, self.dropped_next, self.omit_next = self.dropped_next, 0, set()
         return CareLogFetch(logs=logs, start=start, end=end, dropped=dropped)
 
@@ -1486,6 +1488,28 @@ async def test_a_reader_read_during_the_confirm_fetch_cancels_the_removal(
         await harness.advance(MIN_GAP)
     assert harness.importer._book.pending_requests() == ()
     assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(B1)] == 120.0
+
+
+@pytest.mark.parametrize("later", [True, False], ids=["later_outside", "earlier_outside"])
+async def test_a_row_of_another_kind_outside_the_range_never_removes_the_entry_of_its_uid(
+    make: Callable[..., Harness], hass: HomeAssistant, later: bool
+) -> None:
+    """Every answer, the reader's and the importer's own, also holds a sleep row with b1's uid."""
+    truth = Truth(BASE)
+    harness = await _imported(make, truth)
+    when = NOW + timedelta(days=30) if later else NOW - timedelta(days=4 * 365)
+    stray = CareLog(
+        uid=B1.uid, log_type="sleep", timestamp=_ts(when), baby_uid=UID, duration_s=1800.0
+    )
+    truth.extra = [stray]
+
+    for _ in range(3):
+        await harness.tick_and_poll(MIN_GAP)
+
+    assert B1.uid in harness.importer._book.ledger
+    assert harness.importer._book.pending_requests() == ()
+    assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(B1)] == 120.0
+    assert harness.coordinator.data.latest["bottle_feed"] == B1
 
 
 async def test_a_reader_queue_overflow_forgets_every_waiting_change(

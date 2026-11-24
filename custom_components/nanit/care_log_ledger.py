@@ -202,23 +202,24 @@ class CareLogRead:
     ) -> CareLogRead:
         """Build a read from returned entries.
 
-        Counted kinds only. Each returned row is checked against the
-        inclusive bounds first: a counted row dated outside them is left out
-        and counted in ``dropped`` (such an answer is not what was asked
+        Counted kinds only. Every returned row, of any kind, is checked
+        against the inclusive bounds first: a row dated outside them is left
+        out and counted in ``dropped`` (such an answer is not what was asked
         for, so it can never confirm a removal, and a wrong old date cannot
         stretch the statistics back by years). Only then is one copy per uid
         kept among the rest, the later-dated one of any kind (as the sensors
-        choose), so a copy out of range never displaces one in range.
+        choose), so a copy out of range, of whatever kind, never displaces
+        one in range.
         """
         chosen: dict[str, tuple[float, _Record | None]] = {}
         outside = 0
         for log in logs:
-            contribution = entry_contribution(log)
-            if contribution is not None and not start <= log.timestamp <= end:
+            if not start <= log.timestamp <= end:
                 outside += 1
                 continue
             current = chosen.get(log.uid)
             if current is None or log.timestamp > current[0]:
+                contribution = entry_contribution(log)
                 record = (
                     None
                     if contribution is None

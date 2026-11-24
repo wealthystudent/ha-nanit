@@ -257,18 +257,22 @@ def test_summary_keeps_the_whole_fetch_with_sleep_once_per_uid_oldest_first() ->
     assert data.today == (bottle,)
 
 
+@pytest.mark.parametrize("kind", ["bottle_feed", "sleep"], ids=["same_kind", "sleep_row"])
 @pytest.mark.parametrize("later", [True, False], ids=["later_outside", "earlier_outside"])
 @pytest.mark.parametrize("reverse", [False, True], ids=["inside_first", "outside_first"])
 def test_whole_fetch_checks_the_range_before_choosing_one_copy_per_uid(
-    later: bool, reverse: bool
+    kind: str, later: bool, reverse: bool
 ) -> None:
-    """A copy dated outside the range asked for is dropped, and never displaces the one inside."""
+    """A copy dated outside the range asked for, of any kind, is dropped and displaces nothing."""
     coverage = CareLogRequestCoverage(
         start=int(SEED_START), end=int(MIDNIGHT + 3600), read_at=DAY_START, dropped=2
     )
     inside = _log("b1", "bottle_feed", 600, feed_amount_ml=90.0)
     offset = 7200 if later else SEED_START - MIDNIGHT - 3600
-    outside = _log("b1", "bottle_feed", offset, feed_amount_ml=40.0)
+    if kind == "sleep":
+        outside = _log("b1", "sleep", offset, duration_s=1800.0)
+    else:
+        outside = _log("b1", "bottle_feed", offset, feed_amount_ml=40.0)
     logs = [inside, outside][:: -1 if reverse else 1]
 
     data = build_care_log_data(
@@ -290,8 +294,11 @@ def test_whole_fetch_checks_the_range_before_choosing_one_copy_per_uid(
     )
     assert read.entries["b1"].amount(CareLogSeries.BOTTLE_VOLUME) == 90.0
     assert read.dropped == 3
-    # The sensors still choose as before, from every row.
-    assert data.entries == ((outside if later else inside),)
+    # The sensors choose in the same order: the copy inside.
+    assert data.entries == (inside,)
+    assert data.latest == {"bottle_feed": inside}
+    assert data.today == (inside,)
+    assert _sensor("bottle_volume_today", data).native_value == 90.0
 
 
 def test_whole_fetch_is_only_the_last_fetch() -> None:
@@ -1206,8 +1213,9 @@ _WITH_DROPPED_ROWS = build_care_log_data(
     window_start=SEED_START,
     day_start=DAY_START,
     previous=None,
+    # Up to an hour ahead, as the reader asks: both rows are in the range.
     request_coverage=CareLogRequestCoverage(
-        start=int(SEED_START), end=int(MIDNIGHT), read_at=DAY_START, dropped=4
+        start=int(SEED_START), end=int(MIDNIGHT + 3600), read_at=DAY_START, dropped=4
     ),
 )
 

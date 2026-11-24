@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import contextlib
 import traceback
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
+from email.utils import format_datetime
 from typing import Any
 
 import pytest
@@ -23,6 +24,8 @@ from aionanit.exceptions import (
     NanitAuthError,
     NanitConnectionError,
     NanitMfaRequiredError,
+    NanitRateLimited,
+    NanitRequestRefused,
 )
 from aionanit.models import (
     Baby,
@@ -1415,20 +1418,81 @@ class TestGetCalendar:
             with pytest.raises(NanitAuthError):
                 await self._fetch(client)
 
-    async def test_get_calendar_forbidden_is_connection_error(
-        self, client: NanitRestClient
-    ) -> None:
+    async def test_get_calendar_forbidden_is_a_refusal(self, client: NanitRestClient) -> None:
+        """Still a NanitConnectionError, with the status kept apart and nothing else."""
         with mock_api() as m:
-            m.get(CALENDAR_URL, status=403)
+            m.get(CALENDAR_URL, status=403, body="baby123 is not yours")
 
-            with pytest.raises(NanitConnectionError) as err:
+            with pytest.raises(NanitRequestRefused) as err:
                 await self._fetch(client)
 
+        assert isinstance(err.value, NanitConnectionError)
+        assert not isinstance(err.value, NanitRateLimited)
+        assert err.value.status == 403
         # aiohttp's own error would quote the URL, and with it the baby's uid:
         # it is not chained.
         assert err.value.__cause__ is None
         assert err.value.__context__ is None
         assert str(err.value) == "Calendar fetch failed with HTTP 403"
+
+    @pytest.mark.parametrize(
+        ("header", "expected"),
+        [
+            (None, None),
+            ("120", 120),
+            (" 7 ", 7),
+            ("0", 0),
+            ("99999999", NanitRateLimited.MAX_RETRY_AFTER),
+            ("-5", None),
+            ("1.5", None),
+            ("soon", None),
+            ("x" * 100, None),
+            ("Wed, 21 Oct 2015 07:28:00 GMT", 0),
+            ("Fri, 31 Dec 9999 23:59:59 GMT", NanitRateLimited.MAX_RETRY_AFTER),
+            ("Wed, 21 Oct 2015 07:28:00 -0000", None),
+        ],
+    )
+    async def test_get_calendar_throttled_keeps_a_bounded_retry_after(
+        self, client: NanitRestClient, header: str | None, expected: int | None
+    ) -> None:
+        headers = {"Retry-After": header} if header is not None else None
+        with mock_api() as m:
+            m.get(CALENDAR_URL, status=429, body="slow down baby123", headers=headers)
+
+            with pytest.raises(NanitRateLimited) as err:
+                await self._fetch(client)
+
+        assert isinstance(err.value, NanitRequestRefused)
+        assert err.value.status == 429
+        assert err.value.retry_after == expected
+        assert err.value.__cause__ is None
+        assert err.value.__context__ is None
+        assert str(err.value) == "Calendar fetch failed with HTTP 429"
+
+    async def test_get_calendar_throttled_counts_an_http_date_from_now(
+        self, client: NanitRestClient
+    ) -> None:
+        moment = datetime.now(UTC) + timedelta(seconds=600)
+        with mock_api() as m:
+            m.get(CALENDAR_URL, status=429, headers={"Retry-After": format_datetime(moment, True)})
+
+            with pytest.raises(NanitRateLimited) as err:
+                await self._fetch(client)
+
+        assert err.value.retry_after is not None
+        assert 590 <= err.value.retry_after <= 601
+
+    @pytest.mark.parametrize("status", [400, 404, 422, 500, 503])
+    async def test_get_calendar_other_failures_are_not_refusals(
+        self, client: NanitRestClient, status: int
+    ) -> None:
+        with mock_api() as m:
+            m.get(CALENDAR_URL, status=status)
+
+            with pytest.raises(NanitConnectionError) as err:
+                await self._fetch(client)
+
+        assert not isinstance(err.value, NanitRequestRefused)
 
     async def test_get_calendar_timeout_is_connection_error(self, client: NanitRestClient) -> None:
         with mock_api() as m:
@@ -1473,11 +1537,12 @@ class TestGetCalendar:
         ("status", "content_type", "error"),
         [
             (401, "application/json", NanitAuthError),
-            (403, "application/json", NanitConnectionError),
+            (403, "application/json", NanitRequestRefused),
+            (429, "application/json", NanitRateLimited),
             (500, "application/json", NanitConnectionError),
             (200, "text/html", NanitConnectionError),
         ],
-        ids=["unauthorized", "forbidden", "server_error", "not_json"],
+        ids=["unauthorized", "forbidden", "throttled", "server_error", "not_json"],
     )
     async def test_get_calendar_releases_the_response_on_every_error(
         self,
@@ -1532,7 +1597,9 @@ class TestGetCalendar:
     @pytest.mark.parametrize(
         "method", ["async_get_calendar", "async_get_calendar_result", "async_get_calendar_details"]
     )
-    @pytest.mark.parametrize("failure", ["redirect_loop", "forbidden", "server_error", "not_json"])
+    @pytest.mark.parametrize(
+        "failure", ["redirect_loop", "forbidden", "throttled", "server_error", "not_json"]
+    )
     async def test_no_calendar_error_traceback_holds_the_baby_uid(
         self, client: NanitRestClient, method: str, failure: str
     ) -> None:
@@ -1547,6 +1614,8 @@ class TestGetCalendar:
                 m.get(CALENDAR_URL, exception=redirect_loop)
             elif failure == "forbidden":
                 m.get(CALENDAR_URL, status=403)
+            elif failure == "throttled":
+                m.get(CALENDAR_URL, status=429, headers={"Retry-After": "60"})
             elif failure == "server_error":
                 m.get(CALENDAR_URL, status=500)
             else:

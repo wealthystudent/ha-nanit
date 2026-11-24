@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import email.utils
 import math
 import re
 import unicodedata
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 import aiohttp
@@ -14,6 +15,8 @@ from .exceptions import (
     NanitAuthError,
     NanitConnectionError,
     NanitMfaRequiredError,
+    NanitRateLimited,
+    NanitRequestRefused,
 )
 from .models import (
     Baby,
@@ -49,6 +52,34 @@ def _classify_http_error(resp: aiohttp.ClientResponse, what: str) -> None:
         resp.raise_for_status()
     except aiohttp.ClientResponseError as err:
         raise NanitConnectionError(f"{what} failed with HTTP {err.status}") from err
+
+
+_RETRY_AFTER_SECONDS_RE = re.compile(r"[0-9]{1,10}")
+# Longer than any HTTP date ("Sun, 06 Nov 1994 08:49:37 GMT" is 29).
+_MAX_RETRY_AFTER_LENGTH = 64
+
+
+def _retry_after(value: Any) -> int | None:
+    """Return the wait a Retry-After header asks for, in whole seconds, or None.
+
+    Either form the header can take: a number of seconds, or an HTTP date,
+    counted from now. The result is clamped to 0 up to
+    ``NanitRateLimited.MAX_RETRY_AFTER``; anything else reads as None.
+    """
+    if not isinstance(value, str) or len(value) > _MAX_RETRY_AFTER_LENGTH:
+        return None
+    value = value.strip()
+    if _RETRY_AFTER_SECONDS_RE.fullmatch(value):
+        seconds = int(value)
+    else:
+        try:
+            moment = email.utils.parsedate_to_datetime(value)
+        except (TypeError, ValueError, IndexError, OverflowError):
+            return None
+        if moment.tzinfo is None:
+            return None
+        seconds = math.ceil((moment - datetime.now(UTC)).total_seconds())
+    return min(max(seconds, 0), NanitRateLimited.MAX_RETRY_AFTER)
 
 
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
@@ -673,6 +704,15 @@ class NanitRestClient:
             if resp.status == 401:
                 raise NanitAuthError("Access token invalid")
 
+            # A refusal and throttling are told apart from other failures,
+            # since asking again at once gets the same answer. Only the
+            # status, and the wait a 429 asks for, are kept.
+            if resp.status == 403:
+                raise NanitRequestRefused("Calendar fetch", 403)
+            if resp.status == 429:
+                raise NanitRateLimited(
+                    "Calendar fetch", _retry_after(resp.headers.get("Retry-After"))
+                )
             # Like _classify_http_error, without chaining aiohttp's error.
             if not resp.ok:
                 raise NanitConnectionError(f"Calendar fetch failed with HTTP {resp.status}")

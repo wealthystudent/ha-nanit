@@ -38,6 +38,7 @@ class _Canned:
     body: bytes
     content_type: str
     exception: BaseException | None
+    headers: dict[str, str] | None = None
 
 
 class FakeApi:
@@ -56,6 +57,7 @@ class FakeApi:
         body: str | bytes | None = None,
         content_type: str | None = None,
         exception: BaseException | None = None,
+        headers: dict[str, str] | None = None,
     ) -> None:
         if payload is not None:
             raw = json.dumps(payload).encode()
@@ -65,7 +67,7 @@ class FakeApi:
         else:
             raw = body or b""
         self._queues[(method, URL(url))].append(
-            _Canned(status, raw, content_type or "application/json", exception)
+            _Canned(status, raw, content_type or "application/json", exception, headers)
         )
 
     def get(self, url: str, **kwargs: Any) -> None:
@@ -143,7 +145,7 @@ class FakeSession:
         return web.Response(
             status=canned.status,
             body=canned.body,
-            headers={"Content-Type": canned.content_type},
+            headers={**(canned.headers or {}), "Content-Type": canned.content_type},
         )
 
     async def start(self) -> None:

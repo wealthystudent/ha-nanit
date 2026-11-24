@@ -434,8 +434,8 @@ def _as_dict(result: Any) -> dict[str, Any]:
     return cast(dict[str, Any], result)
 
 
-# A new sign-in also stores the care log choices explicitly, at their defaults.
-_CARE_LOG_DEFAULTS = {CONF_IMPORT_CARE_LOG_STATISTICS: True, CONF_SHOW_CARE_LOG_NOTES: False}
+# A new sign-in also stores the care log choices explicitly: both on.
+_CARE_LOG_DEFAULTS = {CONF_IMPORT_CARE_LOG_STATISTICS: True, CONF_SHOW_CARE_LOG_NOTES: True}
 
 
 @pytest.mark.parametrize(

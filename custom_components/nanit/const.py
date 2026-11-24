@@ -101,8 +101,12 @@ def is_import_care_log_statistics(entry: ConfigEntry) -> bool:
 
 
 def is_show_care_log_notes(entry: ConfigEntry) -> bool:
-    """Return whether care log notes and who logged each entry may be shown."""
-    return entry.options.get(CONF_SHOW_CARE_LOG_NOTES, False) is True
+    """Return whether care log notes and who logged each entry may be shown.
+
+    On unless switched off in the options, also for an entry created before
+    the choice existed.
+    """
+    return entry.options.get(CONF_SHOW_CARE_LOG_NOTES, True) is True
 
 
 def uses_external_go2rtc(hass: HomeAssistant) -> bool:

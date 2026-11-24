@@ -59,12 +59,15 @@ def _schema_defaults(result: Any) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def test_an_entry_without_the_keys_reads_both_as_off() -> None:
-    """People who already have the integration get both off until they choose."""
+def test_an_entry_without_the_keys_reads_import_off_and_notes_on() -> None:
+    """People who already have the integration get the import only when they choose it.
+
+    Notes and who logged each entry show unless switched off.
+    """
     entry = MockConfigEntry(domain=DOMAIN, options={CONF_READ_ONLY: True})
 
     assert is_import_care_log_statistics(entry) is False
-    assert is_show_care_log_notes(entry) is False
+    assert is_show_care_log_notes(entry) is True
 
 
 @pytest.mark.parametrize("value", [True, False])
@@ -93,21 +96,19 @@ def test_only_an_explicit_true_turns_a_choice_on() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_sign_in_form_offers_both_with_import_on_and_notes_off(
-    hass: HomeAssistant,
-) -> None:
+async def test_sign_in_form_asks_nothing_about_care_logs(hass: HomeAssistant) -> None:
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
 
     assert result.get("step_id") == "credentials"
-    defaults = _schema_defaults(result)
-    assert defaults[CONF_IMPORT_CARE_LOG_STATISTICS] is True
-    assert defaults[CONF_SHOW_CARE_LOG_NOTES] is False
+    fields = {str(key) for key in _as_dict(result)["data_schema"].schema}
+    assert CONF_IMPORT_CARE_LOG_STATISTICS not in fields
+    assert CONF_SHOW_CARE_LOG_NOTES not in fields
 
 
-async def test_new_sign_in_stores_the_defaults_explicitly(
+async def test_new_sign_in_stores_both_on_explicitly(
     hass: HomeAssistant, mock_config_flow_client: MagicMock
 ) -> None:
-    """Untouched, the form stores import on and notes off, never a missing key."""
+    """A new entry gets the import and the notes, stored, never as a missing key."""
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
     result = await hass.config_entries.flow.async_configure(result["flow_id"], _CREDENTIALS)
 
@@ -116,40 +117,15 @@ async def test_new_sign_in_stores_the_defaults_explicitly(
     entry = result_data["result"]
     assert entry.options == {
         CONF_IMPORT_CARE_LOG_STATISTICS: True,
-        CONF_SHOW_CARE_LOG_NOTES: False,
+        CONF_SHOW_CARE_LOG_NOTES: True,
     }
     assert CONF_IMPORT_CARE_LOG_STATISTICS not in entry.data
     assert CONF_SHOW_CARE_LOG_NOTES not in entry.data
     assert is_import_care_log_statistics(entry) is True
-    assert is_show_care_log_notes(entry) is False
+    assert is_show_care_log_notes(entry) is True
 
 
-@pytest.mark.parametrize(("import_stats", "show_notes"), [(False, True), (True, True)])
-async def test_new_sign_in_stores_the_choices_made_on_the_form(
-    hass: HomeAssistant,
-    mock_config_flow_client: MagicMock,
-    import_stats: bool,
-    show_notes: bool,
-) -> None:
-    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
-    result = await hass.config_entries.flow.async_configure(
-        result["flow_id"],
-        {
-            **_CREDENTIALS,
-            CONF_IMPORT_CARE_LOG_STATISTICS: import_stats,
-            CONF_SHOW_CARE_LOG_NOTES: show_notes,
-        },
-    )
-
-    result_data = _as_dict(result)
-    assert result_data.get("type") is FlowResultType.CREATE_ENTRY
-    assert result_data["result"].options == {
-        CONF_IMPORT_CARE_LOG_STATISTICS: import_stats,
-        CONF_SHOW_CARE_LOG_NOTES: show_notes,
-    }
-
-
-async def test_choices_survive_the_verification_code_step(
+async def test_a_sign_in_with_a_verification_code_stores_both_on(
     hass: HomeAssistant, mock_config_flow_client: MagicMock
 ) -> None:
     mock_config_flow_client.async_login.side_effect = nanit_config_flow.NanitMfaRequiredError(
@@ -162,16 +138,10 @@ async def test_choices_survive_the_verification_code_step(
 
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
     result = await hass.config_entries.flow.async_configure(
-        result["flow_id"],
-        {
-            **_CREDENTIALS,
-            CONF_READ_ONLY: True,
-            CONF_IMPORT_CARE_LOG_STATISTICS: False,
-            CONF_SHOW_CARE_LOG_NOTES: True,
-        },
+        result["flow_id"], {**_CREDENTIALS, CONF_READ_ONLY: True}
     )
     assert result.get("step_id") == "mfa"
-    # A wrong code first: the retry of the code step keeps the choices too.
+    # A wrong code first: the retry of the code step changes nothing either.
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {CONF_MFA_CODE: "000000"}
     )
@@ -184,7 +154,7 @@ async def test_choices_survive_the_verification_code_step(
     assert result_data.get("type") is FlowResultType.CREATE_ENTRY
     assert result_data["result"].options == {
         CONF_READ_ONLY: True,
-        CONF_IMPORT_CARE_LOG_STATISTICS: False,
+        CONF_IMPORT_CARE_LOG_STATISTICS: True,
         CONF_SHOW_CARE_LOG_NOTES: True,
     }
 
@@ -196,7 +166,7 @@ async def test_choices_survive_the_verification_code_step(
         nanit_config_flow.NanitConnectionError("offline"),
     ],
 )
-async def test_a_failed_sign_in_shows_the_choices_again_and_the_retry_is_stored(
+async def test_a_failed_sign_in_asks_nothing_about_care_logs_and_the_retry_stores_both_on(
     hass: HomeAssistant, mock_config_flow_client: MagicMock, error: Exception
 ) -> None:
     mock_config_flow_client.async_login.side_effect = [
@@ -205,21 +175,14 @@ async def test_a_failed_sign_in_shows_the_choices_again_and_the_retry_is_stored(
     ]
 
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
-    result = await hass.config_entries.flow.async_configure(
-        result["flow_id"],
-        {**_CREDENTIALS, CONF_IMPORT_CARE_LOG_STATISTICS: False, CONF_SHOW_CARE_LOG_NOTES: True},
-    )
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], _CREDENTIALS)
     assert result.get("step_id") == "credentials"
     assert _as_dict(result)["errors"]
-    defaults = _schema_defaults(result)
-    assert defaults[CONF_IMPORT_CARE_LOG_STATISTICS] is False
-    assert defaults[CONF_SHOW_CARE_LOG_NOTES] is True
+    fields = {str(key) for key in _as_dict(result)["data_schema"].schema}
+    assert CONF_IMPORT_CARE_LOG_STATISTICS not in fields
+    assert CONF_SHOW_CARE_LOG_NOTES not in fields
 
-    # The retry changes one choice; what is stored is the retry's.
-    result = await hass.config_entries.flow.async_configure(
-        result["flow_id"],
-        {**_CREDENTIALS, CONF_IMPORT_CARE_LOG_STATISTICS: True, CONF_SHOW_CARE_LOG_NOTES: True},
-    )
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], _CREDENTIALS)
 
     result_data = _as_dict(result)
     assert result_data.get("type") is FlowResultType.CREATE_ENTRY
@@ -314,7 +277,7 @@ async def _open_care_logs(hass: HomeAssistant, entry: MockConfigEntry) -> Any:
 @pytest.mark.parametrize(
     ("options", "expected"),
     [
-        ({}, (False, False)),
+        ({}, (False, True)),
         ({CONF_IMPORT_CARE_LOG_STATISTICS: True, CONF_SHOW_CARE_LOG_NOTES: False}, (True, False)),
         ({CONF_IMPORT_CARE_LOG_STATISTICS: False, CONF_SHOW_CARE_LOG_NOTES: True}, (False, True)),
     ],

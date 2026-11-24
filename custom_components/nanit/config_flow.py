@@ -73,9 +73,6 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
         self._access_token: str = ""
         self._refresh_token: str = ""
         self._read_only: bool = False
-        # Care log privacy choices for a new sign-in: import on, notes off.
-        self._import_care_log_statistics: bool = True
-        self._show_care_log_notes: bool = False
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Handle the initial user step — enter credentials."""
@@ -91,10 +88,6 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
             self._email = user_input[CONF_EMAIL].strip()
             self._password = user_input[CONF_PASSWORD]
             self._read_only = bool(user_input.get(CONF_READ_ONLY, False))
-            self._import_care_log_statistics = bool(
-                user_input.get(CONF_IMPORT_CARE_LOG_STATISTICS, True)
-            )
-            self._show_care_log_notes = bool(user_input.get(CONF_SHOW_CARE_LOG_NOTES, False))
             # Abort on an already-configured account BEFORE attempting
             # login: the attempt costs a real authentication round trip
             # and, on MFA accounts, sends the user a code for a flow that
@@ -121,14 +114,6 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
                     vol.Required(CONF_EMAIL): cv.string,
                     vol.Required(CONF_PASSWORD): cv.string,
                     vol.Optional(CONF_READ_ONLY, default=False): cv.boolean,
-                    # A retry shows the choices already made on this form.
-                    vol.Optional(
-                        CONF_IMPORT_CARE_LOG_STATISTICS,
-                        default=self._import_care_log_statistics,
-                    ): cv.boolean,
-                    vol.Optional(
-                        CONF_SHOW_CARE_LOG_NOTES, default=self._show_care_log_notes
-                    ): cv.boolean,
                 }
             ),
             errors=errors,
@@ -294,11 +279,12 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
 
         # Read-only mode is an option (changeable later), stored only when on.
         options: dict[str, Any] = {CONF_READ_ONLY: True} if self._read_only else {}
-        # The care log choices are always stored explicitly, so a new entry
-        # never falls back to the off-when-missing default meant for entries
-        # created before the choices existed.
-        options[CONF_IMPORT_CARE_LOG_STATISTICS] = self._import_care_log_statistics
-        options[CONF_SHOW_CARE_LOG_NOTES] = self._show_care_log_notes
+        # Setup asks nothing about care logs: a new entry starts with both
+        # choices on, stored explicitly so the import never falls back to the
+        # off-when-missing default meant for entries created before the
+        # choices existed. Both can be changed in the options.
+        options[CONF_IMPORT_CARE_LOG_STATISTICS] = True
+        options[CONF_SHOW_CARE_LOG_NOTES] = True
         return self.async_create_entry(title=title, data=data, options=options)
 
     # ------------------------------------------------------------------

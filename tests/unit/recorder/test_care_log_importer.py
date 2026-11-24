@@ -1750,6 +1750,50 @@ async def test_a_removal_confirmed_by_passes_two_and_three_is_not_undone_by_an_o
     assert (await _stored(hass, S.DIAPER_PEE))[_hour(D2)] == 0.0
 
 
+@pytest.mark.usefixtures("reader_fails_at_once")
+async def test_a_sighting_beyond_the_passes_survives_a_round_that_starts_over(
+    make: Callable[..., Harness], hass: HomeAssistant
+) -> None:
+    """Retries hold the second pass back; meanwhile a poll sees an entry after the passes' end.
+
+    An unrelated edit makes the second pass disagree, so a third one
+    follows: the poll, taken before the round started over, still counts.
+    """
+    truth = Truth(BASE)
+    first = await _imported(make, truth)
+    await first.stop()
+    truth.delete(D2.uid)  # the restart needs a second pass
+    second = make(truth)
+    second.start()
+    await second.poll()  # 18:10, the first pass
+    assert second.diag()["state"] == "waiting_for_second_pass"
+    passes_end = truth.reader[-1][1]  # 19:10, the end of every pass's last read
+    truth.reader_down = True
+    truth.errors = [NanitConnectionError("HTTP 503") for _ in range(3)]
+    for _ in range(13):  # tried at 18:15, 18:20 and 18:35; next at 19:35
+        await second.advance(timedelta(minutes=5))
+    assert second.diag()["state"] == "waiting_to_retry"
+
+    late = _bottle("b_late", NOW + timedelta(minutes=63), 25.0)  # 19:13
+    assert late.timestamp > passes_end
+    truth.put(late)
+    truth.put(_bottle(OLD.uid, datetime.fromtimestamp(OLD.timestamp, UTC), 100.0))
+    truth.reader_down = False
+    await second.tick_and_poll(timedelta(minutes=2))  # 19:17: the only read of the bottle
+    truth.reader_down = True
+
+    await second.advance(timedelta(minutes=18))  # 19:35: the second pass, which disagrees
+    assert second.diag()["state"] == "waiting_for_second_pass"
+    assert second.diag()["passes_completed"] == 2
+    await second.advance(MIN_GAP)  # 19:40: the third pass agrees with the second
+
+    assert second.diag()["state"] == "running"
+    assert second.diag()["passes_completed"] == 3
+    assert late.uid in second.importer._book.ledger
+    assert D2.uid not in second.importer._book.ledger
+    assert (await _stored(hass, S.BOTTLE_VOLUME))[_hour(OLD)] == 100.0
+
+
 async def test_a_recent_poll_still_counts_when_a_piece_of_an_older_period_finishes_after_it(
     make: Callable[..., Harness], hass: HomeAssistant, freezer: FrozenDateTimeFactory
 ) -> None:

@@ -47,7 +47,8 @@ read again.
 Reads waiting to be processed, the reader's and the importer's own, go to
 the book in the order they were taken: an older read processed late can
 add or cancel, never confirm. From the start of the first start-up pass,
-the reader's reads are kept. A second pass is adopted only when none of
+the reader's reads are kept, across rounds too, until the adoption. A
+second pass is adopted only when none of
 the reads kept since its round's first pass began returns, in an hour that
 was finished when that pass began and inside the pass's bounds, an entry
 the second pass lacks or holds otherwise. Older evidence never overrides
@@ -368,13 +369,6 @@ def _seed_absences(
         )
         if newest is not None and newest > changed_at.get(uid, -math.inf):
             changed_at[uid] = newest
-
-
-def _taken_at(data: CareLogData) -> datetime:
-    """Return when a queued reader update's answer arrived."""
-    coverage = data.request_coverage
-    assert coverage is not None  # only updates with coverage are queued
-    return coverage.read_at
 
 
 def _whole_minutes(since: datetime | None, now: datetime) -> int | None:
@@ -953,10 +947,13 @@ class CareLogStatisticsImporter:
         """Make ``reads`` the first pass of the next round; it began at ``began``."""
         self._first_pass = tuple(reads)
         since = min(began, *(read.read_at for read in reads))
-        self._first_pass_began = since
         # Only the reads kept since this round's first pass began count as
-        # sightings; older ones are dropped, never replayed.
-        self._reader_queue = deque(data for data in self._reader_queue if _taken_at(data) >= since)
+        # sightings that can stop an adoption. The older ones stay queued all
+        # the same: after the adoption each is replayed unless newer pass
+        # reads cover it (``_adopt``), so an entry only such a read returned,
+        # beyond the pass's bounds, is not lost. The queue's bound still
+        # applies: an overflow starts the round over.
+        self._first_pass_began = since
         self._startup_due = max(read.read_at for read in reads) + MIN_GAP
         self._state = STATE_WAITING_FOR_SECOND_PASS
 

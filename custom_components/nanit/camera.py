@@ -435,14 +435,20 @@ class NanitCameraEntity(NanitEntity, Camera):
     def _switch_stream_source(stream: Any, source: str) -> None:
         """Point a running HLS stream at ``source``.
 
-        While HA's worker waits to retry after an error (the stream reads as
-        unavailable), Stream.update_source() ends the worker's thread and leaves
-        its restart flag set. The next stop then restarts the worker instead of
-        ending it, and it keeps reading with nobody watching. The worker reads
-        ``source`` when its wait ends (10 s after a first error, longer after
-        more), so there it is only assigned.
+        Before Home Assistant 2026.12, Stream.update_source() during the
+        worker's wait to retry after an error (the stream reads as unavailable)
+        ends the worker's thread and leaves its restart flag set. The next stop
+        then restarts the worker instead of ending it, and it keeps reading with
+        nobody watching. That worker reads ``source`` when its wait ends (10 s
+        after a first error, longer after more), so there it is only assigned.
+
+        From 2026.12 each worker has its own control (core #193752) and reads
+        its source only through update_source() (core #194217), which also wakes
+        it from the wait. So the assignment is kept only while the old restart
+        flag, ``_fast_restart_once``, exists, and any newer stream gets
+        update_source().
         """
-        if stream.available:
+        if stream.available or not hasattr(stream, "_fast_restart_once"):
             stream.update_source(source)
         else:
             stream.source = source

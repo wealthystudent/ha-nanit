@@ -7,10 +7,15 @@ Still probing whether duration=0 means infinite or if looping requires a differe
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
+from aionanit import camera as camera_module
 from aionanit.camera import NanitCamera
-from aionanit.models import CameraEventKind, PlaybackState
+from aionanit.exceptions import NanitTransportError
+from aionanit.models import CameraEvent, CameraEventKind, PlaybackState
 from aionanit.proto import (
     Message,
     MessageType,
@@ -68,6 +73,40 @@ def _setup_camera_transport(cam: NanitCamera) -> list[bytes]:
     return sent_bytes
 
 
+def _setup_playback_responder(cam: NanitCamera, get_replies: list[Playback | None]) -> list[int]:
+    """Ack each request, answering GET_PLAYBACK with the next of `get_replies`.
+
+    A `None` reply answers without a playback field. Returns the request
+    types sent, in order.
+    """
+    sent_types: list[int] = []
+    replies = iter(get_replies)
+    cam._transport = MagicMock()
+    cam._transport.connected = True
+    cam._transport.idle_seconds = 0.0
+
+    async def _fake_send(data: bytes) -> None:
+        request = decode_message(data).request
+        sent_types.append(request.type)
+        resp = Response(request_id=request.id, request_type=request.type, status_code=200)
+        if request.type == RequestType.GET_PLAYBACK:
+            reply = next(replies)
+            if reply is not None:
+                resp.playback.CopyFrom(reply)
+        cam._pending.resolve(request.id, resp)
+
+    cam._transport.async_send = AsyncMock(side_effect=_fake_send)
+    return sent_types
+
+
+def _playing(track: str) -> Playback:
+    """Build a GET_PLAYBACK reply for a camera playing `track`."""
+    playback = Playback(status=Playback.STARTED)
+    playback.current.type = 0
+    playback.current.filename = track
+    return playback
+
+
 def _decode_playback_from_sent(data: bytes) -> Playback:
     """Decode the Playback message from raw bytes sent over WebSocket."""
     msg = decode_message(data)
@@ -91,6 +130,7 @@ class TestCurrentPlaybackWireFormat:
         sent = _setup_camera_transport(cam)
 
         await cam.async_start_playback()
+        cam._cancel_track_lookup()
 
         assert len(sent) == 1
         playback = _decode_playback_from_sent(sent[0])
@@ -149,6 +189,7 @@ class TestPlaybackStateUpdate:
         _setup_camera_transport(cam)
 
         result = await cam.async_start_playback()
+        cam._cancel_track_lookup()
         assert result.playing is True
         assert cam.state.playback.playing is True
 
@@ -184,6 +225,175 @@ class TestPlaybackStateUpdate:
         result = await cam.async_stop_playback()
         assert result.playing is False
         assert cam.state.playback.playing is False
+
+
+# ---------------------------------------------------------------------------
+# Tests — Track lookup after a start without a track
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def no_lookup_delays(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run every track lookup attempt back to back."""
+    monkeypatch.setattr(camera_module, "_TRACK_LOOKUP_DELAYS", (0.0, 0.0, 0.0))
+
+
+class TestTrackLookupAfterStart:
+    """A start without a track asks the camera which track it resumed."""
+
+    async def test_start_without_track_looks_up_resumed_track(self) -> None:
+        cam = _make_camera()
+        sent = _setup_playback_responder(cam, [_playing("Waves.wav")])
+        tracks = ("White Noise.wav", "Waves.wav")
+        cam._update_state(
+            playback=PlaybackState(available_tracks=tracks),
+            kind=CameraEventKind.PLAYBACK_UPDATE,
+        )
+        events: list[CameraEvent] = []
+        cam.subscribe(events.append)
+
+        await cam.async_start_playback()
+        assert cam.state.playback.current_track is None
+        lookup = cam._track_lookup_task
+        assert lookup is not None
+        await lookup
+
+        assert cam.state.playback == PlaybackState(
+            playing=True, current_track="Waves.wav", available_tracks=tracks
+        )
+        assert sent == [RequestType.PUT_PLAYBACK, RequestType.GET_PLAYBACK]
+        assert events[-1].kind == CameraEventKind.PLAYBACK_UPDATE
+        assert events[-1].state.playback.current_track == "Waves.wav"
+
+    @pytest.mark.usefixtures("no_lookup_delays")
+    async def test_lookup_retries_until_camera_reports_track(self) -> None:
+        """Replies from before the camera started don't flip it back to idle."""
+        cam = _make_camera()
+        sent = _setup_playback_responder(
+            cam,
+            [
+                Playback(status=Playback.STOPPED),
+                Playback(status=Playback.STARTED),
+                _playing("Wind.wav"),
+            ],
+        )
+        events: list[CameraEvent] = []
+        cam.subscribe(events.append)
+
+        await cam.async_start_playback()
+        lookup = cam._track_lookup_task
+        assert lookup is not None
+        await lookup
+
+        assert cam.state.playback.current_track == "Wind.wav"
+        assert all(event.state.playback.playing for event in events)
+        assert sent.count(RequestType.GET_PLAYBACK) == 3
+
+    @pytest.mark.usefixtures("no_lookup_delays")
+    async def test_lookup_gives_up_and_keeps_optimistic_state(self) -> None:
+        cam = _make_camera()
+        sent = _setup_playback_responder(cam, [None, None, None])
+
+        await cam.async_start_playback()
+        lookup = cam._track_lookup_task
+        assert lookup is not None
+        await lookup
+
+        assert cam.state.playback.playing is True
+        assert cam.state.playback.current_track is None
+        assert sent.count(RequestType.GET_PLAYBACK) == 3
+
+    async def test_start_with_track_skips_lookup(self) -> None:
+        cam = _make_camera()
+        sent = _setup_playback_responder(cam, [])
+
+        await cam.async_start_playback(track="Birds.wav")
+
+        assert cam._track_lookup_task is None
+        assert sent == [RequestType.PUT_PLAYBACK]
+
+    async def test_lookup_skipped_when_disconnected(self) -> None:
+        cam = _make_camera()
+        sent = _setup_playback_responder(cam, [])
+
+        await cam.async_start_playback()
+        cam._transport.connected = False
+        lookup = cam._track_lookup_task
+        assert lookup is not None
+        await lookup
+
+        assert sent == [RequestType.PUT_PLAYBACK]
+        assert cam.state.playback.playing is True
+
+    async def test_lookup_failure_is_contained(self) -> None:
+        cam = _make_camera()
+        _setup_playback_responder(cam, [])
+
+        await cam.async_start_playback()
+        cam._transport.async_send = AsyncMock(side_effect=NanitTransportError("socket gone"))
+        lookup = cam._track_lookup_task
+        assert lookup is not None
+        await lookup
+
+        assert cam.state.playback.playing is True
+        assert cam.state.playback.current_track is None
+
+    async def test_stop_discards_lookup_reply_still_in_flight(self) -> None:
+        """A lookup reply that lands after a stop must not report playing."""
+        cam = _make_camera()
+        cam._transport = MagicMock()
+        cam._transport.connected = True
+        cam._transport.idle_seconds = 0.0
+        held_get_ids: list[int] = []
+
+        async def _fake_send(data: bytes) -> None:
+            request = decode_message(data).request
+            if request.type == RequestType.GET_PLAYBACK:
+                held_get_ids.append(request.id)
+                return
+            ack = Response(request_id=request.id, request_type=request.type, status_code=200)
+            cam._pending.resolve(request.id, ack)
+
+        cam._transport.async_send = AsyncMock(side_effect=_fake_send)
+
+        await cam.async_start_playback()
+        lookup = cam._track_lookup_task
+        assert lookup is not None
+        for _ in range(10):
+            if held_get_ids:
+                break
+            await asyncio.sleep(0)
+        assert held_get_ids
+
+        await cam.async_stop_playback()
+        late = Response(
+            request_id=held_get_ids[0],
+            request_type=RequestType.GET_PLAYBACK,
+            status_code=200,
+            playback=_playing("Waves.wav"),
+        )
+        cam._pending.resolve(held_get_ids[0], late)
+        with pytest.raises(asyncio.CancelledError):
+            await lookup
+
+        assert lookup.cancelled()
+        assert cam.state.playback.playing is False
+        assert cam.state.playback.current_track is None
+
+    async def test_camera_stop_cancels_lookup(self) -> None:
+        cam = _make_camera()
+        _setup_playback_responder(cam, [])
+        cam._transport.async_close = AsyncMock()
+
+        await cam.async_start_playback()
+        lookup = cam._track_lookup_task
+        assert lookup is not None
+        await cam.async_stop()
+        with pytest.raises(asyncio.CancelledError):
+            await lookup
+
+        assert cam._track_lookup_task is None
+        assert lookup.cancelled()
 
 
 # ---------------------------------------------------------------------------

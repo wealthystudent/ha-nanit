@@ -112,14 +112,10 @@ def _named(baby_name: str, label: str) -> str:
 
 
 def _shortened(baby_name: str, room: int) -> str:
-    """Return the (escaped) baby name cut to ``room`` characters, never inside an entity."""
+    """Return the baby name cut to ``room`` characters."""
     if len(baby_name) <= room:
         return baby_name
-    cut = baby_name[: max(room, 0)]
-    amp = cut.rfind("&")
-    if amp >= 0 and ";" not in cut[amp:]:
-        cut = cut[:amp]
-    return cut.rstrip()
+    return baby_name[: max(room, 0)].rstrip()
 
 
 async def async_statistic_names(hass: HomeAssistant, baby_name: str) -> dict[CareLogSeries, str]:

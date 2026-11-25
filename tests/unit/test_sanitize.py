@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from custom_components.nanit.sanitize import display_name, sanitize_name
@@ -16,7 +18,7 @@ def test_plain_name_unchanged() -> None:
 
 
 def test_strips_script_tag() -> None:
-    assert sanitize_name('<script>alert("xss")</script>') == "alert(&quot;xss&quot;)"
+    assert sanitize_name('<script>alert("xss")</script>') == 'alert("xss")'
 
 
 def test_strips_img_onerror() -> None:
@@ -27,12 +29,61 @@ def test_strips_nested_tags() -> None:
     assert sanitize_name("<b><i>Baby</i></b> Room") == "Baby Room"
 
 
-def test_escapes_html_entities() -> None:
-    assert sanitize_name("A & B < C") == "A &amp; B &lt; C"
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("Mom & Dad", "Mom & Dad"),
+        ("Zoë O'Brien", "Zoë O'Brien"),
+        ('The "Big" Room', 'The "Big" Room'),
+        ("A & B < C", "A & B < C"),
+    ],
+)
+def test_plain_text_is_not_escaped(raw: str, expected: str) -> None:
+    assert sanitize_name(raw) == expected
 
 
-def test_pre_encoded_entities_round_trip() -> None:
-    assert sanitize_name("A &amp; B") == "A &amp; B"
+def test_pre_encoded_entities_are_decoded() -> None:
+    assert sanitize_name("A &amp; B") == "A & B"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("&lt;script&gt;alert(1)&lt;/script&gt;Nursery", "alert(1)Nursery"),
+        ("&amp;lt;b&amp;gt;Nursery&amp;lt;/b&amp;gt;", "Nursery"),
+        ("&#60;img src=x onerror=alert(1)&#62;Nursery", "Nursery"),
+    ],
+)
+def test_encoded_tags_are_stripped(raw: str, expected: str) -> None:
+    """Entities are decoded before the tag strip, so encoded tags never survive."""
+    assert sanitize_name(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "<<b>img src=x onerror=alert(1)>",
+        "<scr<b>ipt>alert(1)</scr<b>ipt>",
+    ],
+)
+def test_tags_hidden_inside_tags_never_come_back(raw: str) -> None:
+    """Stripping a nested tag can't leave a live tag behind."""
+    assert not re.search(r"<[^>]+>", sanitize_name(raw))
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("<img src=x onerror=alert(1)", "< img src=x onerror=alert(1)"),
+        ("</div", "< /div"),
+        ("<!-- x", "< !-- x"),
+        ("Baby <3", "Baby <3"),
+        ("1 < 2", "1 < 2"),
+    ],
+)
+def test_unclosed_tag_opener_is_defused(raw: str, expected: str) -> None:
+    """A leftover "<" that could open a tag gets a space; other "<" stay as typed."""
+    assert sanitize_name(raw) == expected
 
 
 def test_collapses_whitespace() -> None:
@@ -44,7 +95,7 @@ def test_empty_string() -> None:
 
 
 def test_unicode_preserved() -> None:
-    assert sanitize_name("Bébé's Room 🍼") == "Bébé&#x27;s Room 🍼"
+    assert sanitize_name("Bébé's Room 🍼") == "Bébé's Room 🍼"
 
 
 def test_none_returns_empty() -> None:

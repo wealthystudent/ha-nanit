@@ -64,6 +64,7 @@ def segments(command: str) -> list[list[str]]:
     try:
         lexer = shlex.shlex(command, posix=True, punctuation_chars=OPERATORS)
         lexer.whitespace, lexer.whitespace_split = " \t\r", True
+        lexer.commenters = ""  # a "# comment" would eat the newline that ends its command
         tokens = list(lexer)
     except ValueError:  # unbalanced quotes: split on the operators and words
         tokens = re.split(r"([;|&()\n]+)|\s+", command)

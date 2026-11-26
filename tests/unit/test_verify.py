@@ -438,6 +438,7 @@ def test_guard(command: str, blocked: bool, tmp_path: Path) -> None:
         "sh -c 'git push --force'",
         "sh -c 'git push --force && echo done'",
         "git status; timeout 60 git push --force",
+        "git status # check the branch\ngit push --force",
         'bash -c "cd x && git push origin +fix/x"',
         "(git push --force)",
         'echo "$(git push --force)"',

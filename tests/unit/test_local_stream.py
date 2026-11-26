@@ -3199,7 +3199,10 @@ async def test_cooldown_end_during_the_retry_wait_updates_on_new_ha(hass: HomeAs
     entity, _camera = _entity(hass, local)
     stream = _waiting_new_ha_stream("rtmps://cloud/url")
     entity.stream = stream
+    # Watched, so local is tried first and the stream moves once it publishes.
+    _publish_on_request(local)
     entity._handle_local_cooldown_end()
+    await hass.async_block_till_done()
     stream.update_source.assert_called_once_with(FLV_URL)
 
 

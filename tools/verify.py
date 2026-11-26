@@ -292,6 +292,7 @@ def pr_body_problems(
     shas: list[str],
     *,
     new_receipt: bool = False,
+    number: int = 0,
 ) -> tuple[list[str], list[str]]:
     """Check a PR's title and description. Return (errors, warnings).
 
@@ -299,11 +300,12 @@ def pr_body_problems(
     missing receipt, or one for another commit, only warns: CI runs the same
     checks on the head, and a web edit or a rebase shouldn't need a local
     setup. With new_receipt (`just verify`, which prints the replacement) a
-    receipt that didn't pass only warns too.
+    receipt that didn't pass only warns too. Bots, and PR number up to
+    LEGACY_LAST_PR, only get the title and changelog check.
     """
     errors = release_notes.pr_errors(title, body, labels)
     warnings: list[str] = []
-    if author.endswith("[bot]"):
+    if author.endswith("[bot]") or 0 < number <= LEGACY_LAST_PR:
         return errors, warnings
 
     if not release_notes.section_text(body, "AI use"):
@@ -501,6 +503,7 @@ def pr_check(commits: list[str], *, full: bool) -> list[Check]:
         pr["author"]["login"],
         commits,
         new_receipt=full,
+        number=pr["number"],
     )
     head = git("rev-parse", "HEAD")
     if pr["headRefOid"] != head:
@@ -897,13 +900,16 @@ def cmd_pr() -> int:
     expected = int(env.get("PR_COMMITS") or 0)
     title, body = env.get("PR_TITLE", ""), env.get("PR_BODY", "")
     labels = json.loads(env.get("PR_LABELS", "[]"))
+    errors, warnings = pr_body_problems(
+        title,
+        body,
+        labels,
+        env.get("PR_AUTHOR", ""),
+        [str(c["sha"]) for c in commits],
+        number=int(number),
+    )
     if int(number) <= LEGACY_LAST_PR:
-        errors, warnings = release_notes.pr_errors(title, body, labels), []
         print(f"#{number} is from before the testing and AI use sections, so they're optional.")
-    else:
-        errors, warnings = pr_body_problems(
-            title, body, labels, env.get("PR_AUTHOR", ""), [str(c["sha"]) for c in commits]
-        )
     head_sha = env.get("PR_HEAD_SHA", "")
     if head_sha and (not commits or commits[-1]["sha"] != head_sha):
         errors.append(

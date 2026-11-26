@@ -56,16 +56,29 @@ def unwrap(words: list[str]) -> list[list[str]]:
     return []
 
 
+OPERATORS = "();<>|&\n"
+
+
 def segments(command: str) -> list[list[str]]:
     """Split a shell command into simple commands, as word lists."""
-    parts = re.split(r"&&|\|\||[;|\n()]", command)  # (subshells) and $(...) too
-    words = []
-    for part in parts:
-        try:
-            split = shlex.split(part)
-        except ValueError:
-            split = part.split()
-        words += unwrap(split)
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=OPERATORS)
+        lexer.whitespace, lexer.whitespace_split = " \t\r", True
+        tokens = list(lexer)
+    except ValueError:  # unbalanced quotes: split on the operators and words
+        tokens = re.split(r"([;|&()\n]+)|\s+", command)
+    words: list[list[str]] = []
+    current: list[str] = []
+    for token in [*tokens, ";"]:
+        if not token:
+            continue
+        if set(token) <= set(OPERATORS):
+            words += unwrap(current)
+            current = []
+            continue
+        current.append(token)
+        for inner in re.findall(r"\$\((.*)\)|`(.*)`", token):  # "$(git ...)" in quotes
+            words += segments("".join(inner))
     return words
 
 

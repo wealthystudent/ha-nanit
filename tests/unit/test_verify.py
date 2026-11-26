@@ -212,6 +212,13 @@ def test_bots_skip_the_written_sections() -> None:
     )
 
 
+def test_older_prs_skip_the_written_sections() -> None:
+    old_body = "## Changelog\n\nThe sensor works.\n"
+    legacy = verify.LEGACY_LAST_PR
+    assert verify.pr_body_problems("fix: x", old_body, [], "someone", [], number=legacy) == ([], [])
+    assert verify.pr_body_problems("fix: x", old_body, [], "someone", [], number=legacy + 1)[0]
+
+
 def test_title_and_changelog_rules_still_apply() -> None:
     errors, _ = verify.pr_body_problems("Fix stuff", body(), [], "someone", [HEAD])
     assert any("conventional commit" in e for e in errors)
@@ -429,6 +436,8 @@ def test_guard(command: str, blocked: bool, tmp_path: Path) -> None:
         "nice -n 5 git push --force",
         "/usr/bin/git push --force",
         "sh -c 'git push --force'",
+        "sh -c 'git push --force && echo done'",
+        "git status; timeout 60 git push --force",
         'bash -c "cd x && git push origin +fix/x"',
         "(git push --force)",
         'echo "$(git push --force)"',

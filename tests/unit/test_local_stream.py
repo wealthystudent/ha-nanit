@@ -3096,8 +3096,11 @@ async def test_source_switch_during_the_workers_retry_wait_leaves_it_stoppable(
         finally:
             for event in quit_events:
                 event.set()
-            stream._fast_restart_once = False
-            stream._thread_quit.set()
+            if hasattr(stream, "_thread_quit"):  # HA before 2026.12
+                stream._fast_restart_once = False
+                stream._thread_quit.set()
+            elif stream._worker_control is not None:
+                stream._worker_control.stop()
             await hass.async_add_executor_job(thread.join, 2)
 
 
@@ -3105,6 +3108,17 @@ async def test_source_switch_while_the_worker_runs_restarts_it(hass: HomeAssista
     stream = MagicMock(available=True)
     NanitCameraEntity._switch_stream_source(stream, "rtmps://cloud/url")
     stream.update_source.assert_called_once_with("rtmps://cloud/url")
+
+
+async def test_source_switch_in_the_retry_wait_on_new_ha_updates_it(hass: HomeAssistant) -> None:
+    # From HA 2026.12 a running worker only learns a new source through
+    # update_source(), which also wakes it from its wait to retry. Such a stream
+    # has no _fast_restart_once flag.
+    stream = MagicMock(available=False, source="rtmps://old/url")
+    del stream._fast_restart_once
+    NanitCameraEntity._switch_stream_source(stream, "rtmps://cloud/url")
+    stream.update_source.assert_called_once_with("rtmps://cloud/url")
+    assert stream.source == "rtmps://old/url"
 
 
 def _waiting_stream(source: str) -> MagicMock:
@@ -3148,6 +3162,45 @@ async def test_cooldown_end_during_the_retry_wait_only_assigns(hass: HomeAssista
     local.channel.publish_started(1, "192.168.1.107", lambda: None)
     stream.update_source.assert_not_called()
     assert stream.source == FLV_URL
+
+
+def _waiting_new_ha_stream(source: str) -> MagicMock:
+    """A stream on HA 2026.12 or later whose worker is waiting to retry."""
+    stream = _waiting_stream(source)
+    del stream._fast_restart_once
+    return stream
+
+
+async def test_move_to_cloud_during_the_retry_wait_updates_on_new_ha(
+    hass: HomeAssistant, source_ip: Any
+) -> None:
+    local = _local_entry(hass, _entry(hass)).camera("cam_1")
+    entity, _camera = _entity(hass, local)
+    local.start_cooldown("x")
+    stream = _waiting_new_ha_stream(FLV_URL)
+    entity.stream = stream
+    await entity._async_move_hls_to_cloud()
+    stream.update_source.assert_called_once_with("rtmps://cloud/url")
+
+
+async def test_renewal_during_the_retry_wait_updates_on_new_ha(hass: HomeAssistant) -> None:
+    local = _local_entry(hass, _entry(hass)).camera("cam_1")
+    entity, camera = _entity(hass, local)
+    local.start_cooldown("x")
+    camera.async_get_stream_rtmps_url = AsyncMock(return_value="rtmps://cloud/new")
+    stream = _waiting_new_ha_stream("rtmps://cloud/old")
+    entity.stream = stream
+    await entity._async_refresh_stream_source("test")
+    stream.update_source.assert_called_once_with("rtmps://cloud/new")
+
+
+async def test_cooldown_end_during_the_retry_wait_updates_on_new_ha(hass: HomeAssistant) -> None:
+    local = _local_entry(hass, _entry(hass)).camera("cam_1")
+    entity, _camera = _entity(hass, local)
+    stream = _waiting_new_ha_stream("rtmps://cloud/url")
+    entity.stream = stream
+    entity._handle_local_cooldown_end()
+    stream.update_source.assert_called_once_with(FLV_URL)
 
 
 # ----------------------------------------------------------------------

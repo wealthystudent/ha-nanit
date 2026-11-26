@@ -671,7 +671,7 @@ async def test_preloaded_stream_does_not_pin_the_cloud(hass: HomeAssistant) -> N
     assert entity._cancel_local_cooldown_timer is None
 
 
-async def test_webrtc_only_cloud_cache_is_dropped_at_cooldown_end(hass: HomeAssistant) -> None:
+async def test_cloud_cache_without_a_stream_is_dropped_at_cooldown_end(hass: HomeAssistant) -> None:
     local = _local_entry(hass, _entry(hass)).camera("cam_1")
     entity, _camera = _entity(hass, local)
     entity._cached_stream_source = "rtmps://cloud/url"
@@ -2786,6 +2786,69 @@ async def test_a_trial_takes_webrtc_off_before_the_route_goes_back_to_cloud(
     assert entity.extra_state_attributes == {"stream_route": "cloud"}
 
 
+async def test_a_trial_registers_the_provider_before_it_publishes_local(
+    hass: HomeAssistant, source_ip: Any
+) -> None:
+    local, entity, _camera, stream = _watched_on_cloud(hass)
+    entity.entity_id = "camera.nursery"
+    entity.platform = MagicMock()
+    entity._provider_route = entity._settled_route = entity._published_route = "cloud"
+    provider = _FakeGo2rtc()
+    release = asyncio.Event()
+    published: list[tuple[str, bool]] = []
+
+    async def wait(_timeout: float) -> bool:
+        await release.wait()
+        local.channel.publish_started(1, "192.168.1.107", lambda: None)
+        return True
+
+    local.channel.wait_for_publish = AsyncMock(side_effect=wait)
+    with (
+        _offers(provider),
+        patch.object(
+            NanitCameraEntity,
+            "async_write_ha_state",
+            autospec=True,
+            side_effect=lambda self: published.append(
+                (self.extra_state_attributes["stream_route"], self._webrtc_provider is not None)
+            ),
+        ),
+    ):
+        entity._handle_local_cooldown_end()
+        await asyncio.sleep(0.01)
+        assert entity._local_trial_running()
+        # go2rtc registering during the trial (core refresh) gets nothing.
+        await entity.async_refresh_providers()
+        assert entity._webrtc_provider is None
+        assert provider.registered == 0
+        release.set()
+        await hass.async_block_till_done()
+        await entity.async_handle_async_webrtc_offer("sdp", "s1", lambda _m: None)
+    stream.update_source.assert_called_once_with(FLV_URL)
+    assert provider.registered == 1
+    assert ("local", True) in published
+    assert ("local", False) not in published
+    assert provider.sources == [FLV_URL]
+
+
+async def test_a_missed_trial_registers_no_provider(hass: HomeAssistant, source_ip: Any) -> None:
+    local, entity, camera, _stream = _watched_on_cloud(hass)
+    entity.entity_id = "camera.nursery"
+    entity.platform = MagicMock()
+    entity._provider_route = entity._settled_route = entity._published_route = "cloud"
+    provider = _FakeGo2rtc()
+    camera.async_start_streaming = AsyncMock(return_value=STREAM_LIMIT_STATUS)
+    local.channel.wait_for_publish = AsyncMock(return_value=False)
+    with _offers(provider), patch.object(NanitCameraEntity, "async_write_ha_state") as write:
+        entity._handle_local_cooldown_end()
+        await hass.async_block_till_done()
+    assert provider.registered == 0
+    assert entity._webrtc_provider is None
+    assert entity._route_refresh_task is None
+    assert entity.extra_state_attributes == {"stream_route": "cloud"}
+    assert write.called
+
+
 async def test_provider_is_refused_on_the_cloud_route(hass: HomeAssistant) -> None:
     entity, local = _routed_entity(hass)
     local.start_cooldown("test")
@@ -4260,7 +4323,7 @@ async def test_repair_retry_during_a_trial_still_switches_on_publish(
     assert entity._cached_stream_source is None
 
 
-async def test_missed_trial_with_only_webrtc_viewers_asks_for_the_cloud_again(
+async def test_missed_trial_with_no_hls_viewer_asks_for_the_cloud_again(
     hass: HomeAssistant, source_ip: Any
 ) -> None:
     local = _local_entry(hass, _entry(hass)).camera("cam_1")

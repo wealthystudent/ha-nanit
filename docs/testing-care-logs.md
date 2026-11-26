@@ -63,7 +63,7 @@ Open **Calendar** and tick the baby's **Care log** calendar.
 
 1. In the Nanit app, log a diaper change dated earlier today
 
-- [ ] Within about 5 minutes: **Diaper changes today** goes up by one and the calendar shows the entry
+- [ ] Within about 5 minutes: **Diaper changes today** goes up by one and the calendar shows the entry (reopen the calendar or reload the page: an open view can keep its answer for up to 5 minutes)
 
 2. Delete that entry in the app
 

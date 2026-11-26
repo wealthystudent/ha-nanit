@@ -4,8 +4,9 @@ One read-only calendar per config entry and baby. Nothing is stored: each
 range is fetched from Nanit when the calendar is asked for it, and the
 answer is kept in memory for a few minutes. The calendar never reports a
 current event, so nothing from an entry reaches its state or Home
-Assistant's history. Notes and who logged an entry are fetched, and shown,
-only when the entry's "Show notes and who logged each entry" option is on.
+Assistant's history. Nanit's answer always holds each entry's note and who
+logged it; they are kept and shown only when the entry's "Show notes and
+who logged each entry" option is on.
 """
 
 from __future__ import annotations

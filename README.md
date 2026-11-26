@@ -59,7 +59,7 @@ If you set the machine up in the **Nanit Sound + Light** app (the standard Nanit
 - 👁️ Motion & sound detection
 - 💡 Night light switch
 - 🔌 Camera power switch
-- 🍼 Care Logs: last diaper change, feeding and pumping, plus today's diaper and feeding counts, bottle and pumped volume, and nursing time, and a calendar of every entry (see [Care Logs](#care-logs))
+- 🍼 Care Logs: last diaper change, feeding and pumping, plus today's diaper and feeding counts, bottle and pumped volume, and nursing time, and a calendar of the logged entries (see [Care Logs](#care-logs))
 
 **Sound & Light Machine** (works standalone or paired with a camera):
 - Power, sound, and light switches

@@ -49,6 +49,8 @@ Use the release zip, not a copy of the repository: the source on `main` carries 
 
 A Sound & Light Machine that isn't paired to any baby in the Nanit app is picked up too, as its own device named after the machine. This is new, so please open an issue if one shows up but doesn't respond.
 
+If you set the machine up in the **Nanit Sound + Light** app (the standard Nanit app no longer lets you pair a Sound & Light Machine), Nanit's cloud may not report it at all, so it isn't found. Add it by hand under **Settings → Devices & Services → Nanit → Configure → Add Sound & Light Machine by ID**. The ID is the part after `Nanit-` in the machine's network name (for example `L151ABC1234567`, shown in your router's client list), and the IP address is optional. To remove it again, delete its device on the device page.
+
 ## What you get
 
 **Per camera:**
@@ -275,10 +277,10 @@ If the camera can't reach Home Assistant, nothing breaks: the integration falls 
 Good to know:
 
 - The camera only streams to a few Nanit apps or devices at a time (two in testing), and Home Assistant counts as one. When other apps already use them all, Home Assistant falls back to the cloud stream and tries local again later, waiting longer each time the camera is still busy, up to six hours.
-- In testing, Nanit's cloud stream kept playing even while the camera refused Home Assistant's own stream for being busy. When Home Assistant falls back to it, the Nanit card reloads its player right away, and keeps its loader up meanwhile instead of showing the player's error, so the first view isn't left on an error. The camera entity's `stream_route` attribute says which one a new view gets (`local` or `cloud`).
+- In testing, Nanit's cloud stream kept playing even while the camera refused Home Assistant's own stream for being busy. When Home Assistant falls back to it, or moves back to local, the Nanit card reloads its player right away, and keeps its loader up meanwhile instead of showing the player's error, so the first view isn't left on an error. The camera entity's `stream_route` attribute says which one a new view gets (`local` or `cloud`).
 - The camera keeps sending video to Home Assistant until it's told to stop, so Home Assistant stops it about two minutes after the last viewer leaves. Opening the camera again starts it again within a few seconds.
 - If your go2rtc server's URL (`go2rtc: url:` in your configuration) isn't `localhost` or a loopback address, it can't reach the local stream, so WebRTC would fall back to HLS. Local streaming therefore starts off on those setups. You can still turn it on in the options.
-- A camera that falls back to the cloud goes back to local when the wait is over, even while it's being watched, preloaded, or asked for stills. Home Assistant first tells the camera to stop its own cloud stream, which would otherwise hold one of the camera's slots. A WebRTC viewer's picture pauses until the player reconnects, which the Nanit card does on its own.
+- A camera that falls back to the cloud tries local again when the wait is over, even while it's being watched, preloaded, or asked for stills. Home Assistant first tells the camera to stop its own cloud stream, which would otherwise hold one of the camera's slots. While someone's watching, the stream only moves once the camera is actually streaming locally. If it doesn't get there, the stream stays on the cloud and Home Assistant tries again later. A WebRTC viewer's picture pauses until the player reconnects, which the Nanit card does on its own.
 - Reloading the integration ends that wait, so local is tried again on the next view. It also ends the pause after two misses in a row, as the repair's retry button does. Restarting Home Assistant keeps the pause.
 
 ## Troubleshooting

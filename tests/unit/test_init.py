@@ -632,7 +632,11 @@ def _migration_entry(hass: HomeAssistant, options: dict | None = None) -> MockCo
 
 
 def _migration_hub(
-    babies=None, speaker_uid_map=None, camera_speaker_pairs=None, unpaired_speakers=None
+    babies=None,
+    speaker_uid_map=None,
+    camera_speaker_pairs=None,
+    unpaired_speakers=None,
+    manual_speakers=None,
 ) -> SimpleNamespace:
     babies = babies if babies is not None else [_MIG_BABY]
     speaker_uid_map = speaker_uid_map if speaker_uid_map is not None else {"baby_4": "spk_4"}
@@ -648,6 +652,7 @@ def _migration_hub(
         speaker_uid_map=speaker_uid_map,
         camera_speaker_pairs=camera_speaker_pairs,
         unpaired_speakers=unpaired_speakers if unpaired_speakers is not None else {},
+        manual_speakers=manual_speakers if manual_speakers is not None else {},
         unpaired_from_map=set(),
     )
 
@@ -960,6 +965,38 @@ async def test_remove_config_entry_device_prunes_unpaired(hass: HomeAssistant) -
 
     assert await async_remove_config_entry_device(hass, entry, device) is True
     assert entry.data["unpaired_speakers"] == {"spk_9": "Living Room"}
+
+
+async def test_stale_sweep_keeps_manual_speakers(hass: HomeAssistant) -> None:
+    """A speaker added by hand is never swept as stale."""
+    entry = _migration_entry(hass)
+    dev_reg = dr.async_get(hass)
+    manual = dev_reg.async_get_or_create(
+        config_entry_id=entry.entry_id, identifiers={(DOMAIN, "spk_m")}
+    )
+
+    _async_remove_stale_devices(hass, entry, _migration_hub(manual_speakers={"spk_m": "Den"}))
+
+    assert dev_reg.async_get(manual.id) is not None
+
+
+async def test_remove_config_entry_device_prunes_manual(hass: HomeAssistant) -> None:
+    """Deleting a hand-added speaker's device drops it and its saved IP from the options."""
+    from custom_components.nanit import async_remove_config_entry_device
+
+    entry = _migration_entry(
+        hass,
+        options={
+            "manual_speakers": {"spk_m": "Den", "spk_n": "Nursery"},
+            "speaker_ips": {"spk_m": "192.168.1.5", "spk_n": "192.168.1.6"},
+        },
+    )
+    entry.runtime_data = SimpleNamespace(hub=SimpleNamespace(live_device_uids=set()))
+    device = SimpleNamespace(identifiers={(DOMAIN, "spk_m")})
+
+    assert await async_remove_config_entry_device(hass, entry, device) is True
+    assert entry.options["manual_speakers"] == {"spk_n": "Nursery"}
+    assert entry.options["speaker_ips"] == {"spk_n": "192.168.1.6"}
 
 
 async def test_emptied_speaker_map_is_persisted_when_moved_to_unpaired(

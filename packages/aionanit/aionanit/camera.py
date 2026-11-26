@@ -119,6 +119,8 @@ _FRESH_CONNECTION_WINDOW: float = 10.0  # skip reconnect if connected within thi
 _TOKEN_REFRESH_MIN_TTL: float = 360.0  # pre-emptive refresh threshold (> the 330s loop gate)
 _DEFAULT_SENSOR_POLL_INTERVAL: float = 120.0  # 2 min — poll sensors camera doesn't push
 _DEFAULT_PLAYBACK_POLL_INTERVAL: float = 30.0  # 30s — poll GET_PLAYBACK for external changes
+# Seconds before each GET_PLAYBACK that looks up the track a bare start resumed.
+_TRACK_LOOKUP_DELAYS: tuple[float, ...] = (0.0, 1.0, 2.0)
 _STREAM_TOKEN_MIN_TTL: float = 3300.0  # Keep 45-minute HA sources inside JWT lifetime
 # The Nanit app waits 5 s for a WebRTC answer; the camera answered in ~0.3 s.
 _WEBRTC_ANSWER_TIMEOUT: float = 5.0
@@ -189,6 +191,7 @@ class NanitCamera:
         self._session_init_pending: bool = False
         self._sensor_poll_task: asyncio.Task[None] | None = None
         self._playback_poll_task: asyncio.Task[None] | None = None
+        self._track_lookup_task: asyncio.Task[None] | None = None
         self._token_refresh_task: asyncio.Task[None] | None = None
         self._reconnected_task: asyncio.Task[None] | None = None
         self._inline_reconnect_task: asyncio.Task[None] | None = None
@@ -292,6 +295,7 @@ class NanitCamera:
         self._cancel_health_check()
         self._cancel_sensor_poll()
         self._cancel_playback_poll()
+        self._cancel_track_lookup()
         self._cancel_reconnected_task()
         self._cancel_inline_reconnect()
         self._pending.cancel_all()
@@ -504,6 +508,7 @@ class NanitCamera:
                    If None, starts/resumes the last-used track.
             duration: Playback duration in seconds. Defaults to 8 hours.
         """
+        self._cancel_track_lookup()
         proto_playback = Playback(
             status=Playback.STARTED,
             duration=duration if duration is not None else self._DEFAULT_PLAYBACK_DURATION,
@@ -525,10 +530,14 @@ class NanitCamera:
             current_track=track if track is not None else current.current_track,
         )
         self._update_state(playback=new_playback, kind=CameraEventKind.PLAYBACK_UPDATE)
+        if track is None:
+            self._start_track_lookup()
         return new_playback
 
     async def async_stop_playback(self) -> PlaybackState:
         """PUT_PLAYBACK with status=STOPPED."""
+        # Before sending, so a late lookup reply can't undo the stop.
+        self._cancel_track_lookup()
         proto_playback = Playback(status=Playback.STOPPED)
         await self._send_request(
             RequestType.PUT_PLAYBACK,
@@ -1676,6 +1685,46 @@ class NanitCamera:
                     _LOGGER.debug("Playback poll error", exc_info=True)
         except asyncio.CancelledError:
             return
+
+    def _start_track_lookup(self) -> None:
+        """Start the track lookup task."""
+        self._cancel_track_lookup()
+        self._track_lookup_task = asyncio.get_running_loop().create_task(self._track_lookup())
+
+    def _cancel_track_lookup(self) -> None:
+        """Cancel the track lookup if running."""
+        if self._track_lookup_task is not None and not self._track_lookup_task.done():
+            self._track_lookup_task.cancel()
+        self._track_lookup_task = None
+
+    async def _track_lookup(self) -> None:
+        """Ask the camera which track a start without one resumed.
+
+        Replies from before the camera started are skipped so they can't flip it to idle.
+        """
+        try:
+            for delay in _TRACK_LOOKUP_DELAYS:
+                if delay:
+                    await asyncio.sleep(delay)
+                if self._stopped or not self._transport.connected:
+                    return
+                resp = await self._send_request(
+                    RequestType.GET_PLAYBACK,
+                    reconnect_on_failure=False,
+                )
+                reported = _parse_playback(resp)
+                if reported.playing and reported.current_track:
+                    current = self._state.playback
+                    updated = dataclasses.replace(
+                        current, playing=True, current_track=reported.current_track
+                    )
+                    if updated != current:
+                        self._update_state(playback=updated, kind=CameraEventKind.PLAYBACK_UPDATE)
+                    return
+        except (NanitRequestTimeout, NanitTransportError, NanitCameraUnavailable):
+            _LOGGER.debug("Track lookup after playback start failed — leaving it to the poll")
+        except Exception:
+            _LOGGER.debug("Track lookup error", exc_info=True)
 
     # ------------------------------------------------------------------
     # Internal — local probe

@@ -29,6 +29,7 @@ TO_REDACT = {
     "speaker_uid",
     "speaker_uid_map",
     "unpaired_speakers",
+    "manual_speakers",
     "local_stream_state",
     "cloud_push",
     "advertised_host",

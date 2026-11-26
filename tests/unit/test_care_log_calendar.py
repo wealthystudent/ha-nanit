@@ -19,7 +19,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from freezegun.api import FrozenDateTimeFactory
-from homeassistant.components.calendar.helper import api_event_dict_factory
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import STATE_OFF, STATE_UNAVAILABLE
 from homeassistant.core import HomeAssistant
@@ -1695,8 +1694,13 @@ async def test_clocks_going_back_fall_back_to_a_moment_and_keep_the_rest(
 
 
 def _sent(event: Any) -> tuple[datetime, datetime]:
-    """The start and end the frontend is sent for an event, as UTC instants."""
-    sent = dataclasses.asdict(event, dict_factory=api_event_dict_factory)
+    """The start and end the frontend is sent for an event, as UTC instants.
+
+    Home Assistant 2025.12 has no public helper for this, so the tests that
+    use it are skipped there and the rest of this file still runs.
+    """
+    helper = pytest.importorskip("homeassistant.components.calendar.helper")
+    sent = dataclasses.asdict(event, dict_factory=helper.api_event_dict_factory)
     start = datetime.fromisoformat(sent["start"]["dateTime"])
     end = datetime.fromisoformat(sent["end"]["dateTime"])
     return dt_util.as_utc(start), dt_util.as_utc(end)

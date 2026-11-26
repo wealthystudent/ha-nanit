@@ -648,8 +648,8 @@ class NanitCameraEntity(NanitEntity, Camera):
         *different* source string. HA/go2rtc treat a changed source as a new
         stream and tear down the warm producer — several seconds of black
         video for viewers. To keep the source stable, the URL is cached and
-        reused for repeat calls (card reloads, extra viewers, WebRTC
-        renegotiation) until the existing expiry window lapses.
+        reused for repeat calls (card reloads, extra viewers, HomeKit) until
+        the existing expiry window lapses.
 
         The entry log matters for support: when HA never asks for a source
         at all (the frontend silently falls back to still images if the
@@ -1314,9 +1314,9 @@ class NanitCameraEntity(NanitEntity, Camera):
             return
         local.start_cooldown(reason, count_miss=count_miss)
         local.channel.accepting = False
-        # Published once WebRTC is off for the camera, usually after the HLS
-        # stream below has moved. A card remount before that is fine: it joins
-        # the same stream, whose playlist waits for the cloud segments.
+        # Published at once, with WebRTC taken off first, so before the HLS
+        # stream below has moved. A card remount before the move is fine: it
+        # joins the same stream, whose playlist waits for the cloud segments.
         self._write_route_state()
         self._schedule_local_cooldown_end(max(0.0, local.cooldown_until - time.monotonic()))
         stream = self.stream

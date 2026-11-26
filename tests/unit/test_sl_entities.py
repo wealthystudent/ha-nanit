@@ -499,6 +499,7 @@ async def test_async_get_config_entry_diagnostics_redacts_sensitive_fields() -> 
             "camera_ips": "192.168.0.11",
             "speaker_ip": "192.168.0.12",
             "speaker_ips": {"cam_1": "192.168.0.13"},
+            "manual_speakers": {"L151ABC1234567": "Nursery"},
         },
         runtime_data=MagicMock(cameras={"cam_1": cam_data}),
     )
@@ -513,6 +514,7 @@ async def test_async_get_config_entry_diagnostics_redacts_sensitive_fields() -> 
     assert result["config_entry_options"]["camera_ip"] == REDACTED
     assert result["config_entry_options"]["camera_ips"] == REDACTED
     assert result["config_entry_options"]["speaker_ip"] == REDACTED
+    assert result["config_entry_options"]["manual_speakers"] == REDACTED
     assert result["config_entry_options"]["speaker_ips"] == REDACTED
     assert result["cameras"]["camera_0"]["baby_uid"] == REDACTED
     assert result["cameras"]["camera_0"]["baby_name"] == REDACTED

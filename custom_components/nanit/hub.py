@@ -34,6 +34,7 @@ from aionanit.models import Baby
 
 from .aionanit_sl.sound_light import NanitSoundLight
 from .const import (
+    CONF_MANUAL_SPEAKERS,
     CONF_REFRESH_TOKEN,
     CONF_SPEAKER_IPS,
     CONF_UNPAIRED_SPEAKERS,
@@ -154,6 +155,7 @@ class NanitHub:
         self._unpaired_speakers: dict[str, str] = {}
         self._live_unpaired_uids: set[str] = set()
         self._unpaired_from_map: set[str] = set()
+        self._manual_speakers: dict[str, str] = {}
         self._sound_lights: dict[str, NanitSoundLight] = {}
         self._unsubscribe_tokens: Callable[[], None] | None = None
         self._unsubscribe_failed_check: Callable[[], None] | None = None
@@ -204,6 +206,11 @@ class NanitHub:
         return self._unpaired_speakers
 
     @property
+    def manual_speakers(self) -> dict[str, str]:
+        """Return speakers the user added by hand, speaker_uid → name."""
+        return self._manual_speakers
+
+    @property
     def unpaired_from_map(self) -> set[str]:
         """Return speakers this setup moved out of the speaker map as unpaired."""
         return self._unpaired_from_map
@@ -247,7 +254,18 @@ class NanitHub:
 
         self._babies = list(babies)
 
-        if not babies:
+        manual_raw = self._entry.options.get(CONF_MANUAL_SPEAKERS, {})
+        self._manual_speakers = (
+            {
+                uid: name
+                for uid, name in manual_raw.items()
+                if _clean_uid(uid) and isinstance(name, str)
+            }
+            if isinstance(manual_raw, dict)
+            else {}
+        )
+
+        if not babies and not self._manual_speakers:
             _LOGGER.warning("No babies found on Nanit account")
             return
 
@@ -300,6 +318,23 @@ class NanitHub:
         # Its placeholder baby has no uid, which the S&L device name and
         # the setup-failure log fall back on below.
         for speaker_uid, name in self._unpaired_speakers.items():
+            placeholder = Baby(uid="", name=name, camera_uid="", speaker_uid=speaker_uid)
+            tasks.append(
+                asyncio.wait_for(
+                    self._setup_speaker(placeholder, speaker_uid, speaker_ips.get(speaker_uid)),
+                    timeout=_SPEAKER_SETUP_TIMEOUT,
+                )
+            )
+            owners.append(("speaker", placeholder))
+
+        # Machines added by hand, for accounts where the cloud reports none
+        # (e.g. set up only in the Nanit Sound + Light app). Skipped when
+        # the cloud already reports the uid, so nothing is set up twice.
+        # Compared case-insensitively: a uid typed by hand may differ in case.
+        handled = {uid.upper() for uid in [*speaker_uid_map.values(), *self._unpaired_speakers]}
+        for speaker_uid, name in self._manual_speakers.items():
+            if speaker_uid.upper() in handled:
+                continue
             placeholder = Baby(uid="", name=name, camera_uid="", speaker_uid=speaker_uid)
             tasks.append(
                 asyncio.wait_for(

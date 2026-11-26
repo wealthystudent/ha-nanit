@@ -14,7 +14,7 @@ from custom_components.nanit.coordinator import NanitCareLogCoordinator
 
 # Synthetic uids and their codes, worked out once with sha256sum:
 #   printf 'ha-nanit/baby-code/v1\0baby_test_0001' | sha256sum | cut -c1-32
-# If one of these changes, every calendar and statistic built on the code moves.
+# If one of these changes, every calendar built on the code moves.
 VECTORS = {
     "baby_test_0001": "71dc386253a3e9dd0777854a0c04fc5a",
     "baby_1": "065aa64db3013a5d186dcef038a36890",

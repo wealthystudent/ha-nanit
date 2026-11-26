@@ -60,7 +60,7 @@
           "read_only": "Read-only mode",
           "local_stream": "Local streaming",
           "stream_stills": "Stills from the live stream",
-          "care_logs": "Care log statistics and notes"
+          "care_logs": "Care log notes"
         }
       },
       "device": {
@@ -114,14 +114,12 @@
         }
       },
       "care_logs": {
-        "title": "Care log statistics and notes",
+        "title": "Care log notes",
         "description": "Applies to every baby on this account. Saving reloads the integration.",
         "data": {
-          "import_care_log_statistics": "Import care log statistics",
           "show_care_log_notes": "Show notes and who logged each entry"
         },
         "data_description": {
-          "import_care_log_statistics": "Hourly totals for long-term charts. Turn it on any time and everything already logged in Nanit is imported. Imported totals stay until you delete them, even after you turn this off, and the recorder's include and exclude settings don't apply to them.",
           "show_care_log_notes": "Adds each entry's note and who logged it to the calendar. Anyone who can read the calendar can see them, including automations and voice assistants. They aren't stored, so turning this on or off applies to every entry, old ones included."
         }
       }
@@ -552,27 +550,6 @@
               "milliliters": "mL",
               "fluid_ounces": "fl oz",
               "minutes": "min"
-            }
-          },
-          "statistic_name": {
-            "name": "Statistic name",
-            "state": {
-              "diaper_changes": "Diaper changes",
-              "diaper_pee": "Pee diapers",
-              "diaper_poo": "Poo diapers",
-              "diaper_mixed": "Mixed diapers",
-              "diaper_dry": "Dry diapers",
-              "bottle_feeds": "Bottle feeds",
-              "bottle_volume": "Bottle volume",
-              "nursing_sessions": "Nursing sessions",
-              "nursing_time": "Nursing time",
-              "nursing_time_left": "Nursing time, left",
-              "nursing_time_right": "Nursing time, right",
-              "pumping_sessions": "Pumping sessions",
-              "pumped_volume": "Pumped volume",
-              "pumped_volume_left": "Pumped volume, left",
-              "pumped_volume_right": "Pumped volume, right",
-              "pumping_time": "Pumping time"
             }
           }
         }

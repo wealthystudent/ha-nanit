@@ -18,7 +18,6 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from aionanit.exceptions import NanitAuthError, NanitConnectionError
 
-from .care_log_writers import EntryCareLogWriters
 from .const import (
     CONF_BABY_NAME,
     CONF_BABY_UID,
@@ -59,9 +58,6 @@ class NanitData:
     # The local stream receiver's state for this entry, None when local
     # streaming is off or the receiver could not bind.
     local_stream: LocalStreamEntry | None = None
-    # This entry's care log statistics writers, one offer per baby; offers
-    # nothing when the "Import care log statistics" option is off.
-    care_log_writers: EntryCareLogWriters | None = None
 
 
 type NanitConfigEntry = ConfigEntry[NanitData]
@@ -114,14 +110,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: NanitConfigEntry) -> boo
     if local_stream is not None:
         # Runs on unload and on a setup that fails from here on.
         entry.async_on_unload(lambda: async_unload_local_stream(hass, local_stream))
-    care_log_writers = EntryCareLogWriters(hass, entry, hub.client, hub.care_log_coordinators)
     entry.runtime_data = NanitData(
         hub=hub,
         cameras=hub.camera_data,
         speakers=hub.speaker_data,
         platforms=list(platforms),
         local_stream=local_stream,
-        care_log_writers=care_log_writers,
     )
 
     await _async_migrate_sl_identities(hass, entry, hub)
@@ -138,11 +132,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: NanitConfigEntry) -> boo
     entry.async_on_unload(lambda: async_remove_stream_token_filter(hass, entry.entry_id))
 
     _async_register_camera_devices(hass, entry, hub)
-
-    # One importer per baby across sign-ins. Unload stops them before the
-    # hub closes; this callback covers a setup that fails from here on.
-    entry.async_on_unload(care_log_writers.async_stop)
-    await care_log_writers.async_start()
 
     # The card is registered in read-only mode too: skipping it would break an
     # existing card ("Custom element doesn't exist"), and its controls can't do
@@ -164,10 +153,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: NanitConfigEntry) -> boo
     # subscribed to the connections the hub is about to close, and would
     # otherwise start their 30s "still disconnected" timers.
     async def _async_close_on_stop(_event: Event) -> None:
-        # The importers first: they read through the hub's client and listen
-        # to its care log readers.
-        with contextlib.suppress(Exception):
-            await asyncio.shield(care_log_writers.async_stop())
         coordinators: list[NanitPushCoordinator | NanitSoundLightCoordinator] = [
             *(cam.push_coordinator for cam in entry.runtime_data.cameras.values()),
             *(speaker.coordinator for speaker in entry.runtime_data.speakers.values()),
@@ -200,9 +185,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: NanitConfigEntry) -> bo
         entry, entry.runtime_data.platforms
     )
     if unload_ok:
-        # The importers read through the hub's client: stop them first.
-        if (writers := entry.runtime_data.care_log_writers) is not None:
-            await writers.async_stop()
         await entry.runtime_data.hub.async_close()
     return unload_ok
 

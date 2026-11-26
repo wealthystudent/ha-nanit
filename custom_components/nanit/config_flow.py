@@ -20,7 +20,6 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from aionanit import NanitAuthError, NanitClient, NanitConnectionError, NanitMfaRequiredError
 
 from .const import (
-    CONF_IMPORT_CARE_LOG_STATISTICS,
     CONF_LOCAL_STREAM,
     CONF_LOCAL_STREAM_HOST,
     CONF_LOCAL_STREAM_PORT,
@@ -38,7 +37,6 @@ from .const import (
     DEFAULT_LOCAL_STREAM_PORT,
     DOMAIN,
     LOGGER,
-    is_import_care_log_statistics,
     is_read_only,
     is_show_care_log_notes,
     is_stream_stills,
@@ -297,12 +295,6 @@ class NanitConfigFlow(ConfigFlow, domain=DOMAIN):
 
         # Read-only mode is an option (changeable later), stored only when on.
         options: dict[str, Any] = {CONF_READ_ONLY: True} if self._read_only else {}
-        # Setup asks nothing about care logs: a new entry starts with both
-        # choices on, stored explicitly so the import never falls back to the
-        # off-when-missing default meant for entries created before the
-        # choices existed. Both can be changed in the options.
-        options[CONF_IMPORT_CARE_LOG_STATISTICS] = True
-        options[CONF_SHOW_CARE_LOG_NOTES] = True
         return self.async_create_entry(title=title, data=data, options=options)
 
     # ------------------------------------------------------------------
@@ -408,7 +400,7 @@ class NanitOptionsFlow(OptionsFlow):
       2. Enter or clear the machine's IP for local connectivity
     - Read-only mode (account-wide)
     - Stills from the live stream (account-wide)
-    - Care log statistics and notes (account-wide)
+    - Care log notes (account-wide)
 
     Only babies with a Sound & Light Machine are offered, since the camera's
     local port rejects the integration on current firmware (#176). Speaker
@@ -594,14 +586,11 @@ class NanitOptionsFlow(OptionsFlow):
     async def async_step_care_logs(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Choose whether care log statistics are imported and notes are shown."""
+        """Choose whether the calendar shows care log notes and who logged each entry."""
         if user_input is not None:
-            # Merge over the existing options. Both choices are stored
+            # Merge over the existing options. The choice is stored
             # explicitly, on or off.
             new_options: dict[str, Any] = {**self.config_entry.options}
-            new_options[CONF_IMPORT_CARE_LOG_STATISTICS] = bool(
-                user_input[CONF_IMPORT_CARE_LOG_STATISTICS]
-            )
             new_options[CONF_SHOW_CARE_LOG_NOTES] = bool(user_input[CONF_SHOW_CARE_LOG_NOTES])
             return self.async_create_entry(title="", data=new_options)
 
@@ -609,10 +598,6 @@ class NanitOptionsFlow(OptionsFlow):
             step_id="care_logs",
             data_schema=vol.Schema(
                 {
-                    vol.Required(
-                        CONF_IMPORT_CARE_LOG_STATISTICS,
-                        default=is_import_care_log_statistics(self.config_entry),
-                    ): cv.boolean,
                     vol.Required(
                         CONF_SHOW_CARE_LOG_NOTES,
                         default=is_show_care_log_notes(self.config_entry),

@@ -190,7 +190,7 @@ class NanitHub:
         until a fetch succeeds), so a missing key means the baby is not on
         the account, or setup has not reached the Care Logs yet. Like any
         coordinator, a reader polls on its schedule only while something
-        listens to it: the camera's sensors, or a later feature's listener.
+        listens to it: the baby's care sensors or its care log calendar.
         """
         return self._care_log_coordinators
 
@@ -612,9 +612,8 @@ class NanitHub:
             if uid is None:
                 _LOGGER.debug("Skipping /babies row without a usable uid")
                 continue
-            # The library's own parse, so the row keeps every field it does
-            # (the dates where care log history starts among them), with
-            # the device uids then checked like the baby's.
+            # The library's own parse, so the row keeps every field it does,
+            # with the device uids then checked like the baby's.
             parsed = _parse_baby({**baby, "uid": uid})
             if parsed is None:
                 continue

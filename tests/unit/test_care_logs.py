@@ -34,8 +34,6 @@ from aionanit.exceptions import (
 from aionanit.models import Baby, CareLog, CareLogFetch
 from custom_components.nanit import sensor as sensor_module
 from custom_components.nanit.baby_code import baby_code
-from custom_components.nanit.care_log_hours import CareLogSeries
-from custom_components.nanit.care_log_ledger import CareLogRead
 from custom_components.nanit.const import CARE_LOG_POLL_INTERVAL, CARE_LOG_SEED_DAYS, DOMAIN
 from custom_components.nanit.coordinator import (
     CareLogData,
@@ -244,14 +242,12 @@ def test_entry_returned_again_unchanged_before_the_window_needs_no_seed() -> Non
     assert data.needs_seed is False
 
 
-def test_summary_keeps_the_whole_fetch_with_sleep_once_per_uid_oldest_first() -> None:
+def test_summary_keeps_the_four_care_kinds_and_the_request_coverage() -> None:
     nap = _log("s1", "sleep", 3000, duration_s=1800.0, net_duration_s=1500.0)
     camera_sleep = _log("s2", "auto_sleep", -7200, end_timestamp=MIDNIGHT - 3600, status="eligible")
     unknown_kind = _log("x1", "solids", 100)
     bottle = _log("b1", "bottle_feed", 600, feed_amount_ml=90.0)
-    coverage = CareLogRequestCoverage(
-        start=int(SEED_START), end=int(MIDNIGHT + 3600), read_at=DAY_START, dropped=2
-    )
+    coverage = CareLogRequestCoverage(start=int(SEED_START), end=int(MIDNIGHT + 3600), dropped=2)
 
     data = build_care_log_data(
         [nap, bottle, camera_sleep, unknown_kind, nap],
@@ -261,9 +257,8 @@ def test_summary_keeps_the_whole_fetch_with_sleep_once_per_uid_oldest_first() ->
         request_coverage=coverage,
     )
 
-    assert data.all_entries == (camera_sleep, unknown_kind, bottle, nap)
     assert data.request_coverage == coverage
-    # The sensors' own fields still hold the four kinds only.
+    # The sensors' fields hold the four kinds only.
     assert data.entries == (bottle,)
     assert data.latest == {"bottle_feed": bottle}
     assert data.today == (bottle,)
@@ -272,16 +267,11 @@ def test_summary_keeps_the_whole_fetch_with_sleep_once_per_uid_oldest_first() ->
 @pytest.mark.parametrize("kind", ["bottle_feed", "sleep"], ids=["same_kind", "sleep_row"])
 @pytest.mark.parametrize("later", [True, False], ids=["later_outside", "earlier_outside"])
 @pytest.mark.parametrize("reverse", [False, True], ids=["inside_first", "outside_first"])
-def test_whole_fetch_checks_the_range_before_choosing_one_copy_per_uid(
+def test_the_range_is_checked_before_choosing_one_copy_per_uid(
     kind: str, later: bool, reverse: bool
 ) -> None:
-    """A copy dated outside the range asked for, of any kind, is left out and displaces nothing.
-
-    Only one of a counted kind is counted as outside.
-    """
-    coverage = CareLogRequestCoverage(
-        start=int(SEED_START), end=int(MIDNIGHT + 3600), read_at=DAY_START, dropped=2
-    )
+    """A copy dated outside the range asked for, of any kind, is left out and displaces nothing."""
+    coverage = CareLogRequestCoverage(start=int(SEED_START), end=int(MIDNIGHT + 3600), dropped=2)
     inside = _log("b1", "bottle_feed", 600, feed_amount_ml=90.0)
     offset = 7200 if later else SEED_START - MIDNIGHT - 3600
     if kind == "sleep":
@@ -294,37 +284,17 @@ def test_whole_fetch_checks_the_range_before_choosing_one_copy_per_uid(
         logs, window_start=SEED_START, day_start=DAY_START, previous=None, request_coverage=coverage
     )
 
-    assert data.all_entries == (inside,)
-    assert data.request_coverage == CareLogRequestCoverage(
-        start=coverage.start,
-        end=coverage.end,
-        read_at=DAY_START,
-        dropped=2,
-        outside=0 if kind == "sleep" else 1,
-    )
-    # And so the importer's read of it holds the copy inside, with a drop.
-    read = CareLogRead.from_logs(
-        data.all_entries,
-        start=coverage.start,
-        end=coverage.end,
-        read_at=DAY_START,
-        dropped=data.request_coverage.dropped + data.request_coverage.outside,
-        reader="reader",
-    )
-    assert read.entries["b1"].amount(CareLogSeries.BOTTLE_VOLUME) == 90.0
-    assert read.dropped == (2 if kind == "sleep" else 3)
-    # The sensors choose in the same order: the copy inside.
+    assert data.request_coverage == coverage
+    # The sensors keep the copy inside.
     assert data.entries == (inside,)
     assert data.latest == {"bottle_feed": inside}
     assert data.today == (inside,)
     assert _sensor("bottle_volume_today", data).native_value == 90.0
 
 
-def test_a_camera_sleep_session_begun_before_the_range_is_left_out_and_not_counted() -> None:
+def test_a_camera_sleep_session_begun_before_the_range_is_left_out() -> None:
     """Nanit returns a camera sleep session whole when it overlaps the start of the range."""
-    coverage = CareLogRequestCoverage(
-        start=int(MIDNIGHT), end=int(MIDNIGHT + 3600), read_at=DAY_START
-    )
+    coverage = CareLogRequestCoverage(start=int(MIDNIGHT), end=int(MIDNIGHT + 3600))
     session = _log("s1", "auto_sleep", -96, end_timestamp=MIDNIGHT + 1884, status="eligible")
     bottle = _log("b1", "bottle_feed", 600, feed_amount_ml=90.0)
 
@@ -336,21 +306,8 @@ def test_a_camera_sleep_session_begun_before_the_range_is_left_out_and_not_count
         request_coverage=coverage,
     )
 
-    assert data.request_coverage == coverage  # so outside stays 0
-    assert data.all_entries == (bottle,)
+    assert data.request_coverage == coverage
     assert data.entries == (bottle,)
-
-
-def test_whole_fetch_is_only_the_last_fetch() -> None:
-    """Entries carried forward for the sensors are not part of the whole fetch."""
-    yesterdays_pump = _log("p1", "pumping", -7200)
-    seed = _summary([yesterdays_pump, _log("s1", "sleep", -3600)])
-
-    data = _summary([_log("d1", "diaper_change", 600)], window_start=MIDNIGHT, previous=seed)
-
-    assert data.latest["pumping"] == yesterdays_pump
-    assert data.all_entries == (_log("d1", "diaper_change", 600),)
-    assert data.request_coverage is None
 
 
 def test_a_care_sensor_named_after_its_baby_has_the_icon_of_the_one_on_a_camera() -> None:
@@ -377,7 +334,7 @@ def _sensor_readings(data: CareLogData) -> dict[str, tuple[Any, Any, Any]]:
     return readings
 
 
-def test_whole_fetch_does_not_change_what_the_sensors_show() -> None:
+def test_other_kinds_and_the_request_coverage_do_not_change_what_the_sensors_show() -> None:
     """Sleep rows, other kinds and the request coverage leave all eight sensors as they were."""
     care_only = list(DAY.entries)
     extra = [
@@ -391,11 +348,10 @@ def test_whole_fetch_does_not_change_what_the_sensors_show() -> None:
         day_start=DAY_START,
         previous=None,
         request_coverage=CareLogRequestCoverage(
-            start=int(SEED_START), end=int(MIDNIGHT + 86400), read_at=DAY_START, dropped=3
+            start=int(SEED_START), end=int(MIDNIGHT + 86400), dropped=3
         ),
     )
 
-    assert len(whole.all_entries) == len(care_only) + len(extra)
     assert _sensor_readings(whole) == _sensor_readings(DAY)
     assert _sensor("last_diaper_change", whole).entity_registry_enabled_default is True
 
@@ -570,7 +526,7 @@ async def test_poll_summarises_the_fetch(hass: HomeAssistant) -> None:
     assert coordinator.data.latest == {"diaper_change": diaper}
 
 
-async def test_poll_publishes_the_whole_fetch_and_its_request_coverage(
+async def test_poll_publishes_its_request_coverage(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory
 ) -> None:
     freezer.move_to("2026-11-20T18:00:00+00:00")
@@ -595,14 +551,11 @@ async def test_poll_publishes_the_whole_fetch_and_its_request_coverage(
     await coordinator.async_refresh()
 
     data = coordinator.data
-    assert data.all_entries == (nap, diaper)
     assert data.entries == (diaper,)
     assert data.request_coverage == CareLogRequestCoverage(
         start=int((now - timedelta(days=CARE_LOG_SEED_DAYS)).timestamp()),
         end=int((now + timedelta(hours=1)).timestamp()),
-        read_at=now,
         dropped=2,
-        requested_at=now,
     )
 
     # The next, shorter, poll replaces it with its own range.
@@ -611,13 +564,10 @@ async def test_poll_publishes_the_whole_fetch_and_its_request_coverage(
     await coordinator.async_refresh()
 
     later = dt_util.utcnow()
-    assert coordinator.data.all_entries == (diaper,)
     assert coordinator.data.request_coverage == CareLogRequestCoverage(
         start=int((later - timedelta(hours=24)).timestamp()),
         end=int((later + timedelta(hours=1)).timestamp()),
-        read_at=later,
         dropped=2,
-        requested_at=later,
     )
 
 
@@ -808,7 +758,7 @@ async def test_daily_totals_reset_at_local_midnight(
     assert daily["feedings_today"].native_value == 1
     assert daily["bottle_volume_today"].native_value == 90.0
     for sensor in daily.values():
-        # The imported statistics replace their own: no state class, no reset.
+        # No long-term statistics of their own: no state class, no reset.
         assert sensor.entity_description.state_class is None
         assert sensor.state_class is None
         assert sensor.last_reset is None
@@ -834,7 +784,7 @@ async def test_daily_totals_reset_at_local_midnight(
 
 @pytest.mark.parametrize("key", TODAY)
 def test_the_today_sensors_record_no_long_term_statistics_of_their_own(key: str) -> None:
-    """The imported care log statistics replace them, whether or not the import is on."""
+    """They would run low: an entry logged after midnight for the day before never counts."""
     sensor = _sensor(key, DAY)
 
     assert sensor.entity_description.state_class is None
@@ -1568,7 +1518,7 @@ _WITH_DROPPED_ROWS = build_care_log_data(
     previous=None,
     # Up to an hour ahead, as the reader asks: both rows are in the range.
     request_coverage=CareLogRequestCoverage(
-        start=int(SEED_START), end=int(MIDNIGHT + 3600), read_at=DAY_START, dropped=4
+        start=int(SEED_START), end=int(MIDNIGHT + 3600), dropped=4
     ),
 )
 

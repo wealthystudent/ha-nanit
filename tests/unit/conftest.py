@@ -201,17 +201,14 @@ def mock_nanit_client():
                 async_shutdown=AsyncMock(),
                 async_request=through_the_hold,
                 refusals=0,
-                refused=False,
                 baby=baby,
                 data=CareLogData(
                     latest={},
                     today=(),
                     day_start=dt_util.start_of_local_day(),
-                    all_entries=(),
                     request_coverage=CareLogRequestCoverage(
                         start=int((now - timedelta(days=CARE_LOG_SEED_DAYS)).timestamp()),
                         end=int((now + timedelta(hours=1)).timestamp()),
-                        read_at=now,
                         dropped=0,
                     ),
                 ),

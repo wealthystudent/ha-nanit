@@ -83,10 +83,8 @@ DEFAULT_LOCAL_STREAM_PORT = 1935
 # Stills from the live stream when the cloud snapshot fails (off by default).
 CONF_STREAM_STILLS = "stream_stills"
 
-# Care log privacy choices. A new sign-in stores both explicitly, both on. An
-# entry from before they existed has neither key: the import reads as off until
-# the user turns it on, and the notes read as on until the user turns them off.
-CONF_IMPORT_CARE_LOG_STATISTICS = "import_care_log_statistics"
+# Care log privacy choice: whether the calendar shows each entry's note and
+# who logged it. Not stored until the user changes it, and on until then.
 CONF_SHOW_CARE_LOG_NOTES = "show_care_log_notes"
 
 
@@ -100,16 +98,10 @@ def is_stream_stills(entry: ConfigEntry) -> bool:
     return entry.options.get(CONF_STREAM_STILLS, False) is True
 
 
-def is_import_care_log_statistics(entry: ConfigEntry) -> bool:
-    """Return whether care log totals may be imported into long-term statistics."""
-    return entry.options.get(CONF_IMPORT_CARE_LOG_STATISTICS, False) is True
-
-
 def is_show_care_log_notes(entry: ConfigEntry) -> bool:
     """Return whether care log notes and who logged each entry may be shown.
 
-    On unless switched off in the options, also for an entry created before
-    the choice existed.
+    On unless switched off in the options.
     """
     return entry.options.get(CONF_SHOW_CARE_LOG_NOTES, True) is True
 

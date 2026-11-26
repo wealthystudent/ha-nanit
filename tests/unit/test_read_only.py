@@ -29,9 +29,7 @@ from custom_components.nanit.binary_sensor import NanitCameraPowerSensor
 from custom_components.nanit.camera import NanitCameraEntity
 from custom_components.nanit.const import (
     CONF_CAMERA_IPS,
-    CONF_IMPORT_CARE_LOG_STATISTICS,
     CONF_READ_ONLY,
-    CONF_SHOW_CARE_LOG_NOTES,
     CONF_SPEAKER_IP,
     CONF_SPEAKER_IPS,
     DOMAIN,
@@ -434,14 +432,7 @@ def _as_dict(result: Any) -> dict[str, Any]:
     return cast(dict[str, Any], result)
 
 
-# A new sign-in also stores the care log choices explicitly: both on.
-_CARE_LOG_DEFAULTS = {CONF_IMPORT_CARE_LOG_STATISTICS: True, CONF_SHOW_CARE_LOG_NOTES: True}
-
-
-@pytest.mark.parametrize(
-    ("read_only", "expected"),
-    [(True, {CONF_READ_ONLY: True, **_CARE_LOG_DEFAULTS}), (False, _CARE_LOG_DEFAULTS)],
-)
+@pytest.mark.parametrize(("read_only", "expected"), [(True, {CONF_READ_ONLY: True}), (False, {})])
 async def test_setup_flow_stores_read_only_as_an_option(
     hass: HomeAssistant,
     mock_config_flow_client,

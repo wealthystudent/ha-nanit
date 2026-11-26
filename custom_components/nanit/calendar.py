@@ -67,11 +67,11 @@ _MICROSECOND = timedelta(microseconds=1)
 CARE_LOG_REACH_BACK = timedelta(hours=24)
 
 # Where care logs can exist, so an absurd range costs a few dozen requests
-# rather than one per 90 days without end: nothing before 2014 (the floor
-# the statistics importer uses for history; Nanit's care logs are younger)
-# and nothing more than a year ahead. The ceiling counts from the start of
-# today in UTC, so it, and with it a range's cache key, stays put all day.
-# A range wholly outside is answered empty without asking Nanit.
+# rather than one per 90 days without end: nothing before 2014 (Nanit's
+# care logs are younger) and nothing more than a year ahead. The ceiling
+# counts from the start of today in UTC, so it, and with it a range's cache
+# key, stays put all day. A range wholly outside is answered empty without
+# asking Nanit.
 CARE_LOG_EARLIEST = datetime(2014, 1, 1, tzinfo=UTC)
 CARE_LOG_AHEAD = timedelta(days=366)
 

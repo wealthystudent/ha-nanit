@@ -1,11 +1,10 @@
 """An opaque, stable code for a baby, used where a raw baby uid must not appear.
 
 The code names things that outlive a single run: the care log calendar's
-unique id, the care log reader's name in debug lines, and later the
-long-term statistics' ids. The same baby gets the same code on every Home
-Assistant, so re-adding the integration continues where it left off. It is
-a one-way hash of the uid alone: no camera id, email or display name goes
-in.
+unique id and the care log reader's name in debug lines. The same baby gets
+the same code on every Home Assistant, so re-adding the integration
+continues where it left off. It is a one-way hash of the uid alone: no
+camera id, email or display name goes in.
 
 The input is fixed and must never change, or every name built on it moves:
 
@@ -15,9 +14,6 @@ The prefix keeps the hash specific to this use; the NUL byte separates it
 from the uid. The uid is encoded with ``surrogatepass``, so any string a
 JSON answer can hold has an encoding. The code is the first 32 characters
 of the lowercase hex digest (128 bits).
-
-``one_way_code`` is the same construction for another use, with that use's
-own prefix (the care log statistics owner code is one).
 """
 
 from __future__ import annotations
@@ -30,12 +26,6 @@ BABY_CODE_PREFIX = b"ha-nanit/baby-code/v1\x00"
 BABY_CODE_LENGTH = 32
 
 
-def one_way_code(prefix: bytes, value: str) -> str:
-    """Return the first 32 lowercase hex characters of SHA-256(prefix + value as UTF-8)."""
-    digest = hashlib.sha256(prefix + value.encode("utf-8", "surrogatepass"))
-    return digest.hexdigest()[:BABY_CODE_LENGTH]
-
-
 def baby_code(uid: str) -> str:
     """Return the 32 hex character code for a baby uid.
 
@@ -43,7 +33,8 @@ def baby_code(uid: str) -> str:
     """
     if not uid:
         raise ValueError("A baby code needs a non-empty uid")
-    return one_way_code(BABY_CODE_PREFIX, uid)
+    digest = hashlib.sha256(BABY_CODE_PREFIX + uid.encode("utf-8", "surrogatepass"))
+    return digest.hexdigest()[:BABY_CODE_LENGTH]
 
 
 def baby_display_name(name: str | None, uid: str) -> str:

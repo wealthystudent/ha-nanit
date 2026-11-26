@@ -9,7 +9,7 @@ import json
 import logging
 import sys
 import weakref
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta, timezone
 from itertools import pairwise
@@ -58,9 +58,7 @@ from custom_components.nanit.calendar import (
     CARE_LOG_MAX_PIECE,
     NanitCareLogCalendar,
 )
-from custom_components.nanit.care_log_writers import _importer_factory
 from custom_components.nanit.const import (
-    CONF_IMPORT_CARE_LOG_STATISTICS,
     CONF_READ_ONLY,
     CONF_SHOW_CARE_LOG_NOTES,
     DOMAIN,
@@ -384,18 +382,7 @@ async def test_privacy_markers(
     caplog.set_level(logging.DEBUG)
     fake = FakeNanit()
     _day_of_entries(fake)
-    # With the statistics import on, so diagnostics has its section too.
-    entry = _entry(hass, notes=notes)
-    hass.config_entries.async_update_entry(
-        entry, options={**entry.options, CONF_IMPORT_CARE_LOG_STATISTICS: True}
-    )
-    # No recorder runs here: say the database holds none of the baby's rows,
-    # so the entry takes the baby and the importer's own section shows.
-    with patch(
-        "custom_components.nanit.care_log_writers.async_has_care_log_statistics",
-        AsyncMock(return_value=False),
-    ):
-        entry = await _set_up(hass, client, fake, notes=notes, entry=entry)
+    entry = await _set_up(hass, client, fake, notes=notes)
     calendar = _calendar(hass, entry)
 
     surfaces = await _surfaces(hass, hass_client, entry, calendar)
@@ -406,12 +393,6 @@ async def test_privacy_markers(
     for reg in registered:
         for text in (reg.unique_id, reg.entity_id, reg.name or "", reg.original_name or ""):
             assert BABY_MARKER not in text, text
-    statistics = (await async_get_config_entry_diagnostics(hass, entry))["care_log_statistics"]
-    assert statistics["enabled"] is True
-    assert statistics["babies"]["baby_0"]["writer"] is True
-    section = json.dumps(statistics)
-    for marker in (BABY_MARKER, baby_code(BABY_MARKER), BABY.name, entry.entry_id):
-        assert marker not in section, marker
     assert baby_code(BABY_MARKER) not in surfaces["diagnostics"]
 
     # Only the calendar answer and the action response may carry notes and
@@ -611,6 +592,23 @@ async def test_a_reader_refusal_holds_the_calendar_back(
     assert await hass.config_entries.async_unload(entry.entry_id)
 
 
+def _other_caller(
+    client: Any, reader: NanitCareLogCoordinator
+) -> Callable[[int, int], Awaitable[CareLogFetch]]:
+    """Return a fetch of the baby's care logs that goes through the reader's hold.
+
+    It stands for any other caller of ``async_request``, as each calendar
+    piece is, so a test can have it refused directly.
+    """
+
+    async def fetch(start: int, end: int) -> CareLogFetch:
+        return await reader.async_request(
+            lambda: client.async_get_calendar_result(reader.baby.uid, start, end)
+        )
+
+    return fetch
+
+
 @pytest.mark.parametrize("throttled", [False, True], ids=["refused", "throttled"])
 async def test_a_hold_keeps_its_status_and_not_the_error_it_got(
     hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory, throttled: bool
@@ -620,7 +618,7 @@ async def test_a_hold_keeps_its_status_and_not_the_error_it_got(
     fake = FakeNanit()
     _day_of_entries(fake)
     entry, calendar = await _one_calendar(hass, client, fake)
-    importer_fetch = _importer_factory(hass, entry, client, calendar.coordinator)()._fetch
+    other_fetch = _other_caller(client, calendar.coordinator)
     day = (int(_ts(RANGE_START)), int(_ts(RANGE_END)))
     fake.error = (
         NanitRateLimited("Calendar fetch", 600)
@@ -629,14 +627,14 @@ async def test_a_hold_keeps_its_status_and_not_the_error_it_got(
     )
     got = weakref.ref(fake.error)
     with pytest.raises(NanitRequestRefused):
-        await importer_fetch(*day)
+        await other_fetch(*day)
     fake.error = None
     gc.collect()
     assert got() is None
 
     # Still held, with the same status and wait, asking Nanit nothing.
     with pytest.raises(NanitRequestRefused) as held:
-        await importer_fetch(*day)
+        await other_fetch(*day)
     assert len(fake.calls) == 1
     assert held.value.status == (429 if throttled else 403)
     assert isinstance(held.value, NanitRateLimited) is throttled
@@ -701,21 +699,21 @@ async def test_a_hold_stops_every_caller_until_it_ends(
     freezer: FrozenDateTimeFactory,
     error: NanitRequestRefused,
 ) -> None:
-    """The statistics importer is refused; nobody asks Nanit until the hold is over.
+    """Another caller is refused; nobody asks Nanit until the hold is over.
 
     Not the calendar, a refresh of the reader, its scheduled polls (hourly at
-    most, even through a two-hour wait) or the importer itself.
+    most, even through a two-hour wait) or that caller itself.
     """
     freezer.move_to(NOW)
     fake = FakeNanit()
     _day_of_entries(fake)
     entry, calendar = await _one_calendar(hass, client, fake)
     reader = calendar.coordinator
-    importer_fetch = _importer_factory(hass, entry, client, reader)()._fetch
+    other_fetch = _other_caller(client, reader)
     day = (int(_ts(RANGE_START)), int(_ts(RANGE_END)))
     fake.error = error
     with pytest.raises(NanitRequestRefused):
-        await importer_fetch(*day)
+        await other_fetch(*day)
     assert len(fake.calls) == 1
     fake.error = None
 
@@ -724,7 +722,7 @@ async def test_a_hold_stops_every_caller_until_it_ends(
     await reader.async_refresh()
     assert not reader.last_update_success
     with pytest.raises(NanitRequestRefused):
-        await importer_fetch(*day)
+        await other_fetch(*day)
     assert len(fake.calls) == 1
 
     hold = care_log_hold(error)
@@ -745,7 +743,7 @@ async def test_a_hold_stops_every_caller_until_it_ends(
     assert len(fake.calls) == 2
     assert reader.last_update_success
     assert len(await _events(hass, calendar, RANGE_START, RANGE_END)) == 4
-    await importer_fetch(*day)
+    await other_fetch(*day)
     assert len(fake.calls) == 4
     assert await hass.config_entries.async_unload(entry.entry_id)
 
@@ -753,13 +751,13 @@ async def test_a_hold_stops_every_caller_until_it_ends(
 async def test_a_poll_retry_waiting_when_a_refusal_comes_asks_nothing(
     hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory
 ) -> None:
-    """The reader's poll failed once and waits to retry; the importer is refused meanwhile."""
+    """The reader's poll failed once and waits to retry; another caller is refused meanwhile."""
     freezer.move_to(NOW)
     fake = FakeNanit()
     _day_of_entries(fake)
     entry, calendar = await _one_calendar(hass, client, fake)
     reader = calendar.coordinator
-    importer_fetch = _importer_factory(hass, entry, client, reader)()._fetch
+    other_fetch = _other_caller(client, reader)
     waiting = asyncio.Event()
     go_on = asyncio.Event()
 
@@ -774,7 +772,7 @@ async def test_a_poll_retry_waiting_when_a_refusal_comes_asks_nothing(
         assert len(fake.calls) == 1
         fake.error = NanitRequestRefused("Calendar fetch", 403)
         with pytest.raises(NanitRequestRefused):
-            await importer_fetch(int(_ts(RANGE_START)), int(_ts(RANGE_END)))
+            await other_fetch(int(_ts(RANGE_START)), int(_ts(RANGE_END)))
         fake.error = None
         go_on.set()
         await poll
@@ -873,7 +871,7 @@ async def test_an_older_request_succeeding_late_leaves_a_newer_refusal_in_place(
         await _events(hass, calendar, RANGE_START, RANGE_END)
     await reader.async_refresh()
     assert not reader.last_update_success
-    assert reader.refused
+    assert reader.requests_held
     assert len(fake.calls) == asked
     assert await hass.config_entries.async_unload(entry.entry_id)
 
@@ -2083,7 +2081,7 @@ def _labels(name: str) -> dict[str, dict[str, str]]:
 def test_the_labels_are_plain_text_and_the_same_in_both_files() -> None:
     labels = _labels("strings.json")
     assert _labels("en.json") == labels
-    assert {group: set(keys) for group, keys in labels.items() if group != "statistic_name"} == {
+    assert {group: set(keys) for group, keys in labels.items()} == {
         "event_title": {"diaper_change", "bottle_feed", "nursing", "pumping"},
         "event_detail": {"left_side", "right_side", "duration", "logged_at", "note", "logged_by"},
         "diaper_type": {"pee", "poo", "mixed", "dry"},
@@ -2162,8 +2160,6 @@ def test_the_fallback_holds_no_english_text() -> None:
     """Only each label's key: no text of strings.json comes back."""
     texts = calendar_module._Texts({})
     for group, keys in _labels("strings.json").items():
-        if group == "statistic_name":
-            continue  # The statistics' names share the block; not the calendar's.
         for key in keys:
             assert texts.get(group, key) == key, (group, key)
 

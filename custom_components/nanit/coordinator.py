@@ -24,7 +24,7 @@ import asyncio
 import logging
 import math
 from collections.abc import Awaitable, Callable, Iterable, Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -48,7 +48,6 @@ from aionanit.models import Baby, CameraEvent, CameraState, CareLog, CloudEvent,
 from .aionanit_sl.models import SoundLightEvent, SoundLightEventKind, SoundLightFullState
 from .aionanit_sl.sound_light import NanitSoundLight
 from .baby_code import baby_code
-from .care_log_hours import entry_contribution
 from .const import (
     CARE_LOG_POLL_INTERVAL,
     CARE_LOG_SEED_DAYS,
@@ -359,22 +358,14 @@ class CareLogRequestCoverage:
     This is request coverage: the range that was asked for, not a promise
     that Nanit's answer held everything in it (its answer carries no sign
     of being complete). ``start`` and ``end`` are the Unix seconds sent,
-    both inclusive, as Nanit matches an entry by its start. ``read_at`` is
-    when the answer arrived, ``requested_at`` when the request was sent
-    (taken just before it; None when not known), and ``dropped`` how many
-    of its rows were skipped as malformed. ``outside`` counts the rows of a
-    kind the statistics count that were dated outside the range.
-    ``CareLogData`` leaves out every row dated outside, of any kind, but a
-    sleep session that began before the range (Nanit returns those whole)
-    or a row of another uncounted kind is not counted here.
+    both inclusive, as Nanit matches an entry by its start, and ``dropped``
+    how many of its rows were skipped as malformed. ``CareLogData`` leaves
+    out every row dated outside the range, of any kind.
     """
 
     start: int
     end: int
-    read_at: datetime
     dropped: int = 0
-    outside: int = 0
-    requested_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -391,16 +382,11 @@ class CareLogData:
     before it is no longer known and the next fetch has to look back as far
     as the first one did.
 
-    The sensors use only the fields above, which hold the kinds in
-    ``CARE_LOG_TYPES``. ``all_entries`` is the whole numeric answer of the
-    last fetch, every kind (sleep included), each uid once, oldest first,
-    with the range that fetch asked for in ``request_coverage``. Neither
-    carries anything forward from earlier fetches. When the range is known,
-    every row, of any kind, is checked against it before a copy is chosen
-    per uid, for the sensors' fields and ``all_entries`` alike: one dated
-    outside it is left out, so it never displaces a copy inside the range,
-    and one of a kind the statistics count is also counted in
-    ``request_coverage.outside``, so it does not go unnoticed.
+    The fields above hold the kinds in ``CARE_LOG_TYPES``.
+    ``request_coverage`` is the range the last fetch asked for. When it is
+    known, every row, of any kind, is checked against it before a copy is
+    chosen per uid: one dated outside it is left out, so it never displaces
+    a copy inside the range.
     """
 
     latest: Mapping[str, CareLog]
@@ -409,7 +395,6 @@ class CareLogData:
     entries: tuple[CareLog, ...] = ()
     before_window: Mapping[str, CareLog] = field(default_factory=dict)
     needs_seed: bool = False
-    all_entries: tuple[CareLog, ...] = ()
     request_coverage: CareLogRequestCoverage | None = None
 
 
@@ -453,20 +438,10 @@ def build_care_log_data(
     logs = tuple(logs)
     if request_coverage is not None:
         # Every row is checked against the range asked for before one copy
-        # per uid is chosen, and only the counted kinds are counted (see
-        # ``CareLogData``).
+        # per uid is chosen (see ``CareLogData``).
         low, high = request_coverage.start, request_coverage.end
-        in_range = [log for log in logs if low <= log.timestamp <= high]
-        outside = sum(
-            1
-            for log in logs
-            if not low <= log.timestamp <= high and entry_contribution(log) is not None
-        )
-        if outside:
-            request_coverage = replace(request_coverage, outside=outside)
-        logs = tuple(in_range)
+        logs = tuple(log for log in logs if low <= log.timestamp <= high)
     fetched = _by_uid(logs)
-    all_entries = tuple(sorted(fetched.values(), key=_order))
     entries = tuple(log for log in fetched.values() if log.log_type in CARE_LOG_TYPES)
 
     before_window: dict[str, CareLog] = {}
@@ -506,7 +481,6 @@ def build_care_log_data(
         entries=entries,
         before_window=before_window,
         needs_seed=needs_seed,
-        all_entries=all_entries,
         request_coverage=request_coverage,
     )
 
@@ -559,8 +533,6 @@ class NanitCareLogCoordinator(DataUpdateCoordinator[CareLogData]):
         # Every refusal or throttling the hold saw, and every refusal (403).
         self._holds = 0
         self._refusals = 0
-        # A refusal (403) that no request sent after it has answered yet.
-        self._refused = False
         # Whether the reader's own poll is under way.
         self._polling = False
 
@@ -582,23 +554,18 @@ class NanitCareLogCoordinator(DataUpdateCoordinator[CareLogData]):
         """
         return self._refusals
 
-    @property
-    def refused(self) -> bool:
-        """Return whether Nanit refused (HTTP 403) a request no later one has succeeded since."""
-        return self._refused
-
     async def async_request[T](self, request: Callable[[], Awaitable[T]]) -> T:
         """Send one Care Log request of this sign-in for this baby, unless requests are held.
 
         Every request for them goes through here just before it is sent: the
-        reader's polls and their retries, each calendar piece and each of
-        the statistics importer's own. While requests are held it raises the
-        refusal or throttling again, asking Nanit nothing. A refusal or
-        throttling a request gets holds every request (``care_log_hold``),
-        and a success clears the hold only when no refusal or throttling
-        arrived while it was on its way: an older request finishing late
-        leaves a newer hold in place. One that a refusal (not a throttling)
-        arrived during raises that refusal instead of returning its answer.
+        reader's polls and their retries, and each calendar piece. While
+        requests are held it raises the refusal or throttling again, asking
+        Nanit nothing. A refusal or throttling a request gets holds every
+        request (``care_log_hold``), and a success clears the hold only when
+        no refusal or throttling arrived while it was on its way: an older
+        request finishing late leaves a newer hold in place. One that a
+        refusal (not a throttling) arrived during raises that refusal
+        instead of returning its answer.
         """
         if self.requests_held and self._held_status is not None:
             if self._held_status == 429:
@@ -619,7 +586,6 @@ class NanitCareLogCoordinator(DataUpdateCoordinator[CareLogData]):
         if self._holds == holds:
             self._held_until = None
             self._held_status = None
-            self._refused = False
         return result
 
     def _hold(self, err: NanitRequestRefused) -> None:
@@ -632,7 +598,6 @@ class NanitCareLogCoordinator(DataUpdateCoordinator[CareLogData]):
         self._holds += 1
         if not isinstance(err, NanitRateLimited):
             self._refusals += 1
-            self._refused = True
             if not self._polling:
                 # Another caller was refused: the care sensors say so now,
                 # not at the next poll (a poll under way reports it itself).
@@ -666,9 +631,6 @@ class NanitCareLogCoordinator(DataUpdateCoordinator[CareLogData]):
         window_start = min(day_start, now - lookback)
         start = int(window_start.timestamp())
         end = int((now + _CARE_LOG_END_SLACK).timestamp())
-        # Just before the request (and its retries): an hour that had not
-        # finished by then may gain entries the answer lacks.
-        requested_at = dt_util.utcnow()
         self._polling = True
         try:
             client = self._hub.client
@@ -714,9 +676,7 @@ class NanitCareLogCoordinator(DataUpdateCoordinator[CareLogData]):
         coverage = CareLogRequestCoverage(
             start=fetch.start,
             end=fetch.end,
-            read_at=dt_util.utcnow(),
             dropped=fetch.dropped,
-            requested_at=requested_at,
         )
         return build_care_log_data(
             fetch.logs,

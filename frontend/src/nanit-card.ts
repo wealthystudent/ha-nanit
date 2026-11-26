@@ -234,13 +234,17 @@ export class NanitCard extends LitElement {
     // that gap is still seen.
     const route = this._streamRoute(this._entities());
     const fellBack = this._lastRoute === "local" && route === "cloud";
+    // The other way round the running stream has just been moved to the local
+    // URL, which is publishing. A player on the old stream only notices once
+    // it stalls, so it is remounted now, picture or not.
+    const movedLocal = this._lastRoute === "cloud" && route === "local";
     if (route !== undefined) {
       if (route !== this._lastRoute) this._localHoldStartedAt = 0;
       this._lastRoute = route;
     }
-    if (fellBack && !this._sawFrame) {
-      // Skips the reload backoff: this remount is caused by the fallback,
-      // not by a stall, and fallbacks are spaced by the cooldown.
+    if ((fellBack && !this._sawFrame) || movedLocal) {
+      // Skips the reload backoff: this remount is caused by the route change,
+      // not by a stall, and route changes are spaced by the cooldown.
       this._cooldownUntil = 0;
       this._reloadStream(false);
       return;

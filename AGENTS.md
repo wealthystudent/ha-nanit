@@ -106,7 +106,7 @@ Full details in [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/VERIFYING.md](docs/
 - Branch from `main`: `feat/`, `fix/`, `refactor/`, `docs/`, `test/`, `chore/` + short description.
 - Commits and PR titles use conventional commits: `<type>: <description>`, imperative, lowercase, no period. The PR title becomes the squash commit on `main`.
 - Commits are signed with the host's existing signing setup. Never change or disable it. If the host has no signing, stop and ask your person to set it up; never push unsigned commits.
-- No AI co-author trailers or "generated with" lines in commits or PRs. The commit-msg hook and `PR Metadata` reject them.
+- No AI co-author trailers or "generated with" lines in commit messages. The commit-msg hook and `PR Metadata` reject them.
 - If behavior or user-facing functionality changes, update `README.md` in the same PR.
 - Check the change against the applicable sections of [`docs/SECURITY_AUDIT_CHECKLIST.md`](docs/SECURITY_AUDIT_CHECKLIST.md) before opening the PR.
 
@@ -252,7 +252,7 @@ failure that was observed on real hardware:
 ## CI
 
 - **CI**: `.github/workflows/ci.yaml` runs on every PR and push to `main`, and is reused as the release gate. `CI OK` is the single required check that sums up the jobs (lint, types, tests, protobuf and card bundle drift, workflow lint, hassfest). HACS validation is informational.
-- **PR**: `.github/workflows/pr.yaml` (`PR Metadata`) runs `tools/verify.py pr`: the title, the `## Changelog`, `## How I tested this` (live test and a passing receipt from this PR) and `## AI use` sections, and that GitHub verifies every commit's signature. Its job summary lists what the live test must show.
+- **PR**: `.github/workflows/pr.yaml` (`PR Metadata`) runs `tools/verify.py pr`: the title, the `## Changelog`, `## How I tested this` (live test, and a receipt that passed) and `## AI use` sections, and that GitHub verifies every commit's signature. Its job summary lists what the live test must show.
 - **Auto beta**: `.github/workflows/auto-beta.yaml` tags labelled merges and dispatches the release.
 - **Release**: `.github/workflows/release.yaml` resolves the tag, gates stable on owner approval, runs CI, builds, publishes aionanit to PyPI, then creates the GitHub release with nanit.zip and notes.
 

@@ -21,19 +21,51 @@ CONFIG_OPTIONS_WITH_VALUE = {"-f", "--file", "--blob", "--type", "--default", "-
 SIGNING_KEYS = re.compile(r"^(commit|tag|rebase)\.gpgsign$|^gpg\.|^user\.signingkey$", re.I)
 
 
+# Commands that run the rest of their words as a command, and the options of
+# theirs that take a value.
+WRAPPERS = {
+    "env": {"-u", "--unset", "-C", "--chdir", "-S", "--split-string"},
+    "timeout": {"-s", "--signal", "-k", "--kill-after"},
+    "nice": {"-n", "--adjustment"},
+    "nohup": set(),
+    "command": set(),
+    "exec": set(),
+    "time": set(),
+    "sudo": {"-u", "-g", "-C", "-D", "-h", "-p", "-U"},
+}
+SHELLS = {"sh", "bash", "zsh", "dash"}
+
+
+def unwrap(words: list[str]) -> list[list[str]]:
+    """Strip env assignments and wrappers like `timeout 60`; open up `sh -c '...'`."""
+    while words:
+        name = os.path.basename(words[0])
+        if re.match(r"^\w+=", words[0]):  # FOO=bar git ...
+            words = words[1:]
+        elif name in WRAPPERS:
+            rest, with_value = words[1:], WRAPPERS[name]
+            while rest and (rest[0].startswith("-") or re.match(r"^\w+=", rest[0])):
+                rest = rest[2:] if rest[0] in with_value else rest[1:]
+            if name == "timeout" and rest:
+                rest = rest[1:]  # the duration
+            words = rest
+        elif name in SHELLS and "-c" in words[1:-1]:
+            return segments(words[words.index("-c") + 1])
+        else:
+            return [[name, *words[1:]]]
+    return []
+
+
 def segments(command: str) -> list[list[str]]:
     """Split a shell command into simple commands, as word lists."""
-    parts = re.split(r"&&|\|\||[;|\n]", command)
+    parts = re.split(r"&&|\|\||[;|\n()]", command)  # (subshells) and $(...) too
     words = []
     for part in parts:
         try:
             split = shlex.split(part)
         except ValueError:
             split = part.split()
-        while split and re.match(r"^\w+=", split[0]):  # FOO=bar git ...
-            split = split[1:]
-        if split:
-            words.append(split)
+        words += unwrap(split)
     return words
 
 
@@ -114,13 +146,20 @@ def problem(words: list[str], cwd: str | None = None) -> str | None:
 
 
 def main() -> int:
-    """Exit 2 with the reason on stderr to block the command."""
-    data = json.load(sys.stdin)
-    command = data.get("tool_input", {}).get("command", "")
-    for words in segments(command):
-        if reason := problem(words, data.get("cwd")):
-            sys.stderr.write(f"Blocked by .claude/hooks/guard-git.py: {reason}\n")
-            return 2
+    """Exit 2 with the reason on stderr to block the command.
+
+    Only exit 2 blocks, so a crash would let the command through: block then too.
+    """
+    try:
+        data = json.load(sys.stdin)
+        command = data.get("tool_input", {}).get("command", "")
+        reasons = (problem(words, data.get("cwd")) for words in segments(command))
+        reason = next((r for r in reasons if r), None)
+    except Exception as err:  # noqa: BLE001
+        reason = f"the check itself failed ({err!r}), so the command is blocked to be safe."
+    if reason:
+        sys.stderr.write(f"Blocked by .claude/hooks/guard-git.py: {reason}\n")
+        return 2
     return 0
 
 

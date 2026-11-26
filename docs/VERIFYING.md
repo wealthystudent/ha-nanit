@@ -46,10 +46,12 @@ linters only run in CI. A `fail` makes the result `fail`, and the output
 ends with how to fix each problem.
 
 The receipt is the fenced block that starts with `ha-nanit verify <commit>`.
-Paste it into the PR unchanged. `PR Metadata` checks that its commit is in the
-PR and that it says `result: pass`. It warns, without failing, when the
-receipt is for an older commit of the PR. Run `just verify` again before you
-ask for review, so reviewers see the receipt for what they review.
+Paste it into the PR unchanged. `PR Metadata` fails when it doesn't say
+`result: pass`. A missing receipt, or one for another commit (an older push,
+or from before a rebase), only warns: CI runs the same checks on the head, so
+a typo fix from GitHub's web editor can still go green. Run `just verify`
+again before you ask for review, so reviewers see the receipt for what they
+review.
 
 ## The live test
 
@@ -57,7 +59,8 @@ Tests prove the code does what the tests say. A live test proves it does what
 users need, on the hardware they have. Write it under `Live test:` in the PR:
 where you ran it (`just dev` or your own Home Assistant, and its version), the
 device and firmware, what you did and what you saw. Add screenshots and log
-lines where they help.
+lines where they help. Start on the same line as `Live test:` (a bullet or
+quote is fine), or put it under a `### Live test` heading.
 
 What it must show depends on the areas the change touches. `just verify` and
 the `PR Metadata` job summary list them for each PR. "Needs" says what the
@@ -100,12 +103,12 @@ them.
 | Check | What | Required |
 |-------|------|----------|
 | `CI OK` | lint, types, both test suites, card and protobuf drift, workflow lint, hassfest | yes |
-| `PR Metadata` | conventional title, `## Changelog`, `## How I tested this` with a filled-in live test and a passing receipt from this PR, `## AI use`, every commit verified by GitHub, no AI co-author trailers | yes |
+| `PR Metadata` | conventional title, `## Changelog`, `## How I tested this` with a filled-in live test and a receipt that passed, `## AI use`, every commit verified by GitHub, no AI co-author trailers | yes |
 
-PRs from bots (Dependabot) skip the testing and AI use sections. Their
-commits still have to be verified. `PR Metadata` runs the checker from the
-PR's base branch, so a PR that changes `tools/verify.py` is checked by the
-rules it would replace.
+PRs from bots (Dependabot) skip the testing and AI use sections, and so do
+PRs opened before these rules (up to #226). Their commits still have to be
+verified. `PR Metadata` runs the checker from the PR's base branch, so a PR
+that changes `tools/verify.py` is checked by the rules it would replace.
 
 ## Git hooks
 
@@ -117,15 +120,18 @@ moment they apply:
 - **pre-push**: every commit you push is signed.
 
 Never skip them with `--no-verify`. A hook that fails tells you how to fix
-the problem.
+the problem. With a global `core.hooksPath`, git uses no repo hooks, so setup
+installs nothing rather than add ha-nanit's hooks to every repo; run `just
+verify branch` before you push instead.
 
 ## For reviewers
 
 - Read the live test against the area table. A missing area, a vague "works
   for me", or a live test the hardware couldn't have run is a reason to ask
   for more.
-- `PR Metadata` already proves the receipt is from this PR and that every
-  commit is verified. CI proves the checks pass on the head commit.
+- `PR Metadata` already proves that every commit is verified, and CI that
+  the checks pass on the head commit. It only warns when the receipt is
+  missing or from another commit; ask for a fresh one when it matters.
 - Rerun `just verify` on the branch only for authors with merged PRs here. A
   newcomer's tests run as you, with your GitHub token in reach (see the
   `review-prs` skill).

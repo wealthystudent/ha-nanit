@@ -112,11 +112,11 @@ def test_complete_description_passes() -> None:
 
 def test_template_fails_with_every_missing_part() -> None:
     template = (ROOT / ".github" / "pull_request_template.md").read_text()
-    errors, _ = verify.pr_body_problems("chore: x", template, [], "someone", [HEAD])
+    errors, warnings = verify.pr_body_problems("chore: x", template, [], "someone", [HEAD])
     text = " ".join(errors)
     assert "'## AI use' is missing or empty" in text
     assert "'Live test:'" in text
-    assert "no `just verify` receipt" in text
+    assert any("no `just verify` receipt" in w for w in warnings)
 
 
 def test_live_test_must_say_something() -> None:
@@ -125,13 +125,36 @@ def test_live_test_must_say_something() -> None:
     assert problems(body(live="not tested live: no camera here"))[0] == []
 
 
-def test_live_test_may_continue_on_the_next_line() -> None:
-    assert problems(body(live="\n\nIn my own HA 2026.11.1 the stream came back."))[0] == []
+@pytest.mark.parametrize(
+    "label",
+    [
+        "- Live test: ran it",
+        "> Live test: ran it",
+        "- **Live test:** ran it",
+        "### Live test\n\nran it",
+    ],
+)
+def test_live_test_label_forms(label: str) -> None:
+    assert problems(body().replace("**Live test:** ", label + "\n\n", 1))[0] == []
 
 
-def test_receipt_from_another_branch_fails() -> None:
-    errors, _ = problems(body(), shas=["c" * 40])
-    assert any("not in this PR" in e for e in errors)
+def test_empty_live_test_is_not_filled_by_a_later_line() -> None:
+    errors, _ = problems(body(live="\n\nScreenshots below."))
+    assert any("'Live test:'" in e for e in errors)
+    errors, _ = problems(body().replace("**Live test:** ", "### Live test\n\n### Notes\n"))
+    assert any("'Live test:'" in e for e in errors)
+
+
+def test_receipt_from_another_commit_only_warns() -> None:
+    errors, warnings = problems(body(), shas=["c" * 40])
+    assert errors == []
+    assert any("not in this PR" in w for w in warnings)
+
+
+def test_missing_receipt_only_warns() -> None:
+    errors, warnings = problems(body().replace(RECEIPT, ""))
+    assert errors == []
+    assert any("no `just verify` receipt" in w for w in warnings)
 
 
 def test_receipt_for_an_older_commit_warns() -> None:
@@ -160,9 +183,9 @@ def test_live_label_inside_a_code_block_does_not_count() -> None:
 
 def test_receipt_must_be_in_a_closed_code_block() -> None:
     unfenced = body().replace("```text\n", "").replace("result: pass\n```", "result: pass")
-    assert any("no `just verify` receipt" in e for e in problems(unfenced)[0])
+    assert any("no `just verify` receipt" in w for w in problems(unfenced)[1])
     unclosed = body().replace("result: pass\n```", "result: pass")
-    assert any("no `just verify` receipt" in e for e in problems(unclosed)[0])
+    assert any("no `just verify` receipt" in w for w in problems(unclosed)[1])
 
 
 def test_longer_fences_work() -> None:
@@ -172,12 +195,14 @@ def test_longer_fences_work() -> None:
     assert any("'Live test:'" in e for e in problems(hidden)[0])
 
 
-def test_local_run_only_warns_about_an_outdated_receipt() -> None:
+def test_local_run_only_warns_about_a_failed_receipt() -> None:
+    failed = body().replace("result: pass", "result: fail")
     errors, warnings = verify.pr_body_problems(
-        "fix: x", body(), [], "someone", ["c" * 40], receipt_required=False
+        "fix: x", failed, [], "someone", ["c" * 40], new_receipt=True
     )
     assert errors == []
-    assert any("not in this PR" in w for w in warnings)
+    assert any("not in this PR" in w and "replace it" in w for w in warnings)
+    assert any("result: pass" in w for w in warnings)
 
 
 def test_bots_skip_the_written_sections() -> None:
@@ -199,6 +224,10 @@ def test_title_and_changelog_rules_still_apply() -> None:
     "line",
     [
         "Co-Authored-By: Claude <noreply@anthropic.com>",
+        "Co-authored-by: Claude Opus 5 <claude@example.com>",
+        "Co-authored-by: Claude Sonnet 4.5 <noreply@example.com>",
+        "Co-authored-by: Sisyphus <clio-agent@sisyphuslabs.ai>",
+        "Ultraworked with [Sisyphus](https://github.com/code-yeongyu/oh-my-opencode)",
         "Co-authored-by: Copilot <175728472+Copilot@users.noreply.github.com>",
         "co-authored-by: codex <codex@openai.com>",
         "Co-authored-by: Cursor Agent <cursoragent@cursor.com>",
@@ -216,6 +245,7 @@ def test_ai_attribution_is_found(line: str) -> None:
     [
         "fix: x\n\nCo-authored-by: Jordan <com6056@gmail.com>",
         "fix: x\n\nCo-authored-by: Claudette Smith <claudette@example.com>",
+        "fix: x\n\nCo-authored-by: Claude Monet <claude@example.com>",
         "fix: x\n\nCo-authored-by: Devin Smith <devin@example.com>",
         "fix: x\n\nCo-authored-by: Jules Martin <jules@example.org>",
         "fix: x\n\nCo-authored-by: Sam Altwork <sam@openai.com>",
@@ -278,6 +308,7 @@ def _run_pr(
     tmp_path: Path,
     commits: list[dict],
     text: str,
+    number: str = "300",
 ) -> int:
     def fake_api(url: str, token: str) -> list:
         return commits if "/commits" in url else [{"filename": "custom_components/nanit/sensor.py"}]
@@ -285,7 +316,7 @@ def _run_pr(
     monkeypatch.setattr(verify, "_api", fake_api)
     for key, value in {
         "GITHUB_REPOSITORY": "wealthystudent/ha-nanit",
-        "PR_NUMBER": "1",
+        "PR_NUMBER": number,
         "GH_TOKEN": "t",
         "PR_TITLE": "fix: x",
         "PR_BODY": text,
@@ -331,6 +362,18 @@ def test_ci_fails_when_the_head_moved(
     assert "moved to a new head" in capsys.readouterr().out
 
 
+def test_ci_holds_older_prs_to_the_old_check(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    old_body = "## Changelog\n\nThe sensor works.\n"
+    commits = [_commit(HEAD, True)]
+    assert _run_pr(monkeypatch, tmp_path, commits, old_body, str(verify.LEGACY_LAST_PR)) == 0
+    assert _run_pr(monkeypatch, tmp_path, commits, old_body) == 1
+    unsigned = [_commit(HEAD, False, "unsigned")]
+    assert _run_pr(monkeypatch, tmp_path, unsigned, old_body, "1") == 1
+    assert "it isn't signed" in capsys.readouterr().out
+
+
 def test_ci_rejects_ai_trailers_in_commits(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -367,9 +410,48 @@ def test_ci_rejects_ai_trailers_in_commits(
         ("git commit --no-gpg-sign -m 'fix: x'", True),
     ],
 )
-def test_guard(command: str, blocked: bool) -> None:
-    reasons = [guard.problem(words) for words in guard.segments(command)]
+def test_guard(command: str, blocked: bool, tmp_path: Path) -> None:
+    import subprocess
+
+    # On a feature branch, so implicit pushes pass wherever the tests run.
+    subprocess.run(["git", "init", "-q", "-b", "fix/x", str(tmp_path)], check=True)
+    reasons = [guard.problem(words, str(tmp_path)) for words in guard.segments(command)]
     assert any(reasons) is blocked
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "timeout 120 git push --force",
+        "timeout -k 5 60 git push --force",
+        "env git push --force",
+        "env -u X FOO=1 git push --force",
+        "nice -n 5 git push --force",
+        "/usr/bin/git push --force",
+        "sh -c 'git push --force'",
+        'bash -c "cd x && git push origin +fix/x"',
+        "(git push --force)",
+        'echo "$(git push --force)"',
+    ],
+)
+def test_guard_sees_through_wrappers(command: str) -> None:
+    assert any(guard.problem(words, "/") for words in guard.segments(command)), command
+
+
+def test_guard_blocks_when_it_cannot_check(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import io
+
+    missing = tmp_path / "missing"
+    event = {"tool_input": {"command": f"git -C {missing} push"}, "cwd": str(tmp_path)}
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(event)))
+    assert guard.main() == 2
+    monkeypatch.setattr("sys.stdin", io.StringIO("not json"))
+    assert guard.main() == 2
+    assert "check itself failed" in capsys.readouterr().err
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"tool_input": {"command": "ls"}})))
+    assert guard.main() == 0
 
 
 def test_guard_blocks_an_implicit_push_from_main(tmp_path: Path) -> None:
@@ -445,3 +527,21 @@ def test_pre_push_needs_upstream_main(
     # Deleting a branch, or a push with nothing to send, needs no main.
     assert verify.cmd_pre_push("origin", [f"(delete) {'0' * 40} refs/heads/x {'a' * 40}"]) == 0
     assert verify.cmd_pre_push("origin", []) == 0
+
+
+def test_install_hooks_stays_out_of_a_shared_hooks_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import subprocess
+
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "gitconfig"))
+    repo, shared = tmp_path / "repo", tmp_path / "shared-hooks"
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+    monkeypatch.setattr(verify, "ROOT", repo)
+    subprocess.run(["git", "config", "--global", "core.hooksPath", str(shared)], check=True)
+    assert verify.cmd_install_hooks() == 1
+    assert "core.hooksPath is set" in capsys.readouterr().out
+    assert not (shared / "pre-push").exists()
+    subprocess.run(["git", "config", "--global", "--unset", "core.hooksPath"], check=True)
+    assert verify.cmd_install_hooks() == 0
+    assert (repo / ".git" / "hooks" / "pre-push").exists()

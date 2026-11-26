@@ -27,9 +27,10 @@ jobs:
       contents: read
       pull-requests: read # list the PR's commits and their signatures
     steps:
-      # The checker comes from the base branch, not the PR, so a PR can't
-      # change the rules it is checked by. A PR that edits tools/verify.py
-      # is checked by the base's copy until it merges.
+      # The checker comes from the base branch, so a PR that edits
+      # tools/verify.py is checked by the base's copy until it merges. This
+      # workflow file still comes from the PR, so moving the check to a
+      # protected workflow is a follow-up.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.base.sha }}

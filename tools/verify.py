@@ -46,7 +46,12 @@ BRANCH_RE = re.compile(r"^(feat|fix|perf|refactor|docs|test|chore|ci|build|rever
 EXEMPT_SUBJECT_PREFIXES = ("fixup! ", "squash! ", "amend! ", "Merge ", 'Revert "')
 # AI tools by the full identity they sign co-author trailers with, so a
 # person called Devin, or one with an OpenAI address, is never mistaken for one.
-AI_EMAILS = {"noreply@anthropic.com", "cursoragent@cursor.com", "noreply@aider.chat"}
+AI_EMAILS = {
+    "noreply@anthropic.com",
+    "cursoragent@cursor.com",
+    "noreply@aider.chat",
+    "clio-agent@sisyphuslabs.ai",
+}
 AI_GITHUB_LOGINS = {
     "copilot",
     "copilot-swe-agent[bot]",
@@ -58,16 +63,27 @@ AI_GITHUB_LOGINS = {
     "cursor[bot]",
 }
 GITHUB_NOREPLY_RE = re.compile(r"^(?:\d+\+)?(.+)@users\.noreply\.github\.com$", re.I)
+# "Claude Opus 5" and "Claude Sonnet 4.5" are how Claude signs with its model name.
 AI_NAME_RE = re.compile(
-    r"^(?:claude(?: code)?|(?:github )?copilot|codex|chatgpt|cursor agent|aider \(.*\))$", re.I
+    r"^(?:claude(?: code| (?:opus|sonnet|haiku|fable)(?: [\d.]+)?)?|(?:github )?copilot|codex"
+    r"|chatgpt|cursor agent|aider \(.*\)|sisyphus)$",
+    re.I,
 )
 AI_TOOLS = r"\b(?:claude|copilot|codex|chatgpt|gemini|cursor|aider|devin|jules|windsurf)\b"
 TRAILER_RE = re.compile(r"^co-authored-by:\s*(.*?)\s*(<[^>]*>)?\s*$", re.I)
 # Only footer lines, never the subject: "docs: explain logs generated with
 # Cursor" is fine, "Generated with [Claude Code](...)" in a footer is not.
-AI_GENERATED_RE = re.compile(rf"^\W*generated (?:with|by)\b.*{AI_TOOLS}", re.I)
+AI_GENERATED_RE = re.compile(
+    rf"^\W*(?:generated (?:with|by)\b.*{AI_TOOLS}|ultraworked with\b.*\bsisyphus\b)", re.I
+)
 RECEIPT_RE = re.compile(r"^ha-nanit verify ([0-9a-f]{7,40})\b")
-LIVE_RE = re.compile(r"^[*_ \t]*live test[*_ \t]*:[*_ \t]*(.*)$", re.I | re.M | re.S)
+# "Live test: ..." on one line, also as a bullet, quote or bold label. A
+# "### Live test" heading takes the lines under it instead.
+LIVE_RE = re.compile(r"^[-*_>#\s]*live test[*_ \t]*:[*_ \t]*(.*)$", re.I | re.M)
+LIVE_HEADING_RE = re.compile(r"^#+[ \t]*live test[ \t]*:?[ \t]*$", re.I | re.M)
+# PRs opened before the testing and AI use sections existed keep the old
+# title and changelog check; signatures and AI credit apply to all.
+LEGACY_LAST_PR = 226
 SIGNING_DOCS = "CONTRIBUTING.md#signed-commits"
 STATUS_ORDER = ("fail", "warn", "ci", "skip", "pass")
 
@@ -250,8 +266,12 @@ def split_fences(text: str) -> tuple[str, list[list[str]]]:
 
 
 def live_text(testing: str) -> str:
-    """The text after 'Live test:' outside code blocks."""
-    match = LIVE_RE.search(split_fences(testing)[0])
+    """The text after 'Live test:', or under a 'Live test' heading, outside code blocks."""
+    outside = split_fences(testing)[0]
+    if heading := LIVE_HEADING_RE.search(outside):
+        rest = outside[heading.end() :]
+        return re.split(r"^#", rest, maxsplit=1, flags=re.M)[0].strip()
+    match = LIVE_RE.search(outside)
     return match.group(1).strip() if match else ""
 
 
@@ -271,13 +291,15 @@ def pr_body_problems(
     author: str,
     shas: list[str],
     *,
-    receipt_required: bool = True,
+    new_receipt: bool = False,
 ) -> tuple[list[str], list[str]]:
     """Check a PR's title and description. Return (errors, warnings).
 
-    shas are the PR's commits, oldest first, so the last is its head. With
-    receipt_required=False (`just verify`, which prints the replacement) a
-    missing or outdated receipt is only a warning.
+    shas are the PR's commits, oldest first, so the last is its head. A
+    missing receipt, or one for another commit, only warns: CI runs the same
+    checks on the head, and a web edit or a rebase shouldn't need a local
+    setup. With new_receipt (`just verify`, which prints the replacement) a
+    receipt that didn't pass only warns too.
     """
     errors = release_notes.pr_errors(title, body, labels)
     warnings: list[str] = []
@@ -302,17 +324,17 @@ def pr_body_problems(
             "`just verify` lists what this change needs."
         )
 
-    receipt_errors: list[str] = []
+    receipt_problems: list[str] = []  # warnings in CI, except a receipt that didn't pass
     found = receipt_block(testing)
     if not found:
-        receipt_errors.append(
+        receipt_problems.append(
             "'## How I tested this' has no `just verify` receipt. Run `just verify` on the "
             "PR's head and paste the block it prints, unchanged."
         )
     else:
         sha, lines = found
         if shas and not any(s.startswith(sha) for s in shas):
-            receipt_errors.append(
+            receipt_problems.append(
                 f"The receipt is for commit {sha}, which is not in this PR. Run `just verify` "
                 "on the PR's head and paste the new receipt."
             )
@@ -322,13 +344,15 @@ def pr_body_problems(
                 "again and replace it when the change is done."
             )
         if [line for line in lines if line.startswith("result:")] != ["result: pass"]:
-            receipt_errors.append(
-                "The receipt doesn't say 'result: pass'. Fix what failed and run it again."
-            )
-    if receipt_required:
-        errors += receipt_errors
+            failed = "The receipt doesn't say 'result: pass'. Fix what failed and run it again."
+            if new_receipt:
+                receipt_problems.append(failed)
+            else:
+                errors.append(failed)
+    if not new_receipt:
+        warnings += receipt_problems
     else:
-        warnings += [f"{e} (replace it with the receipt below)" for e in receipt_errors]
+        warnings += [f"{p} (replace it with the receipt below)" for p in receipt_problems]
     return errors, warnings
 
 
@@ -476,7 +500,7 @@ def pr_check(commits: list[str], *, full: bool) -> list[Check]:
         [label["name"] for label in pr["labels"]],
         pr["author"]["login"],
         commits,
-        receipt_required=not full,
+        new_receipt=full,
     )
     head = git("rev-parse", "HEAD")
     if pr["headRefOid"] != head:
@@ -756,6 +780,14 @@ exit 0
 
 def cmd_install_hooks() -> int:
     """Install the native pre-push hook, which needs every ref git pushes."""
+    hooks_path = run("git", "config", "--get", "core.hooksPath").stdout.strip()
+    if hooks_path:
+        print(
+            f"core.hooksPath is set ({hooks_path}), so a hook there would run for every repo "
+            "that uses it, and nothing was installed. Unset it and run `just setup` again, or "
+            "run `just verify branch` before you push; CI checks the signatures either way."
+        )
+        return 1
     hooks = Path(git("rev-parse", "--git-path", "hooks"))
     hook = (hooks if hooks.is_absolute() else ROOT / hooks) / "pre-push"
     if hook.exists():
@@ -863,13 +895,15 @@ def cmd_pr() -> int:
             break
 
     expected = int(env.get("PR_COMMITS") or 0)
-    errors, warnings = pr_body_problems(
-        env.get("PR_TITLE", ""),
-        env.get("PR_BODY", ""),
-        json.loads(env.get("PR_LABELS", "[]")),
-        env.get("PR_AUTHOR", ""),
-        [str(c["sha"]) for c in commits],
-    )
+    title, body = env.get("PR_TITLE", ""), env.get("PR_BODY", "")
+    labels = json.loads(env.get("PR_LABELS", "[]"))
+    if int(number) <= LEGACY_LAST_PR:
+        errors, warnings = release_notes.pr_errors(title, body, labels), []
+        print(f"#{number} is from before the testing and AI use sections, so they're optional.")
+    else:
+        errors, warnings = pr_body_problems(
+            title, body, labels, env.get("PR_AUTHOR", ""), [str(c["sha"]) for c in commits]
+        )
     head_sha = env.get("PR_HEAD_SHA", "")
     if head_sha and (not commits or commits[-1]["sha"] != head_sha):
         errors.append(

@@ -657,8 +657,12 @@ class NanitCareLogCalendar(CoordinatorEntity[NanitCareLogCoordinator], CalendarE
         failed = False
         rows: tuple[_Row, ...] = ()
         try:
-            # Shielded: a caller giving up doesn't cancel the fetch others share.
-            rows = await asyncio.shield(task)
+            # A caller giving up doesn't cancel the fetch others share:
+            # ``asyncio.wait`` leaves it running. Not ``asyncio.shield``: some
+            # Python versions report a shielded future's failure to the event
+            # loop's exception handler once its waiter was cancelled.
+            await asyncio.wait([task])
+            rows = task.result()
         except HomeAssistantError:
             failed = True
         except asyncio.CancelledError:

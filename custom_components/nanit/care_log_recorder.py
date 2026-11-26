@@ -679,12 +679,19 @@ class _Sync:
         verified = False
         try:
             try:
-                await asyncio.shield(verify)
+                # ``asyncio.wait`` leaves the verification running when this
+                # task is cancelled. Not ``asyncio.shield``: some Python
+                # versions report a shielded future's failure to the event
+                # loop's exception handler once its waiter was cancelled, and
+                # a verification that fails after a stop is expected here.
+                await asyncio.wait([verify])
             except asyncio.CancelledError:
                 # Let the batch settle first (bounded by SETTLE_TIMEOUT).
                 await asyncio.wait([verify])
                 verified = not verify.cancelled() and verify.exception() is None
                 raise
+            try:
+                verify.result()
             except CareLogStatisticsError as err:
                 raise CareLogWriteUnknownError(
                     "A batch of care log statistics was sent but not verified"

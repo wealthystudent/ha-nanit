@@ -2270,6 +2270,38 @@ async def test_a_caller_giving_up_does_not_stop_the_shared_fetch(
     assert await hass.config_entries.async_unload(entry.entry_id)
 
 
+async def test_a_shared_fetch_that_fails_after_a_caller_gave_up_is_not_reported(
+    hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory
+) -> None:
+    """The caller still waiting gets the failure, and nobody else does.
+
+    Some Python versions report a shielded future's failure to the event
+    loop's exception handler once its waiter was cancelled. The ``hass``
+    fixture fails a test in which anything reaches that handler.
+    """
+    freezer.move_to(NOW)
+    fake = FakeNanit()
+    _day_of_entries(fake)
+    entry, calendar = await _one_calendar(hass, client, fake)
+    fake.gate = asyncio.Event()
+    fake.error = NanitConnectionError("Calendar fetch failed: TimeoutError")
+
+    first = hass.async_create_task(_events(hass, calendar, RANGE_START, RANGE_END))
+    second = hass.async_create_task(_events(hass, calendar, RANGE_START, RANGE_END))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    first.cancel()
+    fake.gate.set()
+
+    with pytest.raises(HomeAssistantError):
+        await second
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    assert len(fake.calendar_calls()) == 1
+    fake.error = None
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
 async def test_cached_answers_expire_after_five_minutes(
     hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory
 ) -> None:

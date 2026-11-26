@@ -2764,6 +2764,28 @@ async def test_capabilities_drop_webrtc_on_cloud_and_regain_it_on_local(
     assert StreamType.WEB_RTC in entity.camera_capabilities.frontend_stream_types
 
 
+async def test_a_trial_takes_webrtc_off_before_the_route_goes_back_to_cloud(
+    hass: HomeAssistant,
+) -> None:
+    # A provider registered while the cooldown had lapsed (a host suspend),
+    # then a watched stream starts a trial: the route is cloud again.
+    entity, _local = _routed_entity(hass)
+    provider = _FakeGo2rtc()
+    entity._webrtc_provider = provider
+    with (
+        _offers(provider),
+        patch.object(NanitCameraEntity, "async_write_ha_state"),
+        patch.object(NanitCameraEntity, "_async_local_trial", AsyncMock()),
+    ):
+        entity._start_local_trial()
+        assert entity._webrtc_provider is None
+        assert entity.camera_capabilities.frontend_stream_types == {StreamType.HLS}
+        await hass.async_block_till_done()
+    assert provider.unregistered == 1
+    assert provider.sources == []
+    assert entity.extra_state_attributes == {"stream_route": "cloud"}
+
+
 async def test_provider_is_refused_on_the_cloud_route(hass: HomeAssistant) -> None:
     entity, local = _routed_entity(hass)
     local.start_cooldown("test")

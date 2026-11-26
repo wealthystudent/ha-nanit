@@ -1564,6 +1564,10 @@ class NanitCameraEntity(NanitEntity, Camera):
             return
         local.cooldown_until = time.monotonic() + _LOCAL_TRIAL_HOLD
         self._update_local_accepting()
+        # The route is cloud again for the trial, so WebRTC goes first, as on
+        # any move to cloud. A provider registered while the cooldown had
+        # lapsed (a host suspend) would otherwise be offered the cloud URL.
+        self._write_route_state()
         # Ends the hold if the trial gives up without an outcome (the relay
         # reconnecting), and is replaced by a miss's own cooldown.
         self._schedule_local_cooldown_end(_LOCAL_TRIAL_HOLD)

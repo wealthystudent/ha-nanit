@@ -1,10 +1,10 @@
 """An opaque, stable code for a baby, used where a raw baby uid must not appear.
 
-The code names things that outlive a single run: the care log calendar's
-unique id and the care log reader's name in debug lines. The same baby gets
-the same code on every Home Assistant, so re-adding the integration
-continues where it left off. It is a one-way hash of the uid alone: no
-camera id, email or display name goes in.
+The code names things that outlive a single run: part of the care log
+sensors' and calendar's unique ids, and the care log reader's name in
+debug lines. The same baby gets the same code on every Home Assistant. It
+is a one-way hash of the uid alone: no camera id, email or display name
+goes in.
 
 The input is fixed and must never change, or every name built on it moves:
 

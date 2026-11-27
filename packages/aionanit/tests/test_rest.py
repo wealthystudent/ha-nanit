@@ -1506,13 +1506,31 @@ class TestGetCalendar:
             (" 7 ", 7),
             ("0", 0),
             ("99999999", NanitRateLimited.MAX_RETRY_AFTER),
+            ("99999999999", NanitRateLimited.MAX_RETRY_AFTER),
+            ("1" + "0" * 63, NanitRateLimited.MAX_RETRY_AFTER),
+            # Digits only: any length, even past the length limit for dates.
+            ("9" * 65, NanitRateLimited.MAX_RETRY_AFTER),
+            ("0" * 70 + "7", 7),
+            ("  " + "9" * 65 + "  ", NanitRateLimited.MAX_RETRY_AFTER),
+            ("  120  ", 120),
             ("-5", None),
+            ("+5", None),
             ("1.5", None),
+            ("", None),
             ("soon", None),
             ("x" * 100, None),
             ("Wed, 21 Oct 2015 07:28:00 GMT", 0),
             ("Fri, 31 Dec 9999 23:59:59 GMT", NanitRateLimited.MAX_RETRY_AFTER),
-            ("Wed, 21 Oct 2015 07:28:00 -0000", None),
+            # An HTTP date is GMT: "-0000" is read as GMT, and asctime as UTC.
+            ("Wed, 21 Oct 2015 07:28:00 -0000", 0),
+            ("Fri, 31 Dec 9999 23:59:59 -0000", NanitRateLimited.MAX_RETRY_AFTER),
+            ("Sun Nov  6 08:49:37 1994", 0),
+            ("Fri Dec 31 23:59:59 9999", NanitRateLimited.MAX_RETRY_AFTER),
+            # An unknown zone is not a usable date, whatever follows it.
+            ("Sun, 06 Nov 1994 08:49:37 XYZ", None),
+            ("Fri, 31 Dec 9999 23:59:59 XYZ", None),
+            ("Fri, 31 Dec 9999 23:59:59 XYZ -0000", None),
+            ("Fri, 31 Dec 9999 23:59:59 XYZ GMT", None),
         ],
     )
     async def test_get_calendar_throttled_keeps_a_bounded_retry_after(
@@ -1544,6 +1562,43 @@ class TestGetCalendar:
 
         assert err.value.retry_after is not None
         assert 590 <= err.value.retry_after <= 601
+
+    async def test_get_calendar_throttled_counts_an_asctime_date_from_now_as_utc(
+        self, client: NanitRestClient
+    ) -> None:
+        """The asctime form, such as "Sun Nov  6 08:49:37 1994", has no zone: it is GMT."""
+        moment = datetime.now(UTC) + timedelta(seconds=600)
+        header = f"{moment:%a %b} {moment.day:2d} {moment:%H:%M:%S %Y}"
+        with mock_api() as m:
+            m.get(CALENDAR_URL, status=429, headers={"Retry-After": header})
+
+            with pytest.raises(NanitRateLimited) as err:
+                await self._fetch(client)
+
+        assert err.value.retry_after is not None
+        assert 590 <= err.value.retry_after <= 601
+
+    async def test_get_calendar_throttled_reads_no_wait_from_a_future_date_in_an_unknown_zone(
+        self, client: NanitRestClient
+    ) -> None:
+        moment = datetime.now(UTC) + timedelta(seconds=600)
+        header = format_datetime(moment, True).replace("GMT", "XYZ")
+        with mock_api() as m:
+            m.get(CALENDAR_URL, status=429, headers={"Retry-After": header})
+
+            with pytest.raises(NanitRateLimited) as err:
+                await self._fetch(client)
+
+        assert err.value.retry_after is None
+
+    @pytest.mark.parametrize(
+        "value",
+        # Arabic-Indic digits, a fullwidth digit, and an ASCII digit before an Arabic-Indic one.
+        [chr(0x661) + chr(0x662), chr(0xFF15), "1" + chr(0x660)],
+        ids=["arabic_indic", "fullwidth", "mixed"],
+    )
+    def test_retry_after_reads_non_ascii_digits_as_no_wait(self, value: str) -> None:
+        assert rest_module._retry_after(value) is None
 
     @pytest.mark.parametrize(
         "method", ["async_get_calendar", "async_get_calendar_result", "async_get_calendar_details"]

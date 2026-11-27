@@ -559,19 +559,20 @@ class NanitCameraEntity(NanitEntity, Camera):
     async def _async_invalidate_stream(self, reason: str) -> None:
         """Discard the cached stream, then stop it.
 
-        The cache slot is cleared before the (potentially multi-second)
-        stop so a viewer connecting mid-stop gets a fresh stream instead
-        of the dying one.
+        Everything is cleared before the (potentially multi-second) stop, so
+        a viewer connecting mid-stop gets a fresh stream instead of the dying
+        one, and the reset does not clear what that fresh stream set up.
         """
         old_stream = self.stream
         if old_stream is not None:
             _LOGGER.debug("Invalidating cached stream after %s", reason)
             self.stream = None
-            await self._stop_discarded_stream(old_stream)
         self._cached_stream_source = None
         self._stream_source_started_at = 0.0
         self._cancel_stream_timers()
         self._close_local_subscribers()
+        if old_stream is not None:
+            await self._stop_discarded_stream(old_stream)
 
     @staticmethod
     def _switch_stream_source(stream: Any, source: str) -> None:

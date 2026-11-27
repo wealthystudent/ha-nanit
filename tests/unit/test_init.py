@@ -637,6 +637,7 @@ def _migration_hub(
     camera_speaker_pairs=None,
     unpaired_speakers=None,
     manual_speakers=None,
+    unpaired_resolved=None,
 ) -> SimpleNamespace:
     babies = babies if babies is not None else [_MIG_BABY]
     speaker_uid_map = speaker_uid_map if speaker_uid_map is not None else {"baby_4": "spk_4"}
@@ -652,6 +653,7 @@ def _migration_hub(
         camera_speaker_pairs=camera_speaker_pairs,
         unpaired_speakers=unpaired_speakers if unpaired_speakers is not None else {},
         manual_speakers=manual_speakers if manual_speakers is not None else {},
+        unpaired_resolved=bool(babies) if unpaired_resolved is None else unpaired_resolved,
         unpaired_from_map=set(),
     )
 
@@ -1027,7 +1029,7 @@ async def test_empty_speaker_map_from_a_collapse_is_not_persisted(hass: HomeAssi
 
 
 async def test_empty_babies_does_not_erase_stored_unpaired(hass: HomeAssistant) -> None:
-    """With no babies the lookup never ran, so its empty result is not written."""
+    """When setup returned before the lookup ran, its empty result is not written."""
     entry = _migration_entry(hass)
     hass.config_entries.async_update_entry(
         entry, data={**entry.data, "unpaired_speakers": {"spk_9": "Living Room"}}
@@ -1036,3 +1038,21 @@ async def test_empty_babies_does_not_erase_stored_unpaired(hass: HomeAssistant) 
     await _async_migrate_sl_identities(hass, entry, _migration_hub(babies=[], speaker_uid_map={}))
 
     assert entry.data["unpaired_speakers"] == {"spk_9": "Living Room"}
+
+
+async def test_unpaired_found_without_babies_is_persisted(hass: HomeAssistant) -> None:
+    """A Sound + Light-only account has no babies, but its lookup ran, so it's saved."""
+    entry = _migration_entry(hass)
+
+    await _async_migrate_sl_identities(
+        hass,
+        entry,
+        _migration_hub(
+            babies=[],
+            speaker_uid_map={},
+            unpaired_speakers={"L151ABC1234567": "Nursery"},
+            unpaired_resolved=True,
+        ),
+    )
+
+    assert entry.data["unpaired_speakers"] == {"L151ABC1234567": "Nursery"}

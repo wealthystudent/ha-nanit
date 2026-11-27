@@ -155,6 +155,8 @@ class NanitHub:
         self._unpaired_speakers: dict[str, str] = {}
         self._live_unpaired_uids: set[str] = set()
         self._unpaired_from_map: set[str] = set()
+        self._unpaired_resolved = False
+        self._unpaired_lookup_failed = False
         self._manual_speakers: dict[str, str] = {}
         self._sound_lights: dict[str, NanitSoundLight] = {}
         self._unsubscribe_tokens: Callable[[], None] | None = None
@@ -211,6 +213,11 @@ class NanitHub:
         return self._manual_speakers
 
     @property
+    def unpaired_resolved(self) -> bool:
+        """Return whether this setup ran the unpaired-machine lookup."""
+        return self._unpaired_resolved
+
+    @property
     def unpaired_from_map(self) -> set[str]:
         """Return speakers this setup moved out of the speaker map as unpaired."""
         return self._unpaired_from_map
@@ -265,15 +272,18 @@ class NanitHub:
             else {}
         )
 
-        if not babies and not self._manual_speakers:
-            _LOGGER.warning("No babies found on Nanit account")
-            return
-
         speaker_uid_map = await self._async_resolve_speaker_uids(babies)
         self._speaker_uid_map = speaker_uid_map
         self._unpaired_speakers = await self._async_resolve_unpaired_speakers(
             babies, speaker_uid_map
         )
+
+        if not babies and not self._unpaired_speakers and not self._manual_speakers:
+            if self._unpaired_lookup_failed:
+                # Nothing stored to fall back on: retry instead of loading empty.
+                raise NanitConnectionError("Could not look up Sound & Light Machines")
+            _LOGGER.warning("No babies or Sound & Light Machines found on Nanit account")
+            return
         # NOTE: the resolved map is persisted by the identity migration in
         # __init__.py, not here — persisting it early would overwrite the
         # legacy camera-keyed map before the migration has used it.
@@ -715,6 +725,11 @@ class NanitHub:
             break
 
         if found is None:
+            # No baby to ask (an account set up only in the Nanit Sound + Light
+            # app has none) or the view failed: GET /speakers needs no baby.
+            found = await self._async_lookup_account_speakers()
+
+        if found is None:
             if stored:
                 _LOGGER.warning(
                     "Could not look up unpaired Sound & Light Machines, "
@@ -730,7 +745,28 @@ class NanitHub:
 
         paired = set(speaker_uid_map.values())
         merged = {**stored, **(found or {})}
+        self._unpaired_resolved = True
+        self._unpaired_lookup_failed = found is None
         return {uid: name for uid, name in merged.items() if uid not in paired}
+
+    async def _async_lookup_account_speakers(self) -> dict[str, str] | None:
+        """Return machines no baby is attached to, from GET /speakers.
+
+        None when the lookup fails, so the caller falls back to the
+        persisted list just as it does when the pairing view fails.
+        """
+        try:
+            speakers = await self._client.async_get_account_speakers()
+        except NanitError as err:
+            # Including auth errors: an optional lookup must never force a reauth.
+            _LOGGER.debug("Account speakers lookup failed: %s", err)
+            return None
+        found: dict[str, str] = {}
+        for speaker in speakers:
+            uid = _clean_uid(speaker.uid)
+            if uid is not None and not speaker.attached_to_baby:
+                found[uid] = speaker.name
+        return found
 
     async def _setup_camera(self, baby: Baby) -> None:
         """Create a camera instance and its coordinators for a single baby."""

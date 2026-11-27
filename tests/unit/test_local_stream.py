@@ -2880,6 +2880,36 @@ async def test_preload_register_reads_source_after_a_flip_to_cloud(
     assert entity._webrtc_provider is None
 
 
+async def test_a_register_on_the_local_route_is_handed_the_local_url(
+    hass: HomeAssistant, source_ip: Any
+) -> None:
+    """Only a register that finds the route on cloud is refused a source."""
+    entity, _local = _routed_entity(hass)
+    sources: list[str | None] = []
+
+    class _Preload(_FakeGo2rtc):
+        async def async_register_camera(self, camera: Any) -> None:
+            self.registered += 1
+            sources.append(await camera.stream_source())
+
+    provider = _Preload()
+
+    async def supported(_hass: HomeAssistant, camera: Any) -> _Preload:
+        # Core reads the source while it picks a provider, in the same task.
+        sources.append(await camera.stream_source())
+        return provider
+
+    with (
+        patch(f"{Camera.__module__}.async_get_supported_provider", side_effect=supported),
+        patch.object(NanitCameraEntity, "async_write_ha_state"),
+    ):
+        await entity.async_refresh_providers()
+        await hass.async_block_till_done()
+    assert sources == [FLV_URL, FLV_URL]
+    assert entity._webrtc_provider is provider
+    assert entity._local_register_task is None
+
+
 async def test_provider_is_refused_on_the_cloud_route(hass: HomeAssistant) -> None:
     entity, local = _routed_entity(hass)
     local.start_cooldown("test")

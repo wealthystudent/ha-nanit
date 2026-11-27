@@ -2849,6 +2849,37 @@ async def test_a_missed_trial_registers_no_provider(hass: HomeAssistant, source_
     assert write.called
 
 
+async def test_preload_register_reads_source_after_a_flip_to_cloud(
+    hass: HomeAssistant, source_ip: Any
+) -> None:
+    """go2rtc's register with preload on awaits REST, then reads stream_source()."""
+    entity, local = _routed_entity(hass)
+    local.start_cooldown("test")
+    entity._provider_route = entity._settled_route = entity._published_route = "cloud"
+
+    class _Preload(_FakeGo2rtc):
+        async def async_register_camera(self, camera: Any) -> None:
+            self.registered += 1
+            await self.rest.wait()  # prefs + preload.list()
+            self.sources.append(await camera.stream_source())
+
+    provider = _Preload()
+    provider.rest.clear()
+    with _offers(provider), patch.object(NanitCameraEntity, "async_write_ha_state"):
+        local.cooldown_until = 0.0
+        entity._handle_local_cooldown_end()
+        await asyncio.sleep(0)
+        assert provider.registered == 1
+        entity._fall_back_to_cloud("test")
+        # An HLS view asking in the meantime is another task and gets the cloud.
+        hls_source = await entity.stream_source()
+        provider.rest.set()
+        await hass.async_block_till_done()
+    assert provider.sources == [None], provider.sources
+    assert hls_source == "rtmps://cloud/url"
+    assert entity._webrtc_provider is None
+
+
 async def test_provider_is_refused_on_the_cloud_route(hass: HomeAssistant) -> None:
     entity, local = _routed_entity(hass)
     local.start_cooldown("test")

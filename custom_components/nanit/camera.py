@@ -243,6 +243,9 @@ class NanitCameraEntity(NanitEntity, Camera):
         self._settled_route: str | None = None
         self._published_route: str | None = None
         self._provider_lock = asyncio.Lock()
+        # The task registering a provider for the local route, which may only
+        # be handed the local URL (see stream_source).
+        self._local_register_task: asyncio.Task[Any] | None = None
         self._route_refresh_task: asyncio.Task[None] | None = None
         # Providers taken off the camera at a flip to cloud, still to be told.
         self._detached_providers: list[Any] = []
@@ -286,7 +289,12 @@ class NanitCameraEntity(NanitEntity, Camera):
             route = self._stream_route()
             self._provider_route = route
             old_provider, old_published = self._webrtc_provider, self._published_route
-            await super().async_refresh_providers(write_state=False)
+            if route == "local":
+                self._local_register_task = asyncio.current_task()
+            try:
+                await super().async_refresh_providers(write_state=False)
+            finally:
+                self._local_register_task = None
             if self._stream_route() != route:
                 # Moved to cloud while a provider was being registered for local.
                 self._detach_provider_for_cloud()
@@ -666,6 +674,16 @@ class NanitCameraEntity(NanitEntity, Camera):
         await self._async_wait_for_local_trial(_STREAM_SOURCE_TRIAL_WAIT)
         if (url := self._local_stream_source()) is not None:
             return url
+        # go2rtc's register with preload on reads the source only after its
+        # REST calls, by when a fallback may have moved the route to cloud.
+        # The refresh detaches the provider afterwards, but go2rtc would
+        # already have the cloud stream it panics on. Only the registering
+        # task is refused, so HLS and every other caller still get the cloud.
+        if self._local_register_task is not None and (
+            asyncio.current_task() is self._local_register_task
+        ):
+            _LOGGER.debug("No local stream for camera %s to give go2rtc", self._camera.uid)
+            return None
 
         source = self._cached_stream_source
         source_age = time.monotonic() - self._stream_source_started_at

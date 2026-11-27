@@ -3705,6 +3705,45 @@ async def test_source_switch_during_the_workers_retry_wait_leaves_it_stoppable(
             await hass.async_add_executor_job(thread.join, 2)
 
 
+@pytest.mark.parametrize("preload", [True, False])
+async def test_discarded_stream_ends_its_worker_even_when_preloaded(
+    hass: HomeAssistant, preload: bool
+) -> None:
+    """A reload left preloaded workers retrying the old FLV port for good (#230)."""
+    await async_setup_component(hass, "stream", {})
+    entity = NanitCameraEntity(_push_coordinator(_camera_state()), MagicMock(uid="cam_1"))
+    entity.hass = hass
+
+    def worker(source: str, *args: Any) -> None:
+        raise StreamWorkerError("connection refused")  # the old receiver is gone
+
+    with (
+        patch("homeassistant.components.stream.worker.stream_worker", worker),
+        patch("homeassistant.components.stream._should_retry", return_value=True),
+        patch("homeassistant.components.stream.KeyFrameConverter", MagicMock()),
+        patch("homeassistant.components.stream.STREAM_RESTART_INCREMENT", 0.3),
+    ):
+        stream = Stream(
+            hass, FLV_URL, {}, MagicMock(), MagicMock(preload_stream=preload, orientation=1), None
+        )
+        stream.add_provider("hls")
+        await stream.start()
+        thread = stream._thread
+        assert thread is not None
+        try:
+            async with asyncio.timeout(5):
+                while stream.available:
+                    await asyncio.sleep(0.01)  # the worker is in its retry wait
+            await entity._stop_discarded_stream(stream)
+            assert not thread.is_alive()
+        finally:
+            if hasattr(stream, "_thread_quit"):  # HA before 2026.12
+                stream._thread_quit.set()
+            elif stream._worker_control is not None:
+                stream._worker_control.stop()
+            await hass.async_add_executor_job(thread.join, 2)
+
+
 async def test_source_switch_while_the_worker_runs_restarts_it(hass: HomeAssistant) -> None:
     stream = MagicMock(available=True)
     NanitCameraEntity._switch_stream_source(stream, "rtmps://cloud/url")

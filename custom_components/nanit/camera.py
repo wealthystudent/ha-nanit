@@ -596,10 +596,21 @@ class NanitCameraEntity(NanitEntity, Camera):
             stream.source = source
 
     async def _stop_discarded_stream(self, stream: Any) -> None:
-        """Best-effort cleanup for a stream removed from HA's cache."""
+        """Best-effort cleanup for a stream removed from HA's cache.
+
+        Stream.stop() leaves the worker of a preloaded stream running, since
+        preload keeps it reading with nobody watching. Nothing reads a
+        discarded stream again, so that worker would retry its old URL for
+        good: after a reload, a port that is gone (#230). Stream._stop() ends
+        the worker whatever the preload setting.
+        """
         try:
             async with asyncio.timeout(_STREAM_STOP_TIMEOUT):
                 await stream.stop()
+                settings = getattr(stream, "dynamic_stream_settings", None)
+                stop_worker = getattr(stream, "_stop", None)
+                if getattr(settings, "preload_stream", False) is True and stop_worker is not None:
+                    await stop_worker()
         except TimeoutError:
             _LOGGER.warning(
                 "Timed out after %.0fs stopping discarded Nanit stream",

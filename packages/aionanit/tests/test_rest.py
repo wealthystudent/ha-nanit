@@ -12,7 +12,7 @@ from aionanit.exceptions import (
     NanitConnectionError,
     NanitMfaRequiredError,
 )
-from aionanit.models import Baby, CloudEvent, SpeakerCandidate
+from aionanit.models import AccountSpeaker, Baby, CloudEvent, SpeakerCandidate
 from aionanit.rest import DEFAULT_BASE_URL, NanitRestClient
 
 from .fake_http import FakeSession, mock_api
@@ -22,6 +22,7 @@ REFRESH_URL = f"{DEFAULT_BASE_URL}/tokens/refresh"
 BABIES_URL = f"{DEFAULT_BASE_URL}/babies"
 EVENTS_URL = f"{DEFAULT_BASE_URL}/babies/baby123/messages?limit=20"
 CANDIDATES_URL = f"{DEFAULT_BASE_URL}/babies/baby123/candidates/speakers"
+ACCOUNT_SPEAKERS_URL = f"{DEFAULT_BASE_URL}/speakers"
 DEVICE_TOKEN_URL = f"{DEFAULT_BASE_URL}/speakers/spk001/udtokens"
 
 
@@ -736,3 +737,82 @@ class TestGetSpeakerCandidates:
 
             with pytest.raises(NanitConnectionError):
                 await client.async_get_speaker_candidates("token123", "baby123")
+
+
+def _account_speaker_row(uid: str, name: str | None, attached: object, **extra: object) -> dict:
+    """A /speakers row shaped like the real response (a Sound + Light-only account)."""
+    return {
+        "uid": uid,
+        "name": name,
+        "deleted_at": None,
+        "baby": {"attached_to_baby": attached, "baby": None},
+        "subscription": None,
+        "feature_flags": ["smart_routines_ok_to_wake"],
+        **extra,
+    }
+
+
+class TestGetAccountSpeakers:
+    async def test_parses_attached_and_unattached(self, client: NanitRestClient) -> None:
+        with mock_api() as m:
+            m.get(
+                ACCOUNT_SPEAKERS_URL,
+                payload={
+                    "speakers": [
+                        _account_speaker_row("L151ABC1234567", "Nursery", False),
+                        _account_speaker_row("spk_b", "Bedroom", True),
+                    ]
+                },
+            )
+            speakers = await client.async_get_account_speakers("token123")
+
+        assert speakers == [
+            AccountSpeaker(uid="L151ABC1234567", name="Nursery", attached_to_baby=False),
+            AccountSpeaker(uid="spk_b", name="Bedroom", attached_to_baby=True),
+        ]
+
+    async def test_skips_deleted_and_rows_without_a_uid(self, client: NanitRestClient) -> None:
+        with mock_api() as m:
+            m.get(
+                ACCOUNT_SPEAKERS_URL,
+                payload={
+                    "speakers": [
+                        _account_speaker_row("spk_gone", "Old", False, deleted_at="2026-01-01"),
+                        {"name": "no uid"},
+                        "junk",
+                        _account_speaker_row("spk_b", None, False),
+                    ]
+                },
+            )
+            speakers = await client.async_get_account_speakers("token123")
+
+        assert speakers == [AccountSpeaker(uid="spk_b", name="", attached_to_baby=False)]
+
+    @pytest.mark.parametrize("baby", [None, {}, {"attached_to_baby": None}, "x"])
+    async def test_unclear_attachment_counts_as_attached(
+        self, client: NanitRestClient, baby: object
+    ) -> None:
+        """Only an explicit false makes a machine unattached."""
+        with mock_api() as m:
+            row = {"uid": "spk_a", "name": "A", "baby": baby}
+            m.get(ACCOUNT_SPEAKERS_URL, payload={"speakers": [row]})
+            speakers = await client.async_get_account_speakers("token123")
+
+        assert speakers == [AccountSpeaker(uid="spk_a", name="A", attached_to_baby=True)]
+
+    @pytest.mark.parametrize("payload", [{"speakers": None}, {"devices": []}, ["x"]])
+    async def test_unexpected_shape_is_connection_error(
+        self, client: NanitRestClient, payload: object
+    ) -> None:
+        with mock_api() as m:
+            m.get(ACCOUNT_SPEAKERS_URL, payload=payload)
+
+            with pytest.raises(NanitConnectionError):
+                await client.async_get_account_speakers("token123")
+
+    async def test_unauthorized(self, client: NanitRestClient) -> None:
+        with mock_api() as m:
+            m.get(ACCOUNT_SPEAKERS_URL, status=401)
+
+            with pytest.raises(NanitAuthError):
+                await client.async_get_account_speakers("bad_token")

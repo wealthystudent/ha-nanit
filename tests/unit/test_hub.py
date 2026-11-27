@@ -1466,6 +1466,110 @@ async def test_unpaired_lookup_auth_error_does_not_force_reauth(
     assert hub.unpaired_speakers == {}
 
 
+# ---------------------------------------------------------------------------
+# Account-wide lookup (GET /speakers), for accounts with no baby to ask
+# ---------------------------------------------------------------------------
+
+
+def _account_speaker(uid: str, name: str = "Nursery", attached: bool = False):
+    from aionanit.models import AccountSpeaker
+
+    return AccountSpeaker(uid=uid, name=name, attached_to_baby=attached)
+
+
+async def _setup_hub(hass, mock_nanit_client, entry=None):
+    entry = entry or _make_entry(hass)
+    hub = NanitHub(hass, MagicMock(), entry)
+    sl_patch, coord_patch = _speaker_patches()
+    with sl_patch as sl_cls, coord_patch as coord_cls:
+        coord_cls.return_value = MagicMock(async_setup=AsyncMock())
+        await hub.async_setup()
+    return hub, sl_cls
+
+
+async def test_sound_light_only_account_is_discovered_without_babies(
+    hass: HomeAssistant, mock_nanit_client
+) -> None:
+    """An account set up only in the Sound + Light app has no babies; /speakers finds it."""
+    mock_nanit_client.async_get_babies.return_value = []
+    mock_nanit_client.async_get_account_speakers.return_value = [
+        _account_speaker("L151ABC1234567", "Nursery"),
+        _account_speaker("spk_paired", "Den", attached=True),
+    ]
+    entry = _make_entry(hass, options={"speaker_ips": {"L151ABC1234567": "192.168.1.72"}})
+    hub, sl_cls = await _setup_hub(hass, mock_nanit_client, entry)
+
+    mock_nanit_client.async_get_speaker_candidates.assert_not_awaited()
+    assert set(hub.speaker_data) == {"L151ABC1234567"}
+    assert hub.speaker_data["L151ABC1234567"].baby.name == "Nursery"
+    assert hub.unpaired_speakers == {"L151ABC1234567": "Nursery"}
+    assert hub.unpaired_resolved
+    assert "L151ABC1234567" in hub.live_device_uids
+    assert sl_cls.call_args.kwargs["device_ip"] == "192.168.1.72"
+
+
+async def test_account_lookup_is_the_fallback_when_the_pairing_view_fails(
+    hass: HomeAssistant, mock_nanit_client
+) -> None:
+    mock_nanit_client.async_get_account_speakers.return_value = [_account_speaker("spk_9")]
+    hub, _ = await _setup_with_candidates(hass, mock_nanit_client, NanitConnectionError("500"))
+
+    assert set(hub.speaker_data) == {"spk_5", "spk_9"}
+    assert "spk_9" in hub.live_device_uids
+
+
+async def test_account_lookup_not_used_when_the_pairing_view_answers(
+    hass: HomeAssistant, mock_nanit_client
+) -> None:
+    await _setup_with_candidates(hass, mock_nanit_client, [_candidate("spk_9", "available")])
+
+    mock_nanit_client.async_get_account_speakers.assert_not_awaited()
+
+
+async def test_manual_entry_for_a_discovered_machine_is_set_up_once(
+    hass: HomeAssistant, mock_nanit_client
+) -> None:
+    """A machine added by hand before discovery existed keeps one device."""
+    mock_nanit_client.async_get_babies.return_value = []
+    mock_nanit_client.async_get_account_speakers.return_value = [
+        _account_speaker("L151ABC1234567", "Nursery")
+    ]
+    entry = _make_entry(hass, options={"manual_speakers": {"L151ABC1234567": "My name"}})
+    hub, sl_cls = await _setup_hub(hass, mock_nanit_client, entry)
+
+    assert set(hub.speaker_data) == {"L151ABC1234567"}
+    assert sl_cls.call_count == 1
+
+
+async def test_failed_account_lookup_without_babies_uses_the_stored_list(
+    hass: HomeAssistant, mock_nanit_client
+) -> None:
+    mock_nanit_client.async_get_babies.return_value = []
+    mock_nanit_client.async_get_account_speakers.side_effect = NanitAuthError("nope")
+    entry = _make_entry(hass)
+    hass.config_entries.async_update_entry(
+        entry, data={**entry.data, "unpaired_speakers": {"L151ABC1234567": "Nursery"}}
+    )
+    hub, _ = await _setup_hub(hass, mock_nanit_client, entry)
+
+    assert set(hub.speaker_data) == {"L151ABC1234567"}
+    assert "L151ABC1234567" not in hub.live_device_uids
+
+
+async def test_account_with_nothing_on_it_sets_nothing_up(
+    hass: HomeAssistant, mock_nanit_client
+) -> None:
+    """Only attached machines (whose baby /babies didn't return) means nothing to set up."""
+    mock_nanit_client.async_get_babies.return_value = []
+    mock_nanit_client.async_get_account_speakers.return_value = [
+        _account_speaker("spk_paired", attached=True)
+    ]
+    hub, sl_cls = await _setup_hub(hass, mock_nanit_client)
+
+    assert hub.speaker_data == {}
+    sl_cls.assert_not_called()
+
+
 async def test_unpaired_speaker_failure_keeps_the_rest(
     hass: HomeAssistant, mock_nanit_client
 ) -> None:
@@ -1589,6 +1693,8 @@ async def test_fallback_to_stored_list_warns(
     hass.config_entries.async_update_entry(
         entry, data={**entry.data, "unpaired_speakers": {"spk_9": "Living Room"}}
     )
+    # Both lookups fail, so only the stored list is left.
+    mock_nanit_client.async_get_account_speakers.side_effect = NanitConnectionError("HTTP 500")
     await _setup_with_candidates(
         hass, mock_nanit_client, NanitConnectionError("HTTP 500"), entry=entry
     )

@@ -169,6 +169,19 @@ class SpeakerCandidate:
 
 
 @dataclass(frozen=True)
+class AccountSpeaker:
+    """A Sound & Light Machine as GET /speakers lists it.
+
+    Account-wide and needs no baby, so it also finds a machine set up only
+    in the Nanit Sound + Light app, on an account with no baby at all.
+    """
+
+    uid: str
+    name: str
+    attached_to_baby: bool
+
+
+@dataclass(frozen=True)
 class WebRtcCandidate:
     """An ICE candidate the camera trickled for a WebRTC session."""
 

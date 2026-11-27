@@ -11,7 +11,16 @@ import aiohttp
 from .auth import TokenManager
 from .camera import NanitCamera
 from .exceptions import NanitAuthError
-from .models import AccountSpeaker, Baby, CloudEvent, SpeakerCandidate
+from .models import (
+    AccountSpeaker,
+    BabiesFetch,
+    Baby,
+    CareLog,
+    CareLogDetailFetch,
+    CareLogFetch,
+    CloudEvent,
+    SpeakerCandidate,
+)
 from .rest import NanitRestClient
 
 _LOGGER = logging.getLogger(__name__)
@@ -133,6 +142,16 @@ class NanitClient:
             lambda token: self._rest.async_get_babies(token),
         )
 
+    async def async_get_babies_result(self) -> BabiesFetch:
+        """Fetch babies like ``async_get_babies``, with how many rows were skipped.
+
+        A skipped row means the list is not the whole account. Retries once
+        on a mid-token-life 401 by refreshing the token.
+        """
+        return await self._async_with_retry(
+            lambda token: self._rest.async_get_babies_result(token),
+        )
+
     async def async_get_events(self, baby_uid: str, limit: int = 20) -> list[CloudEvent]:
         """Fetch cloud events for a baby.
 
@@ -140,6 +159,37 @@ class NanitClient:
         """
         return await self._async_with_retry(
             lambda token: self._rest.async_get_events(token, baby_uid, limit),
+        )
+
+    async def async_get_calendar(self, baby_uid: str, start: int, end: int) -> list[CareLog]:
+        """Fetch a baby's Care Logs and camera sleep sessions between two Unix times.
+
+        Retries once on a mid-token-life 401 by refreshing the token.
+        """
+        return await self._async_with_retry(
+            lambda token: self._rest.async_get_calendar(token, baby_uid, start, end),
+        )
+
+    async def async_get_calendar_result(self, baby_uid: str, start: int, end: int) -> CareLogFetch:
+        """Fetch what ``async_get_calendar`` does, with the range and how many rows were skipped.
+
+        Retries once on a mid-token-life 401 by refreshing the token.
+        """
+        return await self._async_with_retry(
+            lambda token: self._rest.async_get_calendar_result(token, baby_uid, start, end),
+        )
+
+    async def async_get_calendar_details(
+        self, baby_uid: str, start: int, end: int
+    ) -> CareLogDetailFetch:
+        """Fetch a baby's calendar keeping each entry's note and who logged it.
+
+        Notes and names are personal data: use this only where they are
+        meant to be shown, and ``async_get_calendar`` everywhere else.
+        Retries once on a mid-token-life 401 by refreshing the token.
+        """
+        return await self._async_with_retry(
+            lambda token: self._rest.async_get_calendar_details(token, baby_uid, start, end),
         )
 
     async def async_get_speaker_candidates(self, baby_uid: str) -> list[SpeakerCandidate]:

@@ -23,14 +23,17 @@ PLATFORMS = [
     Platform.SELECT,
     Platform.MEDIA_PLAYER,
     Platform.CAMERA,
+    Platform.CALENDAR,
 ]
 
 # Read-only mode: only the platforms that observe. No platform here controls
 # device settings (camera power/sleep, night light, volume, Sound & Light).
+# The care log calendar only reads, so it stays.
 READ_ONLY_PLATFORMS = [
     Platform.SENSOR,
     Platform.BINARY_SENSOR,
     Platform.CAMERA,
+    Platform.CALENDAR,
 ]
 
 # Cloud event detection window (seconds)
@@ -41,6 +44,12 @@ CLOUD_POLL_INTERVAL = 30
 
 # Network info poll interval (seconds)
 NETWORK_POLL_INTERVAL = 300
+
+# Care Logs poll interval (seconds)
+CARE_LOG_POLL_INTERVAL = 300
+
+# How many days the first Care Logs fetch looks back for each type's latest entry
+CARE_LOG_SEED_DAYS = 7
 
 # Config Keys
 CONF_MFA_CODE = "mfa_code"
@@ -74,6 +83,10 @@ DEFAULT_LOCAL_STREAM_PORT = 1935
 # Stills from the live stream when the cloud snapshot fails (off by default).
 CONF_STREAM_STILLS = "stream_stills"
 
+# Care log privacy choice: whether the calendar shows each entry's note and
+# who logged it. Not stored until the user changes it, and off until then.
+CONF_SHOW_CARE_LOG_NOTES = "show_care_log_notes"
+
 
 def is_read_only(entry: ConfigEntry) -> bool:
     """Return whether the entry is in read-only mode (no device control at all)."""
@@ -83,6 +96,14 @@ def is_read_only(entry: ConfigEntry) -> bool:
 def is_stream_stills(entry: ConfigEntry) -> bool:
     """Return whether camera stills may be taken from the live stream."""
     return entry.options.get(CONF_STREAM_STILLS, False) is True
+
+
+def is_show_care_log_notes(entry: ConfigEntry) -> bool:
+    """Return whether care log notes and who logged each entry may be shown.
+
+    Off unless switched on in the options.
+    """
+    return entry.options.get(CONF_SHOW_CARE_LOG_NOTES, False) is True
 
 
 def uses_external_go2rtc(hass: HomeAssistant) -> bool:

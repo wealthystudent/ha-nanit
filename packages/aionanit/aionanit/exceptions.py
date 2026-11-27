@@ -24,6 +24,43 @@ class NanitConnectionError(NanitError):
     """Network-level connection failure (DNS, TCP, TLS)."""
 
 
+class NanitRequestRefused(NanitConnectionError):
+    """The API refused a request (HTTP 403): asking again soon gets the same answer.
+
+    A subclass of NanitConnectionError, so code that handles a failed
+    request keeps doing so; code that retries should not retry this one.
+    ``status`` is the HTTP status, the only part of the answer kept.
+    """
+
+    def __init__(self, what: str, status: int) -> None:
+
+        super().__init__(f"{what} failed with HTTP {status}")
+        self.status = status
+
+
+class NanitRateLimited(NanitRequestRefused):
+    """The API is throttling requests (HTTP 429).
+
+    ``retry_after`` is the wait the answer asked for, in whole seconds from
+    when it arrived, between 0 and ``MAX_RETRY_AFTER``; None when it gave
+    none, or none that could be read.
+    """
+
+    MAX_RETRY_AFTER = 86_400
+
+    def __init__(self, what: str, retry_after: int | None) -> None:
+
+        super().__init__(what, 429)
+        self.retry_after = retry_after
+
+
+class NanitResponseTooLarge(NanitConnectionError):
+    """An answer was larger than the client reads, so it was refused unread.
+
+    Asking again for the same range gets the same answer: do not retry it.
+    """
+
+
 class NanitTransportError(NanitError):
     """WebSocket transport error (unexpected close, protocol violation)."""
 

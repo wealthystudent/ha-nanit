@@ -10,7 +10,7 @@
           "read_only": "Read-only mode"
         },
         "data_description": {
-          "read_only": "Only sensors, motion and sound, and the camera picture. Home Assistant gets no control over device settings: no camera power or sleep, night light, volume or Sound & Light controls. You can change this later in the integration's options."
+          "read_only": "Only sensors, motion and sound, the camera picture and the care log calendar. Home Assistant gets no control over device settings: no camera power or sleep, night light, volume or Sound & Light controls. You can change this later in the integration's options."
         }
       },
       "mfa": {
@@ -59,7 +59,8 @@
           "manual_speaker": "Add Sound & Light Machine by ID",
           "read_only": "Read-only mode",
           "local_stream": "Local streaming",
-          "stream_stills": "Stills from the live stream"
+          "stream_stills": "Stills from the live stream",
+          "care_logs": "Care log notes"
         }
       },
       "device": {
@@ -78,7 +79,7 @@
       },
       "read_only": {
         "title": "Read-only mode",
-        "description": "Read-only mode applies to every device on this account. Home Assistant keeps the camera stream, sensors and motion and sound detection, but gets no control over device settings: camera power or sleep, night light, volume and Sound & Light controls are removed, and automations that use them stop working. Turning it off brings them back with the same names and entity IDs.",
+        "description": "Read-only mode applies to every device on this account. Home Assistant keeps the camera stream, sensors, motion and sound detection and the care log calendar, but gets no control over device settings: camera power or sleep, night light, volume and Sound & Light controls are removed, and automations that use them stop working. Turning it off brings them back with the same names and entity IDs.",
         "data": {
           "read_only": "Read-only mode"
         }
@@ -110,6 +111,16 @@
           "speaker_uid": "Machine ID",
           "manual_speaker_name": "Name",
           "speaker_ip": "IP address (optional)"
+        }
+      },
+      "care_logs": {
+        "title": "Care log notes",
+        "description": "Applies to every baby on this account. Saving reloads the integration.",
+        "data": {
+          "show_care_log_notes": "Show notes and who logged each entry"
+        },
+        "data_description": {
+          "show_care_log_notes": "Adds each entry's note and who logged it to the calendar. Anyone who can read the calendar can see them, including automations and voice assistants. They aren't stored, so turning this on or off applies to every entry, old ones included."
         }
       }
     },
@@ -168,6 +179,12 @@
     },
     "read_only": {
       "message": "This Nanit account is in read-only mode, so Home Assistant can't change the camera. Use the Nanit app, or turn read-only mode off in the integration's options."
+    },
+    "care_log_fetch_failed": {
+      "message": "Failed to fetch Care Logs: {error}"
+    },
+    "care_log_calendar_unavailable": {
+      "message": "Could not read the care log from Nanit. Try again in a few minutes."
     }
   },
   "issues": {
@@ -264,6 +281,172 @@
       },
       "sl_firmware": {
         "name": "Firmware"
+      },
+      "last_diaper_change": {
+        "name": "Last diaper change",
+        "state_attributes": {
+          "change_type": {
+            "name": "Type",
+            "state": {
+              "pee": "Pee",
+              "poo": "Poo",
+              "mixed": "Mixed",
+              "dry": "Dry"
+            }
+          }
+        }
+      },
+      "last_feeding": {
+        "name": "Last feeding",
+        "state_attributes": {
+          "feeding_type": {
+            "name": "Type",
+            "state": {
+              "bottle": "Bottle",
+              "nursing": "Nursing"
+            }
+          },
+          "amount_ml": {
+            "name": "Amount (mL)"
+          },
+          "left_minutes": {
+            "name": "Left side (minutes)"
+          },
+          "right_minutes": {
+            "name": "Right side (minutes)"
+          }
+        }
+      },
+      "last_pumping": {
+        "name": "Last pumping",
+        "state_attributes": {
+          "amount_ml": {
+            "name": "Amount (mL)"
+          },
+          "duration_minutes": {
+            "name": "Duration (minutes)"
+          }
+        }
+      },
+      "diaper_changes_today": {
+        "name": "Diaper changes today",
+        "state_attributes": {
+          "pee": {
+            "name": "Pee"
+          },
+          "poo": {
+            "name": "Poo"
+          },
+          "mixed": {
+            "name": "Mixed"
+          },
+          "dry": {
+            "name": "Dry"
+          }
+        }
+      },
+      "feedings_today": {
+        "name": "Feedings today",
+        "state_attributes": {
+          "bottle": {
+            "name": "Bottle"
+          },
+          "nursing": {
+            "name": "Nursing"
+          }
+        }
+      },
+      "bottle_volume_today": {
+        "name": "Bottle volume today"
+      },
+      "nursing_time_today": {
+        "name": "Nursing time today"
+      },
+      "pumped_volume_today": {
+        "name": "Pumped volume today"
+      },
+      "last_diaper_change_baby": {
+        "name": "{baby_name} last diaper change",
+        "state_attributes": {
+          "change_type": {
+            "name": "Type",
+            "state": {
+              "pee": "Pee",
+              "poo": "Poo",
+              "mixed": "Mixed",
+              "dry": "Dry"
+            }
+          }
+        }
+      },
+      "last_feeding_baby": {
+        "name": "{baby_name} last feeding",
+        "state_attributes": {
+          "feeding_type": {
+            "name": "Type",
+            "state": {
+              "bottle": "Bottle",
+              "nursing": "Nursing"
+            }
+          },
+          "amount_ml": {
+            "name": "Amount (mL)"
+          },
+          "left_minutes": {
+            "name": "Left side (minutes)"
+          },
+          "right_minutes": {
+            "name": "Right side (minutes)"
+          }
+        }
+      },
+      "last_pumping_baby": {
+        "name": "{baby_name} last pumping",
+        "state_attributes": {
+          "amount_ml": {
+            "name": "Amount (mL)"
+          },
+          "duration_minutes": {
+            "name": "Duration (minutes)"
+          }
+        }
+      },
+      "diaper_changes_today_baby": {
+        "name": "{baby_name} diaper changes today",
+        "state_attributes": {
+          "pee": {
+            "name": "Pee"
+          },
+          "poo": {
+            "name": "Poo"
+          },
+          "mixed": {
+            "name": "Mixed"
+          },
+          "dry": {
+            "name": "Dry"
+          }
+        }
+      },
+      "feedings_today_baby": {
+        "name": "{baby_name} feedings today",
+        "state_attributes": {
+          "bottle": {
+            "name": "Bottle"
+          },
+          "nursing": {
+            "name": "Nursing"
+          }
+        }
+      },
+      "bottle_volume_today_baby": {
+        "name": "{baby_name} bottle volume today"
+      },
+      "nursing_time_today_baby": {
+        "name": "{baby_name} nursing time today"
+      },
+      "pumped_volume_today_baby": {
+        "name": "{baby_name} pumped volume today"
       }
     },
     "binary_sensor": {
@@ -326,6 +509,53 @@
     "camera": {
       "camera": {
         "name": "Camera"
+      }
+    },
+    "calendar": {
+      "care_log": {
+        "name": "Care log",
+        "state_attributes": {
+          "event_title": {
+            "name": "Event title",
+            "state": {
+              "diaper_change": "Diaper",
+              "bottle_feed": "Bottle",
+              "nursing": "Nursing",
+              "pumping": "Pumping"
+            }
+          },
+          "event_detail": {
+            "name": "Event description",
+            "state": {
+              "left_side": "Left side",
+              "right_side": "Right side",
+              "duration": "Duration",
+              "logged_at": "Logged at",
+              "note": "Note",
+              "logged_by": "Logged by"
+            }
+          },
+          "diaper_type": {
+            "name": "Diaper type",
+            "state": {
+              "pee": "pee",
+              "poo": "poo",
+              "mixed": "mixed",
+              "dry": "dry"
+            }
+          },
+          "measurement": {
+            "name": "Measurement",
+            "state": {
+              "milliliters": "mL",
+              "fluid_ounces": "fl oz",
+              "minutes": "min"
+            }
+          }
+        }
+      },
+      "care_log_baby": {
+        "name": "{baby_name} care log"
       }
     }
   }

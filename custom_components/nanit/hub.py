@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import logging
 import re
 from collections.abc import Callable, Coroutine
@@ -30,9 +31,10 @@ from aionanit.exceptions import (
     NanitConnectionError,
     NanitError,
 )
-from aionanit.models import Baby
+from aionanit.models import BabiesFetch, Baby
 
 from .aionanit_sl.sound_light import NanitSoundLight
+from .baby_code import baby_code
 from .const import (
     CONF_MANUAL_SPEAKERS,
     CONF_REFRESH_TOKEN,
@@ -41,6 +43,7 @@ from .const import (
     DOMAIN,
 )
 from .coordinator import (
+    NanitCareLogCoordinator,
     NanitCloudCoordinator,
     NanitNetworkCoordinator,
     NanitPushCoordinator,
@@ -112,6 +115,7 @@ class CameraData:
     push_coordinator: NanitPushCoordinator
     cloud_coordinator: NanitCloudCoordinator | None
     network_coordinator: NanitNetworkCoordinator | None = None
+    care_log_coordinator: NanitCareLogCoordinator | None = None
     stream_still: StreamStillInfo = field(default_factory=StreamStillInfo)
 
 
@@ -148,6 +152,7 @@ class NanitHub:
         self._camera_data: dict[str, CameraData] = {}
         self._speaker_data: dict[str, SpeakerData] = {}
         self._babies: list[Baby] = []
+        self._babies_complete = True
         self._failed_camera_uids: set[str] = set()
         self._speaker_uid_map: dict[str, str] = {}
         self._camera_speaker_pairs: dict[str, str] = {}
@@ -159,6 +164,7 @@ class NanitHub:
         self._unpaired_lookup_failed = False
         self._manual_speakers: dict[str, str] = {}
         self._sound_lights: dict[str, NanitSoundLight] = {}
+        self._care_log_coordinators: dict[str, NanitCareLogCoordinator] = {}
         self._unsubscribe_tokens: Callable[[], None] | None = None
         self._unsubscribe_failed_check: Callable[[], None] | None = None
 
@@ -178,9 +184,31 @@ class NanitHub:
         return self._speaker_data
 
     @property
+    def care_log_coordinators(self) -> dict[str, NanitCareLogCoordinator]:
+        """Return the Care Log reader of each baby, keyed by baby uid.
+
+        One per baby record with a uid, whether or not its camera connected.
+        A reader whose first fetch failed is here too (``data`` is None
+        until a fetch succeeds), so a missing key means the baby is not on
+        the account, or setup has not reached the Care Logs yet. Like any
+        coordinator, a reader polls on its schedule only while something
+        listens to it: the baby's care sensors or its care log calendar.
+        """
+        return self._care_log_coordinators
+
+    @property
     def babies(self) -> list[Baby]:
         """Return all discovered babies (including ones that failed to connect)."""
         return self._babies
+
+    @property
+    def babies_complete(self) -> bool:
+        """Return False when setup skipped an unreadable /babies row.
+
+        The babies then are not the whole account, so a device missing from
+        them may still be on it.
+        """
+        return self._babies_complete
 
     @property
     def failed_camera_uids(self) -> set[str]:
@@ -257,9 +285,16 @@ class NanitHub:
             self._unsubscribe_tokens = tm.on_tokens_refreshed(self._on_tokens_refreshed)
 
         # Fetch babies (also validates tokens)
-        babies = await self.async_get_babies_tolerant()
+        fetch = await self._async_get_babies_fetch()
+        babies = list(fetch.babies)
 
         self._babies = list(babies)
+        self._babies_complete = fetch.dropped == 0
+        if not self._babies_complete:
+            _LOGGER.debug(
+                "Nanit's device list had %d unreadable row(s); no device is removed this setup",
+                fetch.dropped,
+            )
 
         manual_raw = self._entry.options.get(CONF_MANUAL_SPEAKERS, {})
         self._manual_speakers = (
@@ -429,6 +464,11 @@ class NanitHub:
                 f"No devices could be set up: {', '.join(failed_cameras + failed_speakers)}"
             )
 
+        # Care Logs start once the devices are up, together, so their fetches
+        # never count against a camera's setup timeout. They come after the
+        # check above, so they never decide whether the entry is set up.
+        await self._async_setup_care_logs()
+
         # via_device must point at a camera device that actually registered
         # this run. The speaker tasks ran concurrently with the camera
         # tasks, so the link is settled only now.
@@ -529,8 +569,12 @@ class NanitHub:
         the hub). Also used by NanitNetworkCoordinator so its polling
         survives mixed accounts on old wheels.
         """
+        return list((await self._async_get_babies_fetch()).babies)
+
+    async def _async_get_babies_fetch(self) -> BabiesFetch:
+        """Fetch babies as ``async_get_babies_tolerant`` does, with the rows skipped."""
         try:
-            return await self._client.async_get_babies()
+            return await self._client.async_get_babies_result()
         except KeyError:
             _LOGGER.debug(
                 "aionanit could not parse /babies (baby without camera?); "
@@ -539,7 +583,7 @@ class NanitHub:
             )
             return await self._async_get_babies_raw()
 
-    async def _async_get_babies_raw(self) -> list[Baby]:
+    async def _async_get_babies_raw(self) -> BabiesFetch:
         """Parse /babies directly, allowing camera-less babies.
 
         Defensive on shape and content: uids are validated before they can
@@ -547,13 +591,7 @@ class NanitHub:
         row is skipped rather than failing the whole scan. Transport-level
         failures surface as NanitConnectionError so setup retries.
         """
-        from aionanit.rest import (
-            NANIT_API_HEADERS,
-            _parse_camera_connected,
-            _parse_camera_last_seen,
-            _parse_network,
-            _sanitize_name,
-        )
+        from aionanit.rest import NANIT_API_HEADERS, _parse_baby
 
         tm = self._client.token_manager
         if tm is None:
@@ -573,33 +611,27 @@ class NanitHub:
         except (TimeoutError, aiohttp.ClientError) as err:
             raise NanitConnectionError(str(err)) from err
 
-        rows = body.get("babies", []) if isinstance(body, dict) else []
+        rows = body.get("babies") if isinstance(body, dict) else None
+        if not isinstance(rows, list):
+            raise NanitConnectionError("Invalid babies response: no babies list")
         babies: list[Baby] = []
-        for baby in rows if isinstance(rows, list) else []:
+        for baby in rows:
             if not isinstance(baby, dict):
                 continue
             uid = _clean_uid(baby.get("uid"))
             if uid is None:
                 _LOGGER.debug("Skipping /babies row without a usable uid")
                 continue
-            raw_name = baby.get("name")
-            speaker = baby.get("speaker")
-            speaker_obj = speaker.get("speaker") if isinstance(speaker, dict) else None
-            speaker_uid = (
-                _clean_uid(speaker_obj.get("uid")) if isinstance(speaker_obj, dict) else None
-            )
-            babies.append(
-                Baby(
-                    uid=uid,
-                    name=_sanitize_name(raw_name if isinstance(raw_name, str) else None),
-                    camera_uid=_clean_uid(baby.get("camera_uid")) or "",
-                    speaker_uid=speaker_uid,
-                    network=_parse_network(baby),
-                    camera_connected=_parse_camera_connected(baby),
-                    camera_last_seen=_parse_camera_last_seen(baby),
-                )
-            )
-        return babies
+            # The library's own parse, so the row keeps every field it does,
+            # with the device uids then checked like the baby's.
+            parsed = _parse_baby({**baby, "uid": uid})
+            if parsed is None:
+                continue
+            if parsed.camera_uid and _clean_uid(parsed.camera_uid) is None:
+                _LOGGER.debug("Skipping /babies row without a usable camera uid")
+                continue
+            babies.append(dataclasses.replace(parsed, speaker_uid=_clean_uid(parsed.speaker_uid)))
+        return BabiesFetch(babies=tuple(babies), dropped=len(rows) - len(babies))
 
     async def _async_resolve_speaker_uids(self, babies: list[Baby]) -> dict[str, str]:
         """Resolve each baby's speaker uid, keyed by baby uid.
@@ -836,6 +868,57 @@ class NanitHub:
             network_coordinator=network_coordinator,
         )
 
+    async def _async_setup_care_logs(self) -> None:
+        """Start one Care Log reader per baby, and hand each camera its baby's.
+
+        Every baby record with a uid gets one, including a baby whose camera
+        failed to connect or who has no camera: Care Logs belong to the
+        baby, not the camera. Only a camera that is set up gets the sensors.
+        """
+        for baby in self._babies:
+            # A record without a uid has no Care Logs to read (the unpaired
+            # speaker's placeholder baby is one), and a repeated uid is the
+            # same baby.
+            if not baby.uid or baby.uid in self._care_log_coordinators:
+                continue
+            self._care_log_coordinators[baby.uid] = NanitCareLogCoordinator(
+                self._hass, self._entry, self, baby
+            )
+
+        results = await asyncio.gather(
+            *(
+                self._async_first_care_log_fetch(coordinator)
+                for coordinator in self._care_log_coordinators.values()
+            ),
+            return_exceptions=True,
+        )
+        # Every first fetch has finished before an authentication failure is
+        # raised, so none is left running against a hub that is closing.
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+
+        for cam_data in self._camera_data.values():
+            cam_data.care_log_coordinator = self._care_log_coordinators.get(cam_data.baby.uid)
+
+    async def _async_first_care_log_fetch(self, coordinator: NanitCareLogCoordinator) -> None:
+        """Run a Care Log reader's first fetch, keeping the reader if it fails."""
+        try:
+            await coordinator.async_config_entry_first_refresh()
+        except ConfigEntryNotReady as err:
+            # Optional, like the cloud and network coordinators, so one failed
+            # fetch must not retry-loop the whole entry. Unlike them, the
+            # reader is kept: it polls again on its normal schedule while its
+            # sensors listen, and they show unavailable until a fetch
+            # succeeds. ConfigEntryAuthFailed still propagates, so HA starts
+            # reauth.
+            # The baby by its code: its name and uid stay out of the log.
+            _LOGGER.warning(
+                "Care log fetch for baby %s failed at setup; retrying on the normal schedule (%s)",
+                baby_code(coordinator.baby.uid),
+                err,
+            )
+
     async def _setup_speaker(
         self,
         baby: Baby,
@@ -901,6 +984,14 @@ class NanitHub:
     async def async_close(self) -> None:
         """Stop all devices and clean up."""
         self._cancel_failed_check()
+        # The readers also shut down with the entry's unload callbacks; doing
+        # it here as well covers a setup that fails after they were created.
+        for coordinator in list(self._care_log_coordinators.values()):
+            try:
+                await coordinator.async_shutdown()
+            except Exception:
+                _LOGGER.debug("Error stopping a care log reader during close")
+        self._care_log_coordinators.clear()
         await self._client.async_close()
         self._camera_data.clear()
         self._speaker_data.clear()

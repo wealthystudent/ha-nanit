@@ -11,6 +11,9 @@ NanitPushCoordinator: Push-based coordinator that wraps NanitCamera.subscribe().
 NanitCloudCoordinator: Polls the Nanit cloud API for motion/sound events every
     CLOUD_POLL_INTERVAL seconds.
 
+NanitCareLogCoordinator: Polls a baby's Care Logs (diaper changes, feedings,
+    pumping) every CARE_LOG_POLL_INTERVAL seconds.
+
 NanitSoundLightCoordinator: Push-based coordinator wrapping NanitSoundLight.subscribe().
     Receives state updates from the S&L device's local WebSocket.
 """
@@ -20,8 +23,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-from collections.abc import Awaitable, Callable
-from datetime import timedelta
+from collections.abc import Awaitable, Callable, Iterable, Mapping
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.config_entries import ConfigEntryState
@@ -30,13 +34,27 @@ from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
-from aionanit.exceptions import NanitAuthError, NanitConnectionError
-from aionanit.models import Baby, CameraEvent, CameraState, CloudEvent, NetworkInfo
+from aionanit.exceptions import (
+    NanitAuthError,
+    NanitConnectionError,
+    NanitRateLimited,
+    NanitRequestRefused,
+    NanitResponseTooLarge,
+)
+from aionanit.models import Baby, CameraEvent, CameraState, CareLog, CloudEvent, NetworkInfo
 
 from .aionanit_sl.models import SoundLightEvent, SoundLightEventKind, SoundLightFullState
 from .aionanit_sl.sound_light import NanitSoundLight
-from .const import CLOUD_POLL_INTERVAL, DOMAIN, NETWORK_POLL_INTERVAL
+from .baby_code import baby_code
+from .const import (
+    CARE_LOG_POLL_INTERVAL,
+    CARE_LOG_SEED_DAYS,
+    CLOUD_POLL_INTERVAL,
+    DOMAIN,
+    NETWORK_POLL_INTERVAL,
+)
 
 if TYPE_CHECKING:
     from aionanit import NanitCamera
@@ -56,17 +74,27 @@ _AVAILABILITY_GRACE_SECONDS: float = 30.0
 # meanwhile. Setup gets no retries, so it still fails fast.
 _POLL_RETRY_DELAYS: tuple[float, ...] = (5.0, 10.0)
 
+# Failures a retry seconds later can't fix: Nanit refused the request, is
+# throttling them, or answered with more than the library reads. They end
+# the poll at once.
+_NOT_RETRIED: tuple[type[NanitConnectionError], ...] = (NanitRequestRefused, NanitResponseTooLarge)
+
 
 async def _async_fetch_with_retries[T](
     coordinator: DataUpdateCoordinator[Any], fetch: Callable[[], Awaitable[T]]
 ) -> T:
-    """Return ``fetch()``, retrying a NanitConnectionError except during setup."""
+    """Return ``fetch()``, retrying a NanitConnectionError except during setup.
+
+    A refusal or throttling (``_NOT_RETRIED``) is never retried.
+    """
     entry = coordinator.config_entry
     in_setup = entry is not None and entry.state is ConfigEntryState.SETUP_IN_PROGRESS
     delays = () if in_setup else _POLL_RETRY_DELAYS
     for delay in delays:
         try:
             return await fetch()
+        except _NOT_RETRIED:
+            raise
         except NanitConnectionError as err:
             _LOGGER.debug("%s poll failed, retrying in %.0fs: %s", coordinator.name, delay, err)
             await asyncio.sleep(delay)
@@ -276,6 +304,387 @@ class NanitNetworkCoordinator(DataUpdateCoordinator[NetworkInfo | None]):
             if baby.camera_uid == self.baby.camera_uid:
                 return baby.network
         return None
+
+
+# Care Log types the sensors summarise. The calendar also returns naps
+# ("sleep") and the camera's own sleep sessions ("auto_sleep"), which no
+# sensor uses yet.
+CARE_LOG_DIAPER = "diaper_change"
+CARE_LOG_BOTTLE = "bottle_feed"
+CARE_LOG_NURSING = "nursing"
+CARE_LOG_PUMPING = "pumping"
+CARE_LOG_TYPES = frozenset({CARE_LOG_DIAPER, CARE_LOG_BOTTLE, CARE_LOG_NURSING, CARE_LOG_PUMPING})
+
+# The fetch runs a little past now, so an entry logged for a few minutes
+# ahead still counts.
+_CARE_LOG_END_SLACK = timedelta(hours=1)
+
+# How far back each poll after the first looks. Parents often log after the
+# fact (a night feed entered in the morning), and an entry from before
+# midnight still has to be seen, as do later edits and deletions of it.
+_CARE_LOG_LOOKBACK = timedelta(hours=24)
+
+# How long the reader waits after Nanit refuses its request (HTTP 403)
+# before it asks again. A refusal is about the account (its role on the
+# baby, or what Nanit offers it), which changes when a person changes it,
+# not between two polls: hourly is 12 times fewer requests than the normal
+# poll, and a permission given back still shows within the hour (at once
+# on a reload).
+CARE_LOG_REFUSED_RECHECK = timedelta(hours=1)
+
+# After Nanit throttles a request (HTTP 429): the wait it asks for, and never
+# less than the normal poll interval. With no wait given,
+# CARE_LOG_THROTTLED_DEFAULT, three normal intervals.
+CARE_LOG_THROTTLED_DEFAULT = timedelta(minutes=15)
+# The longest the reader goes between two polls while requests are held: a
+# longer wait is checked again hourly, and no request goes out before it ends.
+CARE_LOG_HELD_POLL_MAX = timedelta(hours=1)
+
+
+def care_log_hold(err: NanitRequestRefused) -> timedelta:
+    """Return how long to wait before asking Nanit for a baby's Care Logs again."""
+    normal = timedelta(seconds=CARE_LOG_POLL_INTERVAL)
+    if not isinstance(err, NanitRateLimited):
+        return CARE_LOG_REFUSED_RECHECK
+    if err.retry_after is None:
+        return CARE_LOG_THROTTLED_DEFAULT
+    return max(timedelta(seconds=err.retry_after), normal)
+
+
+@dataclass(frozen=True)
+class CareLogRequestCoverage:
+    """What the last successful Care Log fetch asked Nanit for.
+
+    This is request coverage: the range that was asked for, not a promise
+    that Nanit's answer held everything in it (its answer carries no sign
+    of being complete). ``start`` and ``end`` are the Unix seconds sent,
+    both inclusive, as Nanit matches an entry by its start, and ``dropped``
+    how many of its rows were skipped as malformed. ``CareLogData`` leaves
+    out every row dated outside the range, of any kind.
+    """
+
+    start: int
+    end: int
+    dropped: int = 0
+
+
+@dataclass(frozen=True)
+class CareLogData:
+    """A summary of one baby's Care Logs.
+
+    ``latest`` holds the newest entry of each type and ``today`` every entry
+    on the local day that starts at ``day_start`` (local midnight), oldest
+    first. ``entries`` is every entry the last fetch returned, and
+    ``before_window`` the newest entry of each type older than that fetch's
+    start: the next summary needs both to know what came before its own,
+    shorter, fetch. ``needs_seed`` is set when an entry from before the
+    window turned up again inside it (its date was edited), so what came
+    before it is no longer known and the next fetch has to look back as far
+    as the first one did.
+
+    The fields above hold the kinds in ``CARE_LOG_TYPES``.
+    ``request_coverage`` is the range the last fetch asked for. When it is
+    known, every row, of any kind, is checked against it before a copy is
+    chosen per uid: one dated outside it is left out, so it never displaces
+    a copy inside the range.
+    """
+
+    latest: Mapping[str, CareLog]
+    today: tuple[CareLog, ...]
+    day_start: datetime
+    entries: tuple[CareLog, ...] = ()
+    before_window: Mapping[str, CareLog] = field(default_factory=dict)
+    needs_seed: bool = False
+    request_coverage: CareLogRequestCoverage | None = None
+
+
+def _order(log: CareLog) -> tuple[float, str]:
+    """Sort key for entries: by time, and by uid between entries at the same time."""
+    return (log.timestamp, log.uid)
+
+
+def _keep_newest(newest: dict[str, CareLog], log: CareLog) -> None:
+    """Store ``log`` under its type unless a newer entry of that type is there."""
+    current = newest.get(log.log_type)
+    if current is None or _order(log) > _order(current):
+        newest[log.log_type] = log
+
+
+def _by_uid(logs: Iterable[CareLog]) -> dict[str, CareLog]:
+    """Index entries by uid, so a row the API repeats counts only once."""
+    unique: dict[str, CareLog] = {}
+    for log in logs:
+        current = unique.get(log.uid)
+        if current is None or log.timestamp > current.timestamp:
+            unique[log.uid] = log
+    return unique
+
+
+def build_care_log_data(
+    logs: Iterable[CareLog],
+    *,
+    window_start: float,
+    day_start: datetime,
+    previous: CareLogData | None,
+    request_coverage: CareLogRequestCoverage | None = None,
+) -> CareLogData:
+    """Summarise one calendar fetch covering ``window_start`` up to now.
+
+    Later polls fetch a shorter window than the first, so a type with no
+    entry since ``window_start`` falls back to the newest older entry an
+    earlier fetch returned. An entry inside the window that the API no
+    longer returns was deleted in the app, so it no longer counts.
+    """
+    logs = tuple(logs)
+    if request_coverage is not None:
+        # Every row is checked against the range asked for before one copy
+        # per uid is chosen (see ``CareLogData``).
+        low, high = request_coverage.start, request_coverage.end
+        logs = tuple(log for log in logs if low <= log.timestamp <= high)
+    fetched = _by_uid(logs)
+    entries = tuple(log for log in fetched.values() if log.log_type in CARE_LOG_TYPES)
+
+    before_window: dict[str, CareLog] = {}
+    needs_seed = False
+    if previous is not None:
+        for log in (*previous.before_window.values(), *previous.entries):
+            if log.timestamp >= window_start:
+                continue
+            current = fetched.get(log.uid)
+            if current is None:
+                _keep_newest(before_window, log)
+            elif current != log:
+                # The same entry, edited since: the older copy is stale, and
+                # must not come back if the entry is deleted later.
+                needs_seed = True
+
+    latest = dict(before_window)
+    for log in entries:
+        _keep_newest(latest, log)
+
+    # Only the local day itself. The fetch runs a little past now, so close
+    # to midnight it can return an entry dated just after it; that entry
+    # belongs to tomorrow's totals and must not count in today's as well.
+    # Adding a day to the local midnight keeps a 23 or 25 hour day whole.
+    day_start_ts = day_start.timestamp()
+    day_end_ts = (day_start + timedelta(days=1)).timestamp()
+    today = tuple(
+        sorted(
+            (log for log in entries if day_start_ts <= log.timestamp < day_end_ts),
+            key=_order,
+        )
+    )
+    return CareLogData(
+        latest=latest,
+        today=today,
+        day_start=day_start,
+        entries=entries,
+        before_window=before_window,
+        needs_seed=needs_seed,
+        request_coverage=request_coverage,
+    )
+
+
+class NanitCareLogCoordinator(DataUpdateCoordinator[CareLogData]):
+    """Polling coordinator for a baby's Care Logs.
+
+    Polls GET /babies/{uid}/calendar every CARE_LOG_POLL_INTERVAL seconds.
+    The first poll looks back CARE_LOG_SEED_DAYS days to find the newest
+    entry of each type; later polls fetch the last 24 hours (and at least
+    since midnight) and carry older entries forward, which keeps each poll
+    small. A poll looks back the full CARE_LOG_SEED_DAYS again when the last
+    successful one is more than 24 hours old, so entries logged during an
+    outage are not skipped, and when the last summary asks for it
+    (``CareLogData.needs_seed``).
+    """
+
+    config_entry: NanitConfigEntry
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: NanitConfigEntry,
+        hub: NanitHub,
+        baby: Baby,
+    ) -> None:
+        """Initialize the care log coordinator."""
+        super().__init__(
+            hass,
+            _LOGGER,
+            config_entry=entry,
+            # Home Assistant prints the name in its debug lines: the baby's
+            # code, never its raw uid.
+            name=f"{DOMAIN}_{baby_code(baby.uid)}_care_logs",
+            update_interval=timedelta(seconds=CARE_LOG_POLL_INTERVAL),
+        )
+        self._hub = hub
+        self.baby = baby
+        # When the last successful fetch started.
+        self._last_fetch: datetime | None = None
+        # The hold every Care Log request of this sign-in for this baby goes
+        # through (``async_request``). Until when, on the loop's monotonic
+        # clock, no request may be sent; None when one may.
+        self._held_until: float | None = None
+        # The status of the newest refusal or throttling, and the wait a
+        # throttling asked for, until a request sent after it succeeds. Only
+        # these: the error itself, with its traceback, is not kept.
+        self._held_status: int | None = None
+        self._held_retry_after: int | None = None
+        # Every refusal or throttling the hold saw, and every refusal (403).
+        self._holds = 0
+        self._refusals = 0
+        # Whether the reader's own poll is under way.
+        self._polling = False
+
+    @property
+    def requests_held(self) -> bool:
+        """Return whether Nanit refused or throttled this baby's Care Logs a moment ago.
+
+        For as long as ``care_log_hold`` says after the newest refusal or
+        throttling, unless a request sent after it succeeded.
+        """
+        return self._held_until is not None and self.hass.loop.time() < self._held_until
+
+    @property
+    def refusals(self) -> int:
+        """Return how many refusals (HTTP 403) this sign-in got for this baby so far.
+
+        A calendar compares it before and after a fetch: one that changed
+        means what it fetched or kept may no longer be shown.
+        """
+        return self._refusals
+
+    async def async_request[T](self, request: Callable[[], Awaitable[T]]) -> T:
+        """Send one Care Log request of this sign-in for this baby, unless requests are held.
+
+        Every request for them goes through here just before it is sent: the
+        reader's polls and their retries, and each calendar piece. While
+        requests are held it raises the refusal or throttling again, asking
+        Nanit nothing. A refusal or throttling a request gets holds every
+        request (``care_log_hold``), and a success clears the hold only when
+        no refusal or throttling arrived while it was on its way: an older
+        request finishing late leaves a newer hold in place. One that a
+        refusal (not a throttling) arrived during raises that refusal
+        instead of returning its answer.
+        """
+        if self.requests_held and self._held_status is not None:
+            if self._held_status == 429:
+                raise NanitRateLimited("Calendar fetch", self._held_retry_after)
+            raise NanitRequestRefused("Calendar fetch", self._held_status)
+        holds = self._holds
+        refusals = self._refusals
+        try:
+            result = await request()
+        except NanitRequestRefused as err:
+            self._hold(err)
+            raise
+        if self._refusals != refusals:
+            # Nanit refused another request while this one was on its way:
+            # its answer reaches nobody, as if it had been refused too.
+            del result
+            raise NanitRequestRefused("Calendar fetch", 403)
+        if self._holds == holds:
+            self._held_until = None
+            self._held_status = None
+        return result
+
+    def _hold(self, err: NanitRequestRefused) -> None:
+        """Hold every request after a refusal or throttling, for as long as it asks."""
+        until = self.hass.loop.time() + care_log_hold(err).total_seconds()
+        if self._held_until is None or until > self._held_until:
+            self._held_until = until
+        self._held_status = err.status
+        self._held_retry_after = err.retry_after if isinstance(err, NanitRateLimited) else None
+        self._holds += 1
+        if not isinstance(err, NanitRateLimited):
+            self._refusals += 1
+            if not self._polling:
+                # Another caller was refused: the care sensors say so now,
+                # not at the next poll (a poll under way reports it itself).
+                self.async_set_update_error(
+                    UpdateFailed(
+                        translation_domain=DOMAIN,
+                        translation_key="care_log_fetch_failed",
+                        translation_placeholders={"error": "Calendar fetch failed with HTTP 403"},
+                    )
+                )
+
+    def _held_poll_interval(self) -> timedelta:
+        """Return when the reader polls next while requests are held."""
+        normal = timedelta(seconds=CARE_LOG_POLL_INTERVAL)
+        if self._held_until is None:
+            return normal
+        left = timedelta(seconds=self._held_until - self.hass.loop.time())
+        return min(max(left, normal), CARE_LOG_HELD_POLL_MAX)
+
+    async def _async_update_data(self) -> CareLogData:
+        """Fetch Care Logs from the Nanit API and summarise them."""
+        now = dt_util.utcnow()
+        day_start = dt_util.start_of_local_day()
+        seed = (
+            self.data is None
+            or self.data.needs_seed
+            or self._last_fetch is None
+            or now - self._last_fetch > _CARE_LOG_LOOKBACK
+        )
+        lookback = timedelta(days=CARE_LOG_SEED_DAYS) if seed else _CARE_LOG_LOOKBACK
+        window_start = min(day_start, now - lookback)
+        start = int(window_start.timestamp())
+        end = int((now + _CARE_LOG_END_SLACK).timestamp())
+        self._polling = True
+        try:
+            client = self._hub.client
+            fetch = await _async_fetch_with_retries(
+                self,
+                lambda: self.async_request(
+                    lambda: client.async_get_calendar_result(self.baby.uid, start, end)
+                ),
+            )
+        except NanitAuthError as err:
+            raise ConfigEntryAuthFailed(
+                translation_domain=DOMAIN,
+                translation_key="auth_failed",
+                translation_placeholders={"error": str(err)},
+            ) from err
+        except NanitRequestRefused as err:
+            # Not retried, and the next poll waits while requests are held
+            # (async_request): asking again in five minutes would get the
+            # same answer. Reported like any failure.
+            self.update_interval = self._held_poll_interval()
+            _LOGGER.debug(
+                "%s: Nanit answered HTTP %s, next poll in %.0fs",
+                self.name,
+                err.status,
+                self.update_interval.total_seconds(),
+            )
+            raise UpdateFailed(
+                translation_domain=DOMAIN,
+                translation_key="care_log_fetch_failed",
+                translation_placeholders={"error": str(err)},
+            ) from err
+        except NanitConnectionError as err:
+            raise UpdateFailed(
+                translation_domain=DOMAIN,
+                translation_key="care_log_fetch_failed",
+                translation_placeholders={"error": str(err)},
+            ) from err
+        finally:
+            self._polling = False
+
+        self.update_interval = timedelta(seconds=CARE_LOG_POLL_INTERVAL)
+        self._last_fetch = now
+        coverage = CareLogRequestCoverage(
+            start=fetch.start,
+            end=fetch.end,
+            dropped=fetch.dropped,
+        )
+        return build_care_log_data(
+            fetch.logs,
+            window_start=start,
+            day_start=day_start,
+            previous=self.data,
+            request_coverage=coverage,
+        )
 
 
 _SL_STORE_VERSION = 1

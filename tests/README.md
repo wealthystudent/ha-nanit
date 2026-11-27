@@ -39,6 +39,7 @@ Step-by-step instructions for testing specific features with the dev HA instance
 | Guide | Feature |
 |-------|---------|
 | [docs/testing-multi-camera.md](../docs/testing-multi-camera.md) | Multi-camera support (simulated + real) |
+| [docs/testing-care-logs.md](../docs/testing-care-logs.md) | Care Logs: sensors and calendar |
 
 ## Pre-release checklist
 

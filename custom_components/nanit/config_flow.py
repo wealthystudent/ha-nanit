@@ -28,6 +28,7 @@ from .const import (
     CONF_MFA_CODE,
     CONF_READ_ONLY,
     CONF_REFRESH_TOKEN,
+    CONF_SHOW_CARE_LOG_NOTES,
     CONF_SPEAKER_IP,
     CONF_SPEAKER_IPS,
     CONF_SPEAKER_UID,
@@ -37,6 +38,7 @@ from .const import (
     DOMAIN,
     LOGGER,
     is_read_only,
+    is_show_care_log_notes,
     is_stream_stills,
     local_stream_default,
 )
@@ -398,6 +400,7 @@ class NanitOptionsFlow(OptionsFlow):
       2. Enter or clear the machine's IP for local connectivity
     - Read-only mode (account-wide)
     - Stills from the live stream (account-wide)
+    - Care log notes (account-wide)
 
     Only babies with a Sound & Light Machine are offered, since the camera's
     local port rejects the integration on current firmware (#176). Speaker
@@ -419,7 +422,14 @@ class NanitOptionsFlow(OptionsFlow):
         """Choose what to configure."""
         return self.async_show_menu(
             step_id="init",
-            menu_options=["device", "manual_speaker", "read_only", "local_stream", "stream_stills"],
+            menu_options=[
+                "device",
+                "manual_speaker",
+                "read_only",
+                "local_stream",
+                "stream_stills",
+                "care_logs",
+            ],
         )
 
     async def async_step_manual_speaker(
@@ -570,6 +580,29 @@ class NanitOptionsFlow(OptionsFlow):
                 {
                     vol.Required(
                         CONF_STREAM_STILLS, default=is_stream_stills(self.config_entry)
+                    ): cv.boolean,
+                }
+            ),
+        )
+
+    async def async_step_care_logs(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Choose whether the calendar shows care log notes and who logged each entry."""
+        if user_input is not None:
+            # Merge over the existing options. The choice is stored
+            # explicitly, on or off.
+            new_options: dict[str, Any] = {**self.config_entry.options}
+            new_options[CONF_SHOW_CARE_LOG_NOTES] = bool(user_input[CONF_SHOW_CARE_LOG_NOTES])
+            return self.async_create_entry(title="", data=new_options)
+
+        return self.async_show_form(
+            step_id="care_logs",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_SHOW_CARE_LOG_NOTES,
+                        default=is_show_care_log_notes(self.config_entry),
                     ): cv.boolean,
                 }
             ),

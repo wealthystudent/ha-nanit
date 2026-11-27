@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -18,16 +19,30 @@ from homeassistant.const import (
     EntityCategory,
     UnitOfFrequency,
     UnitOfTemperature,
+    UnitOfTime,
+    UnitOfVolume,
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.util import dt as dt_util
 
-from aionanit.models import CameraState, NetworkInfo
+from aionanit.models import CameraState, CareLog, NetworkInfo
 
 from . import NanitConfigEntry
 from .aionanit_sl.models import SoundLightFullState
-from .coordinator import NanitNetworkCoordinator, NanitPushCoordinator, NanitSoundLightCoordinator
-from .entity import NanitEntity, NanitNetworkEntity, NanitSoundLightEntity
+from .baby_code import baby_code, baby_display_name
+from .coordinator import (
+    CARE_LOG_BOTTLE,
+    CARE_LOG_DIAPER,
+    CARE_LOG_NURSING,
+    CARE_LOG_PUMPING,
+    CareLogData,
+    NanitCareLogCoordinator,
+    NanitNetworkCoordinator,
+    NanitPushCoordinator,
+    NanitSoundLightCoordinator,
+)
+from .entity import NanitCareLogEntity, NanitEntity, NanitNetworkEntity, NanitSoundLightEntity
 
 PARALLEL_UPDATES = 0
 
@@ -152,6 +167,158 @@ NETWORK_SENSORS: tuple[NanitNetworkSensorDescription, ...] = (
 )
 
 
+type CareLogAttributes = dict[str, str | float | int | None]
+
+# Diaper change types the Nanit app offers, counted separately in attributes.
+DIAPER_CHANGE_TYPES = ("pee", "poo", "mixed", "dry")
+
+
+@dataclass(frozen=True, kw_only=True)
+class NanitCareLogSensorDescription(SensorEntityDescription):
+    """Description for Care Log sensors."""
+
+    value_fn: Callable[[CareLogData], datetime | float | int | None]
+    attrs_fn: Callable[[CareLogData], CareLogAttributes] | None = None
+
+
+def _time(log: CareLog | None) -> datetime | None:
+    return dt_util.utc_from_timestamp(log.timestamp) if log is not None else None
+
+
+def _minutes(seconds: float | None) -> float | None:
+    return round(seconds / 60, 1) if seconds is not None else None
+
+
+def _rounded(value: float | None) -> float | None:
+    return round(value, 1) if value is not None else None
+
+
+def _pumped_ml(log: CareLog) -> float | None:
+    amounts = [a for a in (log.left_amount_ml, log.right_amount_ml) if a is not None]
+    return sum(amounts) if amounts else None
+
+
+def _nursing_s(log: CareLog) -> float:
+    return (log.left_duration_s or 0.0) + (log.right_duration_s or 0.0)
+
+
+def _today(data: CareLogData, *log_types: str) -> list[CareLog]:
+    return [log for log in data.today if log.log_type in log_types]
+
+
+def _last_feeding(data: CareLogData) -> CareLog | None:
+    feeds = [log for t in (CARE_LOG_BOTTLE, CARE_LOG_NURSING) if (log := data.latest.get(t))]
+    return max(feeds, key=lambda log: log.timestamp, default=None)
+
+
+def _last_diaper_attrs(data: CareLogData) -> CareLogAttributes:
+    log = data.latest.get(CARE_LOG_DIAPER)
+    if log is None:
+        return {}
+    # Only the types the app offers: the value is API text shown to users.
+    kind = log.change_type if log.change_type in DIAPER_CHANGE_TYPES else None
+    return {"change_type": kind}
+
+
+def _last_feeding_attrs(data: CareLogData) -> CareLogAttributes:
+    log = _last_feeding(data)
+    if log is None:
+        return {}
+    if log.log_type == CARE_LOG_BOTTLE:
+        return {"feeding_type": "bottle", "amount_ml": _rounded(log.feed_amount_ml)}
+    return {
+        "feeding_type": "nursing",
+        "left_minutes": _minutes(log.left_duration_s),
+        "right_minutes": _minutes(log.right_duration_s),
+    }
+
+
+def _last_pumping_attrs(data: CareLogData) -> CareLogAttributes:
+    log = data.latest.get(CARE_LOG_PUMPING)
+    if log is None:
+        return {}
+    return {"amount_ml": _rounded(_pumped_ml(log)), "duration_minutes": _minutes(log.duration_s)}
+
+
+def _diapers_today_attrs(data: CareLogData) -> CareLogAttributes:
+    diapers = _today(data, CARE_LOG_DIAPER)
+    return {kind: sum(log.change_type == kind for log in diapers) for kind in DIAPER_CHANGE_TYPES}
+
+
+def _feedings_today_attrs(data: CareLogData) -> CareLogAttributes:
+    return {
+        "bottle": len(_today(data, CARE_LOG_BOTTLE)),
+        "nursing": len(_today(data, CARE_LOG_NURSING)),
+    }
+
+
+CARE_LOG_SENSORS: tuple[NanitCareLogSensorDescription, ...] = (
+    NanitCareLogSensorDescription(
+        key="last_diaper_change",
+        translation_key="last_diaper_change",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        value_fn=lambda data: _time(data.latest.get(CARE_LOG_DIAPER)),
+        attrs_fn=_last_diaper_attrs,
+    ),
+    NanitCareLogSensorDescription(
+        key="last_feeding",
+        translation_key="last_feeding",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        value_fn=lambda data: _time(_last_feeding(data)),
+        attrs_fn=_last_feeding_attrs,
+    ),
+    NanitCareLogSensorDescription(
+        key="last_pumping",
+        translation_key="last_pumping",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        value_fn=lambda data: _time(data.latest.get(CARE_LOG_PUMPING)),
+        attrs_fn=_last_pumping_attrs,
+    ),
+    NanitCareLogSensorDescription(
+        key="diaper_changes_today",
+        translation_key="diaper_changes_today",
+        value_fn=lambda data: len(_today(data, CARE_LOG_DIAPER)),
+        attrs_fn=_diapers_today_attrs,
+    ),
+    NanitCareLogSensorDescription(
+        key="feedings_today",
+        translation_key="feedings_today",
+        value_fn=lambda data: len(_today(data, CARE_LOG_BOTTLE, CARE_LOG_NURSING)),
+        attrs_fn=_feedings_today_attrs,
+    ),
+    NanitCareLogSensorDescription(
+        key="bottle_volume_today",
+        translation_key="bottle_volume_today",
+        device_class=SensorDeviceClass.VOLUME,
+        native_unit_of_measurement=UnitOfVolume.MILLILITERS,
+        suggested_display_precision=0,
+        value_fn=lambda data: round(
+            sum(log.feed_amount_ml or 0.0 for log in _today(data, CARE_LOG_BOTTLE)), 1
+        ),
+    ),
+    NanitCareLogSensorDescription(
+        key="nursing_time_today",
+        translation_key="nursing_time_today",
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.MINUTES,
+        suggested_display_precision=0,
+        value_fn=lambda data: round(
+            sum(_nursing_s(log) for log in _today(data, CARE_LOG_NURSING)) / 60, 1
+        ),
+    ),
+    NanitCareLogSensorDescription(
+        key="pumped_volume_today",
+        translation_key="pumped_volume_today",
+        device_class=SensorDeviceClass.VOLUME,
+        native_unit_of_measurement=UnitOfVolume.MILLILITERS,
+        suggested_display_precision=0,
+        value_fn=lambda data: round(
+            sum(_pumped_ml(log) or 0.0 for log in _today(data, CARE_LOG_PUMPING)), 1
+        ),
+    ),
+)
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: NanitConfigEntry,
@@ -168,6 +335,22 @@ async def async_setup_entry(
         if net_coordinator is not None:
             for net_description in NETWORK_SENSORS:
                 entities.append(NanitNetworkSensor(net_coordinator, net_description))
+
+    # Care Log sensors: one set per baby care log reader, like the calendar.
+    # On the camera's device only when that camera was set up; a baby
+    # without one, or whose camera failed, gets sensors of their own.
+    cameras = entry.runtime_data.cameras
+    for care_coordinator in entry.runtime_data.hub.care_log_coordinators.values():
+        camera_uid = care_coordinator.baby.camera_uid
+        for care_description in CARE_LOG_SENSORS:
+            entities.append(
+                NanitCareLogSensor(
+                    care_coordinator,
+                    care_description,
+                    entry_id=entry.entry_id,
+                    camera_uid=camera_uid if camera_uid and camera_uid in cameras else None,
+                )
+            )
 
     # Sound & Light Machine sensors
     for speaker_data in entry.runtime_data.speakers.values():
@@ -318,3 +501,57 @@ class NanitNetworkSensor(NanitNetworkEntity, SensorEntity):
         if self.coordinator.data is None:
             return None
         return self.entity_description.value_fn(self.coordinator.data)
+
+
+class NanitCareLogSensor(NanitCareLogEntity, SensorEntity):
+    """Sensor summarising the Care Logs parents keep in the Nanit app."""
+
+    entity_description: NanitCareLogSensorDescription
+
+    def __init__(
+        self,
+        coordinator: NanitCareLogCoordinator,
+        description: NanitCareLogSensorDescription,
+        *,
+        entry_id: str,
+        camera_uid: str | None,
+    ) -> None:
+        """Initialize for the reader's baby, on its camera's device if camera_uid."""
+        super().__init__(coordinator, camera_uid=camera_uid)
+        self.entity_description = description
+        baby = coordinator.baby
+        # Per config entry and baby, like the calendar: a camera moved to
+        # another baby can't carry this baby's history over, and two sign-ins
+        # that see the same baby each get their own set. The baby is named
+        # by its code, so the raw uid never reaches the entity registry.
+        self._attr_unique_id = f"{entry_id}_{baby_code(baby.uid)}_{description.key}"
+        if not camera_uid:
+            # No device to carry the baby's name, so the entity name does.
+            self._attr_translation_key = f"{description.key}_baby"
+            self._attr_translation_placeholders = {
+                "baby_name": baby_display_name(baby.name, baby.uid)
+            }
+        # Not every family uses Care Logs. An account with no entries
+        # in the first fetch's lookback gets these registered disabled, so
+        # it isn't handed a set of sensors that never change. No data at all
+        # means the first fetch failed, which says nothing about the account,
+        # so they are registered enabled and stay unavailable until a fetch
+        # succeeds. This is only the default for a new registry entry: one
+        # already registered keeps whatever it was set to.
+        data = coordinator.data
+        self._attr_entity_registry_enabled_default = data is None or bool(data.latest)
+
+    @property
+    def native_value(self) -> datetime | float | int | None:
+        """Return the sensor value."""
+        if self.coordinator.data is None:
+            return None
+        return self.entity_description.value_fn(self.coordinator.data)
+
+    @property
+    def extra_state_attributes(self) -> CareLogAttributes | None:
+        """Return details of the entry or the day's breakdown."""
+        attrs_fn = self.entity_description.attrs_fn
+        if attrs_fn is None or self.coordinator.data is None:
+            return None
+        return attrs_fn(self.coordinator.data)

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum, IntEnum
 
 
@@ -143,6 +143,25 @@ class Baby:
     network: NetworkInfo | None = None
     camera_connected: bool | None = None  # True = camera online per Nanit cloud
     camera_last_seen: int | None = None  # Unix timestamp of last cloud contact
+    # Where care log history can start. Personal, so kept out of repr.
+    birth_date: date | None = field(default=None, repr=False)
+    created_at: float | None = field(default=None, repr=False)  # Unix timestamp of the record
+
+
+@dataclass(frozen=True, repr=False)
+class BabiesFetch:
+    """One /babies fetch: the babies it lists, and how many rows were skipped.
+
+    ``dropped`` counts the rows skipped as malformed. When it is not 0 the
+    list is not the whole account: a baby missing from it may still be
+    there. Its printed form shows only the counts.
+    """
+
+    babies: tuple[Baby, ...]
+    dropped: int
+
+    def __repr__(self) -> str:
+        return f"BabiesFetch(<{len(self.babies)} babies>, dropped={self.dropped})"
 
 
 @dataclass(frozen=True)
@@ -152,6 +171,110 @@ class CloudEvent:
     event_type: str  # "MOTION", "SOUND", etc.
     timestamp: float  # Unix timestamp
     baby_uid: str
+
+
+@dataclass(frozen=True)
+class CareLog:
+    """An entry from the Nanit app's Care Logs.
+
+    Parents log these by hand in the app: diaper changes, bottles, nursing,
+    pumping and naps. The calendar also carries the camera's own sleep
+    sessions (``auto_sleep``). Only the fields that apply to ``log_type``
+    are set; the rest stay None.
+
+    Numbers and short tokens only: the notes and names an entry can carry
+    are never kept here (see ``CareLogDetail``). A measurement the row
+    carried but that could not be used (negative, not a finite number, or
+    above a ceiling no real entry reaches: 100,000 mL, or 7 days in
+    seconds) is None like a missing one, and its field name is in
+    ``invalid_fields``.
+    """
+
+    uid: str
+    log_type: str  # "diaper_change", "bottle_feed", "nursing", "pumping", "sleep", ...
+    timestamp: float  # Unix timestamp of the start of the entry
+    baby_uid: str
+    change_type: str | None = None  # diaper_change: "pee", "poo", "mixed" or "dry"
+    feed_amount_ml: float | None = None  # bottle_feed
+    left_duration_s: float | None = None  # nursing
+    right_duration_s: float | None = None  # nursing
+    left_amount_ml: float | None = None  # pumping
+    right_amount_ml: float | None = None  # pumping
+    duration_s: float | None = None  # pumping, sleep, auto_sleep
+    end_timestamp: float | None = None  # Unix timestamp of the end, when the row gives one
+    net_duration_s: float | None = None  # sleep, semi_auto_sleep
+    status: str | None = None  # auto_sleep: "eligible" or "not_eligible"
+    logged_at: float | None = None  # Unix timestamp of when the entry was logged
+    start_source: str | None = None  # semi_auto_sleep: "camera", "user", ...
+    end_source: str | None = None  # semi_auto_sleep
+    invalid_fields: frozenset[str] = frozenset()  # measurement fields present but rejected
+
+
+@dataclass(frozen=True, repr=False)
+class CareLogFetch:
+    """One calendar fetch: its entries, the range asked for, and what was skipped.
+
+    ``start`` and ``end`` are the Unix times sent; Nanit includes both.
+    ``dropped`` counts the rows skipped as malformed (no uid, an unsafe or
+    missing type, no time in Unix seconds, or not an object at all). Its
+    printed form shows only the counts, none of the entries' ids, times or
+    measurements.
+    """
+
+    logs: tuple[CareLog, ...]
+    start: int
+    end: int
+    dropped: int
+
+    def __repr__(self) -> str:
+        return f"CareLogFetch(<{len(self.logs)} entries>, dropped={self.dropped})"
+
+
+@dataclass(frozen=True)
+class CareLogDetail:
+    """The personal text of a Care Log entry: its note, and who logged it.
+
+    Only ``async_get_calendar_details`` builds this; the numbers-only
+    fetches never do. Each field is cleaned text (control and format
+    characters removed, whitespace collapsed, length capped) or None. The
+    text is kept out of ``repr``, so printing or logging one shows nothing
+    of it.
+    """
+
+    comment: str | None = field(default=None, repr=False)
+    user_name: str | None = field(default=None, repr=False)
+    user_relation: str | None = field(default=None, repr=False)
+
+
+@dataclass(frozen=True, repr=False)
+class CareLogEntry:
+    """A Care Log entry together with its personal text.
+
+    Its printed form shows only the entry's kind, none of its ids, times or
+    measurements.
+    """
+
+    log: CareLog
+    detail: CareLogDetail
+
+    def __repr__(self) -> str:
+        return f"CareLogEntry(<{self.log.log_type}>)"
+
+
+@dataclass(frozen=True, repr=False)
+class CareLogDetailFetch:
+    """One calendar fetch with personal text, otherwise like ``CareLogFetch``.
+
+    Its printed form shows only the counts.
+    """
+
+    entries: tuple[CareLogEntry, ...]
+    start: int
+    end: int
+    dropped: int
+
+    def __repr__(self) -> str:
+        return f"CareLogDetailFetch(<{len(self.entries)} entries>, dropped={self.dropped})"
 
 
 @dataclass(frozen=True)

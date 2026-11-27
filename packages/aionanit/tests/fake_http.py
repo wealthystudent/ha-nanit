@@ -5,8 +5,10 @@ used (`m.get(url, payload=..., status=...)`, `exception=...`). Requests go
 through a real ClientSession to a local aiohttp server on 127.0.0.1, so the
 client under test
 parses genuine aiohttp responses (status handling, `json()` content type
-checks, `raise_for_status`). An `exception` is raised client side instead,
-which is how timeouts and connection failures reach the caller.
+checks, `raise_for_status`). The served URL keeps the requested path, so an
+aiohttp error that quotes its URL quotes the ids in it as a real one would. An
+`exception` is raised client side instead, which is how timeouts and
+connection failures reach the caller.
 
 Each registration answers one request, in order. A request with nothing
 registered fails the test with AssertionError, and so does a registration that
@@ -36,6 +38,7 @@ class _Canned:
     body: bytes
     content_type: str
     exception: BaseException | None
+    headers: dict[str, str] | None = None
 
 
 class FakeApi:
@@ -54,6 +57,7 @@ class FakeApi:
         body: str | bytes | None = None,
         content_type: str | None = None,
         exception: BaseException | None = None,
+        headers: dict[str, str] | None = None,
     ) -> None:
         if payload is not None:
             raw = json.dumps(payload).encode()
@@ -63,7 +67,7 @@ class FakeApi:
         else:
             raw = body or b""
         self._queues[(method, URL(url))].append(
-            _Canned(status, raw, content_type or "application/json", exception)
+            _Canned(status, raw, content_type or "application/json", exception, headers)
         )
 
     def get(self, url: str, **kwargs: Any) -> None:
@@ -125,7 +129,7 @@ class FakeSession:
         self._pending[key] = canned
         assert self._session is not None and self._server is not None
         return await self._session.request(
-            method, self._server.make_url(f"/canned/{key}"), **kwargs
+            method, self._server.make_url(f"/canned/{key}{full.path}"), **kwargs
         )
 
     async def get(self, url: str, **kwargs: Any) -> ClientResponse:
@@ -141,13 +145,13 @@ class FakeSession:
         return web.Response(
             status=canned.status,
             body=canned.body,
-            headers={"Content-Type": canned.content_type},
+            headers={**(canned.headers or {}), "Content-Type": canned.content_type},
         )
 
     async def start(self) -> None:
         """Start the server and a session that talks to it."""
         app = web.Application()
-        app.router.add_route("*", "/canned/{key}", self._handle)
+        app.router.add_route("*", "/canned/{key}{path:.*}", self._handle)
         self._server = TestServer(app, host="127.0.0.1")
         await self._server.start_server()
         self._session = ClientSession()

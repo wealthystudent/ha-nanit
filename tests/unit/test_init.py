@@ -649,6 +649,7 @@ def _migration_hub(
         }
     return SimpleNamespace(
         babies=babies,
+        babies_complete=True,
         speaker_uid_map=speaker_uid_map,
         camera_speaker_pairs=camera_speaker_pairs,
         unpaired_speakers=unpaired_speakers if unpaired_speakers is not None else {},

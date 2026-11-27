@@ -1146,6 +1146,58 @@ async def test_a_complete_babies_answer_without_a_camera_removes_it(
     assert left == {"cam_1"}
 
 
+_INCOMPLETE_WARNING = "Part of Nanit's list of babies could not be read"
+_UNREADABLE_ROWS = [_ROW_1, {**_ROW_2, "uid": 12345}]
+
+
+@pytest.mark.parametrize("fallback", [False, True], ids=["library", "fallback"])
+@pytest.mark.parametrize(
+    ("at_setup", "later", "warnings"),
+    [
+        (_UNREADABLE_ROWS, _UNREADABLE_ROWS, 1),
+        ([_ROW_1, _ROW_2], [_ROW_1, _ROW_2], 0),
+        ([_ROW_1, _ROW_2], _UNREADABLE_ROWS, 0),
+    ],
+    ids=["unreadable_at_setup", "complete", "unreadable_only_later"],
+)
+async def test_an_unreadable_baby_row_at_setup_is_warned_about_once(
+    hass: HomeAssistant,
+    mock_nanit_client,
+    caplog: pytest.LogCaptureFixture,
+    at_setup: list[object],
+    later: list[object],
+    warnings: int,
+    fallback: bool,
+) -> None:
+    """Only the setup read decides removal, so only it warns, and without the row.
+
+    Later reads of /babies (the network and failed-camera checks) never warn.
+    """
+    mock_nanit_client.camera.side_effect = lambda **kw: _make_mock_camera(kw["uid"], kw["baby_uid"])
+    _answer_babies(mock_nanit_client, {"babies": at_setup}, fallback=fallback)
+    entry = _make_entry(hass)
+
+    with caplog.at_level("WARNING", logger="custom_components.nanit.hub"):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        hub = entry.runtime_data.hub
+        _answer_babies(mock_nanit_client, {"babies": later}, fallback=fallback)
+        for _ in range(3):
+            babies = await hub.async_get_babies_tolerant()
+            assert len(babies) == (1 if later is _UNREADABLE_ROWS else 2)
+
+    assert hub.babies_complete is (at_setup is not _UNREADABLE_ROWS)
+    records = [r for r in caplog.records if _INCOMPLETE_WARNING in r.getMessage()]
+    assert len(records) == warnings
+    for record in records:
+        assert record.levelname == "WARNING"
+        message = record.getMessage()
+        assert "(unreadable entries: 1)" in message
+        for detail in ("12345", "baby_", "cam_", "Bedroom", "Nursery", MOCK_EMAIL):
+            assert detail not in message
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
 @pytest.mark.parametrize("fallback", [False, True], ids=["library", "fallback"])
 @pytest.mark.parametrize("body", [{"babies": None}, {}, []], ids=["null_list", "no_list", "list"])
 async def test_a_babies_answer_of_the_wrong_shape_fails_setup(

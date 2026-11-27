@@ -291,8 +291,9 @@ class NanitHub:
         self._babies = list(babies)
         self._babies_complete = fetch.dropped == 0
         if not self._babies_complete:
-            _LOGGER.debug(
-                "Nanit's device list had %d unreadable row(s); no device is removed this setup",
+            _LOGGER.warning(
+                "Part of Nanit's list of babies could not be read (unreadable entries: %d), "
+                "so this setup will not remove devices that are no longer on the account",
                 fetch.dropped,
             )
 

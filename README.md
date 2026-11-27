@@ -246,6 +246,7 @@ Good to know:
 | Temperature or humidity shows unknown (`--` on the card) | The camera isn't reporting a reading. The Nanit app shows dashes for it too. |
 | Sound & Light not using the local connection | Check that it's on the same network as HA, or set its IP in the options. The Nanit app on the same network can hold the speaker's only local slot. |
 | Re-authentication required | Session expired — click the notification to re-enter credentials. |
+| Warning that part of Nanit's list of babies could not be read | An entry in the list couldn't be read when the integration started, so it removed no device that has left your Nanit account. Reload the integration to read the list again. If you've confirmed in the Nanit app that a device is gone, you can also remove it from its Home Assistant device page. |
 | Other issues | Check **Settings → System → Logs** (filter for `nanit`) or download diagnostics from the integration page. |
 
 ## Known limitations

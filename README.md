@@ -132,6 +132,8 @@ Turning it on removes the control entities, so **automations and scripts that us
 
 Turn on **Settings → Devices & Services → Nanit → Configure → Stills from the live stream** to fill the camera's picture from its live stream. Nanit's cloud currently returns no still picture, so without it the camera's picture in Home Assistant, and anything built on it such as a HomeKit camera tile or a picture card, stays empty ("No Response" in HomeKit) until someone opens the live view.
 
+Even with the option off, the picture comes from Home Assistant's own stream whenever that stream is already running, such as with **Preload camera stream** on. It follows the same 10 minute rule as below, but sends nothing to the camera and holds no extra slot. When that stream isn't running, nothing is taken.
+
 How it works:
 
 - When something asks for a picture, the cloud has none, and the last picture is more than about 10 minutes old, Home Assistant starts the camera's stream briefly and keeps a single frame. Until that frame arrives, the previous picture (or none) is shown.

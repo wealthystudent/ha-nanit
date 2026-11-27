@@ -1,4 +1,4 @@
-"""Opt-in stills from the live stream when Nanit's cloud snapshot fails."""
+"""Stills from the live stream when Nanit's cloud snapshot fails."""
 
 from __future__ import annotations
 
@@ -107,6 +107,7 @@ async def _settle(hass: HomeAssistant, entity: NanitCameraEntity) -> None:
 
 
 async def test_option_off_keeps_the_old_behaviour(hass: HomeAssistant) -> None:
+    """With the option off and no stream running, nothing is grabbed."""
     entity, camera, _ = _entity(hass, stream_stills=False)
 
     with patch(GRAB, new=AsyncMock(return_value=NEW_IMAGE)) as grab:
@@ -854,6 +855,70 @@ async def test_watched_stream_gives_the_frame_without_put_streaming(hass: HomeAs
     camera.async_start_streaming.assert_not_awaited()
     assert entity._cached_snapshot == NEW_IMAGE
     assert info.last_taken is not None
+
+
+async def test_option_off_takes_the_frame_from_a_running_stream(hass: HomeAssistant) -> None:
+    """With preload or a viewer, the stream already runs, so a still costs the camera nothing."""
+    entity, camera, info = _entity(hass, stream_stills=False)
+    stream = MagicMock()
+    stream.outputs.return_value = {"hls": MagicMock()}
+    stream.async_get_image = AsyncMock(return_value=NEW_IMAGE)
+    entity.stream = stream
+
+    with patch(GRAB, new=AsyncMock(return_value=b"ffmpeg-image")) as grab:
+        first = await entity.async_camera_image()
+        await _settle(hass, entity)
+        second = await entity.async_camera_image()
+
+    assert first == OLD_IMAGE
+    assert second == NEW_IMAGE
+    stream.async_get_image.assert_awaited_once_with()
+    grab.assert_not_awaited()
+    camera.async_get_stream_rtmps_url.assert_not_awaited()
+    camera.async_start_streaming.assert_not_awaited()
+    assert info.last_taken is not None
+
+
+async def test_option_off_never_starts_an_idle_stream(hass: HomeAssistant) -> None:
+    entity, camera, _ = _entity(hass, stream_stills=False)
+    stream = MagicMock()
+    stream.outputs.return_value = {}
+    stream.async_get_image = AsyncMock(return_value=b"stream-image")
+    entity.stream = stream
+
+    with patch(GRAB, new=AsyncMock(return_value=NEW_IMAGE)) as grab:
+        image = await entity.async_camera_image()
+        await _settle(hass, entity)
+
+    assert image == OLD_IMAGE
+    assert entity._stream_still_task is None
+    stream.async_get_image.assert_not_awaited()
+    grab.assert_not_awaited()
+    camera.async_start_streaming.assert_not_awaited()
+
+
+async def test_option_off_stream_gone_before_the_grab_starts_nothing(
+    hass: HomeAssistant,
+) -> None:
+    """A stream that stopped between the request and the grab is not restarted."""
+    entity, camera, _ = _entity(hass, stream_stills=False)
+    stream = MagicMock()
+    stream.outputs.return_value = {"hls": MagicMock()}
+    stream.async_get_image = AsyncMock(return_value=b"stream-image")
+    entity.stream = stream
+
+    with patch(GRAB, new=AsyncMock(return_value=NEW_IMAGE)) as grab:
+        await entity.async_camera_image()
+        # The grab task is not eager, so the viewer can leave before it runs.
+        stream.outputs.return_value = {}
+        await _settle(hass, entity)
+
+    stream.async_get_image.assert_not_awaited()
+    grab.assert_not_awaited()
+    camera.async_get_stream_rtmps_url.assert_not_awaited()
+    camera.async_start_streaming.assert_not_awaited()
+    assert entity._stream_still_failures == 0
+    assert entity._cached_snapshot == OLD_IMAGE
 
 
 async def test_idle_stream_object_still_uses_ffmpeg(hass: HomeAssistant) -> None:

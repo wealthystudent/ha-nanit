@@ -255,7 +255,9 @@ class NanitCameraEntity(NanitEntity, Camera):
         self._session_providers: list[Any] = []
         self._push_stopped_at = float("-inf")
         self._warned_stop_unsupported = False
-        # Opt-in stills from the live stream when the cloud snapshot fails.
+        # Stills from the live stream when the cloud snapshot fails: always
+        # from a stream already running, and with this option on, also by
+        # starting one.
         self._stream_stills = stream_stills
         self._still_info = still_info if still_info is not None else StreamStillInfo()
         self._stream_still_task: asyncio.Task[None] | None = None
@@ -1785,9 +1787,10 @@ class NanitCameraEntity(NanitEntity, Camera):
         A background prefetch is scheduled when the cache reaches
         ``_SNAPSHOT_PREFETCH_AGE`` so subsequent requests hit a warm cache.
 
-        With stream stills on, a failed cloud fetch may also start a
-        background frame grab from the live stream (see
-        ``_maybe_start_stream_still``). The request never waits for it.
+        A failed cloud fetch may also start a background frame grab from the
+        live stream (see ``_maybe_start_stream_still``): from a stream Home
+        Assistant already runs, or with stream stills on, from one it starts.
+        The request never waits for it.
         """
         if not self.is_on:
             return None
@@ -1841,11 +1844,13 @@ class NanitCameraEntity(NanitEntity, Camera):
     def _maybe_start_stream_still(self) -> None:
         """Start one background frame grab if the cached image is too old.
 
-        Called only after the cloud snapshot failed. At most one grab runs
+        Called only after the cloud snapshot failed. With stream stills off,
+        a grab only reads a stream Home Assistant already runs (preload or a
+        viewer), which sends nothing to the camera. At most one grab runs
         per camera, the next one waits out the retry delay after the last one
         ended, and a camera that is asleep or unreachable is left alone.
         """
-        if not self._stream_stills:
+        if not self._stream_stills and not self._stream_running():
             return
         if self._stream_still_task is not None and not self._stream_still_task.done():
             return
@@ -1868,6 +1873,11 @@ class NanitCameraEntity(NanitEntity, Camera):
             name=f"nanit_stream_still_{self._camera.uid}",
             eager_start=False,
         )
+
+    def _stream_running(self) -> bool:
+        """Return whether Home Assistant's own stream is running (has outputs)."""
+        stream = self.stream
+        return stream is not None and bool(stream.outputs())
 
     @callback
     def _cancel_stream_still(self) -> None:
@@ -1948,7 +1958,8 @@ class NanitCameraEntity(NanitEntity, Camera):
 
         WebRTC (go2rtc) and HomeKit viewers do not use that stream, so for
         them the ffmpeg path runs and re-sends PUT_STREAMING, usually for the
-        URL already cached.
+        URL already cached. With stream stills off there is no ffmpeg path: a
+        stream that stopped before the grab ran is left alone.
 
         Cancelling this task cannot stop an ffmpeg read already under way,
         because Home Assistant shields that call. ffmpeg's stall timeout and
@@ -1960,6 +1971,8 @@ class NanitCameraEntity(NanitEntity, Camera):
         stream = self.stream
         if stream is not None and stream.outputs():
             await self._async_read_still(stream.async_get_image, "the running stream")
+            return
+        if not self._stream_stills:
             return
 
         if not await self._async_ffmpeg_found():

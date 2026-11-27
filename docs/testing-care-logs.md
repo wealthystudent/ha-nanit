@@ -33,7 +33,7 @@ Open http://localhost:8123, then:
 3. Enter your Nanit **email** and **password**, then the code Nanit sends you
 
 **Verify:**
-- [ ] **Settings → Devices & Services → Nanit → Configure → Care log notes** shows **Show notes and who logged each entry** ticked
+- [ ] **Settings → Devices & Services → Nanit → Configure → Care log notes** shows **Show notes and who logged each entry** unticked
 
 ---
 
@@ -54,8 +54,8 @@ The app's own list rounds some amounts and drops seconds from nursing times, so 
 Open **Calendar** and tick the baby's **Care log** calendar.
 
 - [ ] Today's entries match the app by kind, time and amount, such as "Bottle, 90 mL" or "Nursing, 15 min"
-- [ ] Opening a bottle shows when it was logged, its note and "Logged by" the person's name and relation
-- [ ] With **Show notes and who logged each entry** unticked in the options, the note and "Logged by" are gone; tick it again afterwards
+- [ ] Opening a bottle shows when it was logged, but no note and no "Logged by"
+- [ ] With **Show notes and who logged each entry** ticked in the options, the bottle also shows its note and "Logged by" the person's name and relation
 
 ---
 

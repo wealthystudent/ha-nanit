@@ -60,11 +60,11 @@ def _schema_defaults(result: Any) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def test_an_entry_without_the_key_shows_notes() -> None:
-    """Notes and who logged each entry show unless switched off."""
+def test_an_entry_without_the_key_hides_notes() -> None:
+    """Notes and who logged each entry stay hidden unless switched on."""
     entry = MockConfigEntry(domain=DOMAIN, options={CONF_READ_ONLY: True})
 
-    assert is_show_care_log_notes(entry) is True
+    assert is_show_care_log_notes(entry) is False
 
 
 @pytest.mark.parametrize("value", [True, False])
@@ -98,7 +98,7 @@ async def test_sign_in_form_asks_nothing_about_care_logs(hass: HomeAssistant) ->
 async def test_new_sign_in_stores_nothing_about_care_logs(
     hass: HomeAssistant, mock_config_flow_client: MagicMock
 ) -> None:
-    """A new entry shows notes through the default; nothing is stored for it."""
+    """A new entry hides notes through the default; nothing is stored for it."""
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
     result = await hass.config_entries.flow.async_configure(result["flow_id"], _CREDENTIALS)
 
@@ -107,7 +107,7 @@ async def test_new_sign_in_stores_nothing_about_care_logs(
     entry = result_data["result"]
     assert entry.options == {}
     assert CONF_SHOW_CARE_LOG_NOTES not in entry.data
-    assert is_show_care_log_notes(entry) is True
+    assert is_show_care_log_notes(entry) is False
 
 
 async def test_a_sign_in_with_a_verification_code_stores_nothing_about_care_logs(
@@ -255,7 +255,7 @@ async def _open_care_logs(hass: HomeAssistant, entry: MockConfigEntry) -> Any:
 @pytest.mark.parametrize(
     ("options", "expected"),
     [
-        ({}, True),
+        ({}, False),
         ({CONF_SHOW_CARE_LOG_NOTES: False}, False),
         ({CONF_SHOW_CARE_LOG_NOTES: True}, True),
         ({_LEFTOVER: True, CONF_SHOW_CARE_LOG_NOTES: False}, False),

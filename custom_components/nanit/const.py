@@ -84,7 +84,7 @@ DEFAULT_LOCAL_STREAM_PORT = 1935
 CONF_STREAM_STILLS = "stream_stills"
 
 # Care log privacy choice: whether the calendar shows each entry's note and
-# who logged it. Not stored until the user changes it, and on until then.
+# who logged it. Not stored until the user changes it, and off until then.
 CONF_SHOW_CARE_LOG_NOTES = "show_care_log_notes"
 
 
@@ -101,9 +101,9 @@ def is_stream_stills(entry: ConfigEntry) -> bool:
 def is_show_care_log_notes(entry: ConfigEntry) -> bool:
     """Return whether care log notes and who logged each entry may be shown.
 
-    On unless switched off in the options.
+    Off unless switched on in the options.
     """
-    return entry.options.get(CONF_SHOW_CARE_LOG_NOTES, True) is True
+    return entry.options.get(CONF_SHOW_CARE_LOG_NOTES, False) is True
 
 
 def uses_external_go2rtc(hass: HomeAssistant) -> bool:

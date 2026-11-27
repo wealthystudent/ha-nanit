@@ -47,9 +47,9 @@ Use the release zip, not a copy of the repository: the source on `main` carries 
 3. Enter the MFA code sent to your device (use the latest code — they expire quickly).
 4. Done — all devices on your account (cameras and Sound & Light Machines) are discovered automatically.
 
-A Sound & Light Machine that isn't paired to any baby in the Nanit app is picked up too, as its own device named after the machine. This is new, so please open an issue if one shows up but doesn't respond.
+A Sound & Light Machine that isn't paired to any baby in the Nanit app is picked up too, as its own device named after the machine. That includes one set up only in the **Nanit Sound + Light** app (the standard Nanit app no longer lets you pair a Sound & Light Machine), even on an account with no baby or camera. This is new, so please open an issue if one shows up but doesn't respond.
 
-If you set the machine up in the **Nanit Sound + Light** app (the standard Nanit app no longer lets you pair a Sound & Light Machine), Nanit's cloud may not report it at all, so it isn't found. Add it by hand under **Settings → Devices & Services → Nanit → Configure → Add Sound & Light Machine by ID**. The ID is the part after `Nanit-` in the machine's network name (for example `L151ABC1234567`, shown in your router's client list), and the IP address is optional. To remove it again, delete its device on the device page.
+If a machine still isn't found, add it by hand under **Settings → Devices & Services → Nanit → Configure → Add Sound & Light Machine by ID**. The ID is the part after `Nanit-` in the machine's network name (for example `L151ABC1234567`, shown in your router's client list), and the IP address is optional. To remove it again, delete its device on the device page. A machine you added by hand that is later found automatically stays one device.
 
 ## What you get
 

@@ -12,6 +12,7 @@ from .auth import TokenManager
 from .camera import NanitCamera
 from .exceptions import NanitAuthError
 from .models import (
+    AccountSpeaker,
     BabiesFetch,
     Baby,
     CareLog,
@@ -198,6 +199,15 @@ class NanitClient:
         """
         return await self._async_with_retry(
             lambda token: self._rest.async_get_speaker_candidates(token, baby_uid),
+        )
+
+    async def async_get_account_speakers(self) -> list[AccountSpeaker]:
+        """List every Sound & Light Machine on the account, with no baby needed.
+
+        Retries once on a mid-token-life 401 by refreshing the token.
+        """
+        return await self._async_with_retry(
+            lambda token: self._rest.async_get_account_speakers(token),
         )
 
     async def async_get_device_token(self, speaker_uid: str) -> str:

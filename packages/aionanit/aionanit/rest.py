@@ -24,6 +24,7 @@ from .exceptions import (
     NanitResponseTooLarge,
 )
 from .models import (
+    AccountSpeaker,
     BabiesFetch,
     Baby,
     CareLog,
@@ -464,6 +465,18 @@ NANIT_API_HEADERS: dict[str, str] = {
 }
 
 
+def _nanit_lite_headers(access_token: str) -> dict[str, str]:
+    """Headers the Nanit Sound + Light app sends to its /speakers endpoints."""
+    return {
+        "accept": "application/json",
+        "authorization": f"token {access_token}",
+        "accept-charset": "UTF-8",
+        "x-nanit-platform": "homeassistant",
+        "user-agent": "NanitLite/1.8.0 (com.udisense.nanitlite; build:168; homeassistant)",
+        "x-nanit-service": "1.8.0 (168)",
+    }
+
+
 class NanitRestClient:
     """Async HTTP client for the Nanit cloud REST API.
 
@@ -652,14 +665,7 @@ class NanitRestClient:
         """
         # The udtokens endpoint requires NanitLite headers (token prefix,
         # NanitLite User-Agent) rather than the standard NANIT_API_HEADERS.
-        headers = {
-            "accept": "application/json",
-            "authorization": f"token {access_token}",
-            "accept-charset": "UTF-8",
-            "x-nanit-platform": "homeassistant",
-            "user-agent": ("NanitLite/1.8.0 (com.udisense.nanitlite; build:168; homeassistant)"),
-            "x-nanit-service": "1.8.0 (168)",
-        }
+        headers = _nanit_lite_headers(access_token)
         try:
             resp = await self._session.get(
                 f"{self._base_url}/speakers/{speaker_uid}/udtokens",
@@ -878,3 +884,52 @@ class NanitRestClient:
             for row in rows
             if isinstance(row, dict) and isinstance(row.get("uid"), str) and row["uid"]
         ]
+
+    async def async_get_account_speakers(self, access_token: str) -> list[AccountSpeaker]:
+        """List every Sound & Light Machine on the account (GET /speakers).
+
+        Needs no baby, unlike the pairing view. Deleted machines are left
+        out. Uses the same NanitLite headers as the udtokens endpoint.
+        """
+        try:
+            resp = await self._session.get(
+                f"{self._base_url}/speakers",
+                headers=_nanit_lite_headers(access_token),
+                timeout=_DEFAULT_TIMEOUT,
+            )
+        except (TimeoutError, aiohttp.ClientError) as err:
+            raise NanitConnectionError(str(err) or type(err).__name__) from err
+
+        if resp.status == 401:
+            raise NanitAuthError("Access token invalid")
+
+        _classify_http_error(resp, "Account speakers fetch")
+        try:
+            body = await resp.json(content_type=None)
+        except (TimeoutError, aiohttp.ClientError, ValueError) as err:
+            raise NanitConnectionError(f"Invalid account speakers response: {err}") from err
+
+        rows = body.get("speakers") if isinstance(body, dict) else None
+        if not isinstance(rows, list):
+            # Not "no speakers": a caller must be able to tell an unexpected
+            # shape from a real empty list.
+            raise NanitConnectionError("Invalid account speakers response: no speakers list")
+        speakers: list[AccountSpeaker] = []
+        for row in rows:
+            if not isinstance(row, dict) or row.get("deleted_at"):
+                continue
+            uid = row.get("uid")
+            if not isinstance(uid, str) or not uid:
+                continue
+            baby = row.get("baby")
+            # Only an explicit false counts as unattached; anything unexpected
+            # is treated as attached, which keeps the machine out of discovery.
+            attached = not (isinstance(baby, dict) and baby.get("attached_to_baby") is False)
+            speakers.append(
+                AccountSpeaker(
+                    uid=uid,
+                    name=_sanitize_name(row.get("name")),
+                    attached_to_baby=attached,
+                )
+            )
+        return speakers

@@ -459,7 +459,9 @@ class NanitOptionsFlow(OptionsFlow):
                 errors[CONF_SPEAKER_UID] = "invalid_speaker_uid"
             elif uid in paired:
                 errors[CONF_SPEAKER_UID] = "speaker_already_paired"
-            elif uid in unpaired:
+            elif uid in unpaired and uid not in manual:
+                # A hand-added machine that's now discovered can still have
+                # its saved IP changed here.
                 errors[CONF_SPEAKER_UID] = "speaker_already_found"
             if speaker_ip:
                 try:

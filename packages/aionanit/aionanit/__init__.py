@@ -22,6 +22,7 @@ from .exceptions import (
     NanitWebRtcRefused,
 )
 from .models import (
+    AccountSpeaker,
     BabiesFetch,
     Baby,
     CameraEvent,
@@ -82,6 +83,7 @@ def __dir__() -> list[str]:
 
 
 __all__ = [
+    "AccountSpeaker",
     "BabiesFetch",
     "Baby",
     "CameraEvent",

@@ -168,6 +168,7 @@ def mock_nanit_client():
 
         client.async_get_babies_result = AsyncMock(side_effect=get_babies_result)
         client.async_get_speaker_candidates = AsyncMock(return_value=[])
+        client.async_get_account_speakers = AsyncMock(return_value=[])
         client.async_close = AsyncMock()
 
         mock_camera = MagicMock()
@@ -243,4 +244,5 @@ def mock_config_flow_client():
         client.restore_tokens = MagicMock()
         client.async_get_babies = AsyncMock(return_value=[MOCK_BABY_1])
         client.async_get_speaker_candidates = AsyncMock(return_value=[])
+        client.async_get_account_speakers = AsyncMock(return_value=[])
         yield client

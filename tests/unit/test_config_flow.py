@@ -878,6 +878,36 @@ async def test_options_flow_manual_speaker_rejects_a_machine_the_cloud_reports(
     assert entry.options[CONF_SPEAKER_IPS] == {"spk_1": "192.168.1.6"}
 
 
+async def test_options_flow_hand_added_machine_keeps_its_ip_editable_once_discovered(
+    hass: HomeAssistant,
+) -> None:
+    """A machine added by hand that is now found automatically can still change its IP."""
+    hass = await _resolve_hass(hass)
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        options={
+            CONF_MANUAL_SPEAKERS: {"L151ABC1234567": "Nursery"},
+            CONF_SPEAKER_IPS: {"L151ABC1234567": "192.168.1.72"},
+        },
+    )
+    entry.runtime_data = SimpleNamespace(
+        hub=SimpleNamespace(
+            babies=[], speaker_uid_map={}, unpaired_speakers={"L151ABC1234567": "Nursery"}
+        )
+    )
+    entry.add_to_hass(hass)
+
+    result = await _open_manual_options(hass, entry)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {CONF_SPEAKER_UID: "l151abc1234567", CONF_SPEAKER_IP: "192.168.1.80"},
+    )
+
+    result_data = _as_dict(result)
+    assert result_data.get("type") is FlowResultType.CREATE_ENTRY
+    assert result_data["data"][CONF_SPEAKER_IPS] == {"L151ABC1234567": "192.168.1.80"}
+
+
 async def test_options_flow_only_unpaired_machines_keeps_the_found_automatically_message(
     hass: HomeAssistant,
 ) -> None:

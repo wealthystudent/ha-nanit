@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import json
 from collections import Counter
@@ -1336,6 +1337,26 @@ async def test_care_log_hold_bounds() -> None:
     assert care_log_hold(NanitRateLimited("x", 0)) == poll
     assert care_log_hold(NanitRateLimited("x", 1200)) == timedelta(minutes=20)
     assert care_log_hold(NanitRateLimited("x", 86400)) == timedelta(days=1)
+
+
+async def test_an_older_success_leaves_a_newer_throttling_in_place(hass: HomeAssistant) -> None:
+    coordinator = _coordinator(hass, _calendar([]))
+    gate = asyncio.Event()
+
+    async def slow() -> str:
+        await gate.wait()
+        return "ok"
+
+    async def throttled() -> str:
+        raise NanitRateLimited("Calendar fetch", 3600)
+
+    older = hass.async_create_task(coordinator.async_request(slow))
+    await asyncio.sleep(0)
+    with pytest.raises(NanitRateLimited):
+        await coordinator.async_request(throttled)
+    gate.set()
+    assert await older == "ok"
+    assert coordinator.requests_held
 
 
 def _care_registry_entries(

@@ -61,31 +61,50 @@ def _classify_http_error(resp: aiohttp.ClientResponse, what: str) -> None:
         raise NanitConnectionError(f"{what} failed with HTTP {err.status}") from err
 
 
-_RETRY_AFTER_SECONDS_RE = re.compile(r"[0-9]{1,10}")
+_RETRY_AFTER_SECONDS_RE = re.compile(r"[0-9]+")
+# More significant digits than this is more than the cap, whatever they are.
+_MAX_RETRY_AFTER_DIGITS = len(str(NanitRateLimited.MAX_RETRY_AFTER))
 # Longer than any HTTP date ("Sun, 06 Nov 1994 08:49:37 GMT" is 29).
 _MAX_RETRY_AFTER_LENGTH = 64
+# The asctime form of an HTTP date, such as "Sun Nov  6 08:49:37 1994".
+_ASCTIME_RE = re.compile(
+    r"[A-Za-z]{3} [A-Za-z]{3} (?:[0-9]{2}| [0-9]) [0-9]{2}:[0-9]{2}:[0-9]{2} [0-9]{4}"
+)
 
 
 def _retry_after(value: Any) -> int | None:
     """Return the wait a Retry-After header asks for, in whole seconds, or None.
 
     Either form the header can take: a number of seconds, or an HTTP date,
-    counted from now. The result is clamped to 0 up to
+    counted from now. A number of seconds may have any number of digits.
+    An HTTP date is always GMT. A date that ends with the zone "-0000" is
+    read as if it ended with "GMT", and a date in the asctime form, which
+    has no zone, is read as UTC. Any other date that leaves its zone unknown
+    reads as None. The result is clamped to 0 up to
     ``NanitRateLimited.MAX_RETRY_AFTER``; anything else reads as None.
     """
-    if not isinstance(value, str) or len(value) > _MAX_RETRY_AFTER_LENGTH:
+    if not isinstance(value, str):
         return None
-    value = value.strip()
-    if _RETRY_AFTER_SECONDS_RE.fullmatch(value):
-        seconds = int(value)
-    else:
-        try:
-            moment = email.utils.parsedate_to_datetime(value)
-        except (TypeError, ValueError, IndexError, OverflowError):
+    stripped = value.strip()
+    if _RETRY_AFTER_SECONDS_RE.fullmatch(stripped):
+        significant = stripped.lstrip("0")
+        if len(significant) > _MAX_RETRY_AFTER_DIGITS:
+            return NanitRateLimited.MAX_RETRY_AFTER
+        return min(int(significant or "0"), NanitRateLimited.MAX_RETRY_AFTER)
+    if len(value) > _MAX_RETRY_AFTER_LENGTH:
+        return None
+    value = stripped
+    if value.endswith(" -0000"):
+        value = value.removesuffix(" -0000") + " GMT"
+    try:
+        moment = email.utils.parsedate_to_datetime(value)
+    except (TypeError, ValueError, IndexError, OverflowError):
+        return None
+    if moment.tzinfo is None:
+        if not _ASCTIME_RE.fullmatch(value):
             return None
-        if moment.tzinfo is None:
-            return None
-        seconds = math.ceil((moment - datetime.now(UTC)).total_seconds())
+        moment = moment.replace(tzinfo=UTC)
+    seconds = math.ceil((moment - datetime.now(UTC)).total_seconds())
     return min(max(seconds, 0), NanitRateLimited.MAX_RETRY_AFTER)
 
 

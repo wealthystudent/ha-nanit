@@ -1570,6 +1570,17 @@ async def test_account_with_nothing_on_it_sets_nothing_up(
     sl_cls.assert_not_called()
 
 
+async def test_failed_account_lookup_with_nothing_stored_retries(
+    hass: HomeAssistant, mock_nanit_client
+) -> None:
+    """No babies, nothing stored and a failed lookup: retry instead of loading empty."""
+    mock_nanit_client.async_get_babies.return_value = []
+    mock_nanit_client.async_get_account_speakers.side_effect = NanitConnectionError("HTTP 500")
+
+    with pytest.raises(NanitConnectionError):
+        await _setup_hub(hass, mock_nanit_client)
+
+
 async def test_unpaired_speaker_failure_keeps_the_rest(
     hass: HomeAssistant, mock_nanit_client
 ) -> None:

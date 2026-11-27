@@ -156,6 +156,7 @@ class NanitHub:
         self._live_unpaired_uids: set[str] = set()
         self._unpaired_from_map: set[str] = set()
         self._unpaired_resolved = False
+        self._unpaired_lookup_failed = False
         self._manual_speakers: dict[str, str] = {}
         self._sound_lights: dict[str, NanitSoundLight] = {}
         self._unsubscribe_tokens: Callable[[], None] | None = None
@@ -278,6 +279,9 @@ class NanitHub:
         )
 
         if not babies and not self._unpaired_speakers and not self._manual_speakers:
+            if self._unpaired_lookup_failed:
+                # Nothing stored to fall back on: retry instead of loading empty.
+                raise NanitConnectionError("Could not look up Sound & Light Machines")
             _LOGGER.warning("No babies or Sound & Light Machines found on Nanit account")
             return
         # NOTE: the resolved map is persisted by the identity migration in
@@ -742,6 +746,7 @@ class NanitHub:
         paired = set(speaker_uid_map.values())
         merged = {**stored, **(found or {})}
         self._unpaired_resolved = True
+        self._unpaired_lookup_failed = found is None
         return {uid: name for uid, name in merged.items() if uid not in paired}
 
     async def _async_lookup_account_speakers(self) -> dict[str, str] | None:

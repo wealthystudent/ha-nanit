@@ -449,6 +449,8 @@ def test_ci_rejects_ai_trailers_in_commits(
         ("git commit -F - <<EOF\ndocs: don't run `git push --force`\nEOF", True),
         ('git commit -F - <<EOF\nfix: keep the user\'s "session" # 12\nEOF', False),
         ("git push origin $(git rev-parse HEAD):fix/x", False),
+        ("if git diff --quiet; then git push --force origin fix/x; fi", True),
+        ("while true; do git commit --no-verify -m x; done", True),
         ("git -c commit.gpgsign=false commit -m 'fix: x'", True),
         ("git config commit.gpgsign false", True),
         ("cd x && git commit -n -m 'fix: x'", True),
@@ -521,9 +523,12 @@ def test_guard_blocks_an_implicit_push_from_main(tmp_path: Path) -> None:
         "git push origin HEAD >`git rev-parse --show-toplevel`/push.log",
         'git push origin "$(git branch --show-current)"',
         "git push origin HEAD:$(git branch --show-current)",
+        "git push origin HEAD fix/x",
     ):
         assert any(guard.problem(w, str(tmp_path)) for w in guard.segments(command)), command
     assert guard.problem(guard.segments(f"git -C {tmp_path} push")[0], "/")
+    new_branch = "git push origin HEAD:fix/$(date +%Y%m%d)"
+    assert not any(guard.problem(w, str(tmp_path)) for w in guard.segments(new_branch))
     subprocess.run(["git", "-C", str(tmp_path), "switch", "-q", "-c", "fix/x"], check=True)
     assert guard.problem(guard.segments("git push")[0], str(tmp_path)) is None
 

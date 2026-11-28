@@ -34,6 +34,7 @@ WRAPPERS = {
     "sudo": {"-u", "-g", "-C", "-D", "-h", "-p", "-U"},
 }
 SHELLS = {"sh", "bash", "zsh", "dash"}
+KEYWORDS = {"if", "then", "else", "elif", "do", "while", "until", "!", "{"}  # if x; then git ...
 SHELL_C_RE = re.compile(r"^-[a-zA-Z]*c[a-zA-Z]*$")  # -c, and clusters like -lc or -xc
 
 
@@ -41,7 +42,7 @@ def unwrap(words: list[str]) -> list[list[str]]:
     """Strip env assignments and wrappers like `timeout 60`; open up `sh -c '...'`."""
     while words:
         name = os.path.basename(words[0])
-        if re.match(r"^\w+=", words[0]):  # FOO=bar git ...
+        if re.match(r"^\w+=", words[0]) or words[0] in KEYWORDS:  # FOO=bar git ...
             words = words[1:]
         elif name in WRAPPERS:
             rest, with_value = words[1:], WRAPPERS[name]
@@ -251,8 +252,10 @@ def problem(words: list[str], cwd: str | None = None) -> str | None:
         if not any(a == "--repo" or a.startswith("--repo=") for a in rest):
             refs = refs[1:]  # the first one is the remote
         to_main = any(r.split(":")[-1] in ("main", "refs/heads/main") for r in refs)
-        # Pushes the current branch: no ref, HEAD, or a $(...) like $(git branch --show-current)
-        implicit = all(r.split(":")[-1] == "HEAD" or "_sub_" in r.split(":")[-1] for r in refs)
+        # Any of these pushes the current branch: no ref, HEAD, or a whole $(...) such as
+        # $(git branch --show-current). fix/$(date) is a new branch, not the current one.
+        current = ("HEAD", "_sub_", "refs/heads/_sub_")
+        implicit = not refs or any(r.split(":")[-1] in current for r in refs)
         if to_main or (implicit and current_branch(cwd) == "main"):
             return "Never push to main; open a PR."
     return None

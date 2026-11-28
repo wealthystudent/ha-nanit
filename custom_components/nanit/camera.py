@@ -903,13 +903,17 @@ class NanitCameraEntity(NanitEntity, Camera):
                 # Leave the running stream alone — playing until the token
                 # actually dies beats killing it because renewal failed.
                 _LOGGER.warning("Failed to renew RTMPS stream URL", exc_info=True)
-                self._expire_stream_source()
+                if self.stream is stream:
+                    self._expire_stream_source()
                 return
             if not await self._async_start_streaming_safe(source):
-                self._expire_stream_source()
+                if self.stream is stream:
+                    self._expire_stream_source()
                 return
+            # A stream discarded meanwhile would take the switch as a restart,
+            # and the source and timers are a newer stream's by now.
             if self._local_reclaimed_stream(after_put=True) or self.stream is not stream:
-                return  # a discarded stream would take the switch as a restart
+                return
             _LOGGER.debug(
                 "Rotating RTMPS source in place for camera %s after %s",
                 self._camera.uid,

@@ -3878,11 +3878,22 @@ async def test_cooldown_end_during_the_retry_wait_only_assigns(hass: HomeAssista
     assert stream.source == FLV_URL
 
 
-@pytest.mark.parametrize("move", ["renewal", "move to cloud"])
-async def test_cloud_switch_skips_a_stream_discarded_while_it_waited(
-    hass: HomeAssistant, source_ip: Any, move: str
+@pytest.mark.parametrize(
+    ("move", "outcome"),
+    [
+        ("renewal", "ok"),
+        ("renewal", "no url"),
+        ("renewal", "no push"),
+        ("move to cloud", "ok"),
+    ],
+)
+async def test_cloud_switch_leaves_alone_a_stream_discarded_while_it_waited(
+    hass: HomeAssistant, source_ip: Any, move: str, outcome: str
 ) -> None:
-    """A switch of a discarded stream would turn its stop into a restart (#230)."""
+    """A switch of a discarded stream would turn its stop into a restart (#230).
+
+    The cached source and timers belong to the viewer who came meanwhile.
+    """
     local = _local_entry(hass, _entry(hass)).camera("cam_1")
     entity, camera = _entity(hass, local)
     local.start_cooldown("x")
@@ -3892,9 +3903,13 @@ async def test_cloud_switch_skips_a_stream_discarded_while_it_waited(
     async def cloud_url() -> str:
         url_asked.set()
         await release.wait()
+        if outcome == "no url":
+            raise RuntimeError("cloud down")
         return "rtmps://cloud/new"
 
     camera.async_get_stream_rtmps_url = cloud_url
+    if outcome == "no push":
+        entity._async_start_streaming_safe = AsyncMock(return_value=False)  # type: ignore[method-assign]
     stream = _watched_stream("rtmps://cloud/old")
     entity.stream = stream
     switch = hass.async_create_task(
@@ -3904,12 +3919,20 @@ async def test_cloud_switch_skips_a_stream_discarded_while_it_waited(
     )
     await url_asked.wait()
     await entity._async_invalidate_stream("reset")
+    new_stream = _watched_stream("rtmps://cloud/fresh")
+    new_expiry_timer = MagicMock()
+    entity.stream = new_stream
+    entity._cached_stream_source = "rtmps://cloud/fresh"
+    entity._cancel_stream_expiry_timer = new_expiry_timer
     release.set()
     await switch
 
     stream.update_source.assert_not_called()
     assert stream.source == "rtmps://cloud/old"
-    assert entity._cached_stream_source is None
+    assert entity.stream is new_stream
+    assert entity._cached_stream_source == "rtmps://cloud/fresh"
+    assert entity._cancel_stream_expiry_timer is new_expiry_timer
+    new_expiry_timer.assert_not_called()
 
 
 def _waiting_new_ha_stream(source: str) -> MagicMock:

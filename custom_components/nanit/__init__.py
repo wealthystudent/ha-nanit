@@ -404,7 +404,13 @@ async def _async_migrate_sl_identities(
     stored_map = entry.data.get("speaker_uid_map", {})
     # An empty map is only written when this setup emptied it on purpose
     # (speakers moved to unpaired), never after a resolution collapse.
-    if (hub.speaker_uid_map or hub.unpaired_from_map) and hub.speaker_uid_map != stored_map:
+    # Nothing is written when a /babies row could not be read: that baby's
+    # pairing is missing from the resolved map but not from the account.
+    if (
+        hub.babies_complete
+        and (hub.speaker_uid_map or hub.unpaired_from_map)
+        and hub.speaker_uid_map != stored_map
+    ):
         hass.config_entries.async_update_entry(
             entry,
             data={**entry.data, "speaker_uid_map": hub.speaker_uid_map},

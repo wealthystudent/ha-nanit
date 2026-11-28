@@ -62,21 +62,26 @@ def unwrap(words: list[str]) -> list[list[str]]:
 OPERATORS = "();<>|&\n"
 
 
-# A heredoc start: <<EOF, <<-EOF, <<'EOF' or <<"EOF". Its body is text, not commands.
+# A heredoc start: <<EOF, <<-EOF, <<'EOF' or <<"EOF". Its body is text, but
+# substitutions in it still run unless the delimiter is quoted.
 HEREDOC_RE = re.compile(r"<<-?[ \t]*(['\"]?)([A-Za-z_]\w*)\1")
 
 
-def substitutions(command: str, closing: str = "") -> tuple[str, list[str], int]:
+def substitutions(
+    command: str, closing: str = "", *, text: bool = False
+) -> tuple[str, list[str], int]:
     """Replace each $(...) and `...` outside single quotes with one word.
 
     Returns the command with those words, the commands that were inside (each
     is checked on its own, so the outer command keeps its arguments), and
     where the scan stopped: at an unmatched `closing` (")" or "`") or the end.
-    Quoted text, comments and heredoc bodies are never read as commands.
+    Quoted text, comments and quoted heredoc bodies are never read as commands.
+    With text (an unquoted heredoc body) quotes and # are plain characters.
     """
     out: list[str] = []
     inner: list[str] = []
-    quote, depth, heredocs, i = "", 0, [], 0
+    quote, depth, i = "", 0, 0
+    heredocs: list[tuple[str, bool]] = []
     while i < len(command):
         char = command[i]
         if quote == "'":
@@ -85,33 +90,47 @@ def substitutions(command: str, closing: str = "") -> tuple[str, list[str], int]
             out.append(command[i : i + 2])
             i += 2
             continue
-        elif char == "'" and not quote:
+        elif char == "'" and not quote and not text:
             quote = "'"
-        elif char == '"':
+        elif char == '"' and not text:
             quote = "" if quote else '"'
         elif char == closing == "`" or (char == closing == ")" and not quote and not depth):
             break
         elif char in "()" and not quote:
             depth += 1 if char == "(" else -1
-        elif char == "#" and not quote and (i == 0 or command[i - 1] in " \t" + OPERATORS):
+        elif (
+            char == "#"
+            and not quote
+            and not text
+            and (i == 0 or command[i - 1] in " \t" + OPERATORS)
+        ):
             end = command.find("\n", i)
             i = len(command) if end < 0 else end
             continue
-        elif not quote and command[i - 1 : i] != "<" and (heredoc := HEREDOC_RE.match(command, i)):
-            heredocs.append(heredoc.group(2))
+        elif (
+            not quote
+            and not text
+            and command[i - 1 : i] != "<"
+            and (heredoc := HEREDOC_RE.match(command, i))
+        ):
+            heredocs.append((heredoc.group(2), bool(heredoc.group(1))))
             out.append(heredoc.group(0))
             i = heredoc.end()
             continue
         elif char == "\n" and not quote and heredocs:
             out.append(char)
             i += 1
-            for delimiter in heredocs:  # skip each body, up to its delimiter line
+            for delimiter, quoted in heredocs:  # each body, up to its delimiter line
+                body: list[str] = []
                 while i < len(command):
                     end = command.find("\n", i)
                     end = len(command) if end < 0 else end
                     line, i = command[i:end], end + 1
                     if line.lstrip("\t") == delimiter:
                         break
+                    body.append(line)
+                if not quoted:
+                    inner += substitutions("\n".join(body), text=True)[1]
             heredocs = []
             continue
         elif char == "`" or (command.startswith("$(", i) and not command.startswith("$((", i)):

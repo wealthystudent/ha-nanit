@@ -446,6 +446,8 @@ def test_ci_rejects_ai_trailers_in_commits(
             True,
         ),
         ("git push origin fix/x # don't push main", False),
+        ("git commit -F - <<EOF\ndocs: don't run `git push --force`\nEOF", True),
+        ('git commit -F - <<EOF\nfix: keep the user\'s "session" # 12\nEOF', False),
         ("git push origin $(git rev-parse HEAD):fix/x", False),
         ("git -c commit.gpgsign=false commit -m 'fix: x'", True),
         ("git config commit.gpgsign false", True),

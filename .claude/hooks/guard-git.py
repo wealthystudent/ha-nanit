@@ -18,6 +18,7 @@ import subprocess
 import sys
 
 CONFIG_OPTIONS_WITH_VALUE = {"-f", "--file", "--blob", "--type", "--default", "--comment"}
+READ_ONLY = {"grep", "log", "show", "diff", "blame", "shortlog"}  # may search for any text
 SIGNING_KEYS = re.compile(r"^(commit|tag|rebase)\.gpgsign$|^gpg\.|^user\.signingkey$", re.I)
 
 
@@ -237,6 +238,8 @@ def problem(words: list[str], cwd: str | None = None) -> str | None:
         )  # fmt: skip
         if writes and (not words_ or SIGNING_KEYS.search(words_[0])):
             return "Changing signing config is not allowed. Use the host's signing as it is."
+    if sub in READ_ONLY:
+        return None
     if "--no-verify" in rest or (sub == "commit" and "-n" in rest):
         return "Skipping git hooks is not allowed; fix what the hook reports."
     if "--no-gpg-sign" in rest:

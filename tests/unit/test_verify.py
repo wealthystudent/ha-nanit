@@ -451,6 +451,8 @@ def test_ci_rejects_ai_trailers_in_commits(
         ("git push origin $(git rev-parse HEAD):fix/x", False),
         ("if git diff --quiet; then git push --force origin fix/x; fi", True),
         ("while true; do git commit --no-verify -m x; done", True),
+        ("git grep -n -- '--no-verify'", False),
+        ("git log --oneline --grep '--no-gpg-sign'", False),
         ("git -c commit.gpgsign=false commit -m 'fix: x'", True),
         ("git config commit.gpgsign false", True),
         ("cd x && git commit -n -m 'fix: x'", True),

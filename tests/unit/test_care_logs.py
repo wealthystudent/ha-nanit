@@ -32,7 +32,7 @@ from aionanit.exceptions import (
     NanitRequestRefused,
     NanitResponseTooLarge,
 )
-from aionanit.models import Baby, CareLog, CareLogFetch
+from aionanit.models import BabiesFetch, Baby, CareLog, CareLogFetch
 from custom_components.nanit import sensor as sensor_module
 from custom_components.nanit.baby_code import baby_code
 from custom_components.nanit.const import CARE_LOG_POLL_INTERVAL, CARE_LOG_SEED_DAYS, DOMAIN
@@ -1394,14 +1394,54 @@ async def test_a_camera_moved_to_another_baby_does_not_continue_the_first_babys_
     assert len(second) == len(CARE_LOG_SENSORS)
     assert not set(first) & set(second)
     assert not set(first.values()) & {reg.entity_id for reg in second.values()}
-    # The first baby's registry entries are left as they were, not reused.
+    # The first baby is no longer listed: its sensors are removed, not reused.
     registry = er.async_get(hass)
     for unique_id, entity_id in first.items():
-        assert registry.async_get_entity_id("sensor", DOMAIN, unique_id) == entity_id
+        assert registry.async_get_entity_id("sensor", DOMAIN, unique_id) is None
+        assert hass.states.get(entity_id) is None
     # The sibling's sensors are on the camera's device and show the sibling's entry.
     last = second[next(uid for uid in second if uid.endswith("_last_diaper_change"))]
     assert last.device_id is not None
     assert hass.states.get(last.entity_id).state != STATE_UNAVAILABLE
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+    # Another setup with the same list changes nothing more.
+    assert await _set_up(hass, entry, mock_nanit_client, calendar)
+    again = _care_registry_entries(hass, entry, "baby_9")
+    assert {uid: reg.entity_id for uid, reg in again.items()} == {
+        uid: reg.entity_id for uid, reg in second.items()
+    }
+    assert not _care_registry_entries(hass, entry, "baby_1")
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_an_unreadable_row_keeps_the_care_sensors_of_a_baby_it_may_hide(
+    hass: HomeAssistant, mock_nanit_client, freezer: FrozenDateTimeFactory
+) -> None:
+    """A baby missing from an incomplete list may only be unread, so nothing is removed."""
+    freezer.move_to("2026-11-20T18:00:00+00:00")
+    mock_nanit_client.async_get_babies.return_value = [MOCK_BABY_1, MOCK_BABY_2]
+    mock_nanit_client.camera.side_effect = lambda **kw: _mock_camera(kw["uid"], kw["baby_uid"])
+    calendar = _answers({"baby_1": [[]], "baby_2": [[]]})
+    entry = _hub_entry(hass)
+    assert await _set_up(hass, entry, mock_nanit_client, calendar)
+    unread = {
+        uid: reg.entity_id for uid, reg in _care_registry_entries(hass, entry, "baby_2").items()
+    }
+    assert len(unread) == len(CARE_LOG_SENSORS)
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+    # The shared fake always reports every row read: this answer says one was not.
+    mock_nanit_client.async_get_babies_result = AsyncMock(
+        return_value=BabiesFetch(babies=(MOCK_BABY_1,), dropped=1)
+    )
+    assert await _set_up(hass, entry, mock_nanit_client, calendar)
+
+    assert entry.runtime_data.hub.babies_complete is False
+    assert len(_care_registry_entries(hass, entry, "baby_1")) == len(CARE_LOG_SENSORS)
+    registry = er.async_get(hass)
+    for unique_id, entity_id in unread.items():
+        assert registry.async_get_entity_id("sensor", DOMAIN, unique_id) == entity_id
     assert await hass.config_entries.async_unload(entry.entry_id)
 
 

@@ -2741,6 +2741,52 @@ async def test_a_baby_without_a_camera_gets_a_calendar_of_its_own(
     assert await hass.config_entries.async_unload(entry.entry_id)
 
 
+def _care_rows(hass: HomeAssistant, entry: MockConfigEntry, baby_uid: str) -> dict[str, str]:
+    """A baby's care log sensors and calendar on an entry: unique id -> entity id."""
+    prefix = f"{entry.entry_id}_{baby_code(baby_uid)}_"
+    return {
+        row.unique_id: row.entity_id
+        for row in er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)
+        if row.unique_id.startswith(prefix)
+    }
+
+
+async def test_care_log_entities_of_babies_no_longer_listed_are_removed(
+    hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory
+) -> None:
+    """Sensors and calendar alike, of a baby on a camera and of one without."""
+    from custom_components.nanit import _CARE_LOG_ENTITY_KEYS
+
+    freezer.move_to(NOW)
+    no_camera = Baby(uid="baby_4", name="Spare room", camera_uid="")
+    fake = FakeNanit()
+    entry = await _set_up(hass, client, fake, babies=[BABY, no_camera])
+    old = {**_care_rows(hass, entry, BABY_MARKER), **_care_rows(hass, entry, "baby_4")}
+    assert len(old) == 18
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+    # The camera now belongs to a sibling of the same name; the other two are gone.
+    sibling = Baby(uid="zqsiblingbaby5127", name="Nursery", camera_uid="cam_1")
+    await _set_up(hass, client, fake, babies=[sibling], entry=entry)
+
+    assert not _care_rows(hass, entry, BABY_MARKER)
+    assert not _care_rows(hass, entry, "baby_4")
+    registry = er.async_get(hass)
+    for entity_id in old.values():
+        assert registry.async_get(entity_id) is None
+        assert hass.states.get(entity_id) is None
+    new = _care_rows(hass, entry, sibling.uid)
+    assert len(new) == 9
+    # The sibling took none of the first baby's entity ids, the calendar's included.
+    assert not set(new.values()) & set(old.values())
+    calendar = _calendar(hass, entry)
+    assert calendar.entity_id in new.values()
+    # The ending the clean-up knows a calendar by is the one a calendar is given.
+    (ending,) = _CARE_LOG_ENTITY_KEYS["calendar"]
+    assert calendar.unique_id == f"{entry.entry_id}_{baby_code(sibling.uid)}_{ending}"
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
 async def test_an_unnamed_baby_without_a_camera_gets_a_name_without_its_uid(
     hass: HomeAssistant, client: Any, freezer: FrozenDateTimeFactory
 ) -> None:

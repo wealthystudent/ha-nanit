@@ -403,17 +403,22 @@ async def _async_migrate_sl_identities(
     # destroy the pairing a crashed or interrupted first boot still needs.
     stored_map = entry.data.get("speaker_uid_map", {})
     new_map = dict(hub.speaker_uid_map)
+    moved_to_unpaired = bool(hub.unpaired_from_map)
     if not hub.babies_complete and isinstance(stored_map, dict):
         # A baby whose /babies row could not be read is missing from the
         # resolved map but not from the account, so its saved pairing stays.
         # A speaker this setup placed, or is saving as unpaired, is not kept twice.
-        placed = set(new_map.values()) | set(hub.unpaired_speakers)
+        placed = set(new_map.values())
         for key, uid in stored_map.items():
-            if key not in new_map and uid not in placed:
+            if key in new_map or uid in placed:
+                continue
+            if uid in hub.unpaired_speakers:
+                moved_to_unpaired = True
+            else:
                 new_map[key] = uid
     # An empty map is only written when this setup emptied it on purpose
     # (speakers moved to unpaired), never after a resolution collapse.
-    if (new_map or hub.unpaired_from_map) and new_map != stored_map:
+    if (new_map or moved_to_unpaired) and new_map != stored_map:
         hass.config_entries.async_update_entry(
             entry,
             data={**entry.data, "speaker_uid_map": new_map},

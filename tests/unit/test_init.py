@@ -1053,6 +1053,21 @@ async def test_unread_baby_drops_a_saved_pairing_its_speaker_now_unpaired(
     assert entry.data["unpaired_speakers"] == {"spk_5": "Den"}
 
 
+async def test_unread_baby_speaker_now_unpaired_can_empty_the_map(hass: HomeAssistant) -> None:
+    """Dropping the only saved pairing for an unpaired speaker writes the empty map."""
+    entry = _migration_entry(hass)
+    hass.config_entries.async_update_entry(
+        entry, data={**entry.data, "speaker_uid_map": {"baby_5": "spk_5"}}
+    )
+    hub = _migration_hub(speaker_uid_map={}, unpaired_speakers={"spk_5": "Den"})
+    hub.babies_complete = False
+
+    await _async_migrate_sl_identities(hass, entry, hub)
+
+    assert entry.data["speaker_uid_map"] == {}
+    assert entry.data["unpaired_speakers"] == {"spk_5": "Den"}
+
+
 async def test_empty_speaker_map_from_a_collapse_is_not_persisted(hass: HomeAssistant) -> None:
     entry = _migration_entry(hass)
     hass.config_entries.async_update_entry(

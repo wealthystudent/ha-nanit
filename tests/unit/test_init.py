@@ -1018,6 +1018,24 @@ async def test_emptied_speaker_map_is_persisted_when_moved_to_unpaired(
     assert entry.data["unpaired_speakers"] == {"spk_4": "Nursery"}
 
 
+async def test_unread_baby_keeps_its_pairing_while_a_moved_speaker_leaves_the_map(
+    hass: HomeAssistant,
+) -> None:
+    """With a /babies row unread, its saved pairing stays and an unpaired speaker still goes."""
+    entry = _migration_entry(hass)
+    hass.config_entries.async_update_entry(
+        entry, data={**entry.data, "speaker_uid_map": {"baby_4": "spk_4", "baby_5": "spk_5"}}
+    )
+    hub = _migration_hub(speaker_uid_map={}, unpaired_speakers={"spk_4": "Nursery"})
+    hub.babies_complete = False
+    hub.unpaired_from_map = {"spk_4"}
+
+    await _async_migrate_sl_identities(hass, entry, hub)
+
+    assert entry.data["speaker_uid_map"] == {"baby_5": "spk_5"}
+    assert entry.data["unpaired_speakers"] == {"spk_4": "Nursery"}
+
+
 async def test_empty_speaker_map_from_a_collapse_is_not_persisted(hass: HomeAssistant) -> None:
     entry = _migration_entry(hass)
     hass.config_entries.async_update_entry(

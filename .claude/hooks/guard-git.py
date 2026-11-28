@@ -62,15 +62,21 @@ def unwrap(words: list[str]) -> list[list[str]]:
 OPERATORS = "();<>|&\n"
 
 
-def substitutions(command: str) -> tuple[str, list[str]]:
-    """Replace each $(...) and `...` outside single quotes and comments with one word.
+# A heredoc start: <<EOF, <<-EOF, <<'EOF' or <<"EOF". Its body is text, not commands.
+HEREDOC_RE = re.compile(r"<<-?[ \t]*(['\"]?)([A-Za-z_]\w*)\1")
 
-    Returns the command with those words and the commands that were inside, so
-    each is checked on its own and the outer command keeps its arguments.
+
+def substitutions(command: str, closing: str = "") -> tuple[str, list[str], int]:
+    """Replace each $(...) and `...` outside single quotes with one word.
+
+    Returns the command with those words, the commands that were inside (each
+    is checked on its own, so the outer command keeps its arguments), and
+    where the scan stopped: at an unmatched `closing` (")" or "`") or the end.
+    Quoted text, comments and heredoc bodies are never read as commands.
     """
     out: list[str] = []
     inner: list[str] = []
-    quote, i = "", 0
+    quote, depth, heredocs, i = "", 0, [], 0
     while i < len(command):
         char = command[i]
         if quote == "'":
@@ -83,49 +89,52 @@ def substitutions(command: str) -> tuple[str, list[str]]:
             quote = "'"
         elif char == '"':
             quote = "" if quote else '"'
+        elif char == closing == "`" or (char == closing == ")" and not quote and not depth):
+            break
+        elif char in "()" and not quote:
+            depth += 1 if char == "(" else -1
         elif char == "#" and not quote and (i == 0 or command[i - 1] in " \t" + OPERATORS):
             end = command.find("\n", i)
-            end = len(command) if end < 0 else end
-            out.append(command[i:end])
-            i = end
+            i = len(command) if end < 0 else end
+            continue
+        elif not quote and command[i - 1 : i] != "<" and (heredoc := HEREDOC_RE.match(command, i)):
+            heredocs.append(heredoc.group(2))
+            out.append(heredoc.group(0))
+            i = heredoc.end()
+            continue
+        elif char == "\n" and not quote and heredocs:
+            out.append(char)
+            i += 1
+            for delimiter in heredocs:  # skip each body, up to its delimiter line
+                while i < len(command):
+                    end = command.find("\n", i)
+                    end = len(command) if end < 0 else end
+                    line, i = command[i:end], end + 1
+                    if line.lstrip("\t") == delimiter:
+                        break
+            heredocs = []
             continue
         elif char == "`" or (command.startswith("$(", i) and not command.startswith("$((", i)):
             start = i + (1 if char == "`" else 2)
-            end, depth, q = start, 1, ""
-            while end < len(command):
-                c = command[end]
-                if char == "`":
-                    if c == "`":
-                        break
-                elif q:
-                    q = "" if c == q else q
-                elif c in "'\"":
-                    q = c
-                else:
-                    depth += {"(": 1, ")": -1}.get(c, 0)
-                    if not depth:
-                        break
-                end += 1
-            inner.append(command[start:end])
+            length = substitutions(command[start:], "`" if char == "`" else ")")[2]
+            inner.append(command[start : start + length])
             out.append("_sub_")
-            i = end + 1
+            i = start + length + 1
             continue
         out.append(char)
         i += 1
-    return "".join(out), inner
+    return "".join(out), inner, i
 
 
 def segments(command: str) -> list[list[str]]:
     """Split a shell command into simple commands, as word lists."""
     command = re.sub(r"(?<!\\)((?:\\\\)*)\\\r?\n", r"\1", command)  # line continuations
-    command, inner = substitutions(command)
+    command, inner, _ = substitutions(command)
     words = [w for sub in inner for w in segments(sub)]
-    # A "# comment" runs to the end of its line and eats the newline with it,
-    # so a ";" after each newline still ends the command.
-    command = command.replace("\n", "\n;")
     try:
         lexer = shlex.shlex(command, posix=True, punctuation_chars=OPERATORS)
         lexer.whitespace, lexer.whitespace_split = " \t\r", True
+        lexer.commenters = ""  # substitutions() already dropped the comments
         tokens = list(lexer)
     except ValueError:  # unbalanced quotes: split on the operators and words
         tokens = re.split(r"([;|&()\n]+)|\s+", command)
@@ -223,7 +232,8 @@ def problem(words: list[str], cwd: str | None = None) -> str | None:
         if not any(a == "--repo" or a.startswith("--repo=") for a in rest):
             refs = refs[1:]  # the first one is the remote
         to_main = any(r.split(":")[-1] in ("main", "refs/heads/main") for r in refs)
-        implicit = not refs or refs == ["HEAD"]  # pushes the current branch
+        # Pushes the current branch: no ref, HEAD, or a $(...) like $(git branch --show-current)
+        implicit = all(r.split(":")[-1] == "HEAD" or "_sub_" in r.split(":")[-1] for r in refs)
         if to_main or (implicit and current_branch(cwd) == "main"):
             return "Never push to main; open a PR."
     return None
@@ -241,7 +251,8 @@ def main() -> int:
         for words in segments(command):
             if words[:1] == ["cd"]:  # cd main && git push checks main's branch
                 target = next((w for w in words[1:] if not w.startswith("-")), "~")
-                cwd = os.path.join(cwd or os.getcwd(), os.path.expanduser(target))
+                target = os.path.join(cwd or os.getcwd(), os.path.expanduser(target))
+                cwd = target if os.path.isdir(target) else cwd  # $(...) or a typo: stay
             if reason := problem(words, cwd):
                 break
     except Exception as err:  # noqa: BLE001

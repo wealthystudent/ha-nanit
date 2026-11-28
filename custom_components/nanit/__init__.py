@@ -402,14 +402,28 @@ async def _async_migrate_sl_identities(
     # consumed the legacy camera-keyed shape. Persisting earlier would
     # destroy the pairing a crashed or interrupted first boot still needs.
     stored_map = entry.data.get("speaker_uid_map", {})
+    new_map = dict(hub.speaker_uid_map)
+    moved_to_unpaired = bool(hub.unpaired_from_map)
+    if not hub.babies_complete and isinstance(stored_map, dict):
+        # A baby whose /babies row could not be read is missing from the
+        # resolved map but not from the account, so its saved pairing stays.
+        # A speaker this setup placed, or is saving as unpaired, is not kept twice.
+        placed = set(new_map.values())
+        for key, uid in stored_map.items():
+            if key in new_map or uid in placed:
+                continue
+            if uid in hub.unpaired_speakers:
+                moved_to_unpaired = True
+            else:
+                new_map[key] = uid
     # An empty map is only written when this setup emptied it on purpose
     # (speakers moved to unpaired), never after a resolution collapse.
-    if (hub.speaker_uid_map or hub.unpaired_from_map) and hub.speaker_uid_map != stored_map:
+    if (new_map or moved_to_unpaired) and new_map != stored_map:
         hass.config_entries.async_update_entry(
             entry,
-            data={**entry.data, "speaker_uid_map": hub.speaker_uid_map},
+            data={**entry.data, "speaker_uid_map": new_map},
         )
-        LOGGER.debug("Persisted speaker UID map for %d speaker(s)", len(hub.speaker_uid_map))
+        LOGGER.debug("Persisted speaker UID map for %d speaker(s)", len(new_map))
 
     # Unpaired speakers are persisted for the same reason: a failed lookup
     # on a later boot falls back to this list instead of dropping them.

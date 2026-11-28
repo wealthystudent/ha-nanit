@@ -1146,6 +1146,42 @@ async def test_a_complete_babies_answer_without_a_camera_removes_it(
     assert left == {"cam_1"}
 
 
+@pytest.mark.parametrize("fallback", [False, True], ids=["library", "fallback"])
+async def test_an_unreadable_baby_row_keeps_its_saved_speaker_pairing(
+    hass: HomeAssistant, mock_nanit_client, fallback: bool
+) -> None:
+    """A baby whose row could not be read keeps its saved Sound & Light pairing.
+
+    The saved map is the fallback for a later /babies answer that leaves the
+    speaker out, so a setup that saw only part of the account must not shrink it.
+    """
+    from custom_components.nanit import _async_migrate_sl_identities
+
+    stored = {"baby_1": "spk_1", "baby_2": "spk_2"}
+    rows = [{**_ROW_1, "speaker": {"speaker": {"uid": "spk_1"}}}, {**_ROW_2, "uid": 12345}]
+    _answer_babies(mock_nanit_client, {"babies": rows}, fallback=fallback)
+    mock_nanit_client.camera.side_effect = lambda **kw: _make_mock_camera(kw["uid"], kw["baby_uid"])
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={**mock_entry_data_v2(), "speaker_uid_map": stored},
+        version=2,
+        unique_id=MOCK_EMAIL,
+    )
+    entry.add_to_hass(hass)
+    hub = NanitHub(hass, MagicMock(), entry)
+    sl_patch, coord_patch = _speaker_patches()
+    with sl_patch, coord_patch as coord_cls:
+        coord_cls.return_value = MagicMock(async_setup=AsyncMock())
+        await hub.async_setup()
+
+    assert hub.babies_complete is False
+    assert hub.speaker_uid_map == {"baby_1": "spk_1"}
+    await _async_migrate_sl_identities(hass, entry, hub)
+
+    assert entry.data["speaker_uid_map"] == stored
+    await hub.async_close()
+
+
 _INCOMPLETE_WARNING = "Part of Nanit's list of babies could not be read"
 _UNREADABLE_ROWS = [_ROW_1, {**_ROW_2, "uid": 12345}]
 

@@ -62,20 +62,73 @@ def unwrap(words: list[str]) -> list[list[str]]:
 OPERATORS = "();<>|&\n"
 
 
+def substitutions(command: str) -> tuple[str, list[str]]:
+    """Replace each $(...) and `...` outside single quotes and comments with one word.
+
+    Returns the command with those words and the commands that were inside, so
+    each is checked on its own and the outer command keeps its arguments.
+    """
+    out: list[str] = []
+    inner: list[str] = []
+    quote, i = "", 0
+    while i < len(command):
+        char = command[i]
+        if quote == "'":
+            quote = "" if char == "'" else quote
+        elif char == "\\":
+            out.append(command[i : i + 2])
+            i += 2
+            continue
+        elif char == "'" and not quote:
+            quote = "'"
+        elif char == '"':
+            quote = "" if quote else '"'
+        elif char == "#" and not quote and (i == 0 or command[i - 1] in " \t" + OPERATORS):
+            end = command.find("\n", i)
+            end = len(command) if end < 0 else end
+            out.append(command[i:end])
+            i = end
+            continue
+        elif char == "`" or (command.startswith("$(", i) and not command.startswith("$((", i)):
+            start = i + (1 if char == "`" else 2)
+            end, depth, q = start, 1, ""
+            while end < len(command):
+                c = command[end]
+                if char == "`":
+                    if c == "`":
+                        break
+                elif q:
+                    q = "" if c == q else q
+                elif c in "'\"":
+                    q = c
+                else:
+                    depth += {"(": 1, ")": -1}.get(c, 0)
+                    if not depth:
+                        break
+                end += 1
+            inner.append(command[start:end])
+            out.append("_sub_")
+            i = end + 1
+            continue
+        out.append(char)
+        i += 1
+    return "".join(out), inner
+
+
 def segments(command: str) -> list[list[str]]:
     """Split a shell command into simple commands, as word lists."""
     command = re.sub(r"(?<!\\)((?:\\\\)*)\\\r?\n", r"\1", command)  # line continuations
+    command, inner = substitutions(command)
+    words = [w for sub in inner for w in segments(sub)]
     # A "# comment" runs to the end of its line and eats the newline with it,
     # so a ";" after each newline still ends the command.
     command = command.replace("\n", "\n;")
-    command = re.sub(r"`([^`]*)`", r"$(\1)", command)  # backticks split on spaces, $( doesn't
     try:
         lexer = shlex.shlex(command, posix=True, punctuation_chars=OPERATORS)
         lexer.whitespace, lexer.whitespace_split = " \t\r", True
         tokens = list(lexer)
     except ValueError:  # unbalanced quotes: split on the operators and words
         tokens = re.split(r"([;|&()\n]+)|\s+", command)
-    words: list[list[str]] = []
     current: list[str] = []
     target = False  # the next word is a redirection's file, not an argument
     for token in [*tokens, ";"]:
@@ -89,8 +142,6 @@ def segments(command: str) -> list[list[str]]:
                 current.pop()
             target = bool(set(token) & set("<>"))
             continue
-        for inner in re.findall(r"\$\((.*)\)|`(.*)`", token):  # "$(git ...)" in quotes
-            words += segments("".join(inner))
         if target:
             target = False
             continue
@@ -186,8 +237,13 @@ def main() -> int:
     try:
         data = json.load(sys.stdin)
         command = data.get("tool_input", {}).get("command", "")
-        reasons = (problem(words, data.get("cwd")) for words in segments(command))
-        reason = next((r for r in reasons if r), None)
+        cwd, reason = data.get("cwd"), None
+        for words in segments(command):
+            if words[:1] == ["cd"]:  # cd main && git push checks main's branch
+                target = next((w for w in words[1:] if not w.startswith("-")), "~")
+                cwd = os.path.join(cwd or os.getcwd(), os.path.expanduser(target))
+            if reason := problem(words, cwd):
+                break
     except Exception as err:  # noqa: BLE001
         reason = f"the check itself failed ({err!r}), so the command is blocked to be safe."
     if reason:

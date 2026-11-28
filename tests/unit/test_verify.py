@@ -433,6 +433,12 @@ def test_ci_rejects_ai_trailers_in_commits(
         ("git push --all origin", True),
         ("git push origin HEAD \\\n  --force", True),
         ("git push origin fix/x # publish it\ngit status", False),
+        ("git push origin `git rev-parse HEAD`:main", True),
+        ("git push origin HEAD >$(git rev-parse --show-toplevel)/push.log --force", True),
+        ("git push origin >`git rev-parse --show-toplevel`/push.log main", True),
+        ("git commit -m 'docs: describe `git push --force` in the guard'", False),
+        ("git commit -m 'docs: $(git push --force) is blocked'", False),
+        ('git commit -m "fix: x" -m "from `git rev-parse HEAD`"', False),
         ("git -c commit.gpgsign=false commit -m 'fix: x'", True),
         ("git config commit.gpgsign false", True),
         ("cd x && git commit -n -m 'fix: x'", True),
@@ -504,11 +510,26 @@ def test_guard_blocks_an_implicit_push_from_main(tmp_path: Path) -> None:
         "git push -u origin HEAD # publish the branch",
         "git push origin HEAD >`git rev-parse --show-toplevel`/push.log",
     ):
-        words = guard.segments(command)[0]
-        assert guard.problem(words, str(tmp_path)), command
+        assert any(guard.problem(w, str(tmp_path)) for w in guard.segments(command)), command
     assert guard.problem(guard.segments(f"git -C {tmp_path} push")[0], "/")
     subprocess.run(["git", "-C", str(tmp_path), "switch", "-q", "-c", "fix/x"], check=True)
     assert guard.problem(guard.segments("git push")[0], str(tmp_path)) is None
+
+
+def test_guard_follows_cd(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import io
+    import subprocess
+
+    main, feature = tmp_path / "main", tmp_path / "feature"
+    subprocess.run(["git", "init", "-q", "-b", "main", str(main)], check=True)
+    subprocess.run(["git", "init", "-q", "-b", "fix/x", str(feature)], check=True)
+    for command, code in ((f"cd {main} && git push origin HEAD", 2), ("git push", 0)):
+        event = {"tool_input": {"command": command}, "cwd": str(feature)}
+        monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(event)))
+        assert guard.main() == code, command
+    assert "Never push to main" in capsys.readouterr().err
 
 
 def _temp_repo(monkeypatch: pytest.MonkeyPatch, path: Path):

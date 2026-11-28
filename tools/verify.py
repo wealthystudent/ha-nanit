@@ -737,7 +737,7 @@ def cmd_verify(*, full: bool) -> int:
         print(f"result: {result}")
         print(versions())
         print("```")
-    print("\nLive test: what this change must show (write it under 'Live test:'):")
+    print("\nLive test: what this change must show (write it under '### Live test'):")
     print(needs_text(areas, unmapped) or "- Nothing beyond the checks above.")
     print_fixes(checks)
     return 0 if result == "pass" else 1

@@ -138,6 +138,21 @@ def test_live_test_label_forms(label: str) -> None:
     assert problems(body().replace("**Live test:** ", label + "\n\n", 1))[0] == []
 
 
+def test_filled_in_template_passes() -> None:
+    template = (ROOT / ".github" / "pull_request_template.md").read_text()
+    filled = (
+        template.replace("## Changelog\n", "## Changelog\n\nThe sensor shows the right value.\n")
+        .replace("## AI use\n", "## AI use\n\nnone\n")
+        .replace("unchanged. -->\n", "unchanged. -->\n\n" + RECEIPT + "\n")
+    )
+    assert any("'Live test:'" in e for e in problems(filled)[0])
+    # Written under the template's comment, as prose or as a list.
+    for live in ("Ran it in just dev; the sensor shows 22 °C.", "- just dev\n- sensor shows 22 °C"):
+        text = filled.replace("\n-->\n\n<!-- Run", f"\n-->\n\n{live}\n\n<!-- Run", 1)
+        assert text != filled
+        assert problems(text)[0] == [], live
+
+
 def test_empty_live_test_is_not_filled_by_a_later_line() -> None:
     errors, _ = problems(body(live="\n\nScreenshots below."))
     assert any("'Live test:'" in e for e in errors)
@@ -401,6 +416,7 @@ def test_ci_rejects_ai_trailers_in_commits(
         ("git config --get commit.gpgsign", False),
         ("git config get commit.gpgsign", False),
         ("git push -u origin HEAD", False),
+        ("git push origin fix/x > push.log 2>&1 | tail -3", False),
         ("git config --unset commit.gpgsign", True),
         ("git config set commit.gpgsign false", True),
         ("git config unset user.signingkey", True),
@@ -411,6 +427,7 @@ def test_ci_rejects_ai_trailers_in_commits(
         ("git push -uf origin fix/x", True),
         ("git push origin +fix/x", True),
         ("git push origin HEAD:main", True),
+        ("git push >/dev/null origin main", True),
         ("git -c commit.gpgsign=false commit -m 'fix: x'", True),
         ("git config commit.gpgsign false", True),
         ("cd x && git commit -n -m 'fix: x'", True),
@@ -437,6 +454,8 @@ def test_guard(command: str, blocked: bool, tmp_path: Path) -> None:
         "/usr/bin/git push --force",
         "sh -c 'git push --force'",
         "sh -c 'git push --force && echo done'",
+        "bash -lc 'git push --force origin feat'",
+        "sh -xc 'git commit --no-verify -m x'",
         "git status; timeout 60 git push --force",
         "git status # check the branch\ngit push --force",
         'bash -c "cd x && git push origin +fix/x"',
@@ -468,7 +487,13 @@ def test_guard_blocks_an_implicit_push_from_main(tmp_path: Path) -> None:
     import subprocess
 
     subprocess.run(["git", "init", "-q", "-b", "main", str(tmp_path)], check=True)
-    for command in ("git push", "git push origin", "git push origin HEAD"):
+    for command in (
+        "git push",
+        "git push origin",
+        "git push origin HEAD",
+        "git push 2>&1",
+        "git push -u origin HEAD 2>&1",
+    ):
         words = guard.segments(command)[0]
         assert guard.problem(words, str(tmp_path)), command
     assert guard.problem(guard.segments(f"git -C {tmp_path} push")[0], "/")

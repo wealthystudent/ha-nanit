@@ -73,7 +73,7 @@ for the probing tools (`just events`, `just probe`, `just network`,
 6. Open a **pull request** against `main` and fill in every section of the template:
    - **Title**: conventional commit, e.g. `fix: handle token refresh during reconnect`. It becomes the commit on `main`.
    - **Changelog**: what users will notice, in plain sentences. It becomes the release notes. Write `none` if users won't notice (refactors, tests, CI).
-   - **How I tested this**: your live test under `Live test:`, then the `just verify` receipt, unchanged.
+   - **How I tested this**: your live test under `### Live test`, then the `just verify` receipt, unchanged.
    - **AI use**: `none`, or the tool and how you used it.
 7. If the change should ship, it needs a label: `release:patch` (fixes), `release:minor` (features) or `release:major` (breaking). Maintainers add it themselves; from a fork, suggest one in the description and a maintainer adds it. Merging a labelled PR publishes a beta automatically.
 8. CI must pass: `CI OK` (lint, types, tests, drift checks, hassfest) and `PR Metadata` (title, description and signed commits). Fix in the same branch, push, and run `just verify` again before you ask for review.

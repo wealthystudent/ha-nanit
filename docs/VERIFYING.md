@@ -56,11 +56,12 @@ review.
 ## The live test
 
 Tests prove the code does what the tests say. A live test proves it does what
-users need, on the hardware they have. Write it under `Live test:` in the PR:
-where you ran it (`just dev` or your own Home Assistant, and its version), the
-device and firmware, what you did and what you saw. Add screenshots and log
-lines where they help. Start on the same line as `Live test:` (a bullet or
-quote is fine), or put it under a `### Live test` heading.
+users need, on the hardware they have. Write it under the template's
+`### Live test` heading in the PR: where you ran it (`just dev` or your own
+Home Assistant, and its version), the device and firmware, what you did and
+what you saw. Add screenshots and log lines where they help. Prose or a list
+both work. A one-line `Live test: ...` label (also as a bullet or quote) works
+too, but only the text on its own line counts.
 
 What it must show depends on the areas the change touches. `just verify` and
 the `PR Metadata` job summary list them for each PR. "Needs" says what the

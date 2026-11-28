@@ -34,6 +34,7 @@ WRAPPERS = {
     "sudo": {"-u", "-g", "-C", "-D", "-h", "-p", "-U"},
 }
 SHELLS = {"sh", "bash", "zsh", "dash"}
+SHELL_C_RE = re.compile(r"^-[a-zA-Z]*c[a-zA-Z]*$")  # -c, and clusters like -lc or -xc
 
 
 def unwrap(words: list[str]) -> list[list[str]]:
@@ -49,8 +50,10 @@ def unwrap(words: list[str]) -> list[list[str]]:
             if name == "timeout" and rest:
                 rest = rest[1:]  # the duration
             words = rest
-        elif name in SHELLS and "-c" in words[1:-1]:
-            return segments(words[words.index("-c") + 1])
+        elif name in SHELLS and (
+            flag := next((i for i, w in enumerate(words[1:-1], 1) if SHELL_C_RE.match(w)), 0)
+        ):
+            return segments(words[flag + 1])
         else:
             return [[name, *words[1:]]]
     return []
@@ -70,12 +73,20 @@ def segments(command: str) -> list[list[str]]:
         tokens = re.split(r"([;|&()\n]+)|\s+", command)
     words: list[list[str]] = []
     current: list[str] = []
+    target = False  # the next word is a redirection's file, not an argument
     for token in [*tokens, ";"]:
         if not token:
             continue
         if set(token) <= set(OPERATORS):
-            words += unwrap(current)
-            current = []
+            if set(token) & set(";|()\n") or token in ("&", "&&"):
+                words += unwrap(current)
+                current = []
+            elif current and current[-1].isdigit():  # the 2 of 2>&1 is no argument
+                current.pop()
+            target = bool(set(token) & set("<>"))
+            continue
+        if target:
+            target = False
             continue
         current.append(token)
         for inner in re.findall(r"\$\((.*)\)|`(.*)`", token):  # "$(git ...)" in quotes

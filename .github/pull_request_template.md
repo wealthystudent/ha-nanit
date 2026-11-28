@@ -12,7 +12,9 @@ Required for feat/fix PRs and for any PR with a release:* label.
 
 ## How I tested this
 
-**Live test:** <!--
+### Live test
+
+<!--
 What you ran against a real Home Assistant and what you saw: where (`just dev`
 or your own HA, and its version), the device and firmware, the steps, the
 result. Screenshots or log lines where they help. `just verify` lists what

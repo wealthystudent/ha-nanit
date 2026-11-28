@@ -17,7 +17,7 @@ import shlex
 import subprocess
 import sys
 
-CONFIG_OPTIONS_WITH_VALUE = {"-f", "--file", "--blob", "--type", "--default", "--comment"}
+CONFIG_OPTIONS_WITH_VALUE = {"-f", "--file", "--blob", "-t", "--type", "--default", "--comment"}
 READ_ONLY = {"grep", "log", "show", "diff", "blame", "shortlog"}  # may search for any text
 SIGNING_KEYS = re.compile(r"^(commit|tag|rebase)\.gpgsign$|^gpg\.|^user\.signingkey$", re.I)
 SIGNING_SECTIONS = re.compile(r"^(commit|tag|rebase|gpg|user)(\.|$)", re.I)
@@ -238,6 +238,7 @@ def problem(words: list[str], cwd: str | None = None) -> str | None:
         writes = not reads & set(rest) and (
             action in ("set", "unset", "remove-section", "rename-section", "edit")
             or (not action and len(words_) > 1)
+            or "-e" in rest
             or any(a.startswith(("--unset", "--replace-all", "--add", "--rename-section",
                                  "--remove-section", "--edit")) for a in rest)
         )  # fmt: skip

@@ -10,7 +10,8 @@ import shlex
 import shutil
 import time
 from collections.abc import Awaitable, Callable, Coroutine, Mapping
-from typing import Any
+from functools import partial
+from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.camera import Camera, CameraEntityFeature
 from homeassistant.components.ffmpeg import async_get_image as ffmpeg_get_image
@@ -41,6 +42,9 @@ from .local_stream import (
     LocalStreamCamera,
 )
 from .log_redaction import async_attach_to_camera_stream, async_detach_from_camera_stream
+
+if TYPE_CHECKING:
+    from homeassistant.components.stream import Stream
 
 PARALLEL_UPDATES = 0
 
@@ -97,7 +101,9 @@ _SNAPSHOT_PREFETCH_AGE = 30.0
 # Stream stills (opt-in): when the cloud snapshot fails, a cached image older
 # than this is replaced by one frame read from the live stream. Each grab asks
 # the camera to stream. A cloud push then lasts ~20 minutes, and a local one
-# until the idle stop 90 s after the grab.
+# until the idle stop 90 s after the grab. A read from Home Assistant's own
+# stream while it already runs asks nothing of the camera, so then the cached
+# image only has to be older than _SNAPSHOT_CACHE_TTL.
 _STREAM_STILL_MAX_AGE = 10 * 60
 # Wait at least this long after a grab ended before starting another, so a
 # failing stream is not retried on every image request. The wait doubles with
@@ -255,7 +261,9 @@ class NanitCameraEntity(NanitEntity, Camera):
         self._session_providers: list[Any] = []
         self._push_stopped_at = float("-inf")
         self._warned_stop_unsupported = False
-        # Opt-in stills from the live stream when the cloud snapshot fails.
+        # Stills from the live stream when the cloud snapshot fails: always
+        # from a stream already running, and with this option on, also by
+        # starting one.
         self._stream_stills = stream_stills
         self._still_info = still_info if still_info is not None else StreamStillInfo()
         self._stream_still_task: asyncio.Task[None] | None = None
@@ -1785,9 +1793,10 @@ class NanitCameraEntity(NanitEntity, Camera):
         A background prefetch is scheduled when the cache reaches
         ``_SNAPSHOT_PREFETCH_AGE`` so subsequent requests hit a warm cache.
 
-        With stream stills on, a failed cloud fetch may also start a
-        background frame grab from the live stream (see
-        ``_maybe_start_stream_still``). The request never waits for it.
+        A failed cloud fetch may also start a background frame grab from the
+        live stream (see ``_maybe_start_stream_still``): from a stream Home
+        Assistant already runs, or with stream stills on, from one it starts.
+        The request never waits for it.
         """
         if not self.is_on:
             return None
@@ -1841,21 +1850,24 @@ class NanitCameraEntity(NanitEntity, Camera):
     def _maybe_start_stream_still(self) -> None:
         """Start one background frame grab if the cached image is too old.
 
-        Called only after the cloud snapshot failed. At most one grab runs
+        Called only after the cloud snapshot failed. With stream stills off,
+        a grab only reads a stream Home Assistant already runs (preload or a
+        viewer), which sends nothing to the camera, so a cached image older
+        than the cloud TTL is replaced then, not only one older than ten
+        minutes. At most one grab runs
         per camera, the next one waits out the retry delay after the last one
         ended, and a camera that is asleep or unreachable is left alone.
         """
-        if not self._stream_stills:
+        running = self._running_stream() is not None
+        if not self._stream_stills and not running:
             return
         if self._stream_still_task is not None and not self._stream_still_task.done():
             return
         if not self.is_on or not self.available:
             return
         now = time.monotonic()
-        if (
-            self._cached_snapshot is not None
-            and now - self._cached_snapshot_at < _STREAM_STILL_MAX_AGE
-        ):
+        max_age = _SNAPSHOT_CACHE_TTL if running else _STREAM_STILL_MAX_AGE
+        if self._cached_snapshot is not None and now - self._cached_snapshot_at < max_age:
             return
         if (
             self._stream_still_finished_at is not None
@@ -1868,6 +1880,18 @@ class NanitCameraEntity(NanitEntity, Camera):
             name=f"nanit_stream_still_{self._camera.uid}",
             eager_start=False,
         )
+
+    def _running_stream(self) -> Stream | None:
+        """Return Home Assistant's own stream while it serves HLS (preload or a viewer).
+
+        A recorder alone does not count: reading a frame adds an HLS output,
+        which would keep the stream and its keepalive going after the
+        recording ends.
+        """
+        stream = self.stream
+        if stream is not None and "hls" in stream.outputs():
+            return stream
+        return None
 
     @callback
     def _cancel_stream_still(self) -> None:
@@ -1908,7 +1932,7 @@ class NanitCameraEntity(NanitEntity, Camera):
         _LOGGER.debug("No still from camera %s: %s", self._camera.uid, reason)
         if self._stream_still_failures == _STREAM_STILL_WARN_AFTER:
             _LOGGER.warning(
-                "Stills from the live stream keep failing for camera %s (last: %s). "
+                "Stills from the camera's stream keep failing for camera %s (last: %s). "
                 "Retrying less often, up to every %.0f minutes",
                 self._camera.uid,
                 reason,
@@ -1932,7 +1956,10 @@ class NanitCameraEntity(NanitEntity, Camera):
         """Read one frame from the live stream into the snapshot cache.
 
         With a viewer of Home Assistant's own stream, the frame comes from that
-        running stream and nothing is sent to the camera. Otherwise it is read
+        running stream and nothing is sent to the camera. The read waits for
+        the next keyframe: without a new one Home Assistant hands back the
+        last frame it decoded, so a stream stuck retrying would pass an old
+        frame off as new, where this times out and counts a failure. Otherwise it is read
         with a one-shot ffmpeg process, not through the stream worker, so
         nothing keeps running afterwards. The read starts the camera's push
         like a viewer would: on the cloud, ``stream_source()`` sends
@@ -1948,7 +1975,10 @@ class NanitCameraEntity(NanitEntity, Camera):
 
         WebRTC (go2rtc) and HomeKit viewers do not use that stream, so for
         them the ffmpeg path runs and re-sends PUT_STREAMING, usually for the
-        URL already cached.
+        URL already cached. With stream stills off there is no ffmpeg path: a
+        stream that stopped before the grab ran is left alone. With it on, that
+        case reads with ffmpeg only if the cached image is older than
+        ``_STREAM_STILL_MAX_AGE``.
 
         Cancelling this task cannot stop an ffmpeg read already under way,
         because Home Assistant shields that call. ffmpeg's stall timeout and
@@ -1957,9 +1987,21 @@ class NanitCameraEntity(NanitEntity, Camera):
         if not self.is_on:
             # Put to sleep before the task ran. Not a failure.
             return
-        stream = self.stream
-        if stream is not None and stream.outputs():
-            await self._async_read_still(stream.async_get_image, "the running stream")
+        stream = self._running_stream()
+        if stream is not None:
+            await self._async_read_still(
+                partial(stream.async_get_image, wait_for_next_keyframe=True),
+                "the running stream",
+            )
+            return
+        if not self._stream_stills:
+            return
+        if (
+            self._cached_snapshot is not None
+            and time.monotonic() - self._cached_snapshot_at < _STREAM_STILL_MAX_AGE
+        ):
+            # Scheduled for a running stream that stopped before this ran.
+            # Starting the camera's push still waits out the ten minutes.
             return
 
         if not await self._async_ffmpeg_found():

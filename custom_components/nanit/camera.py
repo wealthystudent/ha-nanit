@@ -908,8 +908,8 @@ class NanitCameraEntity(NanitEntity, Camera):
             if not await self._async_start_streaming_safe(source):
                 self._expire_stream_source()
                 return
-            if self._local_reclaimed_stream(after_put=True):
-                return
+            if self._local_reclaimed_stream(after_put=True) or self.stream is not stream:
+                return  # a discarded stream would take the switch as a restart
             _LOGGER.debug(
                 "Rotating RTMPS source in place for camera %s after %s",
                 self._camera.uid,
@@ -1418,8 +1418,8 @@ class NanitCameraEntity(NanitEntity, Camera):
             return
         if not await self._async_start_streaming_safe(source, reconnect_on_failure=False):
             return
-        if self._local_reclaimed_stream(after_put=True):
-            return
+        if self._local_reclaimed_stream(after_put=True) or self.stream is not stream:
+            return  # a discarded stream would take the switch as a restart
         self._cache_cloud_source(source)
         self._switch_stream_source(stream, source)
 

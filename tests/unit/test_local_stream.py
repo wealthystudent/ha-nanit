@@ -3878,6 +3878,40 @@ async def test_cooldown_end_during_the_retry_wait_only_assigns(hass: HomeAssista
     assert stream.source == FLV_URL
 
 
+@pytest.mark.parametrize("move", ["renewal", "move to cloud"])
+async def test_cloud_switch_skips_a_stream_discarded_while_it_waited(
+    hass: HomeAssistant, source_ip: Any, move: str
+) -> None:
+    """A switch of a discarded stream would turn its stop into a restart (#230)."""
+    local = _local_entry(hass, _entry(hass)).camera("cam_1")
+    entity, camera = _entity(hass, local)
+    local.start_cooldown("x")
+    url_asked = asyncio.Event()
+    release = asyncio.Event()
+
+    async def cloud_url() -> str:
+        url_asked.set()
+        await release.wait()
+        return "rtmps://cloud/new"
+
+    camera.async_get_stream_rtmps_url = cloud_url
+    stream = _watched_stream("rtmps://cloud/old")
+    entity.stream = stream
+    switch = hass.async_create_task(
+        entity._async_refresh_stream_source("test")
+        if move == "renewal"
+        else entity._async_move_hls_to_cloud()
+    )
+    await url_asked.wait()
+    await entity._async_invalidate_stream("reset")
+    release.set()
+    await switch
+
+    stream.update_source.assert_not_called()
+    assert stream.source == "rtmps://cloud/old"
+    assert entity._cached_stream_source is None
+
+
 def _waiting_new_ha_stream(source: str) -> MagicMock:
     """A stream on HA 2026.12 or later whose worker is waiting to retry."""
     stream = _waiting_stream(source)

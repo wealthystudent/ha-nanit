@@ -945,6 +945,21 @@ async def test_option_off_running_stream_grabs_after_the_cloud_ttl(hass: HomeAss
     assert entity._cached_snapshot == NEW_IMAGE
 
 
+async def test_option_on_running_stream_grabs_after_the_cloud_ttl(hass: HomeAssistant) -> None:
+    """With the option on, a running stream also refreshes a picture two minutes old."""
+    entity, camera, _ = _entity(hass, cache_age=camera_module._SNAPSHOT_CACHE_TTL + 60)
+    entity.stream = stream = _running_stream()
+
+    with patch(GRAB, new=AsyncMock(return_value=b"ffmpeg-image")) as grab:
+        await entity.async_camera_image()
+        await _settle(hass, entity)
+
+    stream.async_get_image.assert_awaited_once_with(wait_for_next_keyframe=True)
+    grab.assert_not_awaited()
+    camera.async_start_streaming.assert_not_awaited()
+    assert entity._cached_snapshot == NEW_IMAGE
+
+
 async def test_option_off_running_stream_keeps_a_fresh_picture(hass: HomeAssistant) -> None:
     entity, _, _ = _entity(hass, stream_stills=False, cache_age=10)
     entity.stream = stream = _running_stream()

@@ -462,6 +462,8 @@ def test_guard(command: str, blocked: bool, tmp_path: Path) -> None:
         "bash -lc 'git push --force origin feat'",
         "sh -xc 'git commit --no-verify -m x'",
         'git status >"$(git push --force origin feat)"',
+        "git status >`git push --force origin feat`",
+        "echo `git push --force`",
         "git status; timeout 60 git push --force",
         "git status # check the branch\ngit push --force",
         'bash -c "cd x && git push origin +fix/x"',
@@ -500,6 +502,7 @@ def test_guard_blocks_an_implicit_push_from_main(tmp_path: Path) -> None:
         "git push 2>&1",
         "git push -u origin HEAD 2>&1",
         "git push -u origin HEAD # publish the branch",
+        "git push origin HEAD >`git rev-parse --show-toplevel`/push.log",
     ):
         words = guard.segments(command)[0]
         assert guard.problem(words, str(tmp_path)), command

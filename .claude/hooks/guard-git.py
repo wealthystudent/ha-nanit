@@ -68,6 +68,7 @@ def segments(command: str) -> list[list[str]]:
     # A "# comment" runs to the end of its line and eats the newline with it,
     # so a ";" after each newline still ends the command.
     command = command.replace("\n", "\n;")
+    command = re.sub(r"`([^`]*)`", r"$(\1)", command)  # backticks split on spaces, $( doesn't
     try:
         lexer = shlex.shlex(command, posix=True, punctuation_chars=OPERATORS)
         lexer.whitespace, lexer.whitespace_split = " \t\r", True

@@ -406,8 +406,8 @@ async def _async_migrate_sl_identities(
     if not hub.babies_complete and isinstance(stored_map, dict):
         # A baby whose /babies row could not be read is missing from the
         # resolved map but not from the account, so its saved pairing stays.
-        # Speakers this setup placed or moved to unpaired are not kept twice.
-        placed = set(new_map.values()) | hub.unpaired_from_map
+        # A speaker this setup placed, or is saving as unpaired, is not kept twice.
+        placed = set(new_map.values()) | set(hub.unpaired_speakers)
         for key, uid in stored_map.items():
             if key not in new_map and uid not in placed:
                 new_map[key] = uid

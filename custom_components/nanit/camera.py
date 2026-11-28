@@ -1976,7 +1976,9 @@ class NanitCameraEntity(NanitEntity, Camera):
         WebRTC (go2rtc) and HomeKit viewers do not use that stream, so for
         them the ffmpeg path runs and re-sends PUT_STREAMING, usually for the
         URL already cached. With stream stills off there is no ffmpeg path: a
-        stream that stopped before the grab ran is left alone.
+        stream that stopped before the grab ran is left alone. With it on, that
+        case reads with ffmpeg only if the cached image is older than
+        ``_STREAM_STILL_MAX_AGE``.
 
         Cancelling this task cannot stop an ffmpeg read already under way,
         because Home Assistant shields that call. ffmpeg's stall timeout and
@@ -1993,6 +1995,13 @@ class NanitCameraEntity(NanitEntity, Camera):
             )
             return
         if not self._stream_stills:
+            return
+        if (
+            self._cached_snapshot is not None
+            and time.monotonic() - self._cached_snapshot_at < _STREAM_STILL_MAX_AGE
+        ):
+            # Scheduled for a running stream that stopped before this ran.
+            # Starting the camera's push still waits out the ten minutes.
             return
 
         if not await self._async_ffmpeg_found():

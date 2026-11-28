@@ -1000,6 +1000,26 @@ async def test_recording_alone_uses_ffmpeg_with_the_option_on(hass: HomeAssistan
     camera.async_start_streaming.assert_awaited_once()
 
 
+async def test_option_on_stream_gone_before_the_grab_waits_out_ten_minutes(
+    hass: HomeAssistant,
+) -> None:
+    """A grab scheduled for a running stream does not start the camera's push early."""
+    entity, camera, _ = _entity(hass, cache_age=camera_module._SNAPSHOT_CACHE_TTL + 60)
+    entity.stream = stream = _running_stream()
+
+    with patch(GRAB, new=AsyncMock(return_value=NEW_IMAGE)) as grab:
+        await entity.async_camera_image()
+        stream.outputs.return_value = {}
+        await _settle(hass, entity)
+
+    stream.async_get_image.assert_not_awaited()
+    grab.assert_not_awaited()
+    camera.async_get_stream_rtmps_url.assert_not_awaited()
+    camera.async_start_streaming.assert_not_awaited()
+    assert entity._stream_still_failures == 0
+    assert entity._cached_snapshot == OLD_IMAGE
+
+
 async def test_idle_stream_object_still_uses_ffmpeg(hass: HomeAssistant) -> None:
     """A stream nobody is watching would have to be started, so ffmpeg reads instead."""
     entity, camera, _ = _entity(hass)

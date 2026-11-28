@@ -2,7 +2,8 @@
 
 Thanks for your interest in contributing! This is the development workflow for
 everyone, people and AI agents alike. Code standards, architecture and
-invariants are in [AGENTS.md](AGENTS.md). Releases are in
+invariants are in [AGENTS.md](AGENTS.md). How every change is verified is in
+[docs/VERIFYING.md](docs/VERIFYING.md). Releases are in
 [docs/RELEASING.md](docs/RELEASING.md).
 
 ## Setup
@@ -18,9 +19,12 @@ Prerequisites:
 ```bash
 git clone https://github.com/wealthystudent/ha-nanit.git
 cd ha-nanit
-just setup   # uv sync into .venv + pre-commit hooks
-just check   # everything CI runs on Python code
+just setup   # uv sync into .venv + the git hooks
+just verify  # what CI runs, plus your commits and PR
 ```
+
+Set up [commit signing](#signed-commits) before your first commit: `main`
+only accepts PRs whose commits are all signed.
 
 `uv.lock` pins every dev dependency with hashes, so your environment, the
 pre-commit hooks and CI all run the same versions. `uv run` (and every `just`
@@ -39,6 +43,7 @@ just test          # Integration tests with coverage
 just test lib      # aionanit library tests
 just test all      # Both
 just check         # Lint, format, types and both test suites
+just verify        # Before a PR: all of CI, your commits and PR, and the receipt
 just fix           # Auto-fix lint and formatting
 just card          # Rebuild the Lovelace card after editing frontend/src (commit the bundle)
 just card watch    # Rebuild on every change
@@ -61,17 +66,20 @@ for the probing tools (`just events`, `just probe`, `just network`,
 ## Making changes
 
 1. **Branch** from `main`: `feat/`, `fix/`, `refactor/`, `docs/`, `test/` or `chore/` + a short description.
-2. Make your changes. Follow existing code patterns and [AGENTS.md](AGENTS.md).
-3. Run `just check`.
-4. **Verify in the dev HA instance** (`just dev`) for anything users will notice. This is how the maintainers test your PR too.
-5. Open a **pull request** against `main` and fill in the template:
+2. Make your changes. Follow existing code patterns and [AGENTS.md](AGENTS.md). Add tests that fail without the change.
+3. Commit (signed, conventional message). If behavior changes, update `README.md` in the same PR.
+4. Run **`just verify`** and fix what it reports. It ends with a receipt and the live test this change needs.
+5. **Test it live** as `just verify` lists, in `just dev` or your own Home Assistant. See [docs/VERIFYING.md](docs/VERIFYING.md#the-live-test).
+6. Open a **pull request** against `main` and fill in every section of the template:
    - **Title**: conventional commit, e.g. `fix: handle token refresh during reconnect`. It becomes the commit on `main`.
    - **Changelog**: what users will notice, in plain sentences. It becomes the release notes. Write `none` if users won't notice (refactors, tests, CI).
-6. If the change should ship, it needs a label: `release:patch` (fixes), `release:minor` (features) or `release:major` (breaking). Maintainers add it themselves; from a fork, suggest one in the description and a maintainer adds it. Merging a labelled PR publishes a beta automatically.
-7. CI must pass: `CI OK` (lint, types, tests, drift checks, hassfest) and `PR Metadata` (title and changelog). Fix in the same branch and push.
-8. A maintainer reviews and squash-merges. The branch is deleted automatically.
+   - **How I tested this**: your live test under `### Live test`, then the `just verify` receipt, unchanged.
+   - **AI use**: `none`, or the tool and how you used it.
+7. If the change should ship, it needs a label: `release:patch` (fixes), `release:minor` (features) or `release:major` (breaking). Maintainers add it themselves; from a fork, suggest one in the description and a maintainer adds it. Merging a labelled PR publishes a beta automatically.
+8. CI must pass: `CI OK` (lint, types, tests, drift checks, hassfest) and `PR Metadata` (title, description and signed commits). Fix in the same branch, push, and run `just verify` again before you ask for review.
+9. A maintainer reviews and squash-merges. The branch is deleted automatically.
 
-`just release` → Create PR does steps 5 and 6 interactively.
+`just release` → Create PR does steps 6 and 7 interactively.
 
 ### Stacked PRs
 
@@ -109,9 +117,9 @@ test: add coverage for MFA config flow
 chore: update locked dev dependencies
 ```
 
-One logical change per commit. If behavior changes, update `README.md` in the
-same PR. Pre-commit runs ruff lint and format on every commit; don't bypass it
-with `--no-verify`.
+One logical change per commit. The commit-msg hook checks the subject and
+rejects AI co-author trailers; pre-commit runs ruff lint and format. Don't
+bypass them with `--no-verify`.
 
 ### Signed commits
 
@@ -129,26 +137,44 @@ git config --global tag.gpgsign true
 ```
 
 Add the same public key to your GitHub account as a signing key, or the commits
-show up as unverified.
+show up as unverified. The commit email must be a verified email on that
+account too.
 
-If a branch you already pushed has unsigned commits, sign them in place (same
-base, same changes) and force-push. From a fork, use your remote for this repo
-(often `upstream`) instead of `origin`:
+The pre-push hook stops an unsigned commit before it leaves your machine,
+`just verify branch` checks the whole branch, and `PR Metadata` names any
+commit GitHub can't verify, and why.
+
+If a branch you already pushed has unsigned commits, sign them again and
+force-push. Start from a clean tree (`git stash` anything that isn't part of
+the PR), so nothing else ends up in the new commits. From a fork, use your
+remote for this repo (often `upstream`) instead of `origin`:
 
 ```bash
 git fetch origin main
-git rebase --force-rebase --gpg-sign "$(git merge-base HEAD origin/main)"
-git push --force-with-lease
+base="$(git merge-base HEAD origin/main)"
+git log --merges --oneline "$base..HEAD"   # any merge commits?
 ```
 
-The force-push needs a fresh approval before the PR can merge.
+With no merge commits, sign each commit in place (same base, same changes):
 
-If the branch has merge commits and the rebase stops on a conflict, run
-`git rebase --abort` and squash it into one signed commit instead with
-`git reset --soft "$(git merge-base HEAD origin/main)"` and `git commit -S`.
+```bash
+git rebase --force-rebase --gpg-sign "$base" && git push --force-with-lease
+```
 
-Agents use whatever signing the host has configured. A hardware key that needs
-a touch (e.g. a YubiKey) makes every agent commit a deliberate human action.
+With merge commits, don't rebase: it drops them, and any change made in them,
+without stopping. Squash the branch into one signed commit instead:
+
+```bash
+git reset --soft "$base" && git commit -S && git push --force-with-lease
+```
+
+If the commit fails, `git reset --soft ORIG_HEAD` puts the branch back. The
+force-push needs a fresh approval before the PR can merge.
+
+Agents use whatever signing the host has configured, and never change it. On a
+host without signing, an agent stops and asks its person to set it up rather
+than pushing unsigned commits. A hardware key that needs a touch (e.g. a
+YubiKey) makes every agent commit a deliberate human action.
 
 ## Editor setup (optional)
 
@@ -162,15 +188,36 @@ type-checking authority; the editor only gives fast feedback.
 - **VS Code**: the Python, Pylance and Ruff extensions, with `.venv` as the
   interpreter.
 
-## AI assistants
+## AI tools
 
-- [AGENTS.md](AGENTS.md) is the tool-neutral brief every agent should read.
+AI tools are welcome, as tools. The rules follow the
+[Open Home Foundation AI policy](https://contributors.home-assistant.io/start/ai-policy/)
+that Home Assistant itself uses:
+
+- **A person is behind every PR.** You direct the work, read every line, can
+  explain it, and answer review questions yourself. Agents that open PRs on
+  their own, with no person reviewing their work, are not accepted.
+- **Say how you used AI** under `## AI use` in the PR: `none`, `assisted`, or
+  `generated and reviewed`, with the tool.
+- **No AI credit in commits.** No `Co-authored-by` trailers for AI tools and
+  no "generated with" lines. GitHub copies them into the squash commit on
+  `main`. The commit-msg hook and `PR Metadata` reject them.
+- **Verify like everyone else.** An agent runs `just verify` and pastes its
+  receipt. It never claims a test it didn't run; without the hardware it
+  writes `not tested live` and why.
+
+Setup for agents:
+
+- [AGENTS.md](AGENTS.md) is the tool-neutral brief. Codex, Copilot, Cursor and
+  Claude Code read it; `CLAUDE.md` imports it so Claude Code always does.
 - **Claude Code** applies `.claude/settings.json` to anyone using it in this
-  repo. Its rules catch the usual forms of releases, tag creation, workflow
-  dispatch, force pushes, `--admin` merges and `--no-verify` (accident guards
-  that match command text, not a security boundary), ask before merges, and
-  format edited Python with the locked ruff. The format hook
-  installs only ruff, so it stays light on a fresh clone. The `review-prs`
+  repo. It turns off Claude's own commit and PR credit, allows `just verify`,
+  and denies the usual forms of releases, tag creation, workflow dispatch,
+  `--admin` merges and `--no-verify`. A hook blocks a bare `--force` push,
+  pushes to `main` and changes to signing, while allowing the
+  `--force-with-lease` that re-signing your own branch needs. These match
+  command text, so they are accident guards, not a security boundary.
+  Another hook formats edited Python with the locked ruff. The `review-prs`
   skill reviews open PRs. Personal settings go in
   `.claude/settings.local.json` (gitignored).
 - Keep personal tool config (MCP server URLs, tokens) out of the repo: use

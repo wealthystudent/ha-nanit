@@ -1,5 +1,9 @@
 # Testing
 
+How every PR is verified (`just verify`, the live test each area needs, and
+what CI checks) is in [docs/VERIFYING.md](../docs/VERIFYING.md). This page
+covers the test suites and the dev instance.
+
 ## Layout
 
 | Path | Covers |

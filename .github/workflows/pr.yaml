@@ -1,8 +1,11 @@
 name: PR
 
-# Checks PR metadata that CI can't see in the code: the title (it becomes
-# the squash commit on main) and the Changelog section (it becomes the
-# release notes). Re-runs when the description or labels change.
+# Checks what CI can't see in the code: the title (it becomes the squash
+# commit on main), the Changelog (it becomes the release notes), the testing
+# and AI use sections, and that GitHub verifies every commit's signature
+# (main's ruleset blocks the merge otherwise, with no reason given). Re-runs
+# when the description, labels or commits change. The job summary lists what
+# the PR's live test must show, by the areas it touches.
 
 on:
   pull_request:
@@ -20,16 +23,35 @@ jobs:
     name: PR Metadata
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read # list the PR's commits and their signatures
     steps:
+      # The checker comes from the base branch, so a PR that edits
+      # tools/verify.py is checked by the base's copy until it merges. This
+      # workflow file still comes from the PR, so moving the check to a
+      # protected workflow is a follow-up.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.base.sha }}
           persist-credentials: false
-          sparse-checkout: tools/release_notes.py
+          sparse-checkout: tools
           sparse-checkout-cone-mode: false
 
-      - name: Check title and changelog
+      - name: Check title, description and signatures
         env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
           PR_LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
-        run: python3 tools/release_notes.py --check
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_COMMITS: ${{ github.event.pull_request.commits }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        # Until verify.py is on the base branch, the base's older check runs.
+        run: |
+          if [ -f tools/verify.py ]; then
+            python3 tools/verify.py pr
+          else
+            python3 tools/release_notes.py --check
+          fi

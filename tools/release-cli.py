@@ -20,8 +20,10 @@ import re
 import shutil
 import sys
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
+
+import release_notes  # tools/, next to this script
+import verify
 
 try:
     from rich import box
@@ -450,6 +452,10 @@ async def action_create_pr(state: State) -> None:
     last_commit = await sh("git", "log", "-1", "--format=%s")
     title = Prompt.ask("  [bold]PR title[/]", default=last_commit)
 
+    if not release_notes.TITLE_RE.match(title):
+        console.print("  [red]✗ The title must be a conventional commit, e.g. 'fix: ...'.[/]")
+        return
+
     label = _ask_bump(state)
 
     console.print(
@@ -460,9 +466,41 @@ async def action_create_pr(state: State) -> None:
     if label and changelog.strip().lower() in ("", "none"):
         console.print("  [red]✗ A release label needs a changelog entry.[/]")
         return
-    template = Path(".github/pull_request_template.md")
-    body = template.read_text() if template.exists() else "## Changelog\n"
-    body = body.replace("## Changelog\n", f"## Changelog\n\n{changelog.strip()}\n", 1)
+    with console.status("  [bold]Running just verify..."):
+        proc = await asyncio.create_subprocess_exec(
+            "uv", "run", "tools/verify.py", stdout=asyncio.subprocess.PIPE
+        )
+        out = (await proc.communicate())[0].decode()
+    receipt = re.search(r"^```text\nha-nanit verify .*?^```$", out, re.M | re.S)
+    if proc.returncode != 0 or not receipt:
+        console.print("  [red]✗ just verify failed. Run it, fix what it reports, try again.[/]")
+        return
+    needs = out.split("\nLive test: ", 1)[-1].split("\nTo fix:", 1)[0]
+    console.print(f"\n  [bold]Live test[/] [dim]{needs.strip()}[/]")
+
+    answers = {}
+    for key, question in (
+        ("what", "What does this do [dim](the change and why)[/]"),
+        ("live", "Live test [dim](what you ran and saw, or 'not tested live' and why)[/]"),
+        ("ai", "AI use [dim](none, or the tool and 'assisted' or 'generated and reviewed')[/]"),
+    ):
+        answers[key] = Prompt.ask(f"\n  [bold]{question}[/]\n  [bold]▸[/]").strip()
+        if not answers[key]:
+            console.print("  [red]✗ Every section needs an answer.[/]")
+            return
+    body = (
+        f"## What does this do\n\n{answers['what']}\n\n"
+        f"## Changelog\n\n{changelog.strip()}\n\n"
+        f"## How I tested this\n\n**Live test:** {answers['live']}\n\n{receipt.group(0)}\n\n"
+        f"## AI use\n\n{answers['ai']}\n"
+    )
+
+    head = await sh("git", "rev-parse", "HEAD")
+    errors, _ = verify.pr_body_problems(title, body, [label] if label else [], "", [head])
+    if errors:
+        for error in errors:
+            console.print(f"  [red]✗ {error}[/]")
+        return
 
     with console.status("  [bold]Pushing branch..."):
         push_ok = await sh_ok("git", "push", "-u", "origin", state.branch)

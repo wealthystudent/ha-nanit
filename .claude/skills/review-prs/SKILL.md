@@ -13,7 +13,9 @@ Context Router points to for the files each PR touches.
 
 - Open PRs: `gh pr list --state open --json number,title,author,headRefName,baseRefName,labels,body,additions,deletions,changedFiles,url`
 - Diff per PR: `gh pr diff <n>`
-- Checks per PR: `gh pr checks <n>`
+- Checks per PR: `gh pr checks <n>`. A failing `PR Metadata` names what the description or signatures lack; its job summary lists what the live test must show.
+- Signatures per PR: `gh api repos/wealthystudent/ha-nanit/pulls/<n>/commits --jq '.[] | [.sha[:8], .commit.verification.verified, .commit.verification.reason] | @tsv'`
+- What each touched area needs: `docs/VERIFYING.md` (the area table) and `uv run tools/verify.py areas`
 - Mergeability: `gh pr view <n> --json mergeable,mergeStateStatus,reviewDecision`
 - Author history: `gh pr list --author <login> --state merged --limit 20 --json number,title`
 - Open issues the PRs reference: `gh issue view <n>`
@@ -32,11 +34,17 @@ GitHub token and Home Assistant in reach. CI already runs the full suite.
 | Security | Applicable checklist items. Always: no tokens or token-bearing URLs in logs, TLS verified for cloud, malformed protobuf handled, API names sanitized, secrets only in `entry.data`, no `eval`/`exec`/`shell=True` | PASS / CONCERN [sev] / FAIL [sev] |
 | Quality | No `# type: ignore` or `cast()`/`Any` escapes, no blocking I/O in async paths, `(TimeoutError, aiohttp.ClientError)` caught together, tests that would fail without the fix, follows neighboring code | EXCELLENT / GOOD / NEEDS WORK / REJECT |
 | Invariants | S&L changes respect every rule in AGENTS.md "aionanit_sl Invariants"; unique IDs unchanged or migrated | OK / VIOLATION |
-| Metadata | Conventional title; `## Changelog` written for users (it becomes the release notes); release label matches the change size | OK / FIX |
+| Verification | The live test covers every area the PR touches (docs/VERIFYING.md), on hardware that could run it; `not tested live` says why and is flagged for a maintainer test; the receipt is for the head commit, or a later commit only changed what CI covers | PROVEN / PARTIAL / UNTESTED |
+| Metadata | Every template section filled in for real, not just enough to pass; conventional title; `## Changelog` written for users (it becomes the release notes); `## AI use` present; release label matches the change size; every commit verified, no AI co-author trailers | OK / FIX |
 | Contributor | First-time vs established, domain understanding, description explains what and why | TRUSTED / CREDIBLE / UNKNOWN / CAUTION |
 
-The `PR Metadata` check validates title and changelog presence. Judge the
-changelog's content: user-facing wording, accurate, no internal jargon.
+The `PR Metadata` check validates the title, the sections and the receipt,
+and that every commit is verified. It can't judge content: judge the
+changelog (user-facing wording, accurate, no internal jargon) and the live
+test (does it show what the areas need, or only that something ran). A PR
+that ignores the template, or reads like unreviewed AI output its author
+can't explain, gets NEEDS CHANGES with what is missing, as CONTRIBUTING.md's
+AI tools section says.
 
 ## 3. Report and wait
 
@@ -44,7 +52,7 @@ Present a verdict matrix, then 2-3 sentences per PR (what it does, concerns,
 recommendation: MERGE / NEEDS CHANGES / CLOSE):
 
 ```
-| PR | Title | Value | Security | Quality | Metadata | Verdict |
+| PR | Title | Value | Security | Quality | Verification | Metadata | Verdict |
 ```
 
 Ask which to merge. **Do not merge, comment, label or approve without explicit
@@ -64,7 +72,9 @@ Order: smallest and foundational first, broad docs last. For each:
    stacked must not be updated this way, since merging main in can silently
    restore lines it removed. It needs the rebase in CONTRIBUTING.md.
 3. Wait for checks: `gh pr checks <n> --watch --fail-fast`. All required
-   checks (`CI OK`, `PR Metadata`) must pass. Never merge with `--admin`.
+   checks (`CI OK`, `PR Metadata`) must pass, which includes every commit
+   being signed. Never merge with `--admin`, and never ask an author to drop
+   signing: point them to CONTRIBUTING.md "Signed commits".
 4. Note the head SHA (`gh pr view <n> --json headRefOid`), then merge:
    `gh pr merge <n> --squash --delete-branch`. The PR title and body become
    the commit on main. Afterwards, `git diff --stat origin/main <head sha>`

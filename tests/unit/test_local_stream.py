@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import socket
 import sys
+import threading
 import time
 from datetime import timedelta
 from pathlib import Path
@@ -3705,6 +3706,118 @@ async def test_source_switch_during_the_workers_retry_wait_leaves_it_stoppable(
             await hass.async_add_executor_job(thread.join, 2)
 
 
+@pytest.mark.parametrize("preload", [True, False])
+async def test_discarded_stream_ends_its_worker_even_when_preloaded(
+    hass: HomeAssistant, preload: bool
+) -> None:
+    """A reload left preloaded workers retrying the old FLV port for good (#230)."""
+    await async_setup_component(hass, "stream", {})
+    entity = NanitCameraEntity(_push_coordinator(_camera_state()), MagicMock(uid="cam_1"))
+    entity.hass = hass
+
+    def worker(source: str, *args: Any) -> None:
+        raise StreamWorkerError("connection refused")  # the old receiver is gone
+
+    with (
+        patch("homeassistant.components.stream.worker.stream_worker", worker),
+        patch("homeassistant.components.stream._should_retry", return_value=True),
+        patch("homeassistant.components.stream.KeyFrameConverter", MagicMock()),
+        patch("homeassistant.components.stream.STREAM_RESTART_INCREMENT", 0.3),
+    ):
+        stream = Stream(
+            hass, FLV_URL, {}, MagicMock(), MagicMock(preload_stream=preload, orientation=1), None
+        )
+        stream.add_provider("hls")
+        await stream.start()
+        thread = stream._thread
+        assert thread is not None
+        try:
+            async with asyncio.timeout(5):
+                while stream.available:
+                    await asyncio.sleep(0.01)  # the worker is in its retry wait
+            await entity._stop_discarded_stream(stream)
+            assert not thread.is_alive()
+        finally:
+            if hasattr(stream, "_thread_quit"):  # HA before 2026.12
+                stream._thread_quit.set()
+            elif stream._worker_control is not None:
+                stream._worker_control.stop()
+            await hass.async_add_executor_job(thread.join, 2)
+
+
+@pytest.mark.parametrize("preload", [True, False])
+async def test_discarded_stream_ends_a_worker_with_a_pending_source_switch(
+    hass: HomeAssistant, preload: bool
+) -> None:
+    """A switch the worker has not picked up yet must not turn the stop into a restart."""
+    await async_setup_component(hass, "stream", {})
+    entity = NanitCameraEntity(_push_coordinator(_camera_state()), MagicMock(uid="cam_1"))
+    entity.hass = hass
+    calls: list[str] = []
+    quit_events: list[Any] = []
+    release = threading.Event()
+
+    def worker(source: str, *args: Any) -> None:
+        calls.append(source)
+        quit_events.append(args[-1])
+        if len(calls) == 1:
+            release.wait(5)  # still reading the old source when the switch comes
+            return
+        while not args[-1].is_set():
+            time.sleep(0.01)
+
+    with (
+        patch("homeassistant.components.stream.worker.stream_worker", worker),
+        patch("homeassistant.components.stream._should_retry", return_value=True),
+        patch("homeassistant.components.stream.KeyFrameConverter", MagicMock()),
+        patch("custom_components.nanit.camera._STREAM_STOP_TIMEOUT", 1.0),
+    ):
+        stream = Stream(
+            hass, FLV_URL, {}, MagicMock(), MagicMock(preload_stream=preload, orientation=1), None
+        )
+        stream.add_provider("hls")
+        await stream.start()
+        thread = stream._thread
+        assert thread is not None
+        try:
+            async with asyncio.timeout(5):
+                while not calls:
+                    await asyncio.sleep(0.01)
+            NanitCameraEntity._switch_stream_source(stream, "rtmps://cloud/url")
+            stop = asyncio.create_task(entity._stop_discarded_stream(stream))
+            await asyncio.sleep(0.05)
+            release.set()
+            await stop
+            assert not thread.is_alive()
+        finally:
+            release.set()
+            for event in quit_events:
+                event.set()
+            if hasattr(stream, "_thread_quit"):  # HA before 2026.12
+                stream._fast_restart_once = False
+                stream._thread_quit.set()
+            elif stream._worker_control is not None:
+                stream._worker_control.stop()
+            await hass.async_add_executor_job(thread.join, 2)
+
+
+async def test_discarded_stream_without_stop_warns_once(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """If core renames Stream._stop(), #230 would come back silently."""
+    entity = NanitCameraEntity(_push_coordinator(_camera_state()), MagicMock(uid="cam_1"))
+    entity.hass = hass
+    camera_module._warn_no_stream_stop.cache_clear()
+    stream = SimpleNamespace(stop=AsyncMock())
+
+    await entity._stop_discarded_stream(stream)
+    await entity._stop_discarded_stream(stream)
+
+    assert stream.stop.await_count == 2
+    assert caplog.text.count("has no _stop()") == 1
+    camera_module._warn_no_stream_stop.cache_clear()
+
+
 async def test_source_switch_while_the_worker_runs_restarts_it(hass: HomeAssistant) -> None:
     stream = MagicMock(available=True)
     NanitCameraEntity._switch_stream_source(stream, "rtmps://cloud/url")
@@ -3763,6 +3876,63 @@ async def test_cooldown_end_during_the_retry_wait_only_assigns(hass: HomeAssista
     local.channel.publish_started(1, "192.168.1.107", lambda: None)
     stream.update_source.assert_not_called()
     assert stream.source == FLV_URL
+
+
+@pytest.mark.parametrize(
+    ("move", "outcome"),
+    [
+        ("renewal", "ok"),
+        ("renewal", "no url"),
+        ("renewal", "no push"),
+        ("move to cloud", "ok"),
+    ],
+)
+async def test_cloud_switch_leaves_alone_a_stream_discarded_while_it_waited(
+    hass: HomeAssistant, source_ip: Any, move: str, outcome: str
+) -> None:
+    """A switch of a discarded stream would turn its stop into a restart (#230).
+
+    The cached source and timers belong to the viewer who came meanwhile.
+    """
+    local = _local_entry(hass, _entry(hass)).camera("cam_1")
+    entity, camera = _entity(hass, local)
+    local.start_cooldown("x")
+    url_asked = asyncio.Event()
+    release = asyncio.Event()
+
+    async def cloud_url() -> str:
+        url_asked.set()
+        await release.wait()
+        if outcome == "no url":
+            raise RuntimeError("cloud down")
+        return "rtmps://cloud/new"
+
+    camera.async_get_stream_rtmps_url = cloud_url
+    if outcome == "no push":
+        entity._async_start_streaming_safe = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    stream = _watched_stream("rtmps://cloud/old")
+    entity.stream = stream
+    switch = hass.async_create_task(
+        entity._async_refresh_stream_source("test")
+        if move == "renewal"
+        else entity._async_move_hls_to_cloud()
+    )
+    await url_asked.wait()
+    await entity._async_invalidate_stream("reset")
+    new_stream = _watched_stream("rtmps://cloud/fresh")
+    new_expiry_timer = MagicMock()
+    entity.stream = new_stream
+    entity._cached_stream_source = "rtmps://cloud/fresh"
+    entity._cancel_stream_expiry_timer = new_expiry_timer
+    release.set()
+    await switch
+
+    stream.update_source.assert_not_called()
+    assert stream.source == "rtmps://cloud/old"
+    assert entity.stream is new_stream
+    assert entity._cached_stream_source == "rtmps://cloud/fresh"
+    assert entity._cancel_stream_expiry_timer is new_expiry_timer
+    new_expiry_timer.assert_not_called()
 
 
 def _waiting_new_ha_stream(source: str) -> MagicMock:

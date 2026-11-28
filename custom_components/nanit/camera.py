@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import ipaddress
 import logging
 import shlex
@@ -559,19 +560,20 @@ class NanitCameraEntity(NanitEntity, Camera):
     async def _async_invalidate_stream(self, reason: str) -> None:
         """Discard the cached stream, then stop it.
 
-        The cache slot is cleared before the (potentially multi-second)
-        stop so a viewer connecting mid-stop gets a fresh stream instead
-        of the dying one.
+        Everything is cleared before the (potentially multi-second) stop, so
+        a viewer connecting mid-stop gets a fresh stream instead of the dying
+        one, and the reset does not clear what that fresh stream set up.
         """
         old_stream = self.stream
         if old_stream is not None:
             _LOGGER.debug("Invalidating cached stream after %s", reason)
             self.stream = None
-            await self._stop_discarded_stream(old_stream)
         self._cached_stream_source = None
         self._stream_source_started_at = 0.0
         self._cancel_stream_timers()
         self._close_local_subscribers()
+        if old_stream is not None:
+            await self._stop_discarded_stream(old_stream)
 
     @staticmethod
     def _switch_stream_source(stream: Any, source: str) -> None:
@@ -596,13 +598,34 @@ class NanitCameraEntity(NanitEntity, Camera):
             stream.source = source
 
     async def _stop_discarded_stream(self, stream: Any) -> None:
-        """Best-effort cleanup for a stream removed from HA's cache."""
+        """Best-effort cleanup for a stream removed from HA's cache.
+
+        Stream.stop() leaves the worker of a preloaded stream running, since
+        preload keeps it reading with nobody watching. Nothing reads a
+        discarded stream again, so that worker would retry its old URL for
+        good: after a reload, a port that is gone (#230). Stream._stop() ends
+        the worker whatever the preload setting, and returns at once when
+        stop() already did.
+
+        Before Home Assistant 2026.12, a source switch that the worker has not
+        picked up yet leaves its restart flag set, and the worker would take
+        the stop for that restart and carry on. The flag is cleared first.
+        """
         try:
             async with asyncio.timeout(_STREAM_STOP_TIMEOUT):
+                if getattr(stream, "_fast_restart_once", False) is True:
+                    stream._fast_restart_once = False
                 await stream.stop()
+                stop_worker = getattr(stream, "_stop", None)
+                if stop_worker is None:
+                    _warn_no_stream_stop()
+                else:
+                    await stop_worker()
         except TimeoutError:
-            _LOGGER.warning(
-                "Timed out after %.0fs stopping discarded Nanit stream",
+            # A worker blocked in a read (a cloud stream of a camera that went
+            # to sleep) only sees the stop when that read gives up.
+            _LOGGER.debug(
+                "Discarded Nanit stream still stopping after %.0fs, it ends on its own",
                 _STREAM_STOP_TIMEOUT,
             )
         except Exception:
@@ -880,12 +903,16 @@ class NanitCameraEntity(NanitEntity, Camera):
                 # Leave the running stream alone — playing until the token
                 # actually dies beats killing it because renewal failed.
                 _LOGGER.warning("Failed to renew RTMPS stream URL", exc_info=True)
-                self._expire_stream_source()
+                if self.stream is stream:
+                    self._expire_stream_source()
                 return
             if not await self._async_start_streaming_safe(source):
-                self._expire_stream_source()
+                if self.stream is stream:
+                    self._expire_stream_source()
                 return
-            if self._local_reclaimed_stream(after_put=True):
+            # A stream discarded meanwhile would take the switch as a restart,
+            # and the source and timers are a newer stream's by now.
+            if self._local_reclaimed_stream(after_put=True) or self.stream is not stream:
                 return
             _LOGGER.debug(
                 "Rotating RTMPS source in place for camera %s after %s",
@@ -1395,8 +1422,8 @@ class NanitCameraEntity(NanitEntity, Camera):
             return
         if not await self._async_start_streaming_safe(source, reconnect_on_failure=False):
             return
-        if self._local_reclaimed_stream(after_put=True):
-            return
+        if self._local_reclaimed_stream(after_put=True) or self.stream is not stream:
+            return  # a discarded stream would take the switch as a restart
         self._cache_cloud_source(source)
         self._switch_stream_source(stream, source)
 
@@ -2060,3 +2087,12 @@ async def _async_check_ffmpeg(hass: HomeAssistant) -> bool:
 def _ffmpeg_binary_exists(binary: str) -> bool:
     """Return whether the binary can run (blocking, run in the executor)."""
     return is_official_image() or shutil.which(binary) is not None
+
+
+@functools.cache
+def _warn_no_stream_stop() -> None:
+    """Say once that a discarded preloaded stream's worker may keep running."""
+    _LOGGER.warning(
+        "Home Assistant's stream has no _stop(), so a dropped preloaded Nanit "
+        "stream may keep retrying its old address. Please open an issue"
+    )

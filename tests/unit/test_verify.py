@@ -428,6 +428,11 @@ def test_ci_rejects_ai_trailers_in_commits(
         ("git push origin +fix/x", True),
         ("git push origin HEAD:main", True),
         ("git push >/dev/null origin main", True),
+        ("git push --repo origin main", True),
+        ("git push --repo=origin main", True),
+        ("git push --all origin", True),
+        ("git push origin HEAD \\\n  --force", True),
+        ("git push origin fix/x # publish it\ngit status", False),
         ("git -c commit.gpgsign=false commit -m 'fix: x'", True),
         ("git config commit.gpgsign false", True),
         ("cd x && git commit -n -m 'fix: x'", True),
@@ -456,6 +461,7 @@ def test_guard(command: str, blocked: bool, tmp_path: Path) -> None:
         "sh -c 'git push --force && echo done'",
         "bash -lc 'git push --force origin feat'",
         "sh -xc 'git commit --no-verify -m x'",
+        'git status >"$(git push --force origin feat)"',
         "git status; timeout 60 git push --force",
         "git status # check the branch\ngit push --force",
         'bash -c "cd x && git push origin +fix/x"',
@@ -493,6 +499,7 @@ def test_guard_blocks_an_implicit_push_from_main(tmp_path: Path) -> None:
         "git push origin HEAD",
         "git push 2>&1",
         "git push -u origin HEAD 2>&1",
+        "git push -u origin HEAD # publish the branch",
     ):
         words = guard.segments(command)[0]
         assert guard.problem(words, str(tmp_path)), command

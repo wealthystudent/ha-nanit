@@ -64,10 +64,13 @@ OPERATORS = "();<>|&\n"
 
 def segments(command: str) -> list[list[str]]:
     """Split a shell command into simple commands, as word lists."""
+    command = re.sub(r"(?<!\\)((?:\\\\)*)\\\r?\n", r"\1", command)  # line continuations
+    # A "# comment" runs to the end of its line and eats the newline with it,
+    # so a ";" after each newline still ends the command.
+    command = command.replace("\n", "\n;")
     try:
         lexer = shlex.shlex(command, posix=True, punctuation_chars=OPERATORS)
         lexer.whitespace, lexer.whitespace_split = " \t\r", True
-        lexer.commenters = ""  # a "# comment" would eat the newline that ends its command
         tokens = list(lexer)
     except ValueError:  # unbalanced quotes: split on the operators and words
         tokens = re.split(r"([;|&()\n]+)|\s+", command)
@@ -85,12 +88,12 @@ def segments(command: str) -> list[list[str]]:
                 current.pop()
             target = bool(set(token) & set("<>"))
             continue
+        for inner in re.findall(r"\$\((.*)\)|`(.*)`", token):  # "$(git ...)" in quotes
+            words += segments("".join(inner))
         if target:
             target = False
             continue
         current.append(token)
-        for inner in re.findall(r"\$\((.*)\)|`(.*)`", token):  # "$(git ...)" in quotes
-            words += segments("".join(inner))
     return words
 
 
@@ -162,7 +165,11 @@ def problem(words: list[str], cwd: str | None = None) -> str | None:
         plus = any(a.startswith("+") for a in rest if not a.startswith("-"))
         if bare or plus:
             return "Use --force-with-lease, and only on a branch you created."
-        refs = positional(rest, {"-o", "--push-option", "--repo", "--receive-pack", "--exec"})[1:]
+        if {"--all", "--mirror", "--branches"} & set(rest):
+            return "Push one branch at a time; --all and --mirror push main too."
+        refs = positional(rest, {"-o", "--push-option", "--repo", "--receive-pack", "--exec"})
+        if not any(a == "--repo" or a.startswith("--repo=") for a in rest):
+            refs = refs[1:]  # the first one is the remote
         to_main = any(r.split(":")[-1] in ("main", "refs/heads/main") for r in refs)
         implicit = not refs or refs == ["HEAD"]  # pushes the current branch
         if to_main or (implicit and current_branch(cwd) == "main"):

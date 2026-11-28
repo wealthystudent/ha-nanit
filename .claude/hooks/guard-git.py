@@ -20,6 +20,7 @@ import sys
 CONFIG_OPTIONS_WITH_VALUE = {"-f", "--file", "--blob", "--type", "--default", "--comment"}
 READ_ONLY = {"grep", "log", "show", "diff", "blame", "shortlog"}  # may search for any text
 SIGNING_KEYS = re.compile(r"^(commit|tag|rebase)\.gpgsign$|^gpg\.|^user\.signingkey$", re.I)
+SIGNING_SECTIONS = re.compile(r"^(commit|tag|rebase|gpg|user)(\.|$)", re.I)
 
 
 # Commands that run the rest of their words as a command, and the options of
@@ -151,7 +152,6 @@ def segments(command: str) -> list[list[str]]:
     """Split a shell command into simple commands, as word lists."""
     command = re.sub(r"(?<!\\)((?:\\\\)*)\\\r?\n", r"\1", command)  # line continuations
     command, inner, _ = substitutions(command)
-    words = [w for sub in inner for w in segments(sub)]
     try:
         lexer = shlex.shlex(command, posix=True, punctuation_chars=OPERATORS)
         lexer.whitespace, lexer.whitespace_split = " \t\r", True
@@ -159,24 +159,28 @@ def segments(command: str) -> list[list[str]]:
         tokens = list(lexer)
     except ValueError:  # unbalanced quotes: split on the operators and words
         tokens = re.split(r"([;|&()\n]+)|\s+", command)
+    words: list[list[str]] = []
     current: list[str] = []
+    before: list[list[str]] = []  # its substitutions run just before the command, after a cd
     target = False  # the next word is a redirection's file, not an argument
     for token in [*tokens, ";"]:
         if not token:
             continue
         if set(token) <= set(OPERATORS):
             if set(token) & set(";|()\n") or token in ("&", "&&"):
-                words += unwrap(current)
-                current = []
+                words += before + unwrap(current)
+                before, current = [], []
             elif current and current[-1].isdigit():  # the 2 of 2>&1 is no argument
                 current.pop()
             target = bool(set(token) & set("<>"))
             continue
+        for _ in range(min(token.count("_sub_"), len(inner))):
+            before += segments(inner.pop(0))
         if target:
             target = False
             continue
         current.append(token)
-    return words
+    return words + [w for sub in inner for w in segments(sub)]
 
 
 def positional(args: list[str], with_value: set[str]) -> list[str]:
@@ -236,7 +240,9 @@ def problem(words: list[str], cwd: str | None = None) -> str | None:
             or any(a.startswith(("--unset", "--replace-all", "--add", "--rename-section",
                                  "--remove-section", "--edit")) for a in rest)
         )  # fmt: skip
-        if writes and (not words_ or SIGNING_KEYS.search(words_[0])):
+        sections = any(a.startswith(("--remove-section", "--rename-section")) for a in rest)
+        signing = SIGNING_SECTIONS if sections else SIGNING_KEYS
+        if writes and (not words_ or signing.search(words_[0])):
             return "Changing signing config is not allowed. Use the host's signing as it is."
     if sub in READ_ONLY:
         return None

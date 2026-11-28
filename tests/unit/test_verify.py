@@ -452,6 +452,9 @@ def test_ci_rejects_ai_trailers_in_commits(
         ("if git diff --quiet; then git push --force origin fix/x; fi", True),
         ("while true; do git commit --no-verify -m x; done", True),
         ("git grep -n -- '--no-verify'", False),
+        ("git config --global --remove-section gpg", True),
+        ("git config --rename-section commit old", True),
+        ("git config --remove-section alias", False),
         ("git log --oneline --grep '--no-gpg-sign'", False),
         ("git -c commit.gpgsign=false commit -m 'fix: x'", True),
         ("git config commit.gpgsign false", True),
@@ -548,6 +551,7 @@ def test_guard_follows_cd(
         (f"cd {main} && git push origin HEAD", 2),
         ("git push", 0),
         ('cd "$(git rev-parse --show-toplevel)" && git push origin HEAD', 0),
+        (f'cd {main} && out="$(git push origin HEAD 2>&1)"', 2),
     ):
         event = {"tool_input": {"command": command}, "cwd": str(feature)}
         monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(event)))

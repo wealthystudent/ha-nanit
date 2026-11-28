@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import ipaddress
 import logging
 import shlex
@@ -603,18 +604,28 @@ class NanitCameraEntity(NanitEntity, Camera):
         preload keeps it reading with nobody watching. Nothing reads a
         discarded stream again, so that worker would retry its old URL for
         good: after a reload, a port that is gone (#230). Stream._stop() ends
-        the worker whatever the preload setting.
+        the worker whatever the preload setting, and returns at once when
+        stop() already did.
+
+        Before Home Assistant 2026.12, a source switch that the worker has not
+        picked up yet leaves its restart flag set, and the worker would take
+        the stop for that restart and carry on. The flag is cleared first.
         """
         try:
             async with asyncio.timeout(_STREAM_STOP_TIMEOUT):
+                if getattr(stream, "_fast_restart_once", False) is True:
+                    stream._fast_restart_once = False
                 await stream.stop()
-                settings = getattr(stream, "dynamic_stream_settings", None)
                 stop_worker = getattr(stream, "_stop", None)
-                if getattr(settings, "preload_stream", False) is True and stop_worker is not None:
+                if stop_worker is None:
+                    _warn_no_stream_stop()
+                else:
                     await stop_worker()
         except TimeoutError:
-            _LOGGER.warning(
-                "Timed out after %.0fs stopping discarded Nanit stream",
+            # A worker blocked in a read (a cloud stream of a camera that went
+            # to sleep) only sees the stop when that read gives up.
+            _LOGGER.debug(
+                "Discarded Nanit stream still stopping after %.0fs, it ends on its own",
                 _STREAM_STOP_TIMEOUT,
             )
         except Exception:
@@ -2072,3 +2083,12 @@ async def _async_check_ffmpeg(hass: HomeAssistant) -> bool:
 def _ffmpeg_binary_exists(binary: str) -> bool:
     """Return whether the binary can run (blocking, run in the executor)."""
     return is_official_image() or shutil.which(binary) is not None
+
+
+@functools.cache
+def _warn_no_stream_stop() -> None:
+    """Say once that a discarded preloaded stream's worker may keep running."""
+    _LOGGER.warning(
+        "Home Assistant's stream has no _stop(), so a dropped preloaded Nanit "
+        "stream may keep retrying its old address. Please open an issue"
+    )

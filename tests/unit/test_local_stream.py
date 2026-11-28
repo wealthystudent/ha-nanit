@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import socket
 import sys
+import threading
 import time
 from datetime import timedelta
 from pathlib import Path
@@ -3742,6 +3743,79 @@ async def test_discarded_stream_ends_its_worker_even_when_preloaded(
             elif stream._worker_control is not None:
                 stream._worker_control.stop()
             await hass.async_add_executor_job(thread.join, 2)
+
+
+@pytest.mark.parametrize("preload", [True, False])
+async def test_discarded_stream_ends_a_worker_with_a_pending_source_switch(
+    hass: HomeAssistant, preload: bool
+) -> None:
+    """A switch the worker has not picked up yet must not turn the stop into a restart."""
+    await async_setup_component(hass, "stream", {})
+    entity = NanitCameraEntity(_push_coordinator(_camera_state()), MagicMock(uid="cam_1"))
+    entity.hass = hass
+    calls: list[str] = []
+    quit_events: list[Any] = []
+    release = threading.Event()
+
+    def worker(source: str, *args: Any) -> None:
+        calls.append(source)
+        quit_events.append(args[-1])
+        if len(calls) == 1:
+            release.wait(5)  # still reading the old source when the switch comes
+            return
+        while not args[-1].is_set():
+            time.sleep(0.01)
+
+    with (
+        patch("homeassistant.components.stream.worker.stream_worker", worker),
+        patch("homeassistant.components.stream._should_retry", return_value=True),
+        patch("homeassistant.components.stream.KeyFrameConverter", MagicMock()),
+        patch("custom_components.nanit.camera._STREAM_STOP_TIMEOUT", 1.0),
+    ):
+        stream = Stream(
+            hass, FLV_URL, {}, MagicMock(), MagicMock(preload_stream=preload, orientation=1), None
+        )
+        stream.add_provider("hls")
+        await stream.start()
+        thread = stream._thread
+        assert thread is not None
+        try:
+            async with asyncio.timeout(5):
+                while not calls:
+                    await asyncio.sleep(0.01)
+            NanitCameraEntity._switch_stream_source(stream, "rtmps://cloud/url")
+            stop = asyncio.create_task(entity._stop_discarded_stream(stream))
+            await asyncio.sleep(0.05)
+            release.set()
+            await stop
+            assert not thread.is_alive()
+        finally:
+            release.set()
+            for event in quit_events:
+                event.set()
+            if hasattr(stream, "_thread_quit"):  # HA before 2026.12
+                stream._fast_restart_once = False
+                stream._thread_quit.set()
+            elif stream._worker_control is not None:
+                stream._worker_control.stop()
+            await hass.async_add_executor_job(thread.join, 2)
+
+
+async def test_discarded_stream_without_stop_warns_once(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """If core renames Stream._stop(), #230 would come back silently."""
+    entity = NanitCameraEntity(_push_coordinator(_camera_state()), MagicMock(uid="cam_1"))
+    entity.hass = hass
+    camera_module._warn_no_stream_stop.cache_clear()
+    stream = SimpleNamespace(stop=AsyncMock())
+
+    await entity._stop_discarded_stream(stream)
+    await entity._stop_discarded_stream(stream)
+
+    assert stream.stop.await_count == 2
+    assert caplog.text.count("has no _stop()") == 1
+    camera_module._warn_no_stream_stop.cache_clear()
 
 
 async def test_source_switch_while_the_worker_runs_restarts_it(hass: HomeAssistant) -> None:

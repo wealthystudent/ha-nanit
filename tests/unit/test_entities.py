@@ -832,28 +832,38 @@ async def test_camera_reset_stream_service_stops_cached_stream_before_release(
 async def test_camera_reset_stream_keeps_a_viewer_that_arrives_during_the_stop(
     hass: HomeAssistant,
 ) -> None:
-    """Ending a preloaded worker yields, and a new viewer's source must survive it."""
+    """Ending a preloaded worker yields, and a new viewer's stream must survive it."""
     coordinator = _push_coordinator(_camera_state())
     entity = NanitCameraEntity(coordinator, MagicMock(uid="cam_1"))
     entity.hass = hass
     entity._local = MagicMock()
+    order: list[str] = []
+    entity._local.channel.close_subscribers.side_effect = lambda: order.append("close")
+    old_expiry_timer = MagicMock()
+    entity._cancel_stream_expiry_timer = old_expiry_timer
     new_stream = MagicMock()
+    new_expiry_timer = MagicMock()
 
     async def viewer_arrives() -> None:
+        order.append("stop worker")
         entity.stream = new_stream
         entity._cached_stream_source = "rtmps://fresh-url"
         entity._stream_source_started_at = 200.0
+        entity._cancel_stream_expiry_timer = new_expiry_timer
 
     old_stream = MagicMock()
-    old_stream.stop = AsyncMock(side_effect=viewer_arrives)
+    old_stream.stop = AsyncMock(side_effect=lambda: order.append("stop"))
+    old_stream._stop = AsyncMock(side_effect=viewer_arrives)
     entity.stream = old_stream
     entity._cached_stream_source = "rtmps://cached-url"
     entity._stream_source_started_at = 100.0
 
     await entity.async_reset_stream()
 
-    old_stream.stop.assert_awaited_once_with()
-    entity._local.channel.close_subscribers.assert_called_once_with()
+    assert order == ["close", "stop", "stop worker"]
+    old_expiry_timer.assert_called_once_with()
+    new_expiry_timer.assert_not_called()
+    assert entity._cancel_stream_expiry_timer is new_expiry_timer
     assert entity.stream is new_stream
     assert entity._cached_stream_source == "rtmps://fresh-url"
     assert entity._stream_source_started_at == 200.0

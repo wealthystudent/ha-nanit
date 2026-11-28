@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from typing import Any
@@ -18,6 +19,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from aionanit.exceptions import NanitAuthError, NanitConnectionError
 
+from .baby_code import BABY_CODE_LENGTH, baby_code
 from .const import (
     CONF_BABY_NAME,
     CONF_BABY_UID,
@@ -172,6 +174,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: NanitConfigEntry) -> boo
     # so an unload after stop would log "Unable to remove unknown job
     # listener" when it calls the remover again.
     entry.async_on_unload(hass.bus.async_listen(EVENT_HOMEASSISTANT_STOP, _async_close_on_stop))
+
+    # Last, unlike the device clean-up above: the entities of the babies still
+    # listed must be registered before another baby's are removed.
+    _async_remove_stale_care_log_entities(hass, entry, hub)
 
     return True
 
@@ -608,6 +614,70 @@ def _async_remove_read_only_entities(
             if reg_entry is not None and reg_entry.config_entry_id == entry.entry_id:
                 LOGGER.info("Read-only mode off: removing %s", entity_id)
                 ent_reg.async_remove(entity_id)
+
+
+# Care log entities have the unique ID f"{entry_id}_{baby_code}_{key}".
+# By domain: a sensor only with a sensor's key, the calendar only with its own.
+_CARE_LOG_ENTITY_KEYS: dict[str, frozenset[str]] = {
+    "sensor": frozenset(
+        {
+            "last_diaper_change",
+            "last_feeding",
+            "last_pumping",
+            "diaper_changes_today",
+            "feedings_today",
+            "bottle_volume_today",
+            "nursing_time_today",
+            "pumped_volume_today",
+        }
+    ),
+    "calendar": frozenset({"care_log_calendar"}),
+}
+
+
+def _async_remove_stale_care_log_entities(
+    hass: HomeAssistant, entry: NanitConfigEntry, hub: NanitHub
+) -> None:
+    """Remove care log entities of babies the account no longer lists.
+
+    Only after a complete, non-empty list. A domain is cleaned only when
+    every listed baby has all its entities there: one still to be created
+    could otherwise take an entity ID this frees, and show another baby
+    under the old name. Logs a count, not entity IDs: those hold baby names.
+    """
+    if not hub.babies or not hub.babies_complete:
+        return
+    known = {baby_code(baby.uid) for baby in hub.babies if baby.uid}
+    if not known:
+        return
+
+    # One snapshot of this entry's own entities answers both questions.
+    ent_reg = er.async_get(hass)
+    rows = [
+        row
+        for row in er.async_entries_for_config_entry(ent_reg, entry.entry_id)
+        if row.platform == DOMAIN
+    ]
+    present = {(row.domain, row.unique_id) for row in rows}
+    prefix = f"{entry.entry_id}_"
+    ready = {
+        domain
+        for domain, keys in _CARE_LOG_ENTITY_KEYS.items()
+        if all((domain, f"{prefix}{code}_{key}") in present for code in known for key in keys)
+    }
+
+    pattern = re.compile(rf"{re.escape(prefix)}([0-9a-f]{{{BABY_CODE_LENGTH}}})_(.+)")
+    removed = 0
+    for row in rows:
+        if row.domain not in ready:
+            continue
+        match = pattern.fullmatch(row.unique_id)
+        if match is None or match[1] in known or match[2] not in _CARE_LOG_ENTITY_KEYS[row.domain]:
+            continue
+        ent_reg.async_remove(row.entity_id)
+        removed += 1
+    if removed:
+        LOGGER.info("Removed %d stale care log entities", removed)
 
 
 def _make_options_update_listener(

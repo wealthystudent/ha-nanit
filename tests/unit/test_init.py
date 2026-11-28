@@ -1057,3 +1057,175 @@ async def test_unpaired_found_without_babies_is_persisted(hass: HomeAssistant) -
     )
 
     assert entry.data["unpaired_speakers"] == {"L151ABC1234567": "Nursery"}
+
+
+# ---------------------------------------------------------------------------
+# Care log entities of babies no longer on the account
+# ---------------------------------------------------------------------------
+
+from custom_components.nanit import _CARE_LOG_ENTITY_KEYS, _async_remove_stale_care_log_entities
+from custom_components.nanit.baby_code import baby_code
+from custom_components.nanit.sensor import CARE_LOG_SENSORS
+
+_LISTED = Baby(uid="baby_1", name="Nursery", camera_uid="cam_1")
+_NANIT_LOGGER = "custom_components.nanit"
+
+
+def _care_hub(babies: list, *, complete: bool = True) -> SimpleNamespace:
+    return SimpleNamespace(babies=babies, babies_complete=complete)
+
+
+def _other_sign_in(hass: HomeAssistant) -> MockConfigEntry:
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={**mock_entry_data_v2(), "email": "other@example.com"},
+        version=2,
+        unique_id="other@example.com",
+    )
+    entry.add_to_hass(hass)
+    return entry
+
+
+def _register_care(
+    hass: HomeAssistant, entry: MockConfigEntry, baby_uid: str, *, without: str | None = None
+) -> dict[tuple[str, str], str]:
+    """Register a baby's care log entities; (domain, unique id) -> entity id."""
+    ent_reg = er.async_get(hass)
+    registered = {}
+    for domain, keys in _CARE_LOG_ENTITY_KEYS.items():
+        for key in sorted(keys - {without}):
+            unique_id = f"{entry.entry_id}_{baby_code(baby_uid)}_{key}"
+            row = ent_reg.async_get_or_create(domain, DOMAIN, unique_id, config_entry=entry)
+            registered[domain, unique_id] = row.entity_id
+    return registered
+
+
+def _left(hass: HomeAssistant, rows: dict[tuple[str, str], str]) -> set[tuple[str, str]]:
+    """Which of these rows are still registered, as (domain, unique id)."""
+    ent_reg = er.async_get(hass)
+    return {
+        (domain, unique_id)
+        for domain, unique_id in rows
+        if ent_reg.async_get_entity_id(domain, DOMAIN, unique_id)
+    }
+
+
+async def test_care_log_entities_of_a_baby_no_longer_listed_are_removed(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    entry = _migration_entry(hass)
+    ent_reg = er.async_get(hass)
+    camera = dr.async_get(hass).async_get_or_create(
+        config_entry_id=entry.entry_id, identifiers={(DOMAIN, "cam_1")}
+    )
+    kept = _register_care(hass, entry, "baby_1")
+    gone = _register_care(hass, entry, "baby_2")
+    # As a user may have left them: the sensors on the camera's device, the
+    # calendar on none, one sensor disabled and one renamed.
+    sensors = [entity_id for (domain, _), entity_id in gone.items() if domain == "sensor"]
+    for entity_id in sensors:
+        ent_reg.async_update_entity(entity_id, device_id=camera.id)
+    ent_reg.async_update_entity(sensors[0], disabled_by=er.RegistryEntryDisabler.USER)
+    ent_reg.async_update_entity(sensors[1], new_entity_id="sensor.my_own_name", name="Mine")
+
+    with caplog.at_level("INFO", logger=_NANIT_LOGGER):
+        _async_remove_stale_care_log_entities(hass, entry, _care_hub([_LISTED]))
+
+    assert _left(hass, gone) == set()
+    for (domain, unique_id), entity_id in kept.items():
+        assert ent_reg.async_get_entity_id(domain, DOMAIN, unique_id) == entity_id
+    # A count, and no entity id: those hold baby names.
+    assert [r.getMessage() for r in caplog.records if r.name == _NANIT_LOGGER] == [
+        "Removed 9 stale care log entities"
+    ]
+
+
+@pytest.mark.parametrize(
+    "hub",
+    [_care_hub([_LISTED], complete=False), _care_hub([])],
+    ids=["incomplete_list", "empty_list"],
+)
+async def test_care_log_entities_are_kept_without_a_complete_list_of_babies(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture, hub: SimpleNamespace
+) -> None:
+    entry = _migration_entry(hass)
+    _register_care(hass, entry, "baby_1")
+    gone = _register_care(hass, entry, "baby_2")
+
+    with caplog.at_level("INFO", logger=_NANIT_LOGGER):
+        _async_remove_stale_care_log_entities(hass, entry, hub)
+
+    assert _left(hass, gone) == set(gone)
+    assert not [r for r in caplog.records if r.name == _NANIT_LOGGER]
+
+
+@pytest.mark.parametrize(
+    ("domain", "key"),
+    [("sensor", "last_feeding"), ("calendar", "care_log_calendar")],
+)
+async def test_care_log_entities_wait_until_every_listed_baby_has_its_own(
+    hass: HomeAssistant, domain: str, key: str
+) -> None:
+    """Per domain: an entity still to be created could take an id this frees."""
+    entry = _migration_entry(hass)
+    other = _other_sign_in(hass)
+    ent_reg = er.async_get(hass)
+    sibling = Baby(uid="baby_9", name="Nursery", camera_uid="cam_1")
+    hub = _care_hub([_LISTED, sibling])
+    listed = {
+        **_register_care(hass, entry, "baby_1"),
+        **_register_care(hass, entry, "baby_9", without=key),
+    }
+    gone = _register_care(hass, entry, "baby_2")
+    # The sibling's missing entity exists under another sign-in: it does not count.
+    missing = f"{entry.entry_id}_{baby_code('baby_9')}_{key}"
+    stray = ent_reg.async_get_or_create(domain, DOMAIN, missing, config_entry=other)
+
+    _async_remove_stale_care_log_entities(hass, entry, hub)
+
+    assert _left(hass, gone) == {row for row in gone if row[0] == domain}
+    assert _left(hass, listed) == set(listed)
+    assert ent_reg.async_get(stray.entity_id) is not None
+
+    ent_reg.async_remove(stray.entity_id)
+    row = ent_reg.async_get_or_create(domain, DOMAIN, missing, config_entry=entry)
+    listed[domain, missing] = row.entity_id
+    _async_remove_stale_care_log_entities(hass, entry, hub)
+
+    assert _left(hass, gone) == set()
+    assert _left(hass, listed) == set(listed)
+
+
+async def test_only_exact_care_log_entities_are_removed(hass: HomeAssistant) -> None:
+    entry = _migration_entry(hass)
+    other = _other_sign_in(hass)
+    ent_reg = er.async_get(hass)
+    _register_care(hass, entry, "baby_1")
+    code = baby_code("baby_2")
+    assert code != code.upper()
+    own, theirs = entry.entry_id, other.entry_id
+    lookalikes = [
+        ("sensor", DOMAIN, f"{own}_{code[:-1]}_last_feeding", entry),  # 31 characters
+        ("sensor", DOMAIN, f"{own}_{code}0_last_feeding", entry),  # 33 characters
+        ("sensor", DOMAIN, f"{own}_{code.upper()}_last_feeding", entry),
+        ("sensor", DOMAIN, f"{own}_{code}_sleep_time", entry),  # an unknown ending
+        ("sensor", DOMAIN, f"{own}_{code}_care_log_calendar", entry),  # the calendar's ending
+        ("calendar", DOMAIN, f"{own}_{code}_last_feeding", entry),  # a sensor's ending
+        ("sensor", DOMAIN, f"{theirs}_{code}_last_feeding", other),  # another sign-in's own
+        ("sensor", DOMAIN, f"{own}_{code}_last_pumping", other),  # this id, their entry
+        ("sensor", "another_integration", f"{own}_{code}_last_feeding", entry),
+    ]
+    rows = [
+        ent_reg.async_get_or_create(domain, platform, unique_id, config_entry=owner)
+        for domain, platform, unique_id, owner in lookalikes
+    ]
+
+    _async_remove_stale_care_log_entities(hass, entry, _care_hub([_LISTED]))
+
+    assert all(ent_reg.async_get(row.entity_id) is not None for row in rows)
+
+
+def test_the_care_log_entity_keys_are_the_sensors_keys() -> None:
+    """The calendar's ending is checked where a real calendar is set up."""
+    assert set(_CARE_LOG_ENTITY_KEYS) == {"sensor", "calendar"}
+    assert _CARE_LOG_ENTITY_KEYS["sensor"] == {description.key for description in CARE_LOG_SENSORS}

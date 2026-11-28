@@ -232,15 +232,18 @@ def problem(words: list[str], cwd: str | None = None) -> str | None:
 
     if sub == "config":
         words_ = positional(rest, CONFIG_OPTIONS_WITH_VALUE)
-        action = words_.pop(0) if words_ and words_[0] in ("set", "unset", "get", "list") else ""
+        actions = ("set", "unset", "get", "list", "remove-section", "rename-section", "edit")
+        action = words_.pop(0) if words_ and words_[0] in actions else ""
         reads = {"--get", "--get-all", "--get-regexp", "--get-urlmatch", "--list", "-l"}
         writes = not reads & set(rest) and (
-            action in ("set", "unset")
+            action in ("set", "unset", "remove-section", "rename-section", "edit")
             or (not action and len(words_) > 1)
             or any(a.startswith(("--unset", "--replace-all", "--add", "--rename-section",
                                  "--remove-section", "--edit")) for a in rest)
         )  # fmt: skip
-        sections = any(a.startswith(("--remove-section", "--rename-section")) for a in rest)
+        sections = action.endswith("-section") or any(
+            a.startswith(("--remove-section", "--rename-section")) for a in rest
+        )
         signing = SIGNING_SECTIONS if sections else SIGNING_KEYS
         if writes and (not words_ or signing.search(words_[0])):
             return "Changing signing config is not allowed. Use the host's signing as it is."
